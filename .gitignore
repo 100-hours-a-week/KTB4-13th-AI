@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# 환경변수 — 서버 로컬에만 두고 Git·이미지에 넣지 않는다
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
