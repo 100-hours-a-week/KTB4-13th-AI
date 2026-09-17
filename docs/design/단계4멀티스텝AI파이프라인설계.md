@@ -130,7 +130,7 @@ flowchart LR
 
 ---
 
-## 파이프라인 C — 홈 피드 (`POST /recommendations/feed`, 
+## 파이프라인 C — 홈 피드 (`GET /recommendations/feed`, 
 V1, LLM 없음)
 
 ```mermaid
@@ -142,7 +142,7 @@ flowchart LR
     C --> D
     D --> E{cold_start?}
     E -- Yes --> F["개인화 신호 끄고<br/>인기·신간만, match_score=0"]
-    E -- No --> G["정렬·필터<br/>(surface=recommend_more일 때만 sort/filters)"]
+    E -- No --> G["정렬·필터<br/>(surface=recommend_more일 때만 sort·필터)"]
     G --> H["next_cursor 발급<br/>(서버는 목록을 저장하지 않음)"]
     H -.->|다음 요청 cursor| A
 ```

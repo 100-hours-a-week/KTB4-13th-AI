@@ -24,7 +24,7 @@ AI 서버가 소유하는 테이블, BE에서 복제받는 커머스 테이블, 
 | AI 검색 | POST /search | 키워드 검색과 벡터 검색 순위를 합쳐 도서를 조회 | V1 |
 | 텍스트 임베딩 | POST /embeddings | 텍스트를 벡터로 변환 | V1 |
 | 챗봇 추천 | POST /recommendations/chat | 대화로 추천 카드 최대 3장 생성 | V1 |
-| 홈 피드 | POST /recommendations/feed | 취향 프로필 기반 개인화 목록 | V1 |
+| 홈 피드 | GET /recommendations/feed | 취향 프로필 기반 개인화 목록 | V1 |
 | 취향 기억 추출 | POST /preferences/extractions | 야간 배치로 대화에서 취향 추출 | V2 |
 | 취향 프로필 생성 | POST /preferences/profile | 온보딩·기억·이력으로 취향 프로필 생성 | V1 |
 | 쇼핑 에이전트 | POST /agent/act | 쇼핑 의도 해석 후 BE tool 실행 | V2 |
