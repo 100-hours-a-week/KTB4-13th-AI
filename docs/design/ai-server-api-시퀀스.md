@@ -199,7 +199,7 @@ sequenceDiagram
 - **읽기**: `v_books`, `book_embeddings`, (`recognized` 시 유사 카드 채점) `taste_profile` 등
 - **쓰기**: 없음 · **이미지 저장**: ✕
 
-## ④ `POST /recommendations/feed`
+## ④ `GET /recommendations/feed`
 
 ```mermaid
 sequenceDiagram
@@ -208,7 +208,7 @@ sequenceDiagram
     participant VEC as 벡터 인덱스
     participant CP as 복제 사본 (AI Postgres)
 
-    BE->>F: {user_id, surface, sort, filters, cursor}
+    BE->>F: GET 쿼리 파라미터 {user_id, surface, sort, category·pub_year·match_score_min, cursor}
     F->>CP: taste_profile (centroid, tag_weights, profile_version)
     alt centroid 없음 / 정보 부족
         F->>CP: v_book_popularity + 신간
@@ -216,7 +216,7 @@ sequenceDiagram
     else 정상
         F->>VEC: centroid 유사 도서
         F->>CP: v_books(작가·카테고리·신간) + 이력(v_user_*) + v_book_popularity
-        F->>F: 규칙점수(작가·카테고리·태그·이력·인기) + 벡터유사도 → 가중합<br/>이미 산/담은 책·별점 1~2점 제외 → filters·match_score_min → next_cursor 서명
+        F->>F: 규칙점수(작가·카테고리·태그·이력·인기) + 벡터유사도 → 가중합<br/>이미 산/담은 책·별점 1~2점 제외 → 필터·match_score_min → next_cursor 서명
         F-->>BE: 200 {items[], next_cursor, cold_start:false}
     end
 
@@ -227,6 +227,7 @@ sequenceDiagram
 
 - **읽기**: `taste_profile`, `v_books`, `v_user_purchases`/`library`/`reviews`, `v_book_popularity`, `book_embeddings` — 전부 복제 사본
 - **쓰기**: 없음 · **LLM**: 안 씀 · **이유 문구**: 없음 (순서 + `match_score`만, 긴 이유는 ③에서만)
+- **요청**: 요청 본문 없이 쿼리 파라미터만 받는다 — `user_id`·`surface`·`sort`·`category`·`pub_year_from`·`pub_year_to`·`match_score_min`·`size`·`cursor`가 허용 목록 전부이고 그 밖의 키는 400 · **응답 헤더**: `Cache-Control: private, no-store`
 
 ## ⑤ `POST /preferences/extractions` (V2 · 야간 배치)
 
@@ -376,7 +377,7 @@ sequenceDiagram
     AI->>AI: centroid + 태그 가중치 계산 → taste_profile upsert (computed_at 저장)
     AI-->>BE: cold_start:false, profile_version:1
     U->>BE: 홈 진입
-    BE->>AI: POST /recommendations/feed (surface:home, sort:match)
+    BE->>AI: GET /recommendations/feed (surface=home, sort=match)
     AI->>AI: 규칙 점수 + 취향 벡터 유사도 가중합 (LLM 없음)
     AI->>CP: 이력·인기 읽기
     AI-->>BE: items[] + next_cursor + cold_start:false

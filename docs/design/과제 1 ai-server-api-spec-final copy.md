@@ -18,7 +18,7 @@
 | ① | POST /search | 검색어로 도서를 조회한다. 키워드 검색과 벡터 검색 순위를 합친다. 결과가 0건이면 대화형 추천으로 전환하라는 신호를 함께 반환한다 | V1 |
 | ② | POST /embeddings | 글을 벡터로 바꾼다. 검색어와 도서 정보 모두 이 API를 쓴다(내부 전용) | V1 |
 | ③ | POST /recommendations/chat | 챗봇이 대화로 책을 추천한다. 사용자 메시지를 읽어 추천 조건을 갱신하고 카드를 최대 3장 준다. 카드마다 한 줄 이유와 상세 페이지용 긴 이유를 한 번의 LLM 호출로 함께 만든다. (V2) 사진을 보내면 같은 요청에서 표지를 인식한다 | V1 (이미지 턴 V2) |
-| ④ | POST /recommendations/feed | 사용자 취향 프로필로 개인화 추천 목록을 만든다. 검색어를 받지 않는다 | V1 |
+| ④ | GET /recommendations/feed | 사용자 취향 프로필로 개인화 추천 목록을 만든다. 검색어를 받지 않는다 | V1 |
 | ⑤ | POST /preferences/extractions | 밤에 한 번, 그날 끝난 대화에서 취향을 뽑아낸다(동의한 사용자만) | V2 |
 | ⑥ | POST /preferences/profile | 온보딩 응답과 취향 기억으로 취향 프로필을 생성한다. 구매·도서관·리뷰는 아래 복제 테이블에서 직접 읽는다. 호출할 때마다 전체를 다시 계산한다 | V1 |
 | ⑦ | POST /agent/act | 사용자 메시지에서 쇼핑 의도를 해석해 백엔드 tool을 실행한다 | V2 |
@@ -76,7 +76,7 @@
 
 ```json
 {
-  "query": "김영하 : 여행의 이유 10000원이하",
+  "query": "김영하 여행의 이유",
   "filters": {
     "category": "에세이",
     "price_min": 10000,
@@ -465,7 +465,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 ---
 
-### **④ 개인화 추천 목록: `POST /recommendations/feed`**
+### **④ 개인화 추천 목록: `GET /recommendations/feed`**
 
 > 취향 프로필로 개인화 추천 목록을 만든다. 검색어를 받지 않는다. 점수는 규칙 기반 점수(작가, 카테고리, 태그, 이력, 인기)와 취향 벡터 유사도의 가중합이며 LLM을 호출하지 않는다.
 > 
@@ -479,36 +479,29 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 #### **입력**
 
-```json
-// 첫 요청 또는 정렬, 필터를 바꿔 처음부터 다시 조회. cursor 없음
-{ "user_id": 123, "surface": "home", "sort": "match", "size": 15 }
+쿼리 파라미터로 받는다. 요청 본문은 없다.
 
-// 이어서 조회. 직전 응답의 next_cursor를 그대로 싣는다
-{
-  "user_id": 123,
-  "surface": "recommend_more",
-  "sort": "match",
-  "filters": {
-    "category": "에세이",
-    "pub_year_from": 2020,
-    "match_score_min": 70
-  },
-  "size": 15,
-  "cursor": "eyJ…(서명됨)"
-}
+```
+# 첫 요청 또는 정렬, 필터를 바꿔 처음부터 다시 조회. cursor 없음
+GET /recommendations/feed?user_id=123&surface=home&sort=match&size=15
+
+# 이어서 조회. 직전 응답의 next_cursor를 그대로 싣는다(값은 URL 인코딩)
+GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
+    &category=에세이&pub_year_from=2020&match_score_min=70&size=15&cursor=eyJ…
 ```
 
-| 필드 | 타입 | 필수 | 설명 |
+| 파라미터 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- |
 | user_id | int | Y | 사용자 ID. 비로그인은 호출 안 함 |
 | surface | enum | Y | 요청 맥락. home은 정렬, 필터를 받지 않고 recommend_more는 받는다 |
 | sort | enum | N | 정렬 기준. match(기본), newest, price_asc. surface가 recommend_more일 때만 유효 |
-| filters | object | N | 조회 조건. 아래 세 종류만 허용하며 그 외 키는 400 |
-| filters.category | string | N | 카테고리명 |
-| filters.pub_year_from, .pub_year_to | int | N | 출간연도 구간 |
-| filters.match_score_min | int | N | 매칭 점수 하한 0–100. 이 값 미만은 목록에서 제외한다 |
+| category | string | N | 필터. 카테고리명 |
+| pub_year_from, pub_year_to | int | N | 필터. 출간연도 구간 |
+| match_score_min | int | N | 필터. 매칭 점수 하한 0–100. 이 값 미만은 목록에서 제외한다 |
 | size | int | N | 한 페이지 개수. 기본 15, 최대 50 |
 | cursor | string? | N | 페이지 커서. 직전 응답의 next_cursor 그대로. 첫 턴은 생략. 30분 만료 |
+- **위 아홉 개가 허용 파라미터 전부이며, 그 밖의 키가 오면 400이다.**(`pub_year_from`과 `pub_year_to`는 표에서 한 행이지만 별개 파라미터다.) 필터 세 종류(`category`, 출간연도 구간, `match_score_min`)는 `surface`가 `recommend_more`일 때만 유효하다.
+- 값은 **URL 인코딩**해서 싣는다. 특히 `cursor`는 서버가 서명한 문자열이라 `+`·`/`·`=`가 섞이고, `category`는 한글이다.
 
 #### **출력 (200)**
 
@@ -546,13 +539,14 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 - **피드 항목에는 추천 이유 문구가 없다.** 순서와 `match_score`만 낸다. 이유는 대화형 추천 카드에서만 나온다(③의 `reason_short`·`reason_long`). 피드가 LLM을 호출하지 않는다는 원칙을 지키기 위해서다.
 - 커서 제외 규칙의 ’조회, 구매 이력’은 `v_user_purchases`, `v_user_library`를 말한다. 이미 산 책과 담은 책, 별점 1–2점을 준 책은 목록에서 빼되, 커서 발급 이후에 생긴 것은 제외 대상에서 뺀다(카드를 보고 돌아와 스크롤해도 목록이 밀리지 않게).
 - 카탈로그에서 사라진 도서(삭제·비공개)는 `v_books` 조인에서 빠지므로 **한 페이지가 `size`보다 짧을 수 있다.** 짧은 페이지는 목록의 끝이 아니며, 끝은 `next_cursor: null`로만 판정한다.
-- `filters` 없이 후보가 0건인 경우는 없다. `filters`로 0건이면 `items: []`, `next_cursor: null`로 200을 돌려준다. 에러가 아니며 필터를 임의로 풀지 않는다.
+- 필터 없이 후보가 0건인 경우는 없다. 필터로 0건이면 `items: []`, `next_cursor: null`로 200을 돌려준다. 에러가 아니며 필터를 임의로 풀지 않는다.
+- 응답에 `Cache-Control: private, no-store`를 붙인다. 개인화 목록인 데다 서버가 결과를 보관하지 않아 같은 URL이라도 호출할 때마다 본문이 달라진다. 중간 캐시가 응답을 재사용하면 남의 목록이 다른 사용자에게 나갈 수 있다.
 
 #### **응답 코드**
 
 | 상태 | message | 언제 |
 | --- | --- | --- |
-| 400 | invalid_request | 형식 오류, 허용되지 않은 filters 키, size 50 초과 |
+| 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, size 50 초과 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 410 | cursor_expired | 커서가 만료됐거나 필터, 정렬, 축소 모드가 발급 때와 다름. 첫 페이지부터 다시 |
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
@@ -1344,12 +1338,13 @@ curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
 }
 ```
 
-### **예시 5: 개인화 추천 피드 `POST /recommendations/feed`**
+### **예시 5: 개인화 추천 피드 `GET /recommendations/feed`**
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/recommendations/feed> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"surface":"home","sort":"match","size":15}'
+curl -G <https://ai.internal.bookjeok.com/recommendations/feed> \
+  -H "Authorization: Bearer$SERVICE_TOKEN" \
+  --data-urlencode "user_id=123" --data-urlencode "surface=home" \
+  --data-urlencode "sort=match" --data-urlencode "size=15"
 ```
 
 ```json
@@ -1500,6 +1495,9 @@ curl <https://ai.internal.bookjeok.com/health>
 | 필드 완결성 | 문서에 적힌 응답 필드는 항상 존재. 빈 값은 null, [], {}. 조건부 필드도 해당 없을 땐 null. 빈 결과(0건, 카드 없음, 인식 실패, 추출 없음)는 오류가 아니라 200 |
 | 오류 본문 | 성공과 같은 envelope에 data: null. 사유는 message의 문자열 |
 | 인증 | BE→AI는 서비스 토큰(Authorization: Bearer). 없거나 틀리면 401. /health는 예외이며 내부망에서만 접근 |
+| 메서드 선택 | 부수효과가 없는 읽기는 GET, 상태를 바꾸거나 요청 본문이 필요한 것은 POST. ④ 피드와 ⑧ /health가 GET이다. ④는 읽기 전용이라 재시도가 자유롭고 멱등 키가 필요 없다 |
+| 메서드 선택, ①의 예외 | ① /search는 읽기지만 POST다. 검색어가 사용자 자유 텍스트라, GET이면 쿼리스트링에 실려 access log·프록시 로그·APM 트레이스의 URI에 그대로 남는다. "대화 원문·검색어는 로그에 남기지 않는다"(인프라 설계)와 충돌해 본문으로 받는다. ④가 싣는 것은 ID와 enum뿐이라 같은 제약을 받지 않는다 |
+| 캐시 | 목록 응답은 Cache-Control: private, no-store. 개인화 결과이고 서버가 목록을 보관하지 않아 같은 URL이라도 호출마다 본문이 달라진다 |
 | 인증, V2 역방향 | AI→BE tool 호출도 같은 내부망 안이며 방향 전용 서비스 토큰(BE가 AI에 발급)으로 인증. 사용자 위임 토큰은 따로 쓰지 않음. 누구 장바구니인지는 BE가 tool 인자의 user_id로 다시 확인. 영향 범위가 장바구니 담기, 수정, 조회 수준이고 주문, 결제는 이 시스템 밖이라 이 정도로 둠 |
 | 상관관계 ID | 모든 요청에 X-Request-Id 헤더 권장. 없으면 서버가 만들어 응답 헤더로 돌려줌. 로그를 이어 붙이는 키 |
 | 상한 초과 처리 | 개수 상한 초과는 최근 N개만 쓰고 200(recent_turns 20, conversation 40, liked_book_ids 50, memories 500). 항목 길이, 형식, 값 범위 위반과 size 50 초과는 400. 예외. context_cards(최대 10)는 초과 시 400(앞을 자르면 “N번” 해석이 어긋남) |

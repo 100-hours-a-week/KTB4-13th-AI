@@ -217,7 +217,7 @@ sequenceDiagram
 - **읽는 것**: 책 목록, 책 의미 지문, (1권 확정 시 비슷한 책 채점에) 취향 요약
 - **쓰는 것**: 없음 · **사진 저장**: ✕
 
-## ④ `POST /recommendations/feed` — 홈 피드
+## ④ `GET /recommendations/feed` — 홈 피드
 
 ```mermaid
 sequenceDiagram
