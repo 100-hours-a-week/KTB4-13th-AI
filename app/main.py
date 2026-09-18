@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.core import db
 from app.core.config import get_settings
-from app.routers import agent, chat, extractions
+from app.routers import agent, chat, embeddings, extractions, feed, profile, search
 
 
 @asynccontextmanager
@@ -22,6 +22,10 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(agent.router)
 app.include_router(chat.router)
 app.include_router(extractions.router)
+app.include_router(search.router)
+app.include_router(embeddings.router)
+app.include_router(feed.router)
+app.include_router(profile.router)
 
 
 @app.get("/health")
