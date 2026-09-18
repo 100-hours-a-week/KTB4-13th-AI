@@ -93,11 +93,11 @@ erDiagram
     V_BOOKS {
         int book_id PK "BE 복제"
         string title ""
-        string author ""
-        string publisher ""
+        string author "null 허용"
+        string publisher "null 허용"
         int price "판매가 원"
         bool in_stock ""
-        string cover_url ""
+        string cover_url "null 허용"
         string category "null 허용"
         int pub_year "null 허용"
         text description "null 허용"
@@ -253,11 +253,11 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 | --- | --- | --- | --- | --- | --- |
 | book_id | int PK | N | 도서 ID | 응답의 도서 식별자이자 임베딩·인기·이력 테이블의 조인 축. `book_embeddings`가 FK로 참조 | 커머스 정수 ID |
 | title | string | N | 제목 | 검색 결과와 카드 응답 필드. 키워드 인덱스 대상 | 응답 스키마가 string |
-| author | string | N | 저자 | 같음. 키워드 인덱스 대상 | 응답 스키마가 string |
-| publisher | string | N | 출판사 | 검색 결과 응답 필드 | 응답 스키마가 string |
-| price | int | N | 판매가(원) | 응답 필드이자 검색의 가격 구간 필터 조건 | 할인 적용 후 원 단위라 소수점 불필요. 원본이 `DECIMAL`이면 복제 시 정수로 맞춘다(§7) |
-| in_stock | bool | N | 재고 여부 | 응답 필드이자 검색의 품절 제외 필터 조건 | 재고 유무만 판정하므로 bool. MySQL `TINYINT(1)`은 복제 시 boolean으로 변환 |
-| cover_url | string | N | 표지 이미지 URL | 응답 필드 | URL 문자열 |
+| author | string | **Y** | 저자 | 같음. 키워드 인덱스 대상 | 응답 스키마가 string. 원천(국중·정보나루)이 저자를 주지 않는 책이 카탈로그 실측 4.0만 건(1.7%) 있어 2026-09-18에 Null 허용으로 바꿨다(#8) |
+| publisher | string | **Y** | 출판사 | 검색 결과 응답 필드 | 응답 스키마가 string. 빈 값 실측 4건이라 같은 결정으로 Null 허용(#8) |
+| price | int | N | 판매가(원) | 응답 필드이자 검색의 가격 구간 필터 조건 | 할인 적용 후 원 단위라 소수점 불필요. 원본이 `DECIMAL`이면 복제 시 정수로 맞춘다(§7) **NOT NULL 유지**(#8) — 판매가는 BE가 산출하는 값이라 복제 시점에 비어 있을 이유가 없고, Null을 허용하면 가격 구간 필터에서 그 책이 조용히 빠진다. 카탈로그 덤프가 주는 값은 **정가**이며 결측은 0건이다 |
+| in_stock | bool | N | 재고 여부 | 응답 필드이자 검색의 품절 제외 필터 조건 | 재고 유무만 판정하므로 bool. MySQL `TINYINT(1)`은 복제 시 boolean으로 변환. **NOT NULL 유지**(#8) — Null을 허용하면 `in_stock_only` 필터와 부분 인덱스에서 "재고 모름"이 조용히 품절로 처리된다. 카탈로그 덤프에는 이 값이 없으므로 개발용 적재에서는 적재 스크립트가 기본값을 채운다 |
+| cover_url | string | **Y** | 표지 이미지 URL | 응답 필드 | URL 문자열. 국중 표지가 없는 책이 카탈로그 실측 85.8%라 NOT NULL이면 대부분 적재할 수 없다. 플레이스홀더로 채우면 깨진 이미지를 그리게 되므로 Null 허용으로 바꿨다(2026-09-18, #8). 표시는 프런트가 대체 이미지로 처리 |
 | category | string | Y | 카테고리명 | 검색·피드의 카테고리 필터 조건, ⑥의 이력 책 카테고리 점수. 온보딩 관심 대분류와 값 집합이 동일해야 매칭됨 | 문자열 정확 일치로 동작하므로 복제 시 NFC 정규화하고 후행 공백을 다듬는다(§7). 미분류 도서는 필터에서 제외되므로 Null 허용 |
 | pub_year | int | Y | 출간연도 | 검색·피드의 출간연도 구간 필터, newest 정렬 기준 | 연 단위 비교라 정수. 미상 도서는 필터·정렬에서 제외되므로 Null 허용 |
 | description | text | Y | 도서 소개 | 문서 임베딩(purpose: document)의 입력 텍스트. 키워드 인덱스 대상. ③이 이유 문장을 쓸 때 LLM에 주는 도서 소개 | 길이 제한이 큰 본문이라 text. 없으면 임베딩을 생성하지 않아 벡터 검색 대상에서 빠짐 |
@@ -387,6 +387,8 @@ AI가 조회하지 않는다. BE가 요청에 실어 보내고 AI는 계산에�
 명세에 저장 위치나 규칙이 정해지지 않은 항목이다. 값·주기처럼 구현하면서 정할 수 있는 것은 넣지 않았다.
 
 **이전 판에서 미확정이었다가 정해진 것.**
+
+- **`v_books`의 NOT NULL 제약**(2026-09-18, #8) — 카탈로그 실측과 어긋나 적재가 실패하던 문제. `author`·`publisher`·`cover_url`은 **Null 허용**으로 바꾸고(실측 1.7% · 4건 · 85.8%가 빈 값), `in_stock`은 **NOT NULL 유지**한다(`002_v_books_nullable.sql`).
 
 - **사전 임베딩 벡터** — 테이블이 아니다. 온보딩 택소노미의 카테고리·태그 라벨(수십 개)을 서버 기동 시 ②로 임베딩해 메모리에 둔다. ⑥은 요청 시점에 ②를 부르지 않으므로 "임베딩 업스트림 무호출, 503·504 없음" 계약이 유지된다. 모델이나 택소노미가 바뀌면 재기동으로 갱신되고, 인스턴스마다 같은 모델·같은 라벨에서 계산하므로 값이 같다. 벡터가 없는 라벨은 즉석 임베딩하지 않고 태그 신호로만 쓴다.
 - **키워드 검색 인덱스** — AI Postgres 안의 tsvector·pg_trgm 인덱스이며 `v_books`(§3-1)에 건다.
