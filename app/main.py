@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.core import db
 from app.core.config import get_settings
+from app.routers import agent
 
 
 @asynccontextmanager
@@ -17,6 +18,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+app.include_router(agent.router)
 
 
 @app.get("/health")
