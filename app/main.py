@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.core import db
 from app.core.config import get_settings
-from app.routers import agent
+from app.routers import agent, chat, extractions
 
 
 @asynccontextmanager
@@ -20,6 +20,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 app.include_router(agent.router)
+app.include_router(chat.router)
+app.include_router(extractions.router)
 
 
 @app.get("/health")
