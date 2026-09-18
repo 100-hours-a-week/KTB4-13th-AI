@@ -1,0 +1,47 @@
+name: sync-docs-to-wiki
+
+# docs/** (docs/wiki/ 제외) 가 main 에 머지되면 KTB4-13th-wiki 레포의 docs/inbox/ai/ 에 반영용 PR 을 자동 생성한다.
+# docs/wiki/ 는 KTB4-13th-wiki 에서 sync-docs-to-ktb4-13th-ai.yml 로 이미 들어온 사본이라,
+# 그대로 되돌려보내면 자기 복제/무한 루프가 되므로 rsync 대상에서 제외한다.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: KTB4-13th-AI 체크아웃 (docs 원본)
+        uses: actions/checkout@v4
+        with:
+          path: source-ai
+
+      - name: KTB4-13th-wiki 체크아웃 (반영 대상)
+        uses: actions/checkout@v4
+        with:
+          repository: 100-hours-a-week/KTB4-13th-wiki
+          token: ${{ secrets.WIKI_REPO_PAT }}
+          path: target-wiki
+
+      - name: docs 복사 (docs/wiki/ 제외, docs/inbox/ai/ 로만)
+        run: |
+          TARGET_DIR="target-wiki/docs/inbox/ai"
+          mkdir -p "$TARGET_DIR"
+          rsync -a --delete --exclude 'wiki/' --exclude '.DS_Store' source-ai/docs/ "$TARGET_DIR/"
+
+      - name: 반영 PR 생성
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.WIKI_REPO_PAT }}
+          path: target-wiki
+          commit-message: "docs: KTB4-13th-AI 문서 동기화 (${{ github.sha }})"
+          branch: sync/ktb4-13th-ai-docs
+          delete-branch: true
+          title: "docs: KTB4-13th-AI 문서 반영 (inbox/ai)"
+          body: |
+            KTB4-13th-AI 레포의 `docs/**` 변경 사항(`docs/wiki/` 제외)을 `docs/inbox/ai/`에 자동 반영한 PR입니다.
+            원본 커밋: 100-hours-a-week/KTB4-13th-AI@${{ github.sha }}
+
+            자동 생성 - 병합 전 리뷰해 주세요.
