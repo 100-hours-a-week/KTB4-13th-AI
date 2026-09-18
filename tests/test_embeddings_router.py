@@ -118,3 +118,19 @@ def test_본문이_4MB를_넘으면_413이다() -> None:
 
     assert res.status_code == 413
     assert res.json() == {"message": "payload_too_large", "data": None}
+
+
+def test_임베딩이_실패하면_503_upstream_unavailable이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 모델 파일이 없거나 차원이 어긋난 상황. 500이 아니라 503으로 알려야
+    # 호출자가 "임베딩이 죽었다"를 구분해 키워드 전용으로 강등할 수 있다.
+    async def _fail(texts: list[str], purpose: str) -> None:
+        raise RuntimeError("모델 차원 불일치")
+
+    monkeypatch.setattr(embeddings.embedding, "embed", _fail)
+
+    res = client.post("/embeddings", json={"texts": ["책"]})
+
+    assert res.status_code == 503
+    assert res.json() == {"message": "upstream_unavailable", "data": None}

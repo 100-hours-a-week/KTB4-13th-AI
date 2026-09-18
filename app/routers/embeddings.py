@@ -9,6 +9,7 @@ LLM도 DB도 안 쓰는 유일한 엔드포인트라 독립적으로 완성 가�
 """
 
 import json
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
@@ -16,6 +17,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
 from app.gateway import embedding
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["embeddings"])
 
@@ -78,7 +81,15 @@ async def embeddings(request: Request) -> JSONResponse:
     if req is None:
         return _error(400, "invalid_request")
 
-    vectors, dim, model = await embedding.embed(req.texts, req.purpose)
+    try:
+        vectors, dim, model = await embedding.embed(req.texts, req.purpose)
+    except Exception:
+        # 모델 파일이 없거나 차원이 어긋나면 여기서 터진다. 그대로 두면 FastAPI 기본
+        # 500 {"detail": ...} 이 나가 계약 봉투가 깨지고, 호출자는 "임베딩이 죽었다"를
+        # 구분할 수 없어 ① 키워드 전용 강등 판단도 못 한다. 원인은 로그로 남긴다.
+        logger.exception("임베딩 생성 실패")
+        return _error(503, "upstream_unavailable")
+
     return JSONResponse(
         {
             "message": "embed_success",
