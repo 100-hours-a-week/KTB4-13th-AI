@@ -69,3 +69,53 @@ def test_실제_모델은_384차원_단위벡터를_돌려준다() -> None:
 def test_모델을_읽으면_is_loaded가_참이_된다() -> None:
     embedding.load_model()
     assert embedding.is_loaded() is True
+
+
+def test_모델_읽기_실패는_쿨다운_동안_다시_시도하지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 실패를 기억하지 않으면 요청마다 1.4GB 모델 읽기를 새로 시도해
+    # 스레드와 CPU를 잡아먹고 장애가 커진다.
+    calls = {"n": 0}
+
+    def _fail() -> None:
+        calls["n"] += 1
+        raise RuntimeError("모델 파일 없음")
+
+    monkeypatch.setattr(embedding, "_model", None)
+    monkeypatch.setattr(embedding, "_load_failed_at", None)
+    monkeypatch.setattr(embedding, "_load_error", None)
+    monkeypatch.setattr(embedding, "_build_model", _fail)
+
+    for _ in range(5):
+        with pytest.raises(RuntimeError):
+            embedding.load_model()
+
+    assert calls["n"] == 1
+
+
+def test_쿨다운이_지나면_다시_시도한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def _fail() -> None:
+        calls["n"] += 1
+        raise RuntimeError("모델 파일 없음")
+
+    monkeypatch.setattr(embedding, "_model", None)
+    monkeypatch.setattr(embedding, "_load_failed_at", None)
+    monkeypatch.setattr(embedding, "_load_error", None)
+    monkeypatch.setattr(embedding, "_build_model", _fail)
+
+    with pytest.raises(RuntimeError):
+        embedding.load_model()
+
+    # 쿨다운이 지난 것처럼 실패 시각을 과거로 돌린다
+    monkeypatch.setattr(
+        embedding,
+        "_load_failed_at",
+        embedding._load_failed_at - embedding._LOAD_RETRY_COOLDOWN_SECONDS - 1,
+    )
+    with pytest.raises(RuntimeError):
+        embedding.load_model()
+
+    assert calls["n"] == 2

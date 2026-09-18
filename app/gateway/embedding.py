@@ -7,6 +7,7 @@
 
 import asyncio
 import threading
+import time
 
 from sentence_transformers import SentenceTransformer
 
@@ -21,6 +22,13 @@ _model: SentenceTransformer | None = None
 # 첫 요청 두 개가 동시에 오면 모델을 두 번 읽어 메모리가 두 배가 된다.
 _load_lock = threading.Lock()
 
+# 읽기에 실패했을 때 다음 시도까지 기다리는 시간(초).
+# 캐싱하지 않으면 요청마다 1.4GB 모델 읽기를 처음부터 다시 시도해
+# 스레드와 CPU를 잡아먹고 장애를 키운다. 이 시간 동안은 바로 실패시킨다.
+_LOAD_RETRY_COOLDOWN_SECONDS = 60.0
+_load_failed_at: float | None = None
+_load_error: Exception | None = None
+
 
 def build_inputs(texts: list[str], purpose: str) -> list[str]:
     """용도 접두어를 붙인다. purpose 가 enum 밖이면 document 로 본다(명세 기본값)."""
@@ -28,24 +36,55 @@ def build_inputs(texts: list[str], purpose: str) -> list[str]:
     return [prefix + t for t in texts]
 
 
+def _build_model() -> SentenceTransformer:
+    """모델 파일을 실제로 읽는다. 첫 호출은 내려받기 때문에 수십 초 걸린다."""
+    settings = get_settings()
+    model = SentenceTransformer(settings.embedding_model, device="cpu")
+    dim = model.get_embedding_dimension()
+    # DDL 의 vector(384) 와 어긋난 모델을 그대로 서빙하면 저장 단계에서야
+    # 실패하거나, 차원이 같은 다른 모델이면 조용히 섞인다. 여기서 끊는다.
+    if dim != settings.embedding_dim:
+        raise RuntimeError(
+            f"모델 차원({dim})이 설정값({settings.embedding_dim})과 다릅니다. "
+            f"모델: {settings.embedding_model}"
+        )
+    return model
+
+
 def load_model() -> SentenceTransformer:
-    """모델을 한 번만 읽어 재사용한다. 첫 호출은 내려받기 때문에 수십 초 걸린다."""
-    global _model
-    if _model is None:
-        with _load_lock:
-            if _model is None:
-                settings = get_settings()
-                model = SentenceTransformer(settings.embedding_model, device="cpu")
-                dim = model.get_embedding_dimension()
-                # DDL 의 vector(384) 와 어긋난 모델을 그대로 서빙하면
-                # 저장 단계에서야 실패하거나, 차원이 같은 다른 모델이면
-                # 조용히 섞인다. 기동 시점에 끊는다.
-                if dim != settings.embedding_dim:
-                    raise RuntimeError(
-                        f"모델 차원({dim})이 설정값({settings.embedding_dim})과 다릅니다. "
-                        f"모델: {settings.embedding_model}"
-                    )
-                _model = model
+    """모델을 한 번만 읽어 재사용한다.
+
+    읽기에 실패하면 실패한 시각을 기억해 두고, 쿨다운 동안 들어온 요청은
+    모델을 다시 읽지 않고 곧바로 실패시킨다. 그렇게 하지 않으면 요청마다
+    1.4GB 읽기를 새로 시도해 스레드와 CPU가 말라붙는다.
+    """
+    global _model, _load_failed_at, _load_error
+    if _model is not None:
+        return _model
+
+    with _load_lock:
+        if _model is not None:
+            return _model
+
+        if (
+            _load_failed_at is not None
+            and time.monotonic() - _load_failed_at < _LOAD_RETRY_COOLDOWN_SECONDS
+        ):
+            raise RuntimeError(
+                f"임베딩 모델 읽기가 최근에 실패해 {_LOAD_RETRY_COOLDOWN_SECONDS:.0f}초 동안 "
+                "다시 시도하지 않습니다"
+            ) from _load_error
+
+        try:
+            model = _build_model()
+        except Exception as exc:
+            _load_failed_at = time.monotonic()
+            _load_error = exc
+            raise
+
+        _model = model
+        _load_failed_at = None
+        _load_error = None
     return _model
 
 
