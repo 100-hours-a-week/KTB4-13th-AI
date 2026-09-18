@@ -44,7 +44,7 @@ async def check_database() -> bool:
     try:
         async with _pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-    except Exception:
+    except Exception:  # noqa: BLE001 — /health는 어떤 실패든 unavailable로 보고한다
         return False
     return True
 
@@ -63,6 +63,6 @@ async def check_vector_index() -> bool:
                 "SELECT indisvalid FROM pg_index "
                 "WHERE indexrelid = to_regclass('public.book_embeddings_hnsw_idx')"
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 — /health는 어떤 실패든 unavailable로 보고한다
         return False
     return bool(valid)
