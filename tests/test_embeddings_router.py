@@ -105,6 +105,17 @@ def test_본문이_JSON이_아니면_400이다() -> None:
     assert res.status_code == 400
 
 
+def test_본문이_UTF8이_아니면_500이_아니라_400이다() -> None:
+    res = client.post(
+        "/embeddings",
+        content=b"\xff\xfe{",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
+
+
 def test_본문이_4MB를_넘으면_413이다() -> None:
     # 헤더만 크게 속여도 본문을 읽기 전에 막아야 한다.
     res = client.post(

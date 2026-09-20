@@ -74,7 +74,9 @@ async def embeddings(request: Request) -> JSONResponse:
 
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError:
+    except ValueError:
+        # JSON 문법 오류와, UTF-8 이 아닌 본문(UnicodeDecodeError) 둘 다 ValueError 다.
+        # JSONDecodeError 만 잡으면 뒤의 것이 500 으로 샌다.
         return _error(400, "invalid_request")
 
     req = parse_request(payload)
