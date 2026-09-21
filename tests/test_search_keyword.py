@@ -74,6 +74,18 @@ _BOOKS = [
         None,
         "즈믄가람 에 대한 소개글",
     ),
+    # 영문 제목·저자. 검색어는 소문자로 바꿔 쓰는데 책 제목은 원본 그대로라,
+    # 대소문자 때문에 안 걸리는 일이 없는지 본다.
+    (
+        9100005,
+        "Zephyrine Quillfeather",
+        "Marlowe Brightwater",
+        20000,
+        True,
+        "영어",
+        2023,
+        None,
+    ),
 ]
 
 
@@ -128,6 +140,26 @@ def test_오타가_있어도_찾는다() -> None:
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가랑", SearchFilters()))
 
     assert 9100001 in ids
+
+
+@needs_db
+@pytest.mark.parametrize(
+    "query",
+    ["zephyrine quillfeather", "ZEPHYRINE QUILLFEATHER", "Zephyrine Quillfeather"],
+)
+def test_영문_제목은_대소문자를_어떻게_쳐도_찾는다(query: str) -> None:
+    ids = _run_in_rollback(lambda c: keyword.search_ids(c, query, SearchFilters()))
+
+    assert ids == [9100005]
+
+
+@needs_db
+def test_영문_저자도_소문자로_찾는다() -> None:
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "marlowe brightwater", SearchFilters())
+    )
+
+    assert ids == [9100005]
 
 
 @needs_db
