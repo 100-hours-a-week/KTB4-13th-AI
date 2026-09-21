@@ -4,8 +4,7 @@
 텍스트 턴과 이미지 턴을 여기서 함께 다룬다 — 같은 핸들러가 후보검색·카드생성
 파이프라인을 공유하므로 나누지 않는다(개발 워크플로 위키 §9 참고).
 
-처리를 명세 4단계 그대로 함수로 나눴다. 1·3단계는 LLM 체인이고, 2단계는 아직
-최소 구현이다(아래 각 함수 docstring 참고). 바깥 흐름(이 4단계가 이 순서로
+처리를 명세 4단계 그대로 함수로 나눴다. 바깥 흐름(이 4단계가 이 순서로
 불리는 것)은 안 바뀐다.
 """
 
@@ -27,12 +26,17 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
 )
+from app.search import service
+from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 CANDIDATE_LIMIT = 10
+# ①에 없는 exclude를 검색 결과에서 사후 필터링하므로, 걸러지고도 CANDIDATE_LIMIT이
+# 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
+SEARCH_SIZE = 30
 CARD_LIMIT = 3
 
 
@@ -114,29 +118,68 @@ async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
         return spec, True
 
 
-async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
-    """2단계 — spec으로 후보를 뽑는다.
+def _query_text(spec: Spec) -> str:
+    """spec에서 ①에 넘길 검색어 한 줄을 만든다.
 
-    명세는 키워드+벡터 순위 결합과 취향 유사도 점수를 요구한다. book_embeddings가
-    아직 비어 있어 벡터 검색을 못 쓰므로, 지금은 description이 있는 책을 그냥
-    가져오는 최소 구현이다. ①이 끝나면 그쪽 하이브리드 검색 함수로 교체하고,
-    ⑥이 끝나면 취향 유사도·이력 제외를 더한다.
+    intent가 exact면 지정된 제목·저자·출판사를 합친다(①은 이 셋을 구분 안 하고
+    제목·저자·소개글에서 낱말을 찾으므로, 출판사는 낱말로만 섞여 들어간다 —
+    출판사 전용 검색은 없음). 그 조합이 비어 있거나 intent가 semantic이면
+    semantic 문장을 쓴다. 어느 쪽도 없으면 빈 문자열(호출부가 후보 없음으로 처리).
     """
-    exclude = exclude_book_ids + spec.exclude
+    exact_query = " ".join(
+        p for p in (spec.exact.title, spec.exact.author, spec.exact.publisher) if p
+    )
+    text = (
+        exact_query
+        if spec.intent == "exact" and exact_query
+        else spec.semantic or exact_query
+    )
+    return (text or "").strip()[:MAX_QUERY_CHARS]
+
+
+async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
+    """①의 book_id 목록에 description을 붙인다.
+
+    app.search.books.fetch()는 description을 안 돌려준다 — ①의 응답 계약에
+    없는 필드라, 거기 추가하면 /search 응답에도 새 나간다. ①의 파일은 건드리지
+    않고 ③에서 직접 조회한다(엔드포인트 소유권 교차 금지).
+    """
+    if not book_ids:
+        return {}
     pool = db.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT book_id, title, author, description
-            FROM v_books
-            WHERE description IS NOT NULL
-              AND book_id != ALL($1::int[])
-            LIMIT $2
-            """,
-            exclude or [],
-            CANDIDATE_LIMIT,
+            "SELECT book_id, description FROM v_books WHERE book_id = ANY($1::int[])",
+            book_ids,
         )
-    return [dict(row) for row in rows]
+    return {r["book_id"]: r["description"] for r in rows}
+
+
+async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
+    """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(키워드+벡터 순위 합치기)을 쓴다.
+
+    취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다.
+    exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
+    직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
+    """
+    query = _query_text(spec)
+    if not query:
+        return []
+
+    outcome = await service.search(
+        SearchRequest(query=query, filters=spec.filters, size=SEARCH_SIZE)
+    )
+    exclude = set(exclude_book_ids) | set(spec.exclude)
+    candidates = [r for r in outcome.results if r["book_id"] not in exclude][
+        :CANDIDATE_LIMIT
+    ]
+    if not candidates:
+        return []
+
+    descriptions = await _fetch_descriptions([c["book_id"] for c in candidates])
+    for c in candidates:
+        c["description"] = descriptions.get(c["book_id"]) or ""
+    return candidates
 
 
 # {semantic}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
@@ -206,8 +249,8 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
                 "match_score": None,  # ②의 취향 스코어링이 붙기 전까지는 없음
                 "title": book["title"],
                 "author": book["author"],
-                "price": None,
-                "cover_url": None,
+                "price": book.get("price"),
+                "cover_url": book.get("cover_url"),
                 "reason_short": reason_short,
                 "reason_long": item.get("reason_long"),
                 "match_basis": [],
