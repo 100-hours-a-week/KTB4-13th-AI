@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     external_ai_api_key: str = ""
     llm_provider: str = ""
     llm_model_id: str = ""
+    llm_base_url: str = "http://localhost:11434/v1"
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30
     llm_mock: bool = False
