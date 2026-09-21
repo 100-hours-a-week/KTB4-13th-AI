@@ -1,0 +1,63 @@
+"""인기 점수 테스트. SQL 식이라 실제 PostgreSQL 이 있어야 돈다."""
+
+import asyncio
+import math
+import os
+
+import asyncpg
+import pytest
+
+from app.core import popularity
+
+_DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
+
+pytestmark = pytest.mark.skipif(
+    not _DB_URL,
+    reason="실제 PostgreSQL 이 필요하다. SEARCH_TEST_DATABASE_URL 에 주소를 준다",
+)
+
+# (book_id, 판매 수, 평점, 리뷰 수). 9100005 는 인기 행이 없는 책이다.
+_ROWS = [
+    (9100001, 100, 4.0, 1000),  # 전체 평균을 4.0 근처로 잡아 주는 책
+    (9100002, 100, 1.0, 2),  # 별점 테러: 리뷰 2개가 모두 1점
+    (9100003, 100, 1.0, 1000),  # 리뷰가 많은 진짜 낮은 평점
+    (9100004, 0, None, 0),  # 판매도 리뷰도 없음
+]
+
+
+def _scores() -> dict[int, float]:
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute("DELETE FROM v_book_popularity")
+            for book_id in (*[r[0] for r in _ROWS], 9100005):
+                await conn.execute(
+                    "INSERT INTO v_books (book_id, title, price, in_stock)"
+                    " VALUES ($1, '테스트', 10000, true)",
+                    book_id,
+                )
+            await conn.executemany(
+                "INSERT INTO v_book_popularity VALUES ($1, $2, $3, $4, now())", _ROWS
+            )
+            rows = await conn.fetch(
+                f"SELECT b.book_id, {popularity.score_sql('p')} AS score"
+                " FROM v_books b LEFT JOIN v_book_popularity p USING (book_id)"
+                " WHERE b.book_id BETWEEN 9100001 AND 9100005"
+            )
+            return {r["book_id"]: r["score"] for r in rows}
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    return asyncio.run(_go())
+
+
+def test_식대로_계산한다() -> None:
+    mean = (4.0 * 1000 + 1.0 * 2 + 1.0 * 1000) / 2002
+    adjusted = (popularity.PRIOR_REVIEWS * mean + 4.0 * 1000) / (
+        popularity.PRIOR_REVIEWS + 1000
+    )
+
+    assert _scores()[9100001] == pytest.approx(math.log(101) + adjusted - mean)
