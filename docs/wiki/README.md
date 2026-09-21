@@ -18,6 +18,7 @@
 - [CLD-1 Docker 컨테이너 구성 설계](cld/1-initial-deploy/containers.md)
 - [CLD-1 Docker Compose 배포 구조 설계](cld/1-initial-deploy/compose.md)
 - [CLD-1 현재 구조의 한계 정의](cld/1-initial-deploy/limits.md)
+- [CLD-2 CI 파이프라인 설계](cld/2-ci-pipeline/overview.md)
 
 ## AI
 
