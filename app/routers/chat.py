@@ -10,6 +10,7 @@
 """
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -19,6 +20,8 @@ from pydantic import ValidationError
 from app.chat.schemas import ChatRequest, Spec
 from app.core import db, responses
 from app.gateway.llm import LLMUnavailableError, complete, parse_json_response
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
@@ -161,7 +164,12 @@ async def chat(request: Request) -> JSONResponse:
         return responses.error(status, message)
 
     spec = update_spec(req.message, req.spec)
-    candidates = await get_candidates(spec, req.exclude_book_ids)
+    try:
+        candidates = await get_candidates(spec, req.exclude_book_ids)
+    except Exception:
+        # 그대로 두면 FastAPI 기본 500(text/plain)이 나가 공통 응답 형식이 깨진다.
+        logger.exception("후보 검색 실패")
+        return responses.error(500, "internal_server_error")
     cards, degraded = await generate_cards(candidates, spec)
 
     return responses.success(
