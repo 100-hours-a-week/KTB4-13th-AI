@@ -85,6 +85,16 @@ def test_invoke_chain은_OpenAIRefusalError도_LLMUnavailableError로_바꾼다(
         asyncio.run(invoke_chain(chain, None))
 
 
+def test_invoke_chain은_choices가_비정상이면_LLMUnavailableError로_바꾼다() -> None:
+    # choices가 빈 목록·null이면 langchain-openai가 IndexError·TypeError를
+    # 감싸지 않고 그대로 던진다(#68에서 complete()에 먼저 고친 것과 같은 증상.
+    # invoke_chain은 그보다 먼저 갈라져 나온 채로 만들어져 못 물려받았다 — PR #74 리뷰).
+    chain = _raising(IndexError("list index out of range"))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+
 def test_invoke_chain은_모르는_예외는_그대로_던진다() -> None:
     # 설정 오류·코드 버그까지 "LLM 장애"로 삼켜 degraded 처리하면 원인이 가려진다.
     chain = _raising(ValueError("설정 오류"))
