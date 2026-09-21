@@ -2,12 +2,19 @@
 
 실제 LLM(Ollama/상용 API)을 호출하는 테스트는 넣지 않는다 — 네트워크·모델
 상태에 따라 결과가 흔들려서 CI에 안 맞는다. parse_json_response 는 순수
-로직이라 여기서 검증하고, complete() 자체의 동작은 수동으로 확인한다.
+로직이라 여기서 검증한다. complete()는 httpx.MockTransport로 응답 본문만
+흉내 내 네트워크 없이 검증하고, 그 이상의 실제 provider 동작은 수동으로
+확인한다.
 """
 
-import pytest
+import asyncio
 
-from app.gateway.llm import LLMUnavailableError, parse_json_response
+import httpx
+import pytest
+from langchain_openai import ChatOpenAI
+
+import app.gateway.llm as llm_gateway
+from app.gateway.llm import LLMUnavailableError, complete, parse_json_response
 
 
 def test_순수_json이면_그대로_파싱한다() -> None:
@@ -33,3 +40,53 @@ def test_json이_없으면_LLMUnavailableError를_던진다() -> None:
 def test_중괄호는_있지만_형식이_깨지면_LLMUnavailableError를_던진다() -> None:
     with pytest.raises(LLMUnavailableError):
         parse_json_response('{"mood": 잔잔함 (따옴표 없음)}')
+
+
+_OK_BODY = {"id": "1", "object": "chat.completion", "created": 1, "model": "m"}
+
+
+def _call_with_response(monkeypatch, body: dict) -> str:
+    """LLM 서버가 body를 돌려준다고 가정하고 complete()를 부른다."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    real = ChatOpenAI
+
+    def factory(**kwargs):
+        kwargs["http_async_client"] = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return real(**kwargs)
+
+    monkeypatch.setattr(llm_gateway, "ChatOpenAI", factory)
+    monkeypatch.setenv("LLM_MOCK", "false")
+    return asyncio.run(complete("아무 프롬프트"))
+
+
+def test_정상_응답은_content를_그대로_돌려준다(monkeypatch) -> None:
+    body = {
+        **_OK_BODY,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": '{"a": 1}'},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    assert _call_with_response(monkeypatch, body) == '{"a": 1}'
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param([], id="빈_목록"),
+        pytest.param(None, id="null"),
+    ],
+)
+def test_choices가_비정상이면_LLMUnavailableError(monkeypatch, choices) -> None:
+    # OpenAI 호환 서버가 형식이 깨진 응답을 주는 경우.
+    # LLMUnavailableError로 통일돼야 ③이 degraded로 내려간다.
+    with pytest.raises(LLMUnavailableError):
+        _call_with_response(monkeypatch, {**_OK_BODY, "choices": choices})

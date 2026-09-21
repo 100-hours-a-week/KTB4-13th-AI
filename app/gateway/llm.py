@@ -42,6 +42,10 @@ async def complete(prompt: str) -> str:
         # 잡히므로 따로 적는다. 이건 with_structured_output 경로에서 던져진다
         # (지금 json_object 경로에선 거부가 빈 content로 와서 parse 단계에서 걸림).
         raise LLMUnavailableError(str(e)) from e
+    except (IndexError, KeyError, TypeError) as e:
+        # OpenAI 호환 서버가 choices를 빈 목록·null로 줄 때,
+        # langchain-openai는 이걸 감싸지 않고 그대로 던진다.
+        raise LLMUnavailableError(f"LLM 응답 형식이 잘못됨: {e}") from e
 
     if not isinstance(response.content, str):
         # AIMessage.content 타입은 str | list. JSON 모드에선 str이 정상이고,
