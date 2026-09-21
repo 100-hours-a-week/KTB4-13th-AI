@@ -2,6 +2,7 @@ import json
 
 import openai
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import OpenAIRefusalError
 
 from app.core.config import get_settings
 
@@ -34,10 +35,12 @@ async def complete(prompt: str) -> str:
     )
     try:
         response = await llm.ainvoke(prompt)
-    except openai.APIError as e:
+    except (openai.APIError, OpenAIRefusalError) as e:
         # 연결 끊김·타임아웃·rate limit·5xx 전부 APIError 하위. langchain-openai는
         # 이걸 OpenAIConnectionError·OpenAITimeoutError 등으로 감싸 던지는데,
-        # 그것들도 openai.APIError를 상속하므로 여기서 그대로 잡힌다.
+        # 그중 OpenAIRefusalError만 Exception을 직접 상속해서 APIError로는 안
+        # 잡히므로 따로 적는다. 이건 with_structured_output 경로에서 던져진다
+        # (지금 json_object 경로에선 거부가 빈 content로 와서 parse 단계에서 걸림).
         raise LLMUnavailableError(str(e)) from e
 
     if not isinstance(response.content, str):
