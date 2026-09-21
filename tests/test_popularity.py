@@ -1,4 +1,4 @@
-"""인기 점수 테스트. SQL 식이라 실제 PostgreSQL 이 있어야 돈다."""
+"""인기 점수 테스트. 값을 확인하는 쪽은 실제 PostgreSQL 이 있어야 돈다."""
 
 import asyncio
 import math
@@ -11,10 +11,16 @@ from app.core import popularity
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
 
-pytestmark = pytest.mark.skipif(
+needs_db = pytest.mark.skipif(
     not _DB_URL,
     reason="실제 PostgreSQL 이 필요하다. SEARCH_TEST_DATABASE_URL 에 주소를 준다",
 )
+
+
+def test_전체_평균을_식에_한_번만_넣는다() -> None:
+    # 두 번 넣으면 같은 값인데도 DB 가 v_book_popularity 전체 집계를 쿼리마다 두 번 돈다.
+    assert popularity.score_sql().count("FROM v_book_popularity") == 1
+
 
 # (book_id, 판매 수, 평점, 리뷰 수). 9100005 는 인기 행이 없는 책이다.
 _ROWS = [
@@ -54,6 +60,7 @@ def _scores() -> dict[int, float]:
     return asyncio.run(_go())
 
 
+@needs_db
 def test_식대로_계산한다() -> None:
     mean = (4.0 * 1000 + 1.0 * 2 + 1.0 * 1000) / 2002
     adjusted = (popularity.PRIOR_REVIEWS * mean + 4.0 * 1000) / (
@@ -63,6 +70,7 @@ def test_식대로_계산한다() -> None:
     assert _scores()[9100001] == pytest.approx(math.log(101) + adjusted - mean)
 
 
+@needs_db
 def test_리뷰_몇_개의_별점_테러는_리뷰_많은_낮은_평점보다_덜_깎인다() -> None:
     scores = _scores()
 
@@ -73,9 +81,11 @@ def test_리뷰_몇_개의_별점_테러는_리뷰_많은_낮은_평점보다_�
     assert scores[9100003] - math.log(101) < -1.4
 
 
+@needs_db
 def test_판매도_리뷰도_없으면_0점이다() -> None:
     assert _scores()[9100004] == pytest.approx(0.0)
 
 
+@needs_db
 def test_인기_행이_없는_책은_0점이다() -> None:
     assert _scores()[9100005] == 0
