@@ -18,7 +18,7 @@ V1에서는 Frontend를 S3·CloudFront로 제공하고, App EC2와 AI EC2에서 
 ```text
 Frontend: 사용자 → CloudFront → S3
 일반 기능: 사용자 브라우저 → Nginx → Backend → MySQL
-추천 기능: Backend → AI Server → Qdrant
+추천 기능: Backend → AI Server → PostgreSQL (pgvector)
 ```
 
 사용자는 Nginx를 통해서만 Backend에 접근한다. Backend와 MySQL은 App EC2의 Docker Network를 통해 통신하며, Backend와 AI Server는 VPC 내부에서 통신한다.
@@ -28,7 +28,7 @@ Frontend: 사용자 → CloudFront → S3
 | 서버 | 구성요소 | Compose 파일 |
 |---|---|---|
 | App EC2 | Nginx, Backend, MySQL | `compose.app.yml` |
-| AI EC2 | AI Server, Qdrant | `compose.ai.yml` |
+| AI EC2 | AI Server, PostgreSQL (pgvector) | `compose.ai.yml` |
 
 두 서버는 `t3.small`과 gp3 30GB를 사용한다.
 
@@ -146,8 +146,8 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"
-      QDRANT_URL: "http://qdrant:6333"
-      QDRANT_COLLECTION: "${QDRANT_COLLECTION}"
+      VECTOR_DB_DSN: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      VECTOR_DB_TABLE: "${VECTOR_DB_TABLE}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
       WORKER_COUNT: "${WORKER_COUNT}"
       EXTERNAL_AI_API_KEY: "${EXTERNAL_AI_API_KEY}"
@@ -155,23 +155,36 @@ services:
     networks:
       - ai_net
     depends_on:
-      qdrant:
-        condition: service_started
+      postgres:
+        condition: service_healthy
     logging: *default-logging
 
-  qdrant:
-    image: qdrant/qdrant:v1.18.2
+  postgres:
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     expose:
-      - "6333"
+      - "5432"
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      TZ: Asia/Seoul
     volumes:
-      - qdrant_data:/qdrant/storage
+      - pgvector_data:/var/lib/postgresql/data
     networks:
       - ai_net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"'
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     logging: *default-logging
 
 volumes:
-  qdrant_data:
+  pgvector_data:
 
 networks:
   ai_net:
@@ -195,7 +208,7 @@ React 빌드 결과물을 S3에 업로드하고 CloudFront를 통해 제공한�
 
 ### AI EC2
 
-- `ai_net`: AI Server ↔ Qdrant
+- `ai_net`: AI Server ↔ PostgreSQL (pgvector)
 
 ## 5. Port 구성
 
@@ -205,21 +218,21 @@ React 빌드 결과물을 S3에 업로드하고 CloudFront를 통해 제공한�
 | Backend | 8080 | `web_net` 내부 |
 | MySQL | 3306 | `db_net` 내부 |
 | AI Server | 8000 | App EC2에서만 접근 |
-| Qdrant | 6333 | `ai_net` 내부 |
+| PostgreSQL (pgvector) | 5432 | `ai_net` 내부 |
 | SSH | 22 | 관리자 IP에서만 접근 |
 
-MySQL과 Qdrant는 호스트 포트를 외부에 공개하지 않는다.
+MySQL과 PostgreSQL (pgvector)는 호스트 포트를 외부에 공개하지 않는다.
 
 AI Server의 8000번 포트는 App EC2에서 들어오는 요청만 허용한다.
 
 ## 6. 데이터 저장
 
-MySQL과 Qdrant 데이터는 Docker Volume을 통해 EC2에 연결된 EBS에 저장한다.
+MySQL과 PostgreSQL (pgvector) 데이터는 Docker Volume을 통해 EC2에 연결된 EBS에 저장한다.
 
 | 구성요소 | Docker Volume | 컨테이너 경로 |
 |---|---|---|
 | MySQL | `mysql_data` | `/var/lib/mysql` |
-| Qdrant | `qdrant_data` | `/qdrant/storage` |
+| PostgreSQL (pgvector) | `pgvector_data` | `/var/lib/postgresql/data` |
 
 컨테이너가 삭제되더라도 데이터는 Docker Volume에 유지된다.
 
@@ -230,7 +243,7 @@ MySQL과 Qdrant 데이터는 Docker Volume을 통해 EC2에 연결된 EBS에 저
 | 구성요소 | 주요 환경변수 |
 |---|---|
 | Backend | DB 주소, DB 이름, AI Server 주소 |
-| AI Server | Qdrant 주소, 임베딩 모델, Worker 수 |
+| AI Server | PostgreSQL (pgvector) DSN, 벡터 테이블, 임베딩 모델, Worker 수 |
 | Frontend | API 기본 주소 |
 
 V1은 빠르게 배포해야 하므로 별도의 Secret 관리 서비스는 사용하지 않는다.
@@ -251,7 +264,7 @@ Backend와 AI Server 이미지는 AWS ECR에 저장한다.
 
 두 EC2에는 ECR 이미지를 내려받을 수 있는 공통 읽기 권한을 부여한다.
 
-Nginx, MySQL, Qdrant는 `latest`가 아닌 고정된 버전의 공식 이미지를 사용한다.
+Nginx, MySQL, PostgreSQL (pgvector)는 `latest`가 아닌 고정된 버전의 공식 이미지를 사용한다.
 
 Backend와 AI Server 이미지에는 Git Commit SHA를 태그로 사용한다.
 
