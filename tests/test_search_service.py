@@ -85,8 +85,19 @@ def test_임베딩이_실패하면_키워드_결과만_주고_알린다(
     assert outcome.degraded == "keyword-only"
 
 
-def test_벡터_검색이_DB_오류로_실패해도_키워드_결과는_준다(fakes: dict) -> None:
-    fakes["vector"] = asyncpg.PostgresError("색인 이상")
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncpg.PostgresError("색인 이상"),
+        # 아래 둘은 PostgresError 하위가 아니다. 좁게 잡으면 키워드 결과가 멀쩡한데도 500이 된다.
+        asyncpg.InterfaceError("연결이 끊김"),
+        TimeoutError("command_timeout 초과"),
+    ],
+)
+def test_벡터_검색이_어떤_이유로_실패해도_키워드_결과는_준다(
+    fakes: dict, error: Exception
+) -> None:
+    fakes["vector"] = error
 
     outcome = _search()
 

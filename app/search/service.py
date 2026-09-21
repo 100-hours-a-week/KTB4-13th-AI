@@ -51,7 +51,12 @@ async def _vector_ids(
         # 0건이 필터 때문인지, 책 벡터가 아직 없어서인지 가른다(명세: 초기 적재 중이면 축소 응답).
         if not ids and not await vector.has_any(conn):
             return None
-    except asyncpg.PostgresError:
+    except Exception:
+        # 예외 종류를 좁히지 않는다. 벡터 검색이 어떤 이유로 못 되든 할 일은 같다 —
+        # 키워드 결과만 돌려주고 헤더로 알린다(명세 ①). 좁게 잡으면 빠지는 게 생긴다:
+        # asyncpg.InterfaceError(연결 끊김)와 TimeoutError(command_timeout 초과)는
+        # PostgresError 하위가 아니라서, 키워드 결과가 멀쩡한데도 요청 전체가 500이 됐다.
+        # 우리 쪽 버그로 여기 들어와도 로그에 스택이 남고 X-Degraded 비율로 드러난다.
         logger.exception("벡터 검색 실패. 키워드 검색만으로 응답한다")
         return None
     return ids
