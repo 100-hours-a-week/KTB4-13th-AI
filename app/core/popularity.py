@@ -11,6 +11,7 @@
   리뷰가 많으면 실제 평점이 그대로 반영된다.
 - 판매 수는 심하게 쏠려 있어 로그를 씌운다. 이 식에서 별 1개 차이 = 판매량 약 2.7배 차이다.
 - 리뷰가 없으면 평점 항이 0, 행이 없는 책은 0점이다(명세).
+
 """
 
 # 데이터 없이 정한 값이다. BE 집계가 들어오면 실제 분포를 보고 조정한다.
@@ -27,10 +28,18 @@ def score_sql(alias: str = "p") -> str:
     """인기 점수를 계산하는 SQL 식. `alias` 는 LEFT JOIN 한 v_book_popularity 의 별칭이다.
 
     행이 없는 책(LEFT JOIN 결과가 NULL)은 0 이 된다.
+
+    위 식에서 (보정 평점 − 전체 평균) 부분은 아래와 같이 정리된다.
+
+        (C·m + r·n) / (C + n) − m  =  n·(r − m) / (C + n)     (C=PRIOR_REVIEWS, m=전체 평균)
+
+    정리한 쪽을 쓰는 이유는 전체 평균이 한 번만 나오기 때문이다. 양쪽에 두면 같은 값인데도
+    PostgreSQL 이 InitPlan 을 두 개 만들어 v_book_popularity 전체 집계를 쿼리마다 두 번 돈다
+    (13만 행 기준 한 번에 8ms 안팎). 검색·챗봇·피드가 자주 부르는 식이라 한 번으로 줄인다.
     """
     a = alias
     return (
         f"coalesce(ln(1 + {a}.sales)"
-        f" + ({PRIOR_REVIEWS} * {_MEAN_SQL} + coalesce({a}.rating_avg, 0) * {a}.rating_count)"
-        f" / ({PRIOR_REVIEWS} + {a}.rating_count) - {_MEAN_SQL}, 0)"
+        f" + {a}.rating_count * (coalesce({a}.rating_avg, 0) - {_MEAN_SQL})"
+        f" / ({PRIOR_REVIEWS} + {a}.rating_count), 0)"
     )
