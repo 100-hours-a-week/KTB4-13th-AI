@@ -49,5 +49,5 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:latest
-          cache-from: type=gha,scope=bookjeok-ai
-          cache-to: type=gha,mode=max,scope=bookjeok-ai
+          cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
+          cache-to: type=gha,mode=min,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
