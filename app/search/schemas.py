@@ -1,8 +1,15 @@
 """① /search 의 요청 모양과 검사 규칙. 라우터와 검색 로직이 같이 쓴다."""
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# 명세 ①
+MAX_QUERY_CHARS = 200
+DEFAULT_SIZE = 15
+MAX_SIZE = 50
+
+Sort = Literal["relevance", "newest", "price_asc", "price_desc", "popular"]
 
 
 class _Strict(BaseModel):
@@ -34,3 +41,11 @@ class SearchFilters(_Strict):
         ):
             raise ValueError("pub_year_from > pub_year_to")
         return self
+
+
+class SearchRequest(_Strict):
+    query: str = Field(max_length=MAX_QUERY_CHARS)
+    filters: SearchFilters = Field(default_factory=SearchFilters)
+    sort: Sort = "relevance"
+    cursor: str | None = None
+    size: int = Field(default=DEFAULT_SIZE, ge=1, le=MAX_SIZE)
