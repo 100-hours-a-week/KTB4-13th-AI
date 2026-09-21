@@ -1,7 +1,7 @@
 import json
 
 import openai
-from openai import AsyncOpenAI
+from langchain_openai import ChatOpenAI
 
 from app.core.config import get_settings
 
@@ -20,30 +20,32 @@ async def complete(prompt: str) -> str:
     if settings.llm_mock:
         return '{"mock": true}'  # 개발 중 가짜 응답
 
-    client = AsyncOpenAI(
+    llm = ChatOpenAI(
+        model=settings.llm_model_id,
         base_url=settings.llm_base_url,
         api_key="ollama",  # Ollama는 검사 안 하지만 SDK가 값을 요구함
-        # 명세: 생성 경로 상한 30초, 넘으면 504. SDK 기본 재시도(2회)를 살려두면
-        # 재시도 사이 대기시간까지 더해져 timeout 값만으로는 상한을 보장 못 한다.
-        # 재시도는 끄고 timeout 하나로 상한을 정확히 맞춘다.
+        timeout=settings.llm_timeout_seconds,
+        # 명세: 생성 경로 상한 30초, 넘으면 504. max_retries 기본값은 None이라
+        # OpenAI SDK 기본 재시도(2회)가 살아나고, 재시도 사이 대기시간까지 더해져
+        # timeout 값만으로는 상한을 보장 못 한다. 재시도는 끄고 timeout 하나로
+        # 상한을 정확히 맞춘다.
         max_retries=0,
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
     try:
-        response = await client.chat.completions.create(
-            model=settings.llm_model_id,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            timeout=settings.llm_timeout_seconds,
-        )
+        response = await llm.ainvoke(prompt)
     except openai.APIError as e:
-        # 연결 끊김·타임아웃·rate limit·5xx 전부 APIError 하위.
+        # 연결 끊김·타임아웃·rate limit·5xx 전부 APIError 하위. langchain-openai는
+        # 이걸 OpenAIConnectionError·OpenAITimeoutError 등으로 감싸 던지는데,
+        # 그것들도 openai.APIError를 상속하므로 여기서 그대로 잡힌다.
         raise LLMUnavailableError(str(e)) from e
 
-    if not response.choices or response.choices[0].message.content is None:
-        # SDK 타입상 content는 Optional[str]. 비워서 오면 여기서도
-        # LLMUnavailableError로 통일해 degraded 처리 경로를 하나로 유지한다.
-        raise LLMUnavailableError("LLM 응답에 content가 없음")
-    return response.choices[0].message.content
+    if not isinstance(response.content, str):
+        # AIMessage.content 타입은 str | list. JSON 모드에선 str이 정상이고,
+        # 그 밖의 형태는 쓸 수 없는 응답이라 LLMUnavailableError로 통일해
+        # degraded 처리 경로를 하나로 유지한다.
+        raise LLMUnavailableError("LLM 응답에 문자열 content가 없음")
+    return response.content
 
 
 def parse_json_response(raw: str) -> dict:
