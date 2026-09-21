@@ -23,14 +23,19 @@ class SpecExact(_Strict):
 
 
 class Spec(_Strict):
-    """추천 조건. 6개 키는 요청·응답 모두 항상 존재한다(빈 값은 null/{}/[])."""
+    """추천 조건. 6개 키는 요청·응답 모두 항상 존재해야 한다(빈 값은 null/{}/[]).
 
-    intent: Literal["exact", "semantic"] = "semantic"
-    exact: SpecExact = Field(default_factory=SpecExact)
-    filters: SearchFilters = Field(default_factory=SearchFilters)
-    semantic: str | None = None
-    anchor_book: int | None = None
-    exclude: list[int] = Field(default_factory=list)
+    기본값을 일부러 안 둔다 — 기본값이 있으면 클라이언트가 키를 빠뜨려도
+    조용히 채워져서 통과해버린다. 값이 비어도 되는 필드(semantic 등)는
+    `X | None`으로 null은 허용하되, 키 자체는 빠지면 안 되게 한다.
+    """
+
+    intent: Literal["exact", "semantic"]
+    exact: SpecExact
+    filters: SearchFilters
+    semantic: str | None
+    anchor_book: int | None
+    exclude: list[int]
 
 
 class Turn(_Strict):

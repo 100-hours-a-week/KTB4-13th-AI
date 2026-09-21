@@ -27,14 +27,23 @@ CANDIDATE_LIMIT = 10
 CARD_LIMIT = 3
 
 
-def parse_request(payload: Any) -> ChatRequest | None:
-    """계약에 맞으면 요청 객체, 아니면 None 을 돌려준다."""
+def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
+    """계약에 맞으면 요청 객체, 아니면 (상태 코드, message) 를 돌려준다.
+
+    spec 필드 자체가 잘못됐으면 422 spec_schema_violation — 명세가 "호출자가
+    초기 spec으로 되돌려 1회 재시도"하라고 못박은 전용 에러다. 그 외
+    형식 오류(예: message 길이 초과, image_ref와 동시 존재)는 400.
+    """
     if not isinstance(payload, dict):
-        return None
+        return (400, "invalid_request")
     try:
         return ChatRequest.model_validate(payload)
-    except ValidationError:
-        return None
+    except ValidationError as e:
+        # 모델 전체 검증(예: message/image_ref 동시 존재)은 loc이 빈 튜플이라
+        # err["loc"][0]을 바로 쓰면 IndexError가 난다 — 실제로 재현된 버그.
+        if any(err["loc"] and err["loc"][0] == "spec" for err in e.errors()):
+            return (422, "spec_schema_violation")
+        return (400, "invalid_request")
 
 
 def update_spec(message: str, spec: Spec) -> Spec:
@@ -151,8 +160,9 @@ async def chat(request: Request) -> JSONResponse:
         return responses.error(400, "invalid_request")
 
     req = parse_request(payload)
-    if req is None:
-        return responses.error(400, "invalid_request")
+    if isinstance(req, tuple):
+        status, message = req
+        return responses.error(status, message)
 
     spec = update_spec(req.message, req.spec)
     candidates = await get_candidates(spec, req.exclude_book_ids)
