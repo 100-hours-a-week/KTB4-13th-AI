@@ -58,10 +58,15 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # {spec_json}·{message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다
 # (CARD_PROMPT와 같은 이유 — 실제로 모델에 가는 글자는 겹치기 전과 같다).
 #
-# 아래 예시 JSON의 값(null, false 등)은 모양만 보여주는 자리 표시다 — 실제로는
-# "지금 조건"의 값을 그대로 옮겨 적어야 한다. 처음에는 예시의 false를 그대로
-# 베껴서 in_stock_only=true였던 값이 매번 false로 바뀌는 문제가 있었다
-# (실제 Ollama/qwen2.5:7b로 재현). "예시일 뿐, 값을 베끼지 마라"를 못박아 고쳤다.
+# 아래 예시 JSON의 값(null, false, "semantic" 등)은 모양만 보여주는 자리 표시다 —
+# 실제로는 "지금 조건"의 값을 그대로 옮겨 적거나(언급 안 된 필드), 이번 메시지를
+# 보고 새로 판단해서(intent 등) 채워야 한다. 실제로 재현된 문제 두 가지(둘 다
+# 실제 Ollama/qwen2.5:7b로 확인):
+# 1) 예시의 false를 그대로 베껴서 in_stock_only=true였던 값이 매번 false로 바뀜
+# 2) intent 자리에 "exact 또는 semantic"이라고 예시에 적어뒀더니, 둘 중 하나를
+#    고르지 않고 그 설명 문구를 글자 그대로 복사해서 돌려줌(Spec 검증 실패로 이어짐)
+# → 예시엔 항상 실제로 나올 수 있는 값 하나("semantic")만 쓰고, "베끼지 말라"를
+#   intent까지 포함해서 명시했다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 지금까지의 조건에 이번 메시지 "
     "내용만 반영해 갱신하라. 이번 메시지가 언급하지 않은 값은 지금 조건의 값을 "
@@ -69,14 +74,16 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "조건에 있는 그대로 옮겨야 한다 — 언급 안 됐다고 false로 바꾸면 안 된다.\n\n"
     "지금 조건(spec):\n{spec_json}\n\n"
     '이번 메시지: "{message}"\n\n'
-    "intent는 아래 둘 중 하나다.\n"
+    "intent는 아래 둘 중 하나를 골라 그 낱말 그대로 써야 한다(설명 문구를 "
+    "베끼면 안 된다).\n"
     "- exact: 제목이나 저자를 콕 집어 말함\n"
     "- semantic: 분위기나 상황을 말함(기본값)\n\n"
     "반드시 아래 JSON 형식 그대로, 6개 키를 모두 채워 답하라. 값이 없으면 "
     "null이나 빈 배열/빈 객체로 채우고 키 자체를 빼지 마라. 숫자는 따옴표 "
-    "없이 써라. 아래 null·false는 형식 예시일 뿐 실제 값이 아니다 — 그대로 "
-    "베끼지 말고 '지금 조건'과 '이번 메시지'를 보고 채워라:\n"
-    '{{"intent": "exact 또는 semantic", '
+    '없이 써라. 아래 null·false·"semantic"은 형식 예시일 뿐 실제 값이 '
+    "아니다(intent도 마찬가지) — 그대로 베끼지 말고 '지금 조건'과 "
+    "'이번 메시지'를 보고 채워라:\n"
+    '{{"intent": "semantic", '
     '"exact": {{"title": null, "author": null, "publisher": null}}, '
     '"filters": {{"category": null, "price_min": null, "price_max": null, '
     '"pub_year_from": null, "pub_year_to": null, "in_stock_only": false}}, '
