@@ -1,11 +1,12 @@
 """① AI 검색: POST /search
 
 명세: docs/design/과제 1 ai-server-api-spec-final copy.md #search
-LLM을 쓰지 않는다. 지금은 요청 검사와 응답 모양까지만 있고 항상 0건을 돌려준다.
-키워드·벡터 검색, 정렬, 커서는 후속 이슈에서 붙인다.
+LLM을 쓰지 않는다. 지금은 키워드 검색과 필터까지 있다.
+벡터 검색, 정렬, 커서는 후속 이슈에서 붙인다.
 """
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -13,7 +14,10 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core import responses
+from app.search import service
 from app.search.schemas import SearchRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["search"])
 
@@ -47,8 +51,18 @@ async def search(request: Request) -> JSONResponse:
     if req is None:
         return responses.error(400, "invalid_request")
 
-    # 검색이 붙기 전이라 항상 0건이다. 0건은 오류가 아니라 200 + 안내 문구다(명세 ①).
+    try:
+        outcome = await service.search(req)
+    except Exception:
+        # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
+        logger.exception("검색 실패")
+        return responses.error(500, "internal_server_error")
+
+    # 0건은 오류가 아니라 200 + 안내 문구다(명세 ①).
+    fallback = None if outcome.results else {"message": FALLBACK_MESSAGE}
+    headers = {"X-Degraded": outcome.degraded} if outcome.degraded else None
     return responses.success(
         "search_success",
-        {"results": [], "next_cursor": None, "fallback": {"message": FALLBACK_MESSAGE}},
+        {"results": outcome.results, "next_cursor": None, "fallback": fallback},
+        headers=headers,
     )

@@ -4,12 +4,37 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.routers import search as search_router
 from app.routers.search import FALLBACK_MESSAGE, parse_request
+from app.search.service import SearchOutcome
 
 client = TestClient(app)
 
+_BOOK = {
+    "book_id": 2077,
+    "title": "여행의 이유",
+    "author": "김영하",
+    "publisher": "문학동네",
+    "price": 13500,
+    "in_stock": True,
+    "cover_url": None,
+}
 
-def test_검색어만_있으면_200과_0건_모양을_돌려준다() -> None:
+
+def _fake_search(results: list[dict], degraded: str | None = "keyword-only"):
+    async def _search(req):
+        return SearchOutcome(results=results, degraded=degraded)
+
+    return _search
+
+
+@pytest.fixture(autouse=True)
+def no_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DB 없이 돈다. 기본은 0건. 검색 자체는 test_search_keyword.py 가 본다."""
+    monkeypatch.setattr(search_router.service, "search", _fake_search([]))
+
+
+def test_0건이면_200과_안내_문구를_돌려준다() -> None:
     res = client.post("/search", json={"query": "김영하 여행의 이유"})
 
     assert res.status_code == 200
@@ -100,3 +125,50 @@ def test_본문이_UTF8이_아니면_500이_아니라_400이다() -> None:
     )
 
     assert res.status_code == 400
+
+
+def test_결과가_있으면_책을_싣고_안내_문구는_null이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_BOOK]))
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert res.status_code == 200
+    assert res.json()["data"] == {
+        "results": [_BOOK],
+        "next_cursor": None,
+        "fallback": None,
+    }
+
+
+def test_기능을_줄여_응답했으면_헤더로_알린다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        search_router.service, "search", _fake_search([_BOOK], "keyword-only")
+    )
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert res.headers["X-Degraded"] == "keyword-only"
+
+
+def test_온전한_응답에는_헤더가_없다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_BOOK], None))
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert "X-Degraded" not in res.headers
+
+
+def test_검색이_실패하면_500_internal_server_error다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fail(req):
+        raise RuntimeError("DB 연결 끊김")
+
+    monkeypatch.setattr(search_router.service, "search", _fail)
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
