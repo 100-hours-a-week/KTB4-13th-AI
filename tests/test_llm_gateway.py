@@ -1,13 +1,26 @@
 """LLM 게이트웨이 단위 테스트.
 
 실제 LLM(Ollama/상용 API)을 호출하는 테스트는 넣지 않는다 — 네트워크·모델
-상태에 따라 결과가 흔들려서 CI에 안 맞는다. parse_json_response 는 순수
-로직이라 여기서 검증하고, complete() 자체의 동작은 수동으로 확인한다.
+상태에 따라 결과가 흔들려서 CI에 안 맞는다. parse_json_response·message_text 는
+순수 로직, invoke_chain 은 가짜 부품(RunnableLambda)을 끼워 예외 변환만 검증한다.
+진짜 모델을 부르는 complete()·get_chat_model() 의 동작은 수동으로 확인한다.
 """
 
-import pytest
+import asyncio
 
-from app.gateway.llm import LLMUnavailableError, parse_json_response
+import httpx
+import openai
+import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_openai.chat_models.base import OpenAIRefusalError
+
+from app.gateway.llm import (
+    LLMUnavailableError,
+    invoke_chain,
+    message_text,
+    parse_json_response,
+)
 
 
 def test_순수_json이면_그대로_파싱한다() -> None:
@@ -33,3 +46,48 @@ def test_json이_없으면_LLMUnavailableError를_던진다() -> None:
 def test_중괄호는_있지만_형식이_깨지면_LLMUnavailableError를_던진다() -> None:
     with pytest.raises(LLMUnavailableError):
         parse_json_response('{"mood": 잔잔함 (따옴표 없음)}')
+
+
+def test_message_text는_문자열_content를_그대로_꺼낸다() -> None:
+    assert message_text(AIMessage(content='{"mood": "잔잔함"}')) == '{"mood": "잔잔함"}'
+
+
+def test_message_text는_문자열이_아닌_content면_LLMUnavailableError를_던진다() -> None:
+    with pytest.raises(LLMUnavailableError):
+        message_text(AIMessage(content=[{"type": "text", "text": "블록 형태"}]))
+
+
+def _raising(exc: Exception) -> RunnableLambda:
+    def _raise(_inputs) -> None:
+        raise exc
+
+    return RunnableLambda(_raise)
+
+
+def test_invoke_chain은_정상이면_체인_결과를_그대로_돌려준다() -> None:
+    chain = RunnableLambda(lambda x: x + 1)
+    assert asyncio.run(invoke_chain(chain, 1)) == 2
+
+
+def test_invoke_chain은_openai_APIError를_LLMUnavailableError로_바꾼다() -> None:
+    request = httpx.Request("POST", "http://localhost:11434/v1")
+    chain = _raising(openai.APIConnectionError(request=request))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+
+def test_invoke_chain은_OpenAIRefusalError도_LLMUnavailableError로_바꾼다() -> None:
+    # APIError를 상속하지 않아 except openai.APIError만으로는 새어나가던 예외(PR #68 리뷰).
+    chain = _raising(OpenAIRefusalError("요청을 도와드릴 수 없습니다."))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+
+def test_invoke_chain은_모르는_예외는_그대로_던진다() -> None:
+    # 설정 오류·코드 버그까지 "LLM 장애"로 삼켜 degraded 처리하면 원인이 가려진다.
+    chain = _raising(ValueError("설정 오류"))
+
+    with pytest.raises(ValueError):
+        asyncio.run(invoke_chain(chain, None))
