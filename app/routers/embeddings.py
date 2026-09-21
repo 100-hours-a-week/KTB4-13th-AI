@@ -88,9 +88,6 @@ async def embeddings(request: Request) -> JSONResponse:
         logger.exception("임베딩 생성 실패")
         return responses.error(503, "upstream_unavailable")
 
-    return JSONResponse(
-        {
-            "message": "embed_success",
-            "data": {"vectors": vectors, "dim": dim, "model": model},
-        }
+    return responses.success(
+        "embed_success", {"vectors": vectors, "dim": dim, "model": model}
     )
