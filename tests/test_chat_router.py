@@ -104,6 +104,21 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     assert data["cards"] == []
 
 
+def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(spec, exclude_book_ids) -> list[dict]:
+        raise RuntimeError("DB 장애")
+
+    monkeypatch.setattr(chat, "get_candidates", _boom)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 500
+    assert res.headers["content-type"].startswith("application/json")
+    assert res.json() == {"message": "internal_server_error", "data": None}
+
+
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
