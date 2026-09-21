@@ -47,7 +47,13 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(service.keyword, "search_ids", _keyword)
     monkeypatch.setattr(service.vector, "search_ids", _vector)
     monkeypatch.setattr(service.vector, "has_any", _has_any)
+
+    async def _sort(conn, ids, sort):
+        state["sorted"] = (list(ids), sort)
+        return sorted(ids, reverse=True)
+
     monkeypatch.setattr(service.books, "fetch", _fetch)
+    monkeypatch.setattr(service.sorting, "sort_ids", _sort)
     return state
 
 
@@ -117,3 +123,24 @@ def test_키워드_검색이_실패하면_예외가_올라간다(fakes: dict, mo
 
     with pytest.raises(asyncpg.PostgresError):
         _search()
+
+
+def test_관련도순이면_정렬을_부르지_않는다(fakes: dict) -> None:
+    _search()
+
+    assert "sorted" not in fakes
+
+
+def test_다른_정렬이면_합친_후보를_넘겨_다시_줄_세운다(fakes: dict) -> None:
+    outcome = _search(sort="price_asc")
+
+    assert fakes["sorted"] == ([2, 1, 3], "price_asc")
+    assert _ids(outcome) == [3, 2, 1]
+
+
+def test_다른_정렬이면_벡터_쪽은_앞의_20권만_후보에_넣는다(fakes: dict) -> None:
+    fakes["keyword"], fakes["vector"] = [], list(range(100, 150))
+
+    _search(sort="newest", size=50)
+
+    assert fakes["sorted"][0] == list(range(100, 120))
