@@ -9,7 +9,6 @@
 바깥 흐름(이 4단계가 이 순서로 불리는 것)은 안 바뀐다.
 """
 
-import asyncio
 import json
 from typing import Any
 
@@ -119,10 +118,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
     prompt = _build_card_prompt(candidates, spec)
 
     try:
-        # complete()는 동기 함수라 그냥 부르면 응답을 기다리는 동안(최대
-        # llm_timeout_seconds) 이벤트 루프가 막혀 다른 요청도 못 받는다.
-        # 스레드로 돌려서 이벤트 루프는 비워둔다.
-        raw = await asyncio.to_thread(complete, prompt)
+        raw = await complete(prompt)
         parsed = parse_json_response(raw)
     except LLMUnavailableError:
         return [], True

@@ -56,7 +56,7 @@ def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _fake_complete(prompt: str) -> str:
+    async def _fake_complete(prompt: str) -> str:
         return (
             '{"cards": [{"book_id": 1088, "reason_short": "잔잔한 판타지예요.",'
             ' "reason_long": "비 오는 날과 잘 어울리는 따뜻한 이야기입니다."}]}'
@@ -91,7 +91,7 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
 def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _fake_complete(prompt: str) -> str:
+    async def _fake_complete(prompt: str) -> str:
         raise chat.LLMUnavailableError("연결 실패")
 
     monkeypatch.setattr(chat, "complete", _fake_complete)
@@ -107,7 +107,7 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
-    def _fake_complete(prompt: str) -> str:
+    async def _fake_complete(prompt: str) -> str:
         return '{"cards": [{"book_id": 1, "reason_short": "이유"}]}'
 
     monkeypatch.setattr(chat, "complete", _fake_complete)
