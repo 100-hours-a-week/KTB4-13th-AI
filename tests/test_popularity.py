@@ -61,3 +61,21 @@ def test_식대로_계산한다() -> None:
     )
 
     assert _scores()[9100001] == pytest.approx(math.log(101) + adjusted - mean)
+
+
+def test_리뷰_몇_개의_별점_테러는_리뷰_많은_낮은_평점보다_덜_깎인다() -> None:
+    scores = _scores()
+
+    assert scores[9100002] > scores[9100003]
+    # 평점 항만 떼어 보면(점수 − ln(1 + 판매 수)) 1점짜리 리뷰 2개로는 평균에서 0.5점도 못 깎는다.
+    # 리뷰 1000개가 1점이면 평균(약 2.5)에서 거의 그대로 1.5점이 깎인다.
+    assert scores[9100002] - math.log(101) > -0.5
+    assert scores[9100003] - math.log(101) < -1.4
+
+
+def test_판매도_리뷰도_없으면_0점이다() -> None:
+    assert _scores()[9100004] == pytest.approx(0.0)
+
+
+def test_인기_행이_없는_책은_0점이다() -> None:
+    assert _scores()[9100005] == 0
