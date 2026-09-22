@@ -43,6 +43,20 @@ DESCRIPTION_COVERAGE = 0.5
 # 조건에 걸린다. 소개글까지 뒤지면 "때", "책" 같은 흔한 낱말이 수만 권을 후보로 끌고 와
 # 13만 권에서 5초가 넘었다(전부 버려질 책이다). MIN_COVERAGE 를 0.6 아래로 내리거나
 # DESCRIPTION_COVERAGE 를 올리면 이 전제가 깨지니 같이 고쳐야 한다.
+#
+# 제목은 공백을 뺀 형태와도 비교한다. "메타포워즈" 처럼 붙여 치면 "메타포 워즈" 와 글자
+# 조각이 절반만 겹쳐 선을 못 넘는다(이슈 #63). 일반 공백만 빼면 탭·전각공백·nbsp 로 띄어 쓴
+# 제목이 남아서, 네 가지를 함께 지운다.
+#
+# 공백 뺀 제목에는 20260922 마이그레이션의 색인이 있다. 색인은 식이 이것과 같아야 타니,
+# 바꾸면 마이그레이션도 같이 고친다. 네 군데에서 쓰므로 여기 한 곳에만 둔다.
+_BLANKS = "E' \\t\\u3000\\u00a0'"
+
+
+def _nospace(expr: str) -> str:
+    return f"translate({expr}, {_BLANKS}, '')"
+
+
 _SQL = """
 WITH toks AS (
     SELECT * FROM unnest($1::text[], $2::text[]) AS x(t, pat)
@@ -52,6 +66,7 @@ cand AS (
     FROM toks, v_books b
     WHERE (
         toks.t <% b.title
+        OR toks.t <% {nospace_b_title}
         OR toks.t <% b.author
     ){where}
 ),
@@ -63,6 +78,7 @@ scored AS (
     -- 전부 맞는다고 쳐도 선을 못 넘는 책은 소개글을 읽기 전에 버린다.
     CROSS JOIN LATERAL (
         SELECT avg(greatest(word_similarity(toks.t, b.title),
+                            word_similarity(toks.t, {nospace_b_title}),
                             word_similarity(toks.t, coalesce(b.author, '')),
                             {desc_coverage})) AS best_possible
         FROM toks
@@ -73,7 +89,8 @@ scored AS (
                          {w_desc} * x.in_desc)) AS score,
             avg(greatest(x.in_title, x.in_author, {desc_coverage} * x.in_desc)) AS coverage
         FROM (
-            SELECT word_similarity(toks.t, b.title) AS in_title,
+            SELECT greatest(word_similarity(toks.t, b.title),
+                            word_similarity(toks.t, {nospace_b_title})) AS in_title,
                    word_similarity(toks.t, coalesce(b.author, '')) AS in_author,
                    CASE WHEN b.description ILIKE toks.pat THEN 1 ELSE 0 END AS in_desc
             FROM toks
@@ -84,7 +101,10 @@ scored AS (
 SELECT book_id
 FROM scored
 WHERE coverage >= $5
-ORDER BY score + {w_whole} * similarity($3, title) DESC, book_id
+ORDER BY score + {w_whole} * greatest(
+    similarity($3, title),
+    similarity({nospace_query}, {nospace_title})
+) DESC, book_id
 LIMIT $4
 """
 
@@ -121,6 +141,9 @@ async def search_ids(
         w_desc=W_DESCRIPTION,
         w_whole=W_WHOLE_TITLE,
         desc_coverage=DESCRIPTION_COVERAGE,
+        nospace_b_title=_nospace("b.title"),
+        nospace_title=_nospace("title"),
+        nospace_query=_nospace("$3"),
     )
     patterns = [like_pattern(t) for t in tokens]
     rows = await conn.fetch(
