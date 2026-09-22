@@ -78,7 +78,7 @@ def test_검색어가_없으면_service_search를_안_부르고_빈_후보(
     assert result == []
 
 
-def test_검색결과에_description을_붙여_돌려준다(
+def test_검색결과에_description을_붙여_돌려주고_소개글_없는_책은_뺀다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _search(req: SearchRequest) -> SearchOutcome:
@@ -100,11 +100,42 @@ def test_검색결과에_description을_붙여_돌려준다(
     )
     result = asyncio.run(chat.get_candidates(spec, []))
 
-    assert [c["book_id"] for c in result] == [1088, 2000]
+    # 2000은 소개글이 없어 후보에서 빠진다 — 3단계가 소개글만 근거로 카드를 쓴다.
+    assert [c["book_id"] for c in result] == [1088]
     assert result[0]["description"] == "잠든 사이 꿈을 사고파는 상점 이야기."
-    assert result[1]["description"] == ""  # None이 아니라 빈 문자열로 채움
     assert result[0]["price"] == 10000
     assert result[0]["cover_url"] == "https://example.com/1088.jpg"
+
+
+def test_소개글_없는_책은_CANDIDATE_LIMIT_자리를_안_먹는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """맨 앞 책이 소개글이 없어도, 그 뒤 소개글 있는 책으로 CANDIDATE_LIMIT까지 채워야 한다.
+
+    자르기 전에 거르지 않으면(카드 생성 단계에서만 거르면) 이 자리가 그냥
+    버려진다 — 실제로 재현된 문제(리뷰): 후보가 전부 소개글 없는 책이면
+    카드 0장에 "골라봤어요"가 나감.
+    """
+    books = [_book(i) for i in range(1, chat.CANDIDATE_LIMIT + 2)]
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=books, degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {
+            book_id: "설명" for book_id in book_ids if book_id != 1
+        }  # 1만 소개글 없음
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(intent="semantic", semantic="아무거나")
+    result = asyncio.run(chat.get_candidates(spec, []))
+
+    assert len(result) == chat.CANDIDATE_LIMIT
+    book_ids = [c["book_id"] for c in result]
+    assert 1 not in book_ids
+    assert chat.CANDIDATE_LIMIT + 1 in book_ids  # 밀려난 책이 빈 자리를 채운다
 
 
 def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(
@@ -115,8 +146,11 @@ def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(
             results=[_book(1), _book(2), _book(3), _book(4)], degraded=None
         )
 
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
     monkeypatch.setattr(chat.service, "search", _search)
-    monkeypatch.setattr(chat, "_fetch_descriptions", lambda ids: asyncio.sleep(0, {}))
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
 
     spec = _spec(intent="semantic", semantic="아무거나", exclude=[2])
     result = asyncio.run(chat.get_candidates(spec, [3]))
@@ -133,8 +167,11 @@ def test_후보가_CANDIDATE_LIMIT보다_많으면_앞에서부터_자른다(
         assert req.size == chat.SEARCH_SIZE
         return SearchOutcome(results=books, degraded=None)
 
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
     monkeypatch.setattr(chat.service, "search", _search)
-    monkeypatch.setattr(chat, "_fetch_descriptions", lambda ids: asyncio.sleep(0, {}))
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
 
     spec = _spec(intent="semantic", semantic="아무거나")
     result = asyncio.run(chat.get_candidates(spec, []))

@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 CANDIDATE_LIMIT = 10
-# ①에 없는 exclude를 검색 결과에서 사후 필터링하므로, 걸러지고도 CANDIDATE_LIMIT이
-# 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
+# ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
+# CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
 CARD_LIMIT = 3
 
@@ -161,6 +161,11 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다.
     exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
     직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
+
+    소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로 카드를 쓰는데,
+    빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를 지어낸다.
+    exclude와 마찬가지로 CANDIDATE_LIMIT으로 자르기 전에 걸러야, 소개글 없는
+    책이 그 자리를 먹고 뒤쪽의 쓸 수 있는 후보가 밀려나지 않는다.
     """
     query = _query_text(spec)
     if not query:
@@ -170,16 +175,14 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
         SearchRequest(query=query, filters=spec.filters, size=SEARCH_SIZE)
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
-    candidates = [r for r in outcome.results if r["book_id"] not in exclude][
-        :CANDIDATE_LIMIT
-    ]
-    if not candidates:
+    pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    if not pool:
         return []
 
-    descriptions = await _fetch_descriptions([c["book_id"] for c in candidates])
-    for c in candidates:
+    descriptions = await _fetch_descriptions([c["book_id"] for c in pool])
+    for c in pool:
         c["description"] = descriptions.get(c["book_id"]) or ""
-    return candidates
+    return [c for c in pool if c["description"]][:CANDIDATE_LIMIT]
 
 
 # {semantic}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
