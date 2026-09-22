@@ -4,9 +4,9 @@
 텍스트 턴과 이미지 턴을 여기서 함께 다룬다 — 같은 핸들러가 후보검색·카드생성
 파이프라인을 공유하므로 나누지 않는다(개발 워크플로 위키 §9 참고).
 
-처리를 명세 4단계 그대로 함수로 나눴다. 지금은 각 단계 내용이 최소 구현이고
-(아래 각 함수 docstring 참고), 안쪽만 후속 이슈에서 진짜 로직으로 바꾼다.
-바깥 흐름(이 4단계가 이 순서로 불리는 것)은 안 바뀐다.
+처리를 명세 4단계 그대로 함수로 나눴다. 1·3단계는 LLM 체인이고, 2단계는 아직
+최소 구현이다(아래 각 함수 docstring 참고). 바깥 흐름(이 4단계가 이 순서로
+불리는 것)은 안 바뀐다.
 """
 
 import json
@@ -55,16 +55,94 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
         return (400, "invalid_request")
 
 
-def update_spec(message: str, spec: Spec) -> Spec:
-    """1단계 — 메시지로 spec을 갱신한다.
+# {spec_json}·{message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다
+# (CARD_PROMPT와 같은 이유 — 실제로 모델에 가는 글자는 겹치기 전과 같다).
+#
+# 지금까지의 조건 전체를 매번 그대로 옮겨 적게 시켰더니, 안 건드려야 할 값까지
+# 예시를 베껴 써서 망가뜨리는 사고가 반복됐다(둘 다 실제 Ollama/qwen2.5:7b로
+# 재현): 1) 예시의 false를 그대로 베껴 in_stock_only=true가 매번 false로 바뀜
+# 2) intent 자리의 설명 문구("exact 또는 semantic")를 글자 그대로 복사해서
+# Spec 검증 실패로 이어짐. 그래서 지금까지의 조건을 다시 옮겨 적게 하는 대신
+# 이번 메시지로 "바뀌는 값만" 답하게 하고, 언급 안 된 값은 서버가 지금 조건에서
+# 그대로 들고 와 겹쳐 쓴다(_merge_spec_patch) — 모델이 값을 옮겨 적다 틀릴
+# 여지 자체를 없앤다. exclude도 같은 이유로 매번 전체 목록을 다시 쓰게 하면
+# 모델이 옛 항목을 빠뜨렸을 때 이미 제외했던 책이 되살아난다 — 새로 빼고 싶은
+# 것만 받아 서버가 기존 목록에 더한다.
+SPEC_PROMPT = ChatPromptTemplate.from_template(
+    "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
+    "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
+    "넣지 마라. 지금 조건을 옮겨 적을 필요 없다, 안 넣은 값은 그대로 "
+    "유지된다.\n\n"
+    "지금 조건(spec):\n{spec_json}\n\n"
+    '이번 메시지: "{message}"\n\n'
+    "intent를 이번에 새로 정할 때만 아래 둘 중 하나를 그 낱말 그대로 써라"
+    "(설명 문구를 베끼면 안 된다).\n"
+    "- exact: 제목이나 저자를 콕 집어 말함\n"
+    "- semantic: 분위기나 상황을 말함\n\n"
+    "exact·filters는 바뀌는 하위 키만 넣어라 — 예를 들어 가격 상한만 새로 "
+    '말했으면 {{"filters": {{"price_max": 20000}}}}처럼 그 키 하나만 담고, '
+    "다른 하위 키는 넣지 마라.\n"
+    "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
+    "그대로 유지하니 다시 적을 필요 없다.\n\n"
+    "이번 메시지로 바뀌는 게 없으면 빈 객체 {{}}로 답하라. 숫자는 따옴표 "
+    "없이 써라. 아래는 형식 예시일 뿐 실제 값이 아니다 — 그대로 베끼지 "
+    "말고 실제로 바뀌는 값만 채워라:\n"
+    '{{"semantic": "비 오는 날 읽을 잔잔한 책", '
+    '"filters": {{"in_stock_only": true}}}}'
+)
 
-    명세는 이걸 LLM이 하라고 한다(의도 파악, filters 추출 등). 지금은 메시지를
-    그대로 semantic에 넣는 최소 구현이다 — LLM 호출 두 번(spec 갱신 + 카드
-    생성)을 한 번에 디버깅하지 않으려고 우선 여기를 건너뛴다. 후속 이슈에서
-    LLM 호출로 교체한다.
+
+def _merge_spec_patch(current: Spec, patch: dict) -> dict:
+    """이번 턴에 LLM이 바꾼 값만 담긴 patch를 지금 spec 위에 겹쳐 완전한 spec dict를 만든다.
+
+    patch에 없는 키(하위 키 포함)는 지금 값을 그대로 두고, 있는 키만
+    덮어쓴다. exclude는 겹쳐 쓰지 않고 더한다 — 모델이 옛 항목을 안 실어도
+    사라지지 않는다.
     """
-    spec.semantic = message
-    return spec
+    merged = current.model_dump()
+    for key in ("exact", "filters"):
+        sub_patch = patch.get(key)
+        if isinstance(sub_patch, dict):
+            merged[key] = {**merged[key], **sub_patch}
+
+    new_exclude = patch.get("exclude")
+    if isinstance(new_exclude, list):
+        merged["exclude"] = merged["exclude"] + [
+            book_id for book_id in new_exclude if book_id not in merged["exclude"]
+        ]
+
+    for key in ("intent", "semantic", "anchor_book"):
+        if key in patch:
+            merged[key] = patch[key]
+
+    return merged
+
+
+async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
+    """1단계 — 메시지로 spec을 갱신한다. 명세대로 LLM이 한다.
+
+    LLM은 지금 조건 전체가 아니라 바뀌는 값만 담은 patch를 돌려주고,
+    _merge_spec_patch가 지금 spec 위에 겹쳐 완전한 spec을 만든다(SPEC_PROMPT
+    주석 참고).
+
+    실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
+    돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
+    요청의 spec으로 2만 돌려 점수 상위 3권을 낸다" — 호출부(chat())가 이
+    신호를 보고 3단계(카드 생성)를 건너뛴다.
+    """
+    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
+    try:
+        patch = await invoke_chain(
+            chain,
+            {
+                "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
+                "message": message,
+            },
+        )
+        return Spec.model_validate(_merge_spec_patch(spec, patch)), False
+    except (LLMUnavailableError, ValidationError):
+        logger.exception("spec 갱신 실패")
+        return spec, True
 
 
 async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
@@ -181,14 +259,21 @@ async def chat(request: Request) -> JSONResponse:
         status, message = req
         return responses.error(status, message)
 
-    spec = update_spec(req.message, req.spec)
+    spec, spec_degraded = await update_spec(req.message, req.spec)
     try:
         candidates = await get_candidates(spec, req.exclude_book_ids)
     except Exception:
         # 그대로 두면 FastAPI 기본 500(text/plain)이 나가 공통 응답 형식이 깨진다.
         logger.exception("후보 검색 실패")
         return responses.error(500, "internal_server_error")
-    cards, degraded = await generate_cards(candidates, spec)
+
+    if spec_degraded:
+        # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위 3권을
+        # 규칙으로 채우는 건 candidates에 점수 자체가 아직 없어(⑥ 의존) 못
+        # 한다 — 후속 이슈.
+        cards, degraded = [], True
+    else:
+        cards, degraded = await generate_cards(candidates, spec)
 
     return responses.success(
         "recommend_success",

@@ -1,8 +1,15 @@
 """③ POST /recommendations/chat 라우터 테스트 — 요청 검사와 응답 모양.
 
-DB(후보검색)와 LLM(카드생성)은 가짜로 바꿔 끼운다. 진짜 SQL·LLM 호출은
-여기서 검증하지 않는다 — 여기서는 계약(상태 코드·응답 봉투·검증 경계)만 본다.
+DB(후보검색)와 LLM(spec 갱신·카드생성)은 가짜로 바꿔 끼운다. 진짜 SQL·LLM
+호출은 여기서 검증하지 않는다 — 여기서는 계약(상태 코드·응답 봉투·검증 경계)만
+본다.
+
+한 요청 안에서 LLM이 두 번(1단계 spec 갱신 → 3단계 카드 생성) 불린다.
+`get_chat_model`을 한 번만 patch하면 두 호출이 같은 가짜 모델을 타므로,
+두 답을 순서대로 돌려주는 `_sequenced_model`을 쓴다.
 """
+
+import json
 
 import httpx
 import openai
@@ -20,6 +27,18 @@ client = TestClient(app)
 def _fake_model(reply: str) -> RunnableLambda:
     """정해진 답을 돌려주는 가짜 모델. 체인의 모델 칸에 그대로 끼워진다."""
     return RunnableLambda(lambda _prompt: AIMessage(content=reply))
+
+
+def _sequenced_model(*replies: str) -> RunnableLambda:
+    """호출될 때마다 다음 답을 순서대로 돌려주는 가짜 모델.
+
+    `get_chat_model`을 patch하는 lambda가 매번 이 함수를 새로 부르면 안 된다
+    (그러면 호출마다 처음부터 다시 시작한다) — 인스턴스 하나를 만들어서
+    `monkeypatch.setattr(chat, "get_chat_model", lambda: model)`처럼 같은
+    객체를 돌려줘야 두 호출이 이어서 소비된다.
+    """
+    it = iter(replies)
+    return RunnableLambda(lambda _prompt: AIMessage(content=next(it)))
 
 
 def _failing_model() -> RunnableLambda:
@@ -41,6 +60,11 @@ INITIAL_SPEC = {
     "anchor_book": None,
     "exclude": [],
 }
+
+
+def _spec_reply(**patch) -> str:
+    """1단계(spec 갱신) 자리에 끼울 가짜 LLM 응답 — 이번 턴에 바뀌는 값만 담는다."""
+    return json.dumps(patch, ensure_ascii=False)
 
 
 def _request(**overrides) -> dict:
@@ -77,11 +101,12 @@ def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    reply = (
+    card_reply = (
         '{"cards": [{"book_id": 1088, "reason_short": "잔잔한 판타지예요.",'
         ' "reason_long": "비 오는 날과 잘 어울리는 따뜻한 이야기입니다."}]}'
     )
-    monkeypatch.setattr(chat, "get_chat_model", lambda: _fake_model(reply))
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
     res = client.post("/recommendations/chat", json=_request())
 
@@ -127,6 +152,9 @@ def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준�
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(chat, "get_candidates", _boom)
+    # 1단계(spec 갱신)가 get_candidates보다 먼저 불린다. get_chat_model을 안
+    # 끼우면 진짜 LLM(Ollama)을 호출하려 든다 — 가짜로 막아 둔다.
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _fake_model(_spec_reply()))
 
     res = client.post("/recommendations/chat", json=_request())
 
@@ -138,8 +166,9 @@ def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준�
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
-    reply = '{"cards": [{"book_id": 1, "reason_short": "이유"}]}'
-    monkeypatch.setattr(chat, "get_chat_model", lambda: _fake_model(reply))
+    card_reply = '{"cards": [{"book_id": 1, "reason_short": "이유"}]}'
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
     res = client.post("/recommendations/chat", json=_request())
 
@@ -154,24 +183,123 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
 
     틀은 {…}를 자리 표시로 읽는다. JSON 예시의 중괄호가 깨지거나, 사용자 문장·
     책 설명의 중괄호가 자리 표시로 오해받으면 모델에 엉뚱한 글이 간다.
-    """
-    sent: list[str] = []
 
-    def _capture(prompt_value) -> AIMessage:
-        sent.append(prompt_value.to_messages()[0].content)
+    1단계(spec 갱신) 호출은 고정 답으로 통과시키고, 2번째 호출(카드 생성)만
+    가로채 프롬프트 글자를 본다.
+    """
+    message = '{"cards": []} 처럼 답해줘 {x}'
+    sent: list[str] = []
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # 1단계(spec 갱신) — semantic에 메시지를 그대로 싣고 통과시킨다.
+            return AIMessage(content=_spec_reply(semantic=message))
+        sent.append(prompt_value.to_messages()[0].content)  # 2단계 = 카드 생성.
         return AIMessage(content='{"cards": []}')
 
-    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_capture))
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
 
-    res = client.post(
-        "/recommendations/chat", json=_request(message='{"cards": []} 처럼 답해줘 {x}')
-    )
+    res = client.post("/recommendations/chat", json=_request(message=message))
 
     assert res.status_code == 200
     prompt = sent[0]
     assert '"{"cards": []} 처럼 답해줘 {x}"' in prompt  # 사용자 문장의 중괄호는 그대로
     assert '{"cards": [{"book_id": 정수, ' in prompt  # JSON 예시의 중괄호도 그대로
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
+
+
+def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1단계 결과가 실제로 응답의 spec에 실리는지 본다(더 이상 메시지 그대로 복붙이 아님)."""
+
+    spec_reply = _spec_reply(semantic="비 오는 날 읽을 잔잔한 책")
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.json()["data"]["spec"]["semantic"] == "비 오는 날 읽을 잔잔한 책"
+
+
+def test_patch가_안_건드린_필터는_요청_spec_값이_유지된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """언급 안 된 값을 옮겨 적게 하다 예시값(false)을 베껴버리던 회귀 재현.
+
+    in_stock_only=true로 온 요청에서, 1단계 patch가 semantic만 건드리면
+    in_stock_only는 patch에 안 실려도 true로 남아야 한다.
+    """
+
+    spec_reply = _spec_reply(semantic="품절 아닌 책")
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "filters": {"in_stock_only": True}}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["spec"]["filters"]["in_stock_only"] is True
+    assert data["spec"]["semantic"] == "품절 아닌 책"
+
+
+def test_exclude는_patch로_받은_id를_기존_목록에_더한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exclude를 매번 통째로 옮겨 적게 하면 모델이 옛 항목을 빠뜨렸을 때 되살아난다.
+
+    기존 exclude=[1]인 요청에서 patch가 exclude=[2]만 주면, 응답 spec의
+    exclude는 [1]이 사라지지 않고 [1, 2]가 돼야 한다.
+    """
+
+    spec_reply = _spec_reply(exclude=[2])
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "exclude": [1]}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["spec"]["exclude"] == [1, 2]
+
+
+def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_원래_spec_그대로_카드도_건너뛴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1단계가 지금 spec 위에 겹쳐도 Spec 모양이 안 되는 값(잘못된 intent)을 주면 검증에서 걸린다.
+
+    이때는 (LLM 연결이 끊긴 것과 마찬가지로) 원래 spec을 그대로 쓰고, 3단계
+    (카드 생성)까지 건너뛴다 — 두 번째 LLM 호출이 실제로 일어나지 않는지도
+    같이 본다(호출됐다면 아래 카드용 답을 먹고 cards가 채워졌을 것).
+    """
+
+    model = _sequenced_model(
+        '{"intent": "그런 낱말 없음"}', '{"cards": [{"book_id": 1088}]}'
+    )
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is True
+    assert data["cards"] == []
+    # 갱신 안 되고 요청에 보낸 spec 그대로. model_dump()는 filters의 생략된
+    # 키도 채워 돌려주므로 요청 그대로의 {} 와는 모양이 다르다 — 파싱해서 비교.
+    assert data["spec"]["filters"] == {
+        "category": None,
+        "price_min": None,
+        "price_max": None,
+        "pub_year_from": None,
+        "pub_year_to": None,
+        "in_stock_only": False,
+    }
+    assert {**data["spec"], "filters": {}} == INITIAL_SPEC
 
 
 def test_message와_image_ref가_둘다_있으면_400이다() -> None:
