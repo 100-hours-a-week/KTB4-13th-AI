@@ -33,7 +33,12 @@ def get_chat_model() -> BaseChatModel:
     return ChatOpenAI(
         model=settings.llm_model_id,
         base_url=settings.llm_base_url,
-        api_key="ollama",  # Ollama는 검사 안 하지만 SDK가 값을 요구함
+        # EXTERNAL_AI_API_KEY가 비어 있으면(Ollama처럼 검사 안 하는 provider)
+        # SDK가 그래도 값을 요구하므로 "ollama"로 채운다. Gemini 등 실제로
+        # 키를 검사하는 provider는 .env에 EXTERNAL_AI_API_KEY만 채우면 된다 —
+        # base_url·model_id와 함께 이 셋만 바뀌면 되도록 게이트웨이가 provider를
+        # 안 가리게 짜여 있다(파일 상단 주석 참고).
+        api_key=settings.external_ai_api_key or "ollama",
         timeout=settings.llm_timeout_seconds,
         # 명세: 생성 경로 상한 30초, 넘으면 504. max_retries 기본값은 None이라
         # OpenAI SDK 기본 재시도(2회)가 살아나고, 재시도 사이 대기시간까지 더해져
