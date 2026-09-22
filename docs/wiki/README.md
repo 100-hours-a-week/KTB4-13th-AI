@@ -19,6 +19,13 @@
 - [CLD-1 Docker Compose 배포 구조 설계](cld/1-initial-deploy/compose.md)
 - [CLD-1 현재 구조의 한계 정의](cld/1-initial-deploy/limits.md)
 - [CLD-2 CI 파이프라인 설계](cld/2-ci-pipeline/overview.md)
+- [CLD-4 컨테이너 확장 설계](cld/4-container-expansion/overview.md)
+- [CLD-4 현재 서비스의 성장 상황](cld/4-container-expansion/growth.md)
+- [CLD-4 기존 인프라 한계](cld/4-container-expansion/infra-limits.md)
+- [CLD-4 단일 App 서버의 한계와 개선](cld/4-container-expansion/app-server.md)
+- [CLD-4 데이터베이스의 한계와 개선](cld/4-container-expansion/database.md)
+- [CLD-4 요청 분산 구조의 한계와 개선](cld/4-container-expansion/request-distribution.md)
+- [CLD-4 현재 서비스의 성장 상황과 기존 인프라 한계](cld/4-container-expansion/growth-and-infra-limits.md)
 
 ## AI
 
