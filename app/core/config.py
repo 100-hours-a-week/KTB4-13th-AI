@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 30
     llm_mock: bool = False
 
+    # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
+    # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
+    dev_cors_origins: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
