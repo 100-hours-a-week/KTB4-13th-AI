@@ -155,3 +155,14 @@ def test_다른_정렬이면_벡터_쪽은_앞의_20권만_후보에_넣는다(f
     _search(sort="newest", size=50)
 
     assert fakes["sorted"][0] == list(range(100, 120))
+
+
+def test_키워드만으로_줄여_응답할_때는_정렬_후보를_자르지_않는다(fakes: dict) -> None:
+    # 20권 제한은 관련이 약한 벡터 결과를 막으려는 것이라, 키워드 결과에는 걸지 않는다.
+    fakes["keyword"] = list(range(100, 150))
+    fakes["vector"] = asyncpg.InterfaceError("연결이 끊김")
+
+    outcome = _search(sort="price_asc", size=50)
+
+    assert fakes["sorted"] == (list(range(100, 150)), "price_asc")
+    assert outcome.degraded == "keyword-only"
