@@ -44,6 +44,10 @@ class History:
     weights: dict[int, int] = field(default_factory=dict)
     # 카테고리마다 그 카테고리 책들의 가중치 합. −2 도 여기서는 반영한다.
     category_scores: dict[str, int] = field(default_factory=dict)
+    # 2.0점 이하 리뷰를 단 책. weights 와 따로 둔다 — 명세 ⑥ 각주는 이 책을 취향 벡터 재료에서 빼고
+    # 추천에서도 제외하라는데, weights 는 큰 값 하나만 남겨 사고(3) 1점을 준 책이 3 으로 남는다.
+    # 이 경우에도 싫다는 신호가 이긴다고 보고, 취향 벡터를 만드는 쪽(#92)이 이 목록으로 뺀다.
+    disliked_book_ids: set[int] = field(default_factory=set)
     # 이번에 읽은 이력 행들의 시각 중 최댓값. 이력이 없으면 None.
     # 계산 시각이 아니다 — 계산 시각으로 두면 복제가 늦게 도착한 이력이 프로필에도 ③④ 의 가산에도
     # 빠져 영구히 누락된다(명세 ⑥). 가중치 0 인 행도 넣는다. 빼면 ③④ 가 그 행을 "나중 이력"으로
@@ -66,6 +70,8 @@ def summarize(rows: list[dict[str, Any]]) -> History:
         else:
             weight = review_weight(row["rating"])
         book_id = row["book_id"]
+        if weight == DISLIKED_REVIEW:
+            history.disliked_book_ids.add(book_id)
         if book_id not in history.weights or weight > history.weights[book_id]:
             history.weights[book_id] = weight
         categories[book_id] = row["category"]
