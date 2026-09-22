@@ -100,7 +100,7 @@ erDiagram
     V_USER_REVIEWS {
         int user_id "BE 복제"
         int book_id ""
-        int rating "1-5"
+        numeric rating "0.5-5.0"
         timestamptz created_at "computed_at 비교 축"
     }
     USERS {

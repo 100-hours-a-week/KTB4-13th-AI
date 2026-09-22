@@ -67,7 +67,7 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 | v_books | book_id, title, author, publisher, price, in_stock, cover_url, category, pub_year, description | ①③④의 응답 항목, 벡터 적재, 키워드 검색 인덱스, ⑥ 이력 책의 카테고리 점수, ③ 이미지 턴(V2)의 제목·저자 텍스트 검색 |
 | v_user_purchases | user_id, book_id, purchased_at | ⑥ 취향 벡터, ③④ 채점과 중복 제외 |
 | v_user_library | user_id, book_id, added_at | 같음 |
-| v_user_reviews | user_id, book_id, rating(1–5), created_at | 같음 |
+| v_user_reviews | user_id, book_id, rating(0.5–5.0), created_at | 같음 |
 | v_book_popularity | book_id, sales, rating_avg, rating_count, as_of | ① 인기순, ③ 후보 채점, ④ 인기 항과 cold_start 목록 |
 
 **허용 지연(신선도 예산).** 사본이라 실시간이 아니다. 이 값을 넘기면 복제 문제로 보고 조치한다. **복제 수단과 주기 자체는 계약이 아니며** BE·AI·클라우드가 함께 정한다(5절). 계약이 되는 것은 위 컬럼 집합·아래 허용 지연·스키마 변경 통보 의무·위 두 전제다.
@@ -178,7 +178,7 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | purchased_at | timestamptz | N | 구매 시각. v_user_purchases | computed_at 이후 발생분만 채점에 가산하기 위한 비교 축. ④ 피드는 **커서 발급 시각**과도 비교해 그 이후 생긴 이력을 제외 대상에서 뺀다(스크롤이 밀리지 않게) | taste_profile.computed_at과 직접 비교하므로 동일 타입·동일 기준 시간대(UTC) |
 | added_at | timestamptz | N | 도서관 담기 시각. v_user_library | 같음(커서 발급 시각 비교 포함) | 같음 |
 | created_at | timestamptz | N | 리뷰 작성 시각. v_user_reviews | computed_at 이후 발생분만 채점에 가산하기 위한 비교 축 | 같음 |
-| rating | int | N | 별점. v_user_reviews | 4-5점은 선호로 가산하고, 1-2점은 비선호로 카테고리 점수를 깎으며 그 도서를 추천에서 제외 | 1-5 정수 구간이며 구간 분기만 하므로 정수 |
+| rating | numeric(2,1) | N | 별점. v_user_reviews | 4.0점 이상은 선호로 가산하고, 2.0점 이하는 비선호로 카테고리 점수를 깎으며 그 도서를 추천에서 제외한다. 2.5점부터 3.5점은 중립 | 0.5점 단위의 0.5–5.0. CHECK는 범위만 걸고 0.5 단위는 강제하지 않는다(원본 예외값 하나에 복제가 거부되지 않게) |
 
 ### 3.7 users
 
