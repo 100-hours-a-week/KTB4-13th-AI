@@ -152,14 +152,15 @@ async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
 def _query_text(spec: Spec) -> str:
     """spec에서 ①에 넘길 검색어 한 줄을 만든다.
 
-    intent가 exact면 지정된 제목·저자·출판사를 합친다(①은 이 셋을 구분 안 하고
-    제목·저자·소개글에서 낱말을 찾으므로, 출판사는 낱말로만 섞여 들어간다 —
-    출판사 전용 검색은 없음). 그 조합이 비어 있거나 intent가 semantic이면
-    semantic 문장을 쓴다. 어느 쪽도 없으면 빈 문자열(호출부가 후보 없음으로 처리).
+    intent가 exact면 지정된 제목·저자를 합친다. 출판사는 일부러 뺀다 — ①의
+    키워드 검색은 제목·저자·소개글에서만 낱말을 찾고 평균 커버리지가 기준
+    (0.6)을 못 채우면 후보가 통째로 빠지는데, 출판사는 이 셋 어디에도 없는
+    낱말이라 평균만 깎아 정확한 책을 탈락시킨다(예: "마음 현암사", 리뷰 지적).
+    출판사로 거를 필요가 있으면 검색 결과의 publisher 필드로 걸러야 한다.
+    그 조합이 비어 있거나 intent가 semantic이면 semantic 문장을 쓴다.
+    어느 쪽도 없으면 빈 문자열(호출부가 후보 없음으로 처리).
     """
-    exact_query = " ".join(
-        p for p in (spec.exact.title, spec.exact.author, spec.exact.publisher) if p
-    )
+    exact_query = " ".join(p for p in (spec.exact.title, spec.exact.author) if p)
     text = (
         exact_query
         if spec.intent == "exact" and exact_query

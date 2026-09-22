@@ -48,12 +48,22 @@ def test_semantic_intent이면_semantic_문장을_검색어로_쓴다() -> None:
     assert chat._query_text(spec) == "비 오는 날 읽을 잔잔한 책"
 
 
-def test_exact_intent이면_제목_저자_출판사를_합친다() -> None:
+def test_exact_intent이면_제목_저자를_합친다() -> None:
     spec = _spec(
         intent="exact",
         exact=SpecExact(title="달러구트 꿈 백화점", author="이미예", publisher=None),
     )
     assert chat._query_text(spec) == "달러구트 꿈 백화점 이미예"
+
+
+def test_exact_intent이어도_출판사는_검색어에서_뺀다() -> None:
+    # ①은 출판사를 안 보고 제목·저자·소개글에서만 낱말을 찾는다. 검색어에
+    # 섞으면 평균 커버리지만 깎여 정확한 책이 오히려 탈락한다(리뷰 지적).
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    assert chat._query_text(spec) == "마음"
 
 
 def test_exact_intent인데_exact가_비어있으면_semantic으로_대체한다() -> None:
