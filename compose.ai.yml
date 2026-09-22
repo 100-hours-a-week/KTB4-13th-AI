@@ -1,0 +1,80 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  ai-server:
+    image: "${AI_IMAGE:?AI_IMAGE를 설정해야 합니다}"
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      TZ: "${TZ:-Asia/Seoul}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      RELEASE_SHA: "${RELEASE_SHA:?RELEASE_SHA를 설정해야 합니다}"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL을 설정해야 합니다}"
+      DB_POOL_MIN: "${DB_POOL_MIN:-1}"
+      DB_POOL_MAX: "${DB_POOL_MAX:-10}"
+      AI_SERVICE_TOKEN: "${AI_SERVICE_TOKEN:?AI_SERVICE_TOKEN을 설정해야 합니다}"
+      CURSOR_SIGNING_KEY: "${CURSOR_SIGNING_KEY:?CURSOR_SIGNING_KEY를 설정해야 합니다}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}"
+      EMBEDDING_DIM: "${EMBEDDING_DIM:-384}"
+      WORKER_COUNT: "${WORKER_COUNT:-4}"
+      EXTERNAL_AI_API_KEY: "${EXTERNAL_AI_API_KEY:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      LLM_MODEL_ID: "${LLM_MODEL_ID:-}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://localhost:11434/v1}"
+      PROMPT_VERSION: "${PROMPT_VERSION:-v1}"
+      LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-30}"
+      LLM_MOCK: "${LLM_MOCK:-false}"
+    networks:
+      - ai_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 120s
+    logging: *default-logging
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB를 설정해야 합니다}"
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER를 설정해야 합니다}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD를 설정해야 합니다}"
+      TZ: "${TZ:-Asia/Seoul}"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    networks:
+      - ai_net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"'
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+
+volumes:
+  pgvector_data:
+
+networks:
+  ai_net:
+    driver: bridge

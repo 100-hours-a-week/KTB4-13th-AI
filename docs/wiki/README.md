@@ -30,6 +30,7 @@
 - [AI-5 컨텍스트 보강 설계](ai/5-context-augmentation/design.md)
 - [AI-6 도구 통합 설계](ai/6-tool-integration/design.md)
 - [AI-7 인프라 모니터링 설계](ai/7-infra-monitoring/design.md)
+- [AI-7 CD 구축 정보 가이드](ai/7-infra-monitoring/cd-handoff-guide.md)
 - [AI-8 최종 통합 설계](ai/8-final-integration/design.md)
 
 ## 풀스택
@@ -40,4 +41,4 @@
 
 (변환 후 추가)
 
-작성·변환 규칙: [.agents/skills/ktb4-docs/SKILL.md](../.agents/skills/ktb4-docs/SKILL.md)
+작성·변환 규칙: [.agents/skills/ktb4-docs/SKILL.md](../../.agents/skills/ktb4-docs/SKILL.md)

@@ -1,27 +1,25 @@
 name: Publish Docker image
 
 on:
-  pull_request_target:
+  push:
     branches:
       - main
-    types:
-      - closed
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-${{ github.event.pull_request.base.ref }}
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   docker-publish:
     name: Publish Docker image to ECR
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+      id-token: write
 
     steps:
       - name: Check out merged main commit
@@ -33,8 +31,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Log in to Amazon ECR
