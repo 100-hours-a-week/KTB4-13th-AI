@@ -12,6 +12,8 @@ _ORDER_BY = {
     "popular": f"{popularity.score_sql('p')} DESC, ids.pos",
 }
 
+# books.fetch 와 같은 뼈대다. v_books 와 JOIN 하므로 카탈로그에서 빠진 책은 조용히 빠진다.
+# 두 곳의 JOIN 조건이 다르면 정렬 순서와 응답 목록이 어긋나니 같이 고친다.
 _SQL = """
 SELECT b.book_id
 FROM unnest($1::int[]) WITH ORDINALITY AS ids(book_id, pos)
