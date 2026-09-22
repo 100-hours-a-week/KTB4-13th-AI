@@ -29,7 +29,7 @@ Docker Compose는 컨테이너 프로세스가 종료되면 컨테이너를 다�
 
 MySQL에만 Healthcheck를 적용한다.
 
-따라서 Backend, AI Server 및 Qdrant의 연결 장애가 발생하면 운영자가 로그를 확인하고 직접 복구해야 한다.
+따라서 Backend, AI Server 및 PostgreSQL (pgvector)의 연결 장애가 발생하면 운영자가 로그를 확인하고 직접 복구해야 한다.
 
 ### 데이터 복구
 
@@ -39,7 +39,7 @@ EC2·EBS 장애나 Volume 삭제에 대비하려면 MySQL Dump와 EBS Snapshot�
 
 ### 서버 자원 공유
 
-App EC2에서는 Spring Boot와 MySQL이 2GB 메모리를 공유하고, AI EC2에서는 AI Server와 Qdrant가 2GB 메모리를 공유한다.
+App EC2에서는 Spring Boot와 MySQL이 2GB 메모리를 공유하고, AI EC2에서는 AI Server와 PostgreSQL (pgvector)이 2GB 메모리를 공유한다.
 
 임베딩 작업이나 데이터베이스 부하가 증가하면 응답 속도 저하 또는 메모리 부족이 발생할 수 있다.
 
