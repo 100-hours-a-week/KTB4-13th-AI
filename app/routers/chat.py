@@ -15,11 +15,18 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import ChatRequest, Spec
 from app.core import db, responses
-from app.gateway.llm import LLMUnavailableError, complete, parse_json_response
+from app.gateway.llm import (
+    LLMUnavailableError,
+    get_chat_model,
+    invoke_chain,
+    message_text,
+    parse_json_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,22 +92,26 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def _build_card_prompt(candidates: list[dict], spec: Spec) -> str:
+# {semantic}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
+# 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
+CARD_PROMPT = ChatPromptTemplate.from_template(
+    '사용자가 원하는 책 분위기: "{semantic}"\n\n'
+    "아래 책 목록 중 이 분위기에 어울리는 책을 최대 {limit}권 골라라.\n"
+    "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
+    "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
+    '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
+    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)"}}]}}\n\n'
+    "책 목록:\n{listing}"
+)
+
+
+def _format_listing(candidates: list[dict]) -> str:
     # 목록 번호("1. 2. 3...")만 주면 모델이 book_id 대신 그 번호를 돌려준다
     # (실제로 재현됨). 각 줄에 book_id 값을 명시하고, 반드시 그 값을
     # 그대로 쓰라고 못박는다.
-    listing = "\n".join(
+    return "\n".join(
         f"- book_id {c['book_id']}: {c['title']} - {c['author']} - {c['description']}"
         for c in candidates
-    )
-    return (
-        f'사용자가 원하는 책 분위기: "{spec.semantic}"\n\n'
-        f"아래 책 목록 중 이 분위기에 어울리는 책을 최대 {CARD_LIMIT}권 골라라.\n"
-        "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
-        "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
-        '다음 JSON 형식으로만 답하라: {"cards": [{"book_id": 정수, '
-        '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)"}]}\n\n'
-        f"책 목록:\n{listing}"
     )
 
 
@@ -118,11 +129,18 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
         return [], False
 
     id_by_book = {c["book_id"]: c for c in candidates}
-    prompt = _build_card_prompt(candidates, spec)
+    # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
+    chain = CARD_PROMPT | get_chat_model() | message_text | parse_json_response
 
     try:
-        raw = await complete(prompt)
-        parsed = parse_json_response(raw)
+        parsed = await invoke_chain(
+            chain,
+            {
+                "semantic": spec.semantic,
+                "limit": CARD_LIMIT,
+                "listing": _format_listing(candidates),
+            },
+        )
     except LLMUnavailableError:
         return [], True
 
