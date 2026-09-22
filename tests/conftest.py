@@ -15,7 +15,9 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql://test@127.0.0.1:5432/test")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
+from app.core.auth import verify_service_token
 from app.core.config import get_settings
+from app.main import app as _app
 
 
 @pytest.fixture(autouse=True)
@@ -24,3 +26,15 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _bypass_service_token():
+    """라우터 테스트마다 Authorization 헤더를 챙기지 않아도 되게 기본은 통과시킨다.
+
+    인증 자체를 검증하는 tests/test_service_token_auth.py 는 이 오버라이드를
+    직접 지우고 실제 검사 경로를 확인한다.
+    """
+    _app.dependency_overrides[verify_service_token] = lambda: None
+    yield
+    _app.dependency_overrides.pop(verify_service_token, None)

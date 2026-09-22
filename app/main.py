@@ -2,10 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.core import db
+from app.core import db, responses
+from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
@@ -32,13 +33,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.include_router(agent.router)
-app.include_router(chat.router)
-app.include_router(extractions.router)
-app.include_router(search.router)
-app.include_router(embeddings.router)
-app.include_router(feed.router)
-app.include_router(profile.router)
+
+@app.exception_handler(Unauthorized)
+async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResponse:
+    return responses.error(401, "unauthorized")
+
+
+_auth_required = [Depends(verify_service_token)]
+
+app.include_router(agent.router, dependencies=_auth_required)
+app.include_router(chat.router, dependencies=_auth_required)
+app.include_router(extractions.router, dependencies=_auth_required)
+app.include_router(search.router, dependencies=_auth_required)
+app.include_router(embeddings.router, dependencies=_auth_required)
+app.include_router(feed.router, dependencies=_auth_required)
+app.include_router(profile.router, dependencies=_auth_required)
 
 
 @app.get("/health")
