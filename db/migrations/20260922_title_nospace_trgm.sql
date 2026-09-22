@@ -6,8 +6,11 @@
 -- 2ms 이던 검색이 700ms 가 된다.
 --
 -- 13만 권 기준 만드는 데 1초, 크기 27MB(기존 제목 색인 21MB).
--- 식은 keyword.py 의 `replace(title, ' ', '')` 와 글자까지 같아야 색인을 탄다.
+-- 식은 keyword.py 의 _nospace() 와 같아야 색인을 탄다(공백·탭·전각공백·nbsp 를 지운다).
+--
+-- CONCURRENTLY: 복제가 계속 쓰는 테이블이라, 색인을 만드는 동안 쓰기를 막지 않게 한다.
+-- 대신 트랜잭션 안에서는 실행할 수 없다. psql -f 로 이 파일만 따로 적용한다.
 -- ===========================================================================
 
-CREATE INDEX IF NOT EXISTS v_books_title_nospace_trgm_idx ON v_books
-    USING gin (replace(title, ' ', '') gin_trgm_ops);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS v_books_title_nospace_trgm_idx ON v_books
+    USING gin (translate(title, E' \t　 ', '') gin_trgm_ops);
