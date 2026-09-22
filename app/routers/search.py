@@ -1,7 +1,7 @@
 """① AI 검색: POST /search
 
 명세: docs/wiki/ai/1-model-api/spec.md ① POST /search
-LLM을 쓰지 않는다. 키워드 검색과 벡터 검색의 순위를 합쳐 돌려준다.
+LLM을 쓰지 않는다. 키워드 검색 결과를 먼저 놓고 벡터 검색 결과로 뒤를 채운다.
 """
 
 import json

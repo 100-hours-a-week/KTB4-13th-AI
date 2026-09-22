@@ -10,7 +10,7 @@ from app.core.pgvector import to_vector_literal
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
 
-# 순위 합치기에 넘길 후보 수. 키워드 쪽(keyword.CANDIDATE_LIMIT)보다 작게 둔다.
+# 키워드 결과 뒤에 붙일 후보 수. 키워드 쪽(keyword.CANDIDATE_LIMIT)보다 작게 둔다.
 # 벡터 검색은 관련이 없어도 "그나마 가까운 책"을 무조건 채워 주기 때문에,
 # 길게 받을수록 뒤쪽은 잡음이다.
 CANDIDATE_LIMIT = 50

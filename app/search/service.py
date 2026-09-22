@@ -1,4 +1,4 @@
-"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 순위 합치기 → 정렬."""
+"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 이어붙이기 → 정렬."""
 
 import asyncio
 import hashlib
@@ -11,19 +11,13 @@ import asyncpg
 
 from app.core import cursor, db
 from app.gateway import embedding
-from app.search import books, keyword, rrf, sorting, vector
+from app.search import books, keyword, sorting, vector
 from app.search.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
 
 KEYWORD_ONLY = "keyword-only"
 FULL = "full"
-
-# 합칠 때 키워드 쪽 등수를 3배로 쳐 준다. 키워드 결과는 낱말이 실제로 들어 있는 책이라 믿을 만하고,
-# 벡터 결과는 관련이 없어도 "그나마 가까운 책"이 항상 채워지기 때문이다.
-# 1:1 이면 제목을 정확히 쳐도 벡터 쪽 1등과 자리를 다퉈 밀린다(고정 검색어 세트로 확인, 측정 기록은 이슈 #35 코멘트).
-KEYWORD_WEIGHT = 3.0
-VECTOR_WEIGHT = 1.0
 
 # 가격순·최신순·인기순은 등수를 무시하고 줄을 다시 세운다. 벡터 검색은 관련이 없어도 50권을
 # 채워 주므로 다 넣으면 상관없는 책이 "제일 싸다"는 이유로 1등이 된다. 그래서 벡터 쪽은 앞의
@@ -74,6 +68,18 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
     if issued_for != fingerprint or not isinstance(offset, int) or offset < 0:
         raise CursorExpired
     return offset, mode
+
+
+def _keyword_first(keyword_ids: list[int], vector_ids: list[int]) -> list[int]:
+    """키워드 결과를 순서 그대로 먼저 놓고, 키워드가 못 찾은 벡터 결과를 뒤에 붙인다.
+
+    두 순위를 점수로 합치면(RRF) 양쪽에 다 나온 책이 점수를 더 받아, 키워드에서만 1등인
+    정답을 넘어선다. 고정 검색어 40개 중 키워드 1등 15개가 합친 뒤 3개 밀렸다("명상 하는
+    마음" 1등 → 8등). 이어붙이면 15개 모두 1등을 지킨다. 대신 저자 검색 일부가 1등에서
+    2·3등이 되지만 첫 페이지 안에 남는다(측정 기록은 이슈 #62).
+    """
+    seen = set(keyword_ids)
+    return keyword_ids + [book_id for book_id in vector_ids if book_id not in seen]
 
 
 async def _embed_query(query: str) -> list[float] | None:
@@ -127,10 +133,10 @@ async def search(req: SearchRequest) -> SearchOutcome:
             ranked, degraded = keyword_ids, KEYWORD_ONLY
         else:
             pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
-            ranked = rrf.fuse([keyword_ids, pool], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+            ranked = _keyword_first(keyword_ids, pool)
             degraded = None
 
-        # 앞 페이지는 벡터까지 합친 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라
+        # 앞 페이지는 벡터 결과까지 이은 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라
         # 같은 offset 이 다른 책을 가리킨다. 명세대로 410 으로 첫 페이지부터 다시 받게 한다.
         mode = degraded or FULL
         if issued_mode is not None and issued_mode != mode:

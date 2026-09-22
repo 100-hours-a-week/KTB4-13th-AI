@@ -189,7 +189,7 @@ async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
 
 
 async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
-    """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(키워드+벡터 순위 합치기)을 쓴다.
+    """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(키워드 결과 뒤에 벡터 결과를 잇는다)을 쓴다.
 
     취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다.
     exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서

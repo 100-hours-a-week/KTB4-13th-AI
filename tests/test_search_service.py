@@ -1,4 +1,4 @@
-"""검색 흐름 테스트 — 언제 합치고, 언제 키워드만으로 줄여 응답하는가.
+"""검색 흐름 테스트 — 두 결과를 어떻게 잇고, 언제 키워드만으로 줄여 응답하는가.
 
 DB·모델 없이 돈다. 키워드·벡터·임베딩을 전부 가짜로 바꿔 끼운다.
 """
@@ -67,16 +67,18 @@ def _ids(outcome: service.SearchOutcome) -> list[int]:
     return [r["book_id"] for r in outcome.results]
 
 
-def test_둘_다_되면_합치고_헤더가_없다(fakes: dict) -> None:
+def test_둘_다_되면_키워드_결과_뒤에_벡터_결과를_붙이고_헤더가_없다(
+    fakes: dict,
+) -> None:
     outcome = _search()
 
-    # 2 는 두 목록에 다 있어 맨 위, 1 은 키워드 1등(비중 3), 3 은 벡터에만 있다.
-    assert _ids(outcome) == [2, 1, 3]
+    # 2 는 벡터 1등이지만 키워드 순서(1, 2)를 따른다. 3 은 벡터에만 있어 뒤에 붙는다.
+    assert _ids(outcome) == [1, 2, 3]
     assert outcome.degraded is None
 
 
 def test_size_만큼만_돌려준다(fakes: dict) -> None:
-    assert _ids(_search(size=2)) == [2, 1]
+    assert _ids(_search(size=2)) == [1, 2]
 
 
 def test_임베딩이_실패하면_키워드_결과만_주고_알린다(
@@ -144,10 +146,10 @@ def test_관련도순이면_정렬을_부르지_않는다(fakes: dict) -> None:
     assert "sorted" not in fakes
 
 
-def test_다른_정렬이면_합친_후보를_넘겨_다시_줄_세운다(fakes: dict) -> None:
+def test_다른_정렬이면_이은_후보를_넘겨_다시_줄_세운다(fakes: dict) -> None:
     outcome = _search(sort="price_asc")
 
-    assert fakes["sorted"] == ([2, 1, 3], "price_asc")
+    assert fakes["sorted"] == ([1, 2, 3], "price_asc")
     assert _ids(outcome) == [3, 2, 1]
 
 
@@ -164,7 +166,7 @@ def test_다른_정렬이면_벡터_쪽은_앞의_20권만_후보에_넣는다(f
 
 def test_다음_페이지가_있으면_커서를_주고_마지막이면_null이다(fakes: dict) -> None:
     first = _search(size=2)
-    assert _ids(first) == [2, 1]
+    assert _ids(first) == [1, 2]
     assert first.next_cursor is not None
 
     last = _search(size=2, cursor=first.next_cursor)
