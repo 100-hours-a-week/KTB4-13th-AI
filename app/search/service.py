@@ -1,13 +1,15 @@
 """① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 순위 합치기 → 정렬."""
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
 
-from app.core import db
+from app.core import cursor, db
 from app.gateway import embedding
 from app.search import books, keyword, rrf, sorting, vector
 from app.search.schemas import SearchRequest
@@ -15,6 +17,7 @@ from app.search.schemas import SearchRequest
 logger = logging.getLogger(__name__)
 
 KEYWORD_ONLY = "keyword-only"
+FULL = "full"
 
 # 합칠 때 키워드 쪽 등수를 3배로 쳐 준다. 키워드 결과는 낱말이 실제로 들어 있는 책이라 믿을 만하고,
 # 벡터 결과는 관련이 없어도 "그나마 가까운 책"이 항상 채워지기 때문이다.
@@ -29,11 +32,48 @@ VECTOR_WEIGHT = 1.0
 SORT_VECTOR_LIMIT = 20
 
 
+class CursorExpired(Exception):
+    """커서를 쓸 수 없다. 클라이언트는 첫 페이지부터 다시 요청해야 한다(410)."""
+
+
 @dataclass
 class SearchOutcome:
     results: list[dict[str, Any]]
     # 기능을 줄여 응답했으면 그 이름(X-Degraded 헤더 값). 온전하면 None.
     degraded: str | None
+    # 다음 페이지가 있으면 커서, 마지막 페이지면 None.
+    # ③ chat 처럼 첫 페이지만 쓰는 호출부는 두 값을 몰라도 되게 기본값을 둔다.
+    next_cursor: str | None = None
+    # 첫 페이지였는가. 0건 안내(fallback)는 첫 페이지가 비었을 때만 붙인다.
+    first_page: bool = True
+
+
+def _fingerprint(req: SearchRequest) -> str:
+    """검색 조건의 지문. 커서를 만들 때와 조건이 같은지 확인하는 데 쓴다.
+
+    순위는 매번 다시 계산하므로, 조건이 다르면 같은 offset 이 전혀 다른 책을 가리킨다.
+    """
+    conditions = {
+        "q": req.query.strip(),
+        "f": req.filters.model_dump(),
+        "s": req.sort,
+    }
+    raw = json.dumps(conditions, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]:
+    """커서에서 (몇 번째부터, 커서를 만들 때의 응답 모드) 를 꺼낸다. 첫 페이지면 (0, None)."""
+    if req.cursor is None:
+        return 0, None
+    try:
+        data = cursor.decode(req.cursor)
+        offset, mode, issued_for = data["o"], data["m"], data["f"]
+    except (cursor.CursorError, KeyError, TypeError) as exc:
+        raise CursorExpired from exc
+    if issued_for != fingerprint or not isinstance(offset, int) or offset < 0:
+        raise CursorExpired
+    return offset, mode
 
 
 async def _embed_query(query: str) -> list[float] | None:
@@ -69,6 +109,10 @@ async def _vector_ids(
 
 
 async def search(req: SearchRequest) -> SearchOutcome:
+    fingerprint = _fingerprint(req)
+    # 못 쓰는 커서는 검색을 돌리기 전에 거른다.
+    offset, issued_mode = _read_offset(req, fingerprint)
+
     async with db.get_pool().acquire() as conn:
         # 임베딩은 CPU, 키워드 검색은 DB 를 기다리는 일이라 동시에 돌린다.
         # 키워드 검색이 실패하면 예외가 그대로 올라가 500 이 된다(DB 가 죽은 상태).
@@ -85,8 +129,25 @@ async def search(req: SearchRequest) -> SearchOutcome:
             pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
             ranked = rrf.fuse([keyword_ids, pool], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
             degraded = None
+
+        # 앞 페이지는 벡터까지 합친 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라
+        # 같은 offset 이 다른 책을 가리킨다. 명세대로 410 으로 첫 페이지부터 다시 받게 한다.
+        mode = degraded or FULL
+        if issued_mode is not None and issued_mode != mode:
+            raise CursorExpired
+
         if not by_relevance:
             ranked = await sorting.sort_ids(conn, ranked, req.sort)
 
-        results = await books.fetch(conn, ranked[: req.size])
-    return SearchOutcome(results=results, degraded=degraded)
+        end = offset + req.size
+        results = await books.fetch(conn, ranked[offset:end])
+
+    next_cursor = None
+    if end < len(ranked):
+        next_cursor = cursor.encode({"o": end, "f": fingerprint, "m": mode})
+    return SearchOutcome(
+        results=results,
+        next_cursor=next_cursor,
+        first_page=offset == 0,
+        degraded=degraded,
+    )

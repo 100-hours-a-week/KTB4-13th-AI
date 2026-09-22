@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app.core import db
+from app.core import cursor, db
 from app.core.config import get_settings
 from app.gateway import embedding
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 앱이 뜰 때
+    cursor.check_key()
     await db.connect()
     # 임베딩 모델을 미리 읽어 둔다. 첫 요청에서 읽으면 그 요청만 수 초 걸리고,
     # 모델 파일이 없거나 차원이 어긋난 것도 첫 호출에서야 드러난다.

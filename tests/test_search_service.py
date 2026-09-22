@@ -23,6 +23,7 @@ class _FakePool:
 def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
     """기본 상태: 키워드 [1, 2], 벡터 [2, 3], 임베딩 정상, 책 벡터 있음."""
     state = {"keyword": [1, 2], "vector": [2, 3], "has_any": True}
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
 
     async def _embed(texts, purpose):
         assert purpose == "query"
@@ -58,7 +59,8 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 def _search(**kwargs) -> service.SearchOutcome:
-    return asyncio.run(service.search(SearchRequest(query="책", **kwargs)))
+    req = SearchRequest.model_validate({"query": "책", **kwargs})
+    return asyncio.run(service.search(req))
 
 
 def _ids(outcome: service.SearchOutcome) -> list[int]:
@@ -155,6 +157,67 @@ def test_다른_정렬이면_벡터_쪽은_앞의_20권만_후보에_넣는다(f
     _search(sort="newest", size=50)
 
     assert fakes["sorted"][0] == list(range(100, 120))
+
+
+# --- 커서 -------------------------------------------------------------------
+
+
+def test_다음_페이지가_있으면_커서를_주고_마지막이면_null이다(fakes: dict) -> None:
+    first = _search(size=2)
+    assert _ids(first) == [2, 1]
+    assert first.next_cursor is not None
+
+    last = _search(size=2, cursor=first.next_cursor)
+    assert _ids(last) == [3]
+    assert last.next_cursor is None
+
+
+def test_첫_페이지인지_알려준다(fakes: dict) -> None:
+    first = _search(size=2)
+
+    assert first.first_page is True
+    assert _search(size=2, cursor=first.next_cursor).first_page is False
+
+
+def test_검색어가_달라지면_커서를_못_쓴다(fakes: dict) -> None:
+    token = _search(size=2).next_cursor
+
+    with pytest.raises(service.CursorExpired):
+        asyncio.run(
+            service.search(SearchRequest(query="다른 책", size=2, cursor=token))
+        )
+
+
+def test_필터나_정렬이_달라지면_커서를_못_쓴다(fakes: dict) -> None:
+    token = _search(size=2).next_cursor
+
+    with pytest.raises(service.CursorExpired):
+        _search(size=2, cursor=token, sort="newest")
+    with pytest.raises(service.CursorExpired):
+        _search(size=2, cursor=token, filters={"in_stock_only": True})
+
+
+def test_응답_모드가_달라지면_커서를_못_쓴다(fakes: dict) -> None:
+    token = _search(size=2).next_cursor
+    fakes["vector"] = asyncpg.PostgresError("색인 이상")
+
+    with pytest.raises(service.CursorExpired):
+        _search(size=2, cursor=token)
+
+
+def test_위조하거나_깨진_커서는_못_쓴다(fakes: dict) -> None:
+    with pytest.raises(service.CursorExpired):
+        _search(cursor="아무글자.서명아님")
+
+
+def test_못_쓰는_커서는_검색을_돌리기_전에_거른다(fakes: dict, monkeypatch) -> None:
+    async def _must_not_run(conn, query, filters):
+        raise AssertionError("검색이 돌았다")
+
+    monkeypatch.setattr(service.keyword, "search_ids", _must_not_run)
+
+    with pytest.raises(service.CursorExpired):
+        _search(cursor="아무글자.서명아님")
 
 
 def test_키워드만으로_줄여_응답할_때는_정렬_후보를_자르지_않는다(fakes: dict) -> None:
