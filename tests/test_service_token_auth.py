@@ -64,6 +64,19 @@ def test_설정에_토큰이_비어있으면_뭘_보내도_401이다(
     assert res.status_code == 401
 
 
+def test_토큰에_비ASCII_문자가_있어도_500이_아니라_401이다() -> None:
+    # dict 헤더는 httpx가 ascii로 인코딩을 강제해 버그를 재현하지 못하므로,
+    # 실제 요청처럼 raw bytes 헤더로 보낸다.
+    res = client.post(
+        "/search",
+        json={"query": "아무 검색어"},
+        headers=[(b"authorization", "Bearer 한글토큰".encode())],
+    )
+
+    assert res.status_code == 401
+    assert res.json() == {"message": "unauthorized", "data": None}
+
+
 def test_health는_인증_없이도_통과한다() -> None:
     res = client.get("/health")
 

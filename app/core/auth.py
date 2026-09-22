@@ -27,5 +27,5 @@ def verify_service_token(
     # expected 가 비어있으면(환경변수 설정 누락) 무조건 거부한다.
     # 그냥 == 비교로 두면 빈 문자열끼리 우연히 같아져 인증이 조용히
     # 무력화될 수 있고, 타이밍 공격에도 노출된다.
-    if not expected or not hmac.compare_digest(provided, expected):
+    if not expected or not hmac.compare_digest(provided.encode(), expected.encode()):
         raise Unauthorized()
