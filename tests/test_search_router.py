@@ -21,9 +21,19 @@ _BOOK = {
 }
 
 
-def _fake_search(results: list[dict], degraded: str | None = "keyword-only"):
+def _fake_search(
+    results: list[dict],
+    degraded: str | None = "keyword-only",
+    next_cursor: str | None = None,
+    first_page: bool = True,
+):
     async def _search(req):
-        return SearchOutcome(results=results, degraded=degraded)
+        return SearchOutcome(
+            results=results,
+            next_cursor=next_cursor,
+            first_page=first_page,
+            degraded=degraded,
+        )
 
     return _search
 
@@ -172,3 +182,37 @@ def test_검색이_실패하면_500_internal_server_error다(
 
     assert res.status_code == 500
     assert res.json() == {"message": "internal_server_error", "data": None}
+
+
+def test_다음_페이지_커서를_응답에_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        search_router.service, "search", _fake_search([_BOOK], next_cursor="커서글자")
+    )
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert res.json()["data"]["next_cursor"] == "커서글자"
+
+
+def test_커서를_못_쓰면_410_cursor_expired다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _expired(req):
+        raise search_router.service.CursorExpired
+
+    monkeypatch.setattr(search_router.service, "search", _expired)
+
+    res = client.post("/search", json={"query": "김영하", "cursor": "옛커서"})
+
+    assert res.status_code == 410
+    assert res.json() == {"message": "cursor_expired", "data": None}
+
+
+def test_둘째_페이지_이후가_비어도_0건_안내는_붙이지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        search_router.service, "search", _fake_search([], first_page=False)
+    )
+
+    res = client.post("/search", json={"query": "김영하", "cursor": "커서"})
+
+    assert res.json()["data"]["fallback"] is None
