@@ -1,4 +1,4 @@
-"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 순위 합치기."""
+"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 순위 합치기 → 정렬."""
 
 import asyncio
 import logging
@@ -9,7 +9,7 @@ import asyncpg
 
 from app.core import db
 from app.gateway import embedding
-from app.search import books, keyword, rrf, vector
+from app.search import books, keyword, rrf, sorting, vector
 from app.search.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,12 @@ KEYWORD_ONLY = "keyword-only"
 # 1:1 이면 제목을 정확히 쳐도 벡터 쪽 1등과 자리를 다퉈 밀린다(고정 검색어 세트로 확인, 측정 기록은 이슈 #35 코멘트).
 KEYWORD_WEIGHT = 3.0
 VECTOR_WEIGHT = 1.0
+
+# 가격순·최신순·인기순은 등수를 무시하고 줄을 다시 세운다. 벡터 검색은 관련이 없어도 50권을
+# 채워 주므로 다 넣으면 상관없는 책이 "제일 싸다"는 이유로 1등이 된다. 그래서 벡터 쪽은 앞의
+# 20권만 정렬 대상에 넣는다. 고정 검색어 40개로 재니 벡터가 찾아낸 정답은 20등 안이 84%,
+# 50등까지 넓히면 100% 였다. 남은 16%를 얻자고 관련이 약한 30권을 들이는 쪽이 손해라고 봤다.
+SORT_VECTOR_LIMIT = 20
 
 
 @dataclass
@@ -72,13 +78,15 @@ async def search(req: SearchRequest) -> SearchOutcome:
         )
         vector_ids = await _vector_ids(conn, query_vector, req)
 
+        by_relevance = req.sort == "relevance"
         if vector_ids is None:
             ranked, degraded = keyword_ids, KEYWORD_ONLY
         else:
-            ranked, degraded = (
-                rrf.fuse([keyword_ids, vector_ids], [KEYWORD_WEIGHT, VECTOR_WEIGHT]),
-                None,
-            )
+            pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
+            ranked = rrf.fuse([keyword_ids, pool], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+            degraded = None
+        if not by_relevance:
+            ranked = await sorting.sort_ids(conn, ranked, req.sort)
 
         results = await books.fetch(conn, ranked[: req.size])
     return SearchOutcome(results=results, degraded=degraded)

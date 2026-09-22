@@ -2,7 +2,7 @@
 
 명세: docs/design/과제 1 ai-server-api-spec-final copy.md #search
 LLM을 쓰지 않는다. 키워드 검색과 벡터 검색의 순위를 합쳐 돌려준다.
-정렬, 커서는 후속 이슈에서 붙인다.
+커서는 후속 이슈에서 붙인다.
 """
 
 import json
