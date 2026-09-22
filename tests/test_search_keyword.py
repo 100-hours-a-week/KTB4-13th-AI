@@ -86,6 +86,8 @@ _BOOKS = [
         2023,
         None,
     ),
+    # 띄어 쓴 제목. 검색어를 붙여 쳐도 찾는지 본다.
+    (9100006, "누리보듬 한가온", "아무개", 11000, True, "소설", 2021, None),
 ]
 
 
@@ -140,6 +142,15 @@ def test_오타가_있어도_찾는다() -> None:
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가랑", SearchFilters()))
 
     assert 9100001 in ids
+
+
+@needs_db
+def test_띄어_쓴_제목을_붙여_쳐도_찾는다() -> None:
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "누리보듬한가온", SearchFilters())
+    )
+
+    assert ids == [9100006]
 
 
 @needs_db
