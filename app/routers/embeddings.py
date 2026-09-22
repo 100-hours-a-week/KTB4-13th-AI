@@ -1,6 +1,6 @@
 """② 텍스트 임베딩: POST /embeddings (내부 전용)
 
-명세: docs/design/과제 1 ai-server-api-spec-final copy.md #embeddings
+명세: docs/wiki/ai/1-model-api/spec.md ② POST /embeddings
 LLM도 DB도 안 쓰는 유일한 엔드포인트라 독립적으로 완성 가능하다.
 
 응답을 app.core.responses 로 직접 조립하는 이유: FastAPI 기본 검증 실패는 422 `{"detail": ...}` 인데
