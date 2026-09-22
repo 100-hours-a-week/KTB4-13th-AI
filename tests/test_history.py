@@ -70,6 +70,23 @@ def test_같은_책이_여러_곳에_있으면_가장_큰_가중치_하나만_�
     assert h.category_scores == {"에세이": 3}
 
 
+def test_2점_이하_리뷰를_단_책은_산_책이어도_싫어한_책으로_따로_남긴다() -> None:
+    # 사고(3) 1점 리뷰(−2) — weights 는 명세대로 큰 값 3 이지만, 취향 벡터와 추천에서
+    # 빼야 할 책이라는 사실은 disliked_book_ids 로 남는다.
+    h = history.summarize(
+        [
+            _row(1, "purchase", 0),
+            _row(1, "review", 1, "1.0"),
+            _row(2, "review", 2, "2.0"),
+            _row(3, "review", 3, "2.5"),  # 중립은 싫어한 책이 아니다
+            _row(4, "purchase", 4),
+        ]
+    )
+
+    assert h.weights[1] == 3
+    assert h.disliked_book_ids == {1, 2}
+
+
 def test_카테고리_점수는_책별_가중치를_더하고_비선호도_깎는다() -> None:
     h = history.summarize(
         [
