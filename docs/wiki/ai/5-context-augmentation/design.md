@@ -59,7 +59,7 @@ flowchart TB
 
 | 노드 | 설명 |
 |---|---|
-| ② POST /embeddings | bge-m3-2026q3 · dim 1024 · 모든 축의 공통 좌표계 (도서·passage·centroid·preset) |
+| ② POST /embeddings | multilingual-e5-small · dim 384 · 모든 축의 공통 좌표계 (도서·passage·centroid·preset) |
 | ① POST /search | BM25(pg_trgm/tsvector) + pgvector + RRF · 결과 0건 → ③ 전환 신호 |
 | ④ GET /recommendations/feed | 취향 centroid 유사도 + 규칙 점수 · ※ passage 증강 없음 · 이유 문구 없음 (즉시성) |
 | ③ spec 델타 추출 | preset_vectors 얕은 RAG · 자유어 → 표준 태그 (422 감소) |
@@ -112,7 +112,7 @@ flowchart TD
 |---|---|
 | 국중도 SEOJI 원본 | BOOK_INTRODUCTION·BOOK_TB·BOOK_SUMMARY (HTML) |
 | 청크 분할 | 문단 / 목차항목 단위 |
-| ② /embeddings | bge-m3-2026q3 (dim 1024) |
+| ② /embeddings | multilingual-e5-small (dim 384) |
 | book_passage | (AI PostgreSQL + pgvector — book_embeddings 옆) · book_id · passage_type · text · vector · source_updated_at |
 | 태그·카테고리 택소노미 | (ONBOARD-003 / 004 값) |
 | preset_vectors | tag_label · vector |
@@ -181,12 +181,12 @@ flowchart TD
 | **국중도 `BOOK_SUMMARY`** | 짧은 요약 | 소개문이 빈 책의 폴백 | 길이 짧음 — 단독으로는 근거 부족, 보조로만 |
 | **리뷰 본문** | 구매자 작성 텍스트 | "다른 독자평" 근거 — `match_basis`에 "독자 반응" 라벨을 열 수 있음 | **명세에 리뷰 본문 뷰가 없다.** 노출된 건 `v_user_reviews`(내 별점 1–5, ⑥ 취향용)와 `v_book_popularity.rating_avg/count`(집계)뿐. 본문을 passage로 쓰려면 **새 읽기전용 뷰 `v_book_reviews`(book_id·body·rating) BE 합의 필요** V1은 없이 출시, 확보되면 추가 |
 | **태그·카테고리 택소노미** | ONBOARD-003 관심 카테고리 / 004 세부 태그의 표준 값 | spec 델타 추출 시 자유어 정규화 사전 | 값이 개정되면 preset_vectors 재생성 |
-| `v_books` · `book_embeddings` · `user_profiles` | 기존 자산 | 이미 색인·벡터화됨 — 재사용 | — |
+| `v_books` · `book_embeddings` · `taste_profile` | 기존 자산 | 이미 색인·벡터화됨 — 재사용 | — |
 
 #### `book_passage` 를 어디에 두는가
 
 - **AI 서버 = pgvector 얹은 PostgreSQL.** BE 커머스 원본(MySQL)은 **BE MySQL → AI Postgres 단방향 복제**로 AI 쪽에 `v_books`·`v_user_*`·`v_book_popularity` 로 들어온다(역방향 없음).
-- `book_passage`·`book_embeddings`·`user_profiles`·`preset_vectors` 는 전부 **이 AI Postgres 한 곳**에 둔다. 복제돼 들어온 커머스 테이블도 같은 DB에 있으므로:
+- `book_passage`·`book_embeddings`·`taste_profile`·`preset_vectors` 는 전부 **이 AI Postgres 한 곳**에 둔다. 복제돼 들어온 커머스 테이블도 같은 DB에 있으므로:
     - **하이브리드 검색이 한 엔진**이다
     - `book_passage.book_id` 는 복제된 도서 테이블을 **실제 FK로** 참조 가능.
 - 색인 배치가 읽을 원문(`BOOK_INTRODUCTION`/`BOOK_TB` 전문)은 복제본 `v_books`에 없다(`description` 도입부만)
@@ -240,12 +240,12 @@ def index_passages(book_id: int, seoji: dict, reviews: list[Review] | None):
     ])
 ```
 
-- **임베딩 = ② `/embeddings` (`bge-m3-2026q3`, dim 1024) 재사용.**
+- **임베딩 = ② `/embeddings` (`multilingual-e5-small`, dim 384) 재사용.**
     도서 문서 벡터·취향 centroid·passage 벡터가 같은 좌표계여야 `spec.semantic` 하나로 셋 다 검색 가능. 별도 모델 금지.
     `purpose` 는 명세 enum(`query`/`document`)만 있으므로 passage도 `document` 로 색인.
 
 - **저장소**: `book_passage` 는 **AI PostgreSQL**에 `book_embeddings` 와 나란히.
-    `vector(1024)` 컬럼 + HNSW 인덱스. BM25용 `tsvector`/`pg_trgm` 도 같은 테이블/DB.
+    `vector(384)` 컬럼 + HNSW 인덱스. BM25용 `tsvector`/`pg_trgm` 도 같은 테이블/DB.
 
 - **규모**: passage 수 ≈ 도서 수 × 8~15 → 5만 종이면 40~75만 행.
     E2 실측(전수 스캔 N=20만 p95 7.5ms) 근거로 ANN이면 여유.
@@ -434,7 +434,7 @@ VLM 폴백 프롬프트 (입력 포맷) — **"무슨 책인지" 를 묻지 않�
 | 대상 | 트리거 | 방식 |
 |---|---|---|
 | passage 재색인 | 국중도 소개문 개정 (`source_updated_at` 변화) · (리뷰 뷰(데이터) 확보 시) 리뷰 CRUD | 해당 book_id만 재청크·재임베딩 |
-| 임베딩 전량 재계산 | 임베딩 모델 교체 (e5-small 트랙 채택 시) | `model`+`dim` 동시 변경 → **shadow 인덱스** 빌드 후 원자 스위치(무중단). AI PostgreSQL의 `book_embeddings`·`book_passage`·`user_profiles`(centroid) 전부 대상 |
+| 임베딩 전량 재계산 | 임베딩 모델 교체 (e5-small 트랙 채택 시) | `model`+`dim` 동시 변경 → **shadow 인덱스** 빌드 후 원자 스위치(무중단). AI PostgreSQL의 `book_embeddings`·`book_passage`·`taste_profile`(centroid) 전부 대상 |
 | `preset_vectors` | 태그·카테고리 택소노미 개정 | 재생성 → ⑥ 프로필 다음 트리거 때 반영 |
 | 캐시 무효화 | — | **해당 없음** 명세에서 `reason_cache`/`reason_ref` 삭제됨. 긴 이유는 BE가 카드와 함께 보관, 재생성은 다음 추천 턴에서 자연히 새로 만들어짐 |
 | 임베딩 도메인 파인튜닝 | 분기별 | 질의–클릭 도서 쌍으로 한국어 도서 도메인 적응 ¹ |

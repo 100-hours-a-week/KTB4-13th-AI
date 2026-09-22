@@ -56,8 +56,8 @@ curl -X POST <https://ai.internal.bookjeok.com/embeddings> \
   "message": "embed_success",
   "data": {
     "vectors": [[0.0123, -0.0456, "…"]],
-    "dim": 1024,
-    "model": "bge-m3-2026q3"
+    "dim": 384,
+    "model": "multilingual-e5-small"
   }
 }
 ```
@@ -254,7 +254,7 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/extractions> \
         "value": "이별 후 위로되는 잔잔한 소설을 찾음",
         "confidence": 0.86,
         "vector": [0.01, -0.04, "…"],
-        "dim": 1024,
+        "dim": 384,
         "source_conversation_id": "cv_20260903_a1"
       }
     ],
@@ -270,7 +270,7 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/extractions> \
 ```bash
 curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
   -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"idempotency_key":"prof_20260904_a1b2","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":1024}]}'
+  -d '{"user_id":123,"idempotency_key":"prof_20260904_a1b2","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384}]}'
 ```
 
 ```json
@@ -285,7 +285,7 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
 ```bash
 curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
   -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"idempotency_key":"prof_20261004_c3d4","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":1024},{"type":"mood","value":"이별 후 위로되는 잔잔한 소설을 찾음","vector":[0.01,-0.04,"…"],"dim":1024}]}'
+  -d '{"user_id":123,"idempotency_key":"prof_20261004_c3d4","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384},{"type":"mood","value":"이별 후 위로되는 잔잔한 소설을 찾음","vector":[0.01,-0.04,"…"],"dim":384}]}'
 ```
 
 ```json
