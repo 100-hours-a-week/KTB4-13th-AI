@@ -43,6 +43,10 @@ DESCRIPTION_COVERAGE = 0.5
 # 조건에 걸린다. 소개글까지 뒤지면 "때", "책" 같은 흔한 낱말이 수만 권을 후보로 끌고 와
 # 13만 권에서 5초가 넘었다(전부 버려질 책이다). MIN_COVERAGE 를 0.6 아래로 내리거나
 # DESCRIPTION_COVERAGE 를 올리면 이 전제가 깨지니 같이 고쳐야 한다.
+#
+# 제목은 공백을 뺀 형태와도 비교한다. "메타포워즈" 처럼 붙여 치면 "메타포 워즈" 와 글자
+# 조각이 절반만 겹쳐 선을 못 넘는다(이슈 #63). 공백 뺀 제목에는 004 마이그레이션의 색인이
+# 있다. 색인은 식이 `replace(title, ' ', '')` 와 글자까지 같아야 타니 식을 바꾸면 같이 고친다.
 _SQL = """
 WITH toks AS (
     SELECT * FROM unnest($1::text[], $2::text[]) AS x(t, pat)
@@ -52,6 +56,7 @@ cand AS (
     FROM toks, v_books b
     WHERE (
         toks.t <% b.title
+        OR toks.t <% replace(b.title, ' ', '')
         OR toks.t <% b.author
     ){where}
 ),
@@ -63,6 +68,7 @@ scored AS (
     -- 전부 맞는다고 쳐도 선을 못 넘는 책은 소개글을 읽기 전에 버린다.
     CROSS JOIN LATERAL (
         SELECT avg(greatest(word_similarity(toks.t, b.title),
+                            word_similarity(toks.t, replace(b.title, ' ', '')),
                             word_similarity(toks.t, coalesce(b.author, '')),
                             {desc_coverage})) AS best_possible
         FROM toks
@@ -73,7 +79,8 @@ scored AS (
                          {w_desc} * x.in_desc)) AS score,
             avg(greatest(x.in_title, x.in_author, {desc_coverage} * x.in_desc)) AS coverage
         FROM (
-            SELECT word_similarity(toks.t, b.title) AS in_title,
+            SELECT greatest(word_similarity(toks.t, b.title),
+                            word_similarity(toks.t, replace(b.title, ' ', ''))) AS in_title,
                    word_similarity(toks.t, coalesce(b.author, '')) AS in_author,
                    CASE WHEN b.description ILIKE toks.pat THEN 1 ELSE 0 END AS in_desc
             FROM toks
@@ -84,7 +91,10 @@ scored AS (
 SELECT book_id
 FROM scored
 WHERE coverage >= $5
-ORDER BY score + {w_whole} * similarity($3, title) DESC, book_id
+ORDER BY score + {w_whole} * greatest(
+    similarity($3, title),
+    similarity(replace($3, ' ', ''), replace(title, ' ', ''))
+) DESC, book_id
 LIMIT $4
 """
 
