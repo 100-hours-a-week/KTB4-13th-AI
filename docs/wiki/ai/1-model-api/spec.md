@@ -211,10 +211,12 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| texts | string[] | Y | 임베딩할 텍스트. 1–256개, 각 8,192토큰 이하 |
-| purpose | enum | N | query(검색어), document(도서 소개) ¹ |
+| texts | string[] | Y | 임베딩할 텍스트. 1–256개, 각 앞 512토큰까지 반영 ¹ |
+| purpose | enum | N | query(검색어), document(도서 소개) ² |
 
-¹ 기본 document. 용도에 따라 벡터를 다르게 만들기 때문에 구분
+¹ 넘는 부분은 오류 없이 잘린다. 512토큰은 한글로 약 640자다
+
+² 기본 document. 용도에 따라 벡터를 다르게 만들기 때문에 구분
 
 **출력** `200`
 
@@ -239,7 +241,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | texts 개수, 길이 한도 위반 등 형식 오류 |
+| 400 | invalid_request | texts 개수 위반 등 형식 오류 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 413 | payload_too_large | 요청 본문이 약 4MB 초과 |
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
