@@ -513,7 +513,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 ```http
 # 첫 요청 또는 정렬, 필터를 바꿔 처음부터 다시 조회. cursor 없음
-GET /recommendations/feed?user_id=123&surface=home&sort=match&size=15
+GET /recommendations/feed?user_id=123&surface=home&size=15
 
 # 이어서 조회. 직전 응답의 next_cursor를 그대로 싣는다(값은 URL 인코딩)
 GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
@@ -533,7 +533,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 
 ¹ match(기본), newest, price_asc. surface가 recommend_more일 때만 유효
 
-- **위 여덟 개가 허용 파라미터 전부이며, 그 밖의 키가 오면 400이다.** 필터 세 종류(`category`, 출간연도 구간, `match_score_min`)는 `surface`가 `recommend_more`일 때만 유효하다.
+- **위 아홉 개가 허용 파라미터 전부이며, 그 밖의 키가 오면 400이다.** 정렬(`sort`)과 필터 세 종류(`category`, 출간연도 구간, `match_score_min`)는 `surface`가 `recommend_more`일 때만 유효하고, `home`에 오면 400이다.
 - **값은 URL 인코딩해서 싣는다.** 특히 `cursor`는 서버가 서명한 문자열이라 `+`·`/`·`=`가 섞이고, `category`는 한글이다.
 
 **출력** `200`
@@ -580,7 +580,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, size 50 초과 |
+| 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, home에 정렬·필터, size 50 초과 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 410 | cursor_expired | 커서가 만료됐거나 필터, 정렬, 축소 모드가 발급 때와 다름. 첫 페이지부터 다시 |
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
