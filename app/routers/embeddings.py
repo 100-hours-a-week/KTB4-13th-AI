@@ -52,6 +52,22 @@ def parse_request(payload: Any) -> EmbeddingsRequest | None:
     return req
 
 
+async def _read_body(request: Request) -> bytes | None:
+    """본문을 조각씩 받으며 크기를 센다. 상한을 넘는 순간 멈추고 None 을 돌려준다.
+
+    헤더 검사만으로는 부족하다. Content-Length 를 빼고(chunked) 보내면 첫 검사를 지나쳐,
+    request.body() 가 본문을 끝까지 메모리에 올린 뒤에야 크기를 알 수 있다.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/embeddings")
 async def embeddings(request: Request) -> JSONResponse:
     # 본문을 읽기 전에 헤더로 먼저 막는다. 4MB를 메모리에 올리고 나서 거절하면
@@ -64,8 +80,8 @@ async def embeddings(request: Request) -> JSONResponse:
     ):
         return responses.error(413, "payload_too_large")
 
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
+    body = await _read_body(request)
+    if body is None:
         return responses.error(413, "payload_too_large")
 
     try:

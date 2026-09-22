@@ -5,6 +5,8 @@
 여기서는 계약(상태 코드·응답 봉투·검증 경계)만 본다.
 """
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -129,6 +131,60 @@ def test_본문이_4MB를_넘으면_413이다() -> None:
 
     assert res.status_code == 413
     assert res.json() == {"message": "payload_too_large", "data": None}
+
+
+def test_Content_Length_없이_4MB를_넘기면_다_받기_전에_413이다() -> None:
+    # chunked 로 보내면 헤더 검사를 지나친다. 끝까지 받지 않고 상한에서 멈춰야 한다.
+    # TestClient 는 본문을 다 모은 뒤 앱에 넘겨서 "도중에 멈췄는지"를 볼 수 없다.
+    # 그래서 앱을 직접 불러 1MB 씩 흘려 넣고, 몇 조각을 가져갔는지 센다.
+    chunk = b"x" * (1024 * 1024)
+    total_chunks = 10
+    taken = 0
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        nonlocal taken
+        taken += 1
+        return {
+            "type": "http.request",
+            "body": chunk,
+            "more_body": taken < total_chunks,
+        }
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/embeddings",
+        "raw_path": b"/embeddings",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+    assert taken < total_chunks
+
+
+def test_Content_Length_없이_보내도_4MB_이하면_처리한다() -> None:
+    def _body():
+        yield b'{"texts": '
+        yield b'["chunked"]}'
+
+    res = client.post(
+        "/embeddings", content=_body(), headers={"Content-Type": "application/json"}
+    )
+
+    assert res.status_code == 200
 
 
 def test_임베딩이_실패하면_503_upstream_unavailable이다(
