@@ -29,7 +29,7 @@ order: 0
 |---|---|
 | Frontend | Private S3 + CloudFront |
 | App EC2 | Nginx, Backend, MySQL |
-| AI EC2 | AI Server, Qdrant |
+| AI EC2 | AI Server, PostgreSQL (pgvector) |
 | Image Registry | Amazon ECR |
 | 배포 실행 | GitHub Actions + AWS Systems Manager |
 
@@ -53,7 +53,7 @@ Frontend, Backend, AI Server는 별도의 Repository에서 개발한다. CD Work
 
 Frontend Staging에서는 화면 렌더링, 라우팅과 정적 파일을 확인하며, 운영 데이터가 변경되는 API는 연결하지 않고 Mock API 또는 읽기 전용 API만 사용한다.
 
-배포 전에 GitHub Actions Runner에서 Backend, AI Server, MySQL, Qdrant를 Docker Compose로 실행하고 서비스 간 연결을 검증한다. 외부 LLM은 Mock으로 대체하며, 검증이 끝나면 해당 환경을 제거한다.
+배포 전에 GitHub Actions Runner에서 Backend, AI Server, MySQL, PostgreSQL (pgvector)을 Docker Compose로 실행하고 서비스 간 연결을 검증한다. 외부 LLM은 Mock으로 대체하며, 검증이 끝나면 해당 환경을 제거한다.
 
 상시 Staging보다 운영 환경과의 차이는 있지만, 추가 EC2 비용 없이 서로 다른 Repository 사이의 연동 오류를 확인할 수 있다.
 
@@ -120,7 +120,7 @@ flowchart LR
 3. Frontend 결과물을 SHA별 S3 Release 경로에 업로드
 4. `staging.example.com`에서 Frontend 화면과 라우팅 확인
 5. GitHub Actions Runner에서 일회성 Docker Compose 환경 실행
-6. Backend·AI Server·MySQL·Qdrant 연결 확인
+6. Backend·AI Server·MySQL·PostgreSQL (pgvector) 연결 확인
 7. 핵심 API Smoke Test 실행
 8. 검증 완료 후 일회성 환경 제거
 9. 운영 승인 대기
@@ -131,7 +131,7 @@ Frontend 파일은 `releases/<frontend-sha>/` 경로에 저장한다. 서비스�
 
 - Backend가 MySQL에 연결되는지 확인
 - Backend가 AI Server를 호출할 수 있는지 확인
-- AI Server가 Qdrant에 연결되는지 확인
+- AI Server가 PostgreSQL (pgvector)에 연결되는지 확인
 - 로그인 후 검색·상세·추천 API가 정상 응답하는지 확인
 - 외부 LLM은 Mock 응답으로 대체
 
@@ -148,7 +148,7 @@ AI Server 검증에 실패하면 App EC2와 Frontend는 변경하지 않다. AI 
 
 신규 AI Server는 순차 배포 중에도 기존 Backend 요청을 처리할 수 있도록 기존 API 형식을 함께 지원한다.
 
-MySQL과 Qdrant 컨테이너 및 Docker Volume은 일반 배포에서 재생성하지 않다.
+MySQL과 PostgreSQL (pgvector) 컨테이너 및 Docker Volume은 일반 배포에서 재생성하지 않다.
 
 #### SSM 배포 Script의 역할
 
@@ -162,7 +162,7 @@ GitHub Actions는 Secret 값을 EC2로 전달하지 않고 Release ID와 Image D
 4. Container Health와 의존 서비스 연결 확인
 5. 성공하면 `current-release.env`를 신규 Release로 갱신
 
-MySQL과 Qdrant Container 및 Volume은 이 과정에서 재생성하지 않다. Script가 실패하면 `current-release.env`를 변경하지 않아 이전 Release 정보를 유지한다.
+MySQL과 PostgreSQL (pgvector) Container 및 Volume은 이 과정에서 재생성하지 않다. Script가 실패하면 `current-release.env`를 변경하지 않아 이전 Release 정보를 유지한다.
 
 #### 이전 Release 관리
 
@@ -271,7 +271,7 @@ App EC2와 AI EC2에서 Application 컨테이너만 교체하는 **Recreate 전�
 | Backend | 기존 컨테이너를 신규 Image로 교체 |
 | Frontend | 검증된 Release의 `index.html` 전환 |
 | MySQL | 계속 실행하고 Volume 유지 |
-| Qdrant | 계속 실행하고 Volume 유지 |
+| PostgreSQL (pgvector) | 계속 실행하고 Volume 유지 |
 | Nginx | 계속 실행 |
 
 App EC2와 AI EC2는 같은 서비스의 복제 환경이 아니라 서로 다른 역할을 담당한다. 따라서 현재는 Rolling이나 Blue-Green 배포에 필요한 기존·신규 복제 환경을 별도로 운영하지 않다.
@@ -299,7 +299,7 @@ Container가 실행 중인지만으로 배포 성공을 판단하지 않다.
 
 - Backend와 AI Server 실행 상태 확인
 - Backend와 MySQL·AI Server 연결 확인
-- AI Server와 Qdrant 연결 확인
+- AI Server와 PostgreSQL (pgvector) 연결 확인
 
 ##### HTTP 및 Smoke Test
 
@@ -341,7 +341,7 @@ Smoke Test는 `로그인 → 도서 검색 → 도서 상세 조회 → AI 추�
 - Frontend 전환 후 최종 검증 실패: Frontend, Backend, AI Server 복원
 - DB Migration 실패: Application을 변경하지 않고 배포 중단
 
-MySQL과 Qdrant의 컨테이너 및 Volume은 Rollback 과정에서 재생성하지 않다. MySQL 데이터는 신규 배포 이후 생성된 데이터가 사라질 수 있으므로 자동으로 이전 Backup을 복원하지 않다.
+MySQL과 PostgreSQL (pgvector)의 컨테이너 및 Volume은 Rollback 과정에서 재생성하지 않다. MySQL 데이터는 신규 배포 이후 생성된 데이터가 사라질 수 있으므로 자동으로 이전 Backup을 복원하지 않다.
 
 #### 수동 Rollback
 
@@ -423,7 +423,7 @@ V1에서는 별도의 Secret 관리 서비스를 도입하지 않다. 서버와 
 - App EC2와 AI EC2가 각각 한 대이므로 서버 장애 시 자동으로 복구되지 않음
 - Recreate 배포 중 최대 5분의 서비스 중단이 발생할 수 있음
 - 상시 Staging 환경이 없어 운영 환경과 완전히 같은 조건으로 검증하기 어려움
-- MySQL과 Qdrant를 직접 운영하므로 자동 장애 복구가 없음
+- MySQL과 PostgreSQL (pgvector)을 직접 운영하므로 자동 장애 복구가 없음
 - 여러 Repository의 연동 문제는 일회성 통합 검증 범위에서만 확인
 - 배포 이후 발견된 문제는 운영 담당자가 수동으로 Rollback 여부를 판단
 - 서버 수가 늘어나면 Docker Compose와 SSM 배포 Script 관리가 복잡해짐

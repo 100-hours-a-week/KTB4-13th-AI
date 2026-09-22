@@ -31,7 +31,7 @@ V1은 약 3주간 운영하는 초기 POC이며, 초기 가입자는 약 900명,
 
 ### 2. Docker 컨테이너 구성 설계
 
-Nginx, Backend, MySQL은 App EC2에 배치하고, AI Server와 Qdrant는 AI EC2에 배치한다.
+Nginx, Backend, MySQL은 App EC2에 배치하고, AI Server와 PostgreSQL (pgvector)은 AI EC2에 배치한다.
 
 Frontend는 S3 + CloudFront로 제공하며, Redis와 별도 Batch 및 Worker는 초기 구성에서 제외한다.
 
@@ -41,7 +41,7 @@ Frontend는 S3 + CloudFront로 제공하며, Redis와 별도 Batch 및 Worker는
 
 App EC2와 AI EC2에서 각각 별도의 Docker Compose를 실행한다.
 
-컨테이너별 Network와 Port를 분리하고, MySQL과 Qdrant 데이터는 EBS에 저장한다.
+컨테이너별 Network와 Port를 분리하고, MySQL과 PostgreSQL (pgvector) 데이터는 EBS에 저장한다.
 
 애플리케이션 이미지는 ECR에 저장하고 Git Commit SHA로 버전을 관리한다.
 
