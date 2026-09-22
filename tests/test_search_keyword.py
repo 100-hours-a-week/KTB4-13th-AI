@@ -86,6 +86,10 @@ _BOOKS = [
         2023,
         None,
     ),
+    # 띄어 쓴 제목. 검색어를 붙여 쳐도 찾는지 본다. 실제 제목과 겹치지 않게 지어낸 낱말이다.
+    (9100006, "퀼렌보르 사나톡", "아무개", 11000, True, "소설", 2021, None),
+    # 전각공백으로 띄어 쓴 제목. 일반 공백만 지우면 붙여 친 검색어와 맞지 않는다.
+    (9100007, "도리안토\u3000미르벨", "아무개", 11000, True, "소설", 2021, None),
 ]
 
 
@@ -140,6 +144,24 @@ def test_오타가_있어도_찾는다() -> None:
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가랑", SearchFilters()))
 
     assert 9100001 in ids
+
+
+@needs_db
+def test_띄어_쓴_제목을_붙여_쳐도_찾는다() -> None:
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "퀼렌보르사나톡", SearchFilters())
+    )
+
+    assert ids == [9100006]
+
+
+@needs_db
+def test_전각공백으로_띄어_쓴_제목도_붙여_쳐서_찾는다() -> None:
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "도리안토미르벨", SearchFilters())
+    )
+
+    assert ids == [9100007]
 
 
 @needs_db

@@ -4,7 +4,7 @@ type: spec
 group: ai-1
 owner: 김세훈
 status: 작성중
-updated: 2026-09-18
+updated: 2026-09-22
 sources:
   - 모델-API-설계.md
 limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장을 자르지 않고 전부 보존 (변환 문서)
@@ -211,10 +211,12 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| texts | string[] | Y | 임베딩할 텍스트. 1–256개, 각 8,192토큰 이하 |
-| purpose | enum | N | query(검색어), document(도서 소개) ¹ |
+| texts | string[] | Y | 임베딩할 텍스트. 1–256개, 각 앞 512토큰까지 반영 ¹ |
+| purpose | enum | N | query(검색어), document(도서 소개) ² |
 
-¹ 기본 document. 용도에 따라 벡터를 다르게 만들기 때문에 구분
+¹ 넘는 부분은 오류 없이 잘린다. 512토큰은 한글로 약 640자다
+
+² 기본 document. 용도에 따라 벡터를 다르게 만들기 때문에 구분
 
 **출력** `200`
 
@@ -223,8 +225,8 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
   "message": "embed_success",
   "data": {
     "vectors": [[0.0123, -0.0456, "…"]],
-    "dim": 1024,
-    "model": "bge-m3-2026q3"
+    "dim": 384,
+    "model": "multilingual-e5-small"
   }
 }
 ```
@@ -233,13 +235,13 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 |---|---|---|
 | vectors | float[][] | 입력과 같은 순서의 벡터 |
 | dim | int | 벡터 길이. 호출자가 쓰는 인덱스 차원과 다르면 저장하지 않는다 |
-| model | string | 어떤 모델로 만들었는지 기록용. 이 값으로 모델을 고르지는 않는다 (bge-m3-2026q3) |
+| model | string | 어떤 모델로 만들었는지 기록용. 이 값으로 모델을 고르지는 않는다 (multilingual-e5-small) |
 
 **에러**
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | texts 개수, 길이 한도 위반 등 형식 오류 |
+| 400 | invalid_request | texts 개수 위반 등 형식 오류 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 413 | payload_too_large | 요청 본문이 약 4MB 초과 |
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
@@ -631,7 +633,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
         "value": "이별 후 위로되는 잔잔한 소설을 찾음",
         "confidence": 0.82,
         "vector": [0.01, -0.04, "…"],
-        "dim": 1024,
+        "dim": 384,
         "source_conversation_id": "cv_20260903_a1"
       }
     ],
@@ -697,13 +699,13 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
       "type": "author",
       "value": "김영하의 문장을 좋아함",
       "vector": [0.02, -0.01, "…"],
-      "dim": 1024
+      "dim": 384
     },
     {
       "type": "mood",
       "value": "이별 후 위로되는 잔잔한 소설을 찾음",
       "vector": [0.01, -0.04, "…"],
-      "dim": 1024
+      "dim": 384
     }
   ]
 }
@@ -752,7 +754,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 ```python
 이력 = v_user_purchases ∪ v_user_library ∪ v_user_reviews  (복제 테이블, user_id로 조회)
 
-centroid = 가중평균( liked 책 문서벡터 ∪ memories(type:author) 작가벡터
+centroid = 가중평균( liked 책 문서벡터
                    ∪ 카테고리, 태그 사전임베딩 벡터 ∪ memories[].vector
                    ∪ 이력 책들의 문서벡터(구매 3, 리뷰 4~5점 2, 담기 1) )
 태그 가중치 = 온보딩 태그 + 기억 type 집계 + 이력 책들의 카테고리 점수
@@ -764,7 +766,7 @@ centroid = 가중평균( liked 책 문서벡터 ∪ memories(type:author) 작가
 |---|---|---|
 | 좋아한 책 (liked_book_ids) | 책 적재 때 만든 벡터 재사용 | 이미 있음 |
 | 구매, 도서관, 리뷰 책 (이력 3종) | 같은 도서 임베딩 재사용 | 이미 있음 |
-| 관심 작가 (memories type: author) | 작가 대표 벡터(그 작가 책들의 평균 등) | 미리 만들어 둠 |
+| 관심 작가 (memories type: author) | 기억 문장 벡터 그대로 (`memories[].vector`) | 야간 배치, 문장당 1번 |
 | 관심 카테고리, 태그 | 종류가 적어 미리 벡터로 | 미리 만들어 둠 |
 | 기억 문장 | 취향 추출 때 벡터로 | 야간 배치, 문장당 1번 |
 | reading_times, criteria | 벡터 없음. 태그 신호로만 |  |

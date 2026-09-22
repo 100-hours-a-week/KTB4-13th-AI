@@ -12,3 +12,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# 로컬 전용 chat 테스트 화면 (BE 연동 시작하면 필요 없어짐)
+dev/

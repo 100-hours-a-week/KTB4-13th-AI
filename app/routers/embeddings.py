@@ -1,6 +1,6 @@
 """② 텍스트 임베딩: POST /embeddings (내부 전용)
 
-명세: docs/design/과제 1 ai-server-api-spec-final copy.md #embeddings
+명세: docs/wiki/ai/1-model-api/spec.md ② POST /embeddings
 LLM도 DB도 안 쓰는 유일한 엔드포인트라 독립적으로 완성 가능하다.
 
 응답을 app.core.responses 로 직접 조립하는 이유: FastAPI 기본 검증 실패는 422 `{"detail": ...}` 인데
@@ -52,6 +52,22 @@ def parse_request(payload: Any) -> EmbeddingsRequest | None:
     return req
 
 
+async def _read_body(request: Request) -> bytes | None:
+    """본문을 조각씩 받으며 크기를 센다. 상한을 넘는 순간 멈추고 None 을 돌려준다.
+
+    헤더 검사만으로는 부족하다. Content-Length 를 빼고(chunked) 보내면 첫 검사를 지나쳐,
+    request.body() 가 본문을 끝까지 메모리에 올린 뒤에야 크기를 알 수 있다.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/embeddings")
 async def embeddings(request: Request) -> JSONResponse:
     # 본문을 읽기 전에 헤더로 먼저 막는다. 4MB를 메모리에 올리고 나서 거절하면
@@ -64,8 +80,8 @@ async def embeddings(request: Request) -> JSONResponse:
     ):
         return responses.error(413, "payload_too_large")
 
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
+    body = await _read_body(request)
+    if body is None:
         return responses.error(413, "payload_too_large")
 
     try:

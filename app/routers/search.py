@@ -1,8 +1,7 @@
 """① AI 검색: POST /search
 
-명세: docs/design/과제 1 ai-server-api-spec-final copy.md #search
+명세: docs/wiki/ai/1-model-api/spec.md ① POST /search
 LLM을 쓰지 않는다. 키워드 검색과 벡터 검색의 순위를 합쳐 돌려준다.
-커서는 후속 이슈에서 붙인다.
 """
 
 import json
@@ -53,16 +52,25 @@ async def search(request: Request) -> JSONResponse:
 
     try:
         outcome = await service.search(req)
+    except service.CursorExpired:
+        # 만료·위조·조건 변경 모두 클라이언트가 할 일은 같다: 첫 페이지부터 다시 요청.
+        return responses.error(410, "cursor_expired")
     except Exception:
         # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
         logger.exception("검색 실패")
         return responses.error(500, "internal_server_error")
 
     # 0건은 오류가 아니라 200 + 안내 문구다(명세 ①).
-    fallback = None if outcome.results else {"message": FALLBACK_MESSAGE}
+    # 둘째 페이지 이후가 빈 것은 "끝"이지 "못 찾음"이 아니라서 안내를 붙이지 않는다.
+    no_match = outcome.first_page and not outcome.results
+    fallback = {"message": FALLBACK_MESSAGE} if no_match else None
     headers = {"X-Degraded": outcome.degraded} if outcome.degraded else None
     return responses.success(
         "search_success",
-        {"results": outcome.results, "next_cursor": None, "fallback": fallback},
+        {
+            "results": outcome.results,
+            "next_cursor": outcome.next_cursor,
+            "fallback": fallback,
+        },
         headers=headers,
     )

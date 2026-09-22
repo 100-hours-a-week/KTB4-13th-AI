@@ -3,9 +3,10 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core import db, responses
+from app.core import cursor, db, responses
 from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 앱이 뜰 때
+    cursor.check_key()
     await db.connect()
     # 임베딩 모델을 미리 읽어 둔다. 첫 요청에서 읽으면 그 요청만 수 초 걸리고,
     # 모델 파일이 없거나 차원이 어긋난 것도 첫 호출에서야 드러난다.
@@ -40,6 +42,19 @@ async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResp
 
 
 _auth_required = [Depends(verify_service_token)]
+
+# --- 로컬 개발 전용 CORS 시작 — dev/ 테스트 화면이 브라우저에서 직접 이 서버를
+# fetch() 하기 위함. DEV_CORS_ORIGINS가 비어있으면(운영 기본값) 아무 효과 없다.
+# BE 연동을 시작하면 이 블록과 dev/ 폴더를 함께 삭제한다.
+_dev_cors_origins = get_settings().dev_cors_origins
+if _dev_cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in _dev_cors_origins.split(",")],
+        allow_methods=["POST"],
+        allow_headers=["*"],
+    )
+# --- 로컬 개발 전용 CORS 끝 ---
 
 app.include_router(agent.router, dependencies=_auth_required)
 app.include_router(chat.router, dependencies=_auth_required)

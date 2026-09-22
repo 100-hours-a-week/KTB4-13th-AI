@@ -38,6 +38,8 @@
 - [AI-6 도구 통합 설계](ai/6-tool-integration/design.md)
 - [AI-7 인프라 모니터링 설계](ai/7-infra-monitoring/design.md)
 - [AI-8 최종 통합 설계](ai/8-final-integration/design.md)
+- [AI-9 데이터 ERD 명세](ai/9-data-erd/spec.md)
+- [AI-9 데이터 ERD 명세 부록](ai/9-data-erd/appendix.md)
 
 ## 풀스택
 

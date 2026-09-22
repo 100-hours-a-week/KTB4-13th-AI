@@ -1,6 +1,6 @@
 """⑦ 쇼핑 에이전트: POST /agent/act (V2)
 
-명세: docs/design/과제 1 ai-server-api-spec-final copy.md #agent
+명세: docs/wiki/ai/1-model-api/spec.md ⑦ POST /agent/act
 지금은 뼈대만 있다. 실제 tool 루프·grounding은 후속 이슈에서 채운다.
 """
 

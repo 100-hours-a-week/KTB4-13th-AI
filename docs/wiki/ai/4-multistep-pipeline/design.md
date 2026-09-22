@@ -4,7 +4,7 @@ type: design
 group: ai-4
 owner: 미정
 status: 작성중
-updated: 2026-09-21
+updated: 2026-09-22
 sources:
   - 멀티스텝-AI-파이프라인-구현-검토.md
 ---
@@ -18,14 +18,14 @@ sources:
 
 ```mermaid
 flowchart TB
-    EMB["② /embeddings — bge-m3-2026q3 (dim 1024)"]
+    EMB["② /embeddings — multilingual-e5-small (dim 384)"]
     V[("커머스 복제 테이블 · AI Postgres 안")]
 
     subgraph UP["상류 — 취향 형성 (파이프라인 D)"]
         P5["⑤ /preferences/extractions (V2)"]
         P6["⑥ /preferences/profile (V1)"]
         P5 -.->|memories with vector| P6
-        P6 --> PROF[("user_profiles")]
+        P6 --> PROF[("taste_profile")]
     end
 
     subgraph LLMFREE["LLM 비의존 (LLM 장애에도 동작)"]
@@ -57,11 +57,11 @@ flowchart TB
 
 | 노드 | 설명 |
 |---|---|
-| ② /embeddings — bge-m3-2026q3 (dim 1024) | 모든 벡터의 단일 좌표계 |
+| ② /embeddings — multilingual-e5-small (dim 384) | 모든 벡터의 단일 좌표계 |
 | 커머스 복제 테이블 · AI Postgres 안 | v_books · v_user_purchases · v_user_library · v_user_reviews · v_book_popularity · (원본은 BE MySQL · 단방향 복제 · 역방향 없음) |
 | ⑤ /preferences/extractions (V2) | 야간배치: 대화→취향사실 LLM추출→임베딩 |
 | ⑥ /preferences/profile (V1) | 온보딩·기억변경 트리거 · 벡터 가중평균 집계 (LLM·임베딩 재호출 없음) |
-| user_profiles | centroid + tag_weights + computed_at · 개인화 단일 소스 |
+| taste_profile | centroid + tag_weights + computed_at · 개인화 단일 소스 |
 | ① /search (V1) | BM25/pg_trgm + 벡터 + RRF + 규칙 · 0건 → fallback 배너 |
 | ④ /recommendations/feed (V1) | 규칙신호 + centroid 유사도 가중합 · 목록 비저장, 커서만 |
 | ③ /recommendations/chat | V1 텍스트 / V2 이미지 · LLM = spec 델타 + 10 후보 중 3권 선택 + 이유 2종(short+long) · 후보 풀·점수는 결정론 / 최종 3권·순위는 LLM |
@@ -86,7 +86,7 @@ flowchart LR
 
 | 노드 | 설명 |
 |---|---|
-| ② /embeddings 호출 | bge-m3-2026q3, purpose:query |
+| ② /embeddings 호출 | multilingual-e5-small, purpose:query |
 | 규칙 스코어링 | sort=popular면 v_book_popularity 반영 |
 | results: [], fallback 배너 신호 | 'AI 추천에게 물어볼까요?' |
 
@@ -225,7 +225,7 @@ flowchart TD
         F --> G["복제 테이블 조회: v_user_purchases ∪ v_user_library ∪ v_user_reviews"]
         G --> H["가중평균 centroid"]
         H --> I["태그 가중치 집계"]
-        I --> J["user_profiles upsert"]
+        I --> J["taste_profile upsert"]
     end
     D -.->|다음 재계산 트리거 시 memories로 전달| E
     J --> K["파이프라인 B·C가 참조하는"]
@@ -235,19 +235,19 @@ flowchart TD
 |---|---|
 | 활동 있던(종료된) 대화 세션 | 세션 단위 호출 |
 | LLM: 세션 전체에서 취향 사실 추출 | type/value, confidence 0.5 미만은 반환 안 함 |
-| 각 사실 임베딩 | bge-m3-2026q3 |
+| 각 사실 임베딩 | multilingual-e5-small |
 | BE가 취향 테이블에 한 행씩 저장 | (source_conversation_id로 재처리 시 교체) |
 | 트리거: 온보딩 완료 직후 · 취향 기억 변경 시 | (구매·리뷰가 늘었다고 부르지 않음) |
 | 입력: onboarding + memories[] | (memories는 이미 vector 포함) |
 | 복제 테이블 조회: v_user_purchases ∪ v_user_library ∪ v_user_reviews | (user_id로. 요청 본문에 없음) |
-| 가중평균 centroid | 좋아한책 ∪ 작가벡터 ∪ 카테고리·태그 사전벡터 · ∪ 기억벡터 ∪ 이력 책벡터(구매3 / 리뷰4~5점2 / 담기1) |
+| 가중평균 centroid | 좋아한책 ∪ 카테고리·태그 사전벡터 · ∪ 기억벡터(작가 기억 포함) ∪ 이력 책벡터(구매3 / 리뷰4~5점2 / 담기1) |
 | 태그 가중치 집계 | (리뷰1~2점 −2: centroid엔 빼고 카테고리 점수만 깎음) |
-| user_profiles upsert | computed_at = 반영한 이력 행들의 최대 시각 (계산 시각 아님) · (user_id 단위 직렬, last-writer-wins) · 순위 영향값 바뀔 때만 profile_version +1 |
+| taste_profile upsert | computed_at = 반영한 이력 행들의 최대 시각 (계산 시각 아님) · (user_id 단위 직렬, last-writer-wins) · 순위 영향값 바뀔 때만 profile_version +1 |
 | 파이프라인 B·C가 참조하는 | 개인화 단일 소스 |
 
 - **⑥은 "AI 파이프라인"이라기보다 가중평균 계산이다.**
 
-    좋아한 책·이력 책은 적재 시 문서벡터 재사용, 작가/카테고리/태그는 사전 임베딩, 기억은 ⑤가 이미 임베딩.
+    좋아한 책·이력 책은 적재 시 문서벡터 재사용, 카테고리/태그는 사전 임베딩, 기억은 ⑤가 이미 임베딩(작가 기억도 문장 벡터 그대로 쓴다).
 
     그래서 ⑥은 LLM도 임베딩 업스트림도 호출하지 않고, **503·504가 없다.**
 
@@ -392,7 +392,7 @@ v3.1까지 독립 파이프라인이던 **'추천 이유 상세'(`/books/{bookId
 
 | 구성요소 | 선택 | 선택 이유 | 기대 효과 |
 |---|---|---|---|
-| 텍스트 임베딩 | `bge-m3-2026q3`(dim 1024) | API 계약으로 고정. | 인덱스·프로필·기억 벡터가 전부 호환 |
+| 텍스트 임베딩 | `multilingual-e5-small`(dim 384) | API 계약으로 고정. | 인덱스·프로필·기억 벡터가 전부 호환 |
 | (별도 트랙) e5-small | 벤치 결과 기준 후보 | 추론 최적화 실험에서 하이브리드 recall·지연·비용 우위 확인 | 계약과 분리된 트랙. |
 | 검색 결합 | RRF | 스케일 다른 두 랭킹(BM25·벡터)을 정규화 없이 합치는 표준 기법 | ① 검색과 ③ 후보검색이 같은 로직 재사용 |
 | 벡터 저장소 | AI 전용 PostgreSQL + pgvector (HNSW) | BE가 MySQL이라 DB 공유 불가(구 "Postgres 공유" 안 무효). 도서 임베딩·취향 프로필·멱등 기록을 한 Postgres에 둠 → 전용 벡터DB 불필요 | AI 쪽 데이터스토어 1개. 대신 BE→AI 단방향 복제 파이프라인이 필요 |
@@ -436,7 +436,7 @@ v3.1까지 독립 파이프라인이던 **'추천 이유 상세'(`/books/{bookId
 ```python
 def hybrid_candidates(text_query: str, filters: dict, size: int) -> list[Book]:
     kw_hits = bm25_search(text_query, filters)
-    query_vec = call_embeddings_api([text_query], purpose="query")[0]  # bge-m3-2026q3
+    query_vec = call_embeddings_api([text_query], purpose="query")[0]  # multilingual-e5-small
     vec_hits = pgvector_search(query_vec, filters)
     return reciprocal_rank_fusion(kw_hits, vec_hits, k=60)[:size]
 
@@ -520,12 +520,11 @@ def rebuild_profile(user_id: int, idempotency_key: str, onboarding: dict, memori
 
     hist = read_history_replica(user_id)                   # 요청 본문에 없음 — user_id로 복제 테이블 조회
     liked_vecs  = [book_doc_vector(b) for b in onboarding.get("liked_book_ids", [])[:50]]
-    author_vecs = [author_vector(m["value"]) for m in memories if m["type"] == "author"]
     tag_vecs    = preset_vectors(onboarding.get("categories", []) + onboarding.get("tags", []))
-    mem_vecs    = [m["vector"] for m in memories[-500:]]   # 이미 ⑤에서 임베딩 — 재호출 없음
+    mem_vecs    = [m["vector"] for m in memories[-500:]]   # 이미 ⑤에서 임베딩 — 재호출 없음. 작가 기억도 여기 포함
     hist_vecs   = hist.weighted_doc_vectors()             # 구매3 / 리뷰4~5점2 / 담기1, 리뷰1~2점 제외
 
-    centroid    = weighted_average(liked_vecs + author_vecs + tag_vecs + mem_vecs + hist_vecs)
+    centroid    = weighted_average(liked_vecs + tag_vecs + mem_vecs + hist_vecs)
     tag_weights = aggregate_tags(onboarding, memories, hist)   # 리뷰1~2점은 여기서 −2
 
     reflected_at = hist.max_row_ts()   # 실제로 읽어 반영한 이력 행들의 최대 시각. now() 아님 —
