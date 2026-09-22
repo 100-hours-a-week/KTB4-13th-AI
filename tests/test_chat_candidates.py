@@ -88,7 +88,7 @@ def test_검색어가_없으면_service_search를_안_부르고_빈_후보(
     assert result == []
 
 
-def test_검색결과에_description을_붙여_돌려주고_소개글_없는_책은_뺀다(
+def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _search(req: SearchRequest) -> SearchOutcome:
@@ -115,6 +115,29 @@ def test_검색결과에_description을_붙여_돌려주고_소개글_없는_책
     assert result[0]["description"] == "잠든 사이 꿈을 사고파는 상점 이야기."
     assert result[0]["price"] == 10000
     assert result[0]["cover_url"] == "https://example.com/1088.jpg"
+
+
+def test_exact이면_소개글_없는_책도_후보에_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # exact는 분위기를 안 보므로, ①이 키워드로 찾아준 소개글 없는 책도 그대로 쓴다
+    # (리뷰: "exact에서는 소개글 없는 책도 후보에 남기고, semantic일 때만 거르자").
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=[_book(1088), _book(2000)], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {1088: "잠든 사이 꿈을 사고파는 상점 이야기."}  # 2000은 설명 없음
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact", exact=SpecExact(title="아무 제목", author=None, publisher=None)
+    )
+    result = asyncio.run(chat.get_candidates(spec, []))
+
+    assert [c["book_id"] for c in result] == [1088, 2000]
+    assert result[1]["description"] == ""
 
 
 def test_소개글_없는_책은_CANDIDATE_LIMIT_자리를_안_먹는다(

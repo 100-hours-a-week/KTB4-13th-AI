@@ -194,10 +194,13 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
     직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
 
-    소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로 카드를 쓰는데,
-    빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를 지어낸다.
-    exclude와 마찬가지로 CANDIDATE_LIMIT으로 자르기 전에 걸러야, 소개글 없는
-    책이 그 자리를 먹고 뒤쪽의 쓸 수 있는 후보가 밀려나지 않는다.
+    semantic이면 소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로
+    카드를 쓰는데, 빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를
+    지어낸다. exact는 분위기를 안 보므로 소개글 유무와 무관하게 그대로 둔다
+    (리뷰 — ①의 하이브리드 검색이 소개글 없는 책도 키워드로 찾아주는 걸
+    exact에서는 그대로 살린다). exclude와 마찬가지로 CANDIDATE_LIMIT으로
+    자르기 전에 걸러야, 소개글 없는 책이 그 자리를 먹고 뒤쪽의 쓸 수 있는
+    후보가 밀려나지 않는다.
     """
     query = _query_text(spec)
     if not query:
@@ -214,7 +217,10 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     descriptions = await _fetch_descriptions([c["book_id"] for c in pool])
     for c in pool:
         c["description"] = descriptions.get(c["book_id"]) or ""
-    return [c for c in pool if c["description"]][:CANDIDATE_LIMIT]
+
+    if spec.intent == "semantic":
+        pool = [c for c in pool if c["description"]]
+    return pool[:CANDIDATE_LIMIT]
 
 
 # {semantic}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
