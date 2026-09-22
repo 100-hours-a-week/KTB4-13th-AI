@@ -24,6 +24,11 @@ dev = [
 [tool.ruff]
 extend-exclude = ["docs", ".agents"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 의 Depends()/Query() 등은 기본값 자리에서 호출하는 게 정석 패턴이라
+# B008(가변 기본값 경고) 대상에서 뺀다.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Body"]
+
 [tool.pytest.ini_options]
 # 테스트에서 app 패키지를 import 하려면 저장소 루트가 import 경로에 있어야 한다
 pythonpath = ["."]

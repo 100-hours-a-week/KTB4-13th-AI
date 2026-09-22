@@ -2,11 +2,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core import cursor, db
+from app.core import cursor, db, responses
+from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
@@ -34,6 +35,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+@app.exception_handler(Unauthorized)
+async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResponse:
+    return responses.error(401, "unauthorized")
+
+
+_auth_required = [Depends(verify_service_token)]
+
 # --- 로컬 개발 전용 CORS 시작 — dev/ 테스트 화면이 브라우저에서 직접 이 서버를
 # fetch() 하기 위함. DEV_CORS_ORIGINS가 비어있으면(운영 기본값) 아무 효과 없다.
 # BE 연동을 시작하면 이 블록과 dev/ 폴더를 함께 삭제한다.
@@ -47,13 +56,13 @@ if _dev_cors_origins:
     )
 # --- 로컬 개발 전용 CORS 끝 ---
 
-app.include_router(agent.router)
-app.include_router(chat.router)
-app.include_router(extractions.router)
-app.include_router(search.router)
-app.include_router(embeddings.router)
-app.include_router(feed.router)
-app.include_router(profile.router)
+app.include_router(agent.router, dependencies=_auth_required)
+app.include_router(chat.router, dependencies=_auth_required)
+app.include_router(extractions.router, dependencies=_auth_required)
+app.include_router(search.router, dependencies=_auth_required)
+app.include_router(embeddings.router, dependencies=_auth_required)
+app.include_router(feed.router, dependencies=_auth_required)
+app.include_router(profile.router, dependencies=_auth_required)
 
 
 @app.get("/health")
