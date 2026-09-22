@@ -62,10 +62,9 @@ INITIAL_SPEC = {
 }
 
 
-def _spec_reply(**overrides) -> str:
-    """1단계(spec 갱신) 자리에 끼울, Spec 모양을 갖춘 가짜 LLM 응답."""
-    spec = {**INITIAL_SPEC, **overrides}
-    return json.dumps(spec, ensure_ascii=False)
+def _spec_reply(**patch) -> str:
+    """1단계(spec 갱신) 자리에 끼울 가짜 LLM 응답 — 이번 턴에 바뀌는 값만 담는다."""
+    return json.dumps(patch, ensure_ascii=False)
 
 
 def _request(**overrides) -> dict:
@@ -227,17 +226,61 @@ def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
     assert res.json()["data"]["spec"]["semantic"] == "비 오는 날 읽을 잔잔한 책"
 
 
-def test_spec_갱신_응답이_Spec_모양이_아니면_원래_spec_그대로_카드도_건너뛴다(
+def test_patch가_안_건드린_필터는_요청_spec_값이_유지된다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """1단계가 Spec 6개 키를 못 갖춘 JSON을 주면 검증에서 걸린다.
+    """언급 안 된 값을 옮겨 적게 하다 예시값(false)을 베껴버리던 회귀 재현.
+
+    in_stock_only=true로 온 요청에서, 1단계 patch가 semantic만 건드리면
+    in_stock_only는 patch에 안 실려도 true로 남아야 한다.
+    """
+
+    spec_reply = _spec_reply(semantic="품절 아닌 책")
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "filters": {"in_stock_only": True}}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["spec"]["filters"]["in_stock_only"] is True
+    assert data["spec"]["semantic"] == "품절 아닌 책"
+
+
+def test_exclude는_patch로_받은_id를_기존_목록에_더한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exclude를 매번 통째로 옮겨 적게 하면 모델이 옛 항목을 빠뜨렸을 때 되살아난다.
+
+    기존 exclude=[1]인 요청에서 patch가 exclude=[2]만 주면, 응답 spec의
+    exclude는 [1]이 사라지지 않고 [1, 2]가 돼야 한다.
+    """
+
+    spec_reply = _spec_reply(exclude=[2])
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "exclude": [1]}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["spec"]["exclude"] == [1, 2]
+
+
+def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_원래_spec_그대로_카드도_건너뛴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1단계가 지금 spec 위에 겹쳐도 Spec 모양이 안 되는 값(잘못된 intent)을 주면 검증에서 걸린다.
 
     이때는 (LLM 연결이 끊긴 것과 마찬가지로) 원래 spec을 그대로 쓰고, 3단계
     (카드 생성)까지 건너뛴다 — 두 번째 LLM 호출이 실제로 일어나지 않는지도
     같이 본다(호출됐다면 아래 카드용 답을 먹고 cards가 채워졌을 것).
     """
 
-    model = _sequenced_model('{"not_a_spec": true}', '{"cards": [{"book_id": 1088}]}')
+    model = _sequenced_model(
+        '{"intent": "그런 낱말 없음"}', '{"cards": [{"book_id": 1088}]}'
+    )
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
     res = client.post("/recommendations/chat", json=_request())

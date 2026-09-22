@@ -62,57 +62,88 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # {spec_json}·{message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다
 # (CARD_PROMPT와 같은 이유 — 실제로 모델에 가는 글자는 겹치기 전과 같다).
 #
-# 아래 예시 JSON의 값(null, false, "semantic" 등)은 모양만 보여주는 자리 표시다 —
-# 실제로는 "지금 조건"의 값을 그대로 옮겨 적거나(언급 안 된 필드), 이번 메시지를
-# 보고 새로 판단해서(intent 등) 채워야 한다. 실제로 재현된 문제 두 가지(둘 다
-# 실제 Ollama/qwen2.5:7b로 확인):
-# 1) 예시의 false를 그대로 베껴서 in_stock_only=true였던 값이 매번 false로 바뀜
-# 2) intent 자리에 "exact 또는 semantic"이라고 예시에 적어뒀더니, 둘 중 하나를
-#    고르지 않고 그 설명 문구를 글자 그대로 복사해서 돌려줌(Spec 검증 실패로 이어짐)
-# → 예시엔 항상 실제로 나올 수 있는 값 하나("semantic")만 쓰고, "베끼지 말라"를
-#   intent까지 포함해서 명시했다.
+# 지금까지의 조건 전체를 매번 그대로 옮겨 적게 시켰더니, 안 건드려야 할 값까지
+# 예시를 베껴 써서 망가뜨리는 사고가 반복됐다(둘 다 실제 Ollama/qwen2.5:7b로
+# 재현): 1) 예시의 false를 그대로 베껴 in_stock_only=true가 매번 false로 바뀜
+# 2) intent 자리의 설명 문구("exact 또는 semantic")를 글자 그대로 복사해서
+# Spec 검증 실패로 이어짐. 그래서 지금까지의 조건을 다시 옮겨 적게 하는 대신
+# 이번 메시지로 "바뀌는 값만" 답하게 하고, 언급 안 된 값은 서버가 지금 조건에서
+# 그대로 들고 와 겹쳐 쓴다(_merge_spec_patch) — 모델이 값을 옮겨 적다 틀릴
+# 여지 자체를 없앤다. exclude도 같은 이유로 매번 전체 목록을 다시 쓰게 하면
+# 모델이 옛 항목을 빠뜨렸을 때 이미 제외했던 책이 되살아난다 — 새로 빼고 싶은
+# 것만 받아 서버가 기존 목록에 더한다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
-    "너는 책 추천 챗봇의 조건(spec) 갱신기다. 지금까지의 조건에 이번 메시지 "
-    "내용만 반영해 갱신하라. 이번 메시지가 언급하지 않은 값은 지금 조건의 값을 "
-    "한 글자도 안 바꾸고 그대로 옮겨 적어라. 특히 true/false 같은 값도 지금 "
-    "조건에 있는 그대로 옮겨야 한다 — 언급 안 됐다고 false로 바꾸면 안 된다.\n\n"
+    "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
+    "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
+    "넣지 마라. 지금 조건을 옮겨 적을 필요 없다, 안 넣은 값은 그대로 "
+    "유지된다.\n\n"
     "지금 조건(spec):\n{spec_json}\n\n"
     '이번 메시지: "{message}"\n\n'
-    "intent는 아래 둘 중 하나를 골라 그 낱말 그대로 써야 한다(설명 문구를 "
-    "베끼면 안 된다).\n"
+    "intent를 이번에 새로 정할 때만 아래 둘 중 하나를 그 낱말 그대로 써라"
+    "(설명 문구를 베끼면 안 된다).\n"
     "- exact: 제목이나 저자를 콕 집어 말함\n"
-    "- semantic: 분위기나 상황을 말함(기본값)\n\n"
-    "반드시 아래 JSON 형식 그대로, 6개 키를 모두 채워 답하라. 값이 없으면 "
-    "null이나 빈 배열/빈 객체로 채우고 키 자체를 빼지 마라. 숫자는 따옴표 "
-    '없이 써라. 아래 null·false·"semantic"은 형식 예시일 뿐 실제 값이 '
-    "아니다(intent도 마찬가지) — 그대로 베끼지 말고 '지금 조건'과 "
-    "'이번 메시지'를 보고 채워라:\n"
-    '{{"intent": "semantic", '
-    '"exact": {{"title": null, "author": null, "publisher": null}}, '
-    '"filters": {{"category": null, "price_min": null, "price_max": null, '
-    '"pub_year_from": null, "pub_year_to": null, "in_stock_only": false}}, '
-    '"semantic": null, "anchor_book": null, "exclude": []}}'
+    "- semantic: 분위기나 상황을 말함\n\n"
+    "exact·filters는 바뀌는 하위 키만 넣어라 — 예를 들어 가격 상한만 새로 "
+    '말했으면 {{"filters": {{"price_max": 20000}}}}처럼 그 키 하나만 담고, '
+    "다른 하위 키는 넣지 마라.\n"
+    "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
+    "그대로 유지하니 다시 적을 필요 없다.\n\n"
+    "이번 메시지로 바뀌는 게 없으면 빈 객체 {{}}로 답하라. 숫자는 따옴표 "
+    "없이 써라. 아래는 형식 예시일 뿐 실제 값이 아니다 — 그대로 베끼지 "
+    "말고 실제로 바뀌는 값만 채워라:\n"
+    '{{"semantic": "비 오는 날 읽을 잔잔한 책", '
+    '"filters": {{"in_stock_only": true}}}}'
 )
+
+
+def _merge_spec_patch(current: Spec, patch: dict) -> dict:
+    """이번 턴에 LLM이 바꾼 값만 담긴 patch를 지금 spec 위에 겹쳐 완전한 spec dict를 만든다.
+
+    patch에 없는 키(하위 키 포함)는 지금 값을 그대로 두고, 있는 키만
+    덮어쓴다. exclude는 겹쳐 쓰지 않고 더한다 — 모델이 옛 항목을 안 실어도
+    사라지지 않는다.
+    """
+    merged = current.model_dump()
+    for key in ("exact", "filters"):
+        sub_patch = patch.get(key)
+        if isinstance(sub_patch, dict):
+            merged[key] = {**merged[key], **sub_patch}
+
+    new_exclude = patch.get("exclude")
+    if isinstance(new_exclude, list):
+        merged["exclude"] = merged["exclude"] + [
+            book_id for book_id in new_exclude if book_id not in merged["exclude"]
+        ]
+
+    for key in ("intent", "semantic", "anchor_book"):
+        if key in patch:
+            merged[key] = patch[key]
+
+    return merged
 
 
 async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
     """1단계 — 메시지로 spec을 갱신한다. 명세대로 LLM이 한다.
 
-    실패(LLM 장애, 또는 spec 모양이 아닌 응답)하면 원래 spec을 그대로 돌려주고
-    두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고 요청의 spec
-    으로 2만 돌려 점수 상위 3권을 낸다" — 호출부(chat())가 이 신호를 보고
-    3단계(카드 생성)를 건너뛴다.
+    LLM은 지금 조건 전체가 아니라 바뀌는 값만 담은 patch를 돌려주고,
+    _merge_spec_patch가 지금 spec 위에 겹쳐 완전한 spec을 만든다(SPEC_PROMPT
+    주석 참고).
+
+    실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
+    돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
+    요청의 spec으로 2만 돌려 점수 상위 3권을 낸다" — 호출부(chat())가 이
+    신호를 보고 3단계(카드 생성)를 건너뛴다.
     """
     chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
-        parsed = await invoke_chain(
+        patch = await invoke_chain(
             chain,
             {
                 "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
                 "message": message,
             },
         )
-        return Spec.model_validate(parsed), False
+        return Spec.model_validate(_merge_spec_patch(spec, patch)), False
     except (LLMUnavailableError, ValidationError):
         logger.exception("spec 갱신 실패")
         return spec, True
