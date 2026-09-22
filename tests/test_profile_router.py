@@ -1,0 +1,155 @@
+"""⑥ POST /preferences/profile 라우터 테스트 — 요청 검사와 응답 모양."""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.profile.schemas import USED_LIKED_BOOKS, USED_MEMORIES
+from app.routers.profile import parse_request
+
+client = TestClient(app)
+
+DIM = 384
+
+
+def _memory(**overrides) -> dict:
+    memory = {"type": "mood", "value": "잔잔한 소설", "vector": [0.0] * DIM, "dim": DIM}
+    memory.update(overrides)
+    return memory
+
+
+def _request(**overrides) -> dict:
+    body = {
+        "user_id": 123,
+        "idempotency_key": "prof_20260904_a1b2",
+        "onboarding": {
+            "reading_times": ["밤"],
+            "criteria": ["베스트셀러"],
+            "categories": ["에세이", "한국소설"],
+            "tags": ["힐링", "성장"],
+            "liked_book_ids": [1088, 3310],
+        },
+        "memories": [_memory()],
+    }
+    body.update(overrides)
+    return body
+
+
+def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() -> None:
+    res = client.post("/preferences/profile", json=_request())
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "message": "profile_success",
+        "data": {"cold_start": True, "profile_version": 0},
+    }
+
+
+def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() -> None:
+    res = client.post("/preferences/profile", json=_request(onboarding={}, memories=[]))
+
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize("field", ["user_id", "idempotency_key", "onboarding"])
+def test_필수_칸이_없으면_400이다(field: str) -> None:
+    body = _request()
+    del body[field]
+
+    res = client.post("/preferences/profile", json=body)
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
+
+
+@pytest.mark.parametrize(
+    ("field", "limit"),
+    [("reading_times", 5), ("criteria", 3), ("categories", 3), ("tags", 9)],
+)
+def test_온보딩_배열이_상한을_넘으면_400이고_상한_정확히는_통과한다(
+    field: str, limit: int
+) -> None:
+    def _post(count: int) -> int:
+        onboarding = {field: [f"값{i}" for i in range(count)]}
+        return client.post(
+            "/preferences/profile", json=_request(onboarding=onboarding)
+        ).status_code
+
+    assert _post(limit) == 200
+    assert _post(limit + 1) == 400
+
+
+def test_좋아한_책과_기억은_상한을_넘어도_400이_아니라_잘라_쓴다() -> None:
+    body = _request(
+        onboarding={"liked_book_ids": list(range(1, 81))},
+        memories=[_memory(value=f"기억{i}") for i in range(600)],
+    )
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+
+    req = parse_request(body)
+    assert req.used_liked_book_ids() == list(range(1, USED_LIKED_BOOKS + 1))
+    # 기억은 배열 뒤쪽을 최근으로 본다.
+    used = req.used_memories()
+    assert len(used) == USED_MEMORIES
+    assert used[0].value == "기억100"
+    assert used[-1].value == "기억599"
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        _memory(dim=1024, vector=[0.0] * 1024),  # 명세 예시의 옛 모델 차원
+        _memory(vector=[0.0] * (DIM - 1)),  # dim 만 맞고 길이가 다름
+    ],
+)
+def test_기억_벡터가_인덱스_차원과_다르면_400이다(memory: dict) -> None:
+    res = client.post("/preferences/profile", json=_request(memories=[memory]))
+
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])
+def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -> None:
+    # 파이썬 json 은 NaN·Infinity 를 그대로 읽는다. 문자열로 직접 만들어 보낸다.
+    vector = ", ".join(["0.0"] * (DIM - 1) + [bad])
+    body = (
+        '{"user_id": 1, "idempotency_key": "k", "onboarding": {},'
+        f' "memories": [{{"type": "mood", "value": "v", "vector": [{vector}], "dim": {DIM}}}]}}'
+    )
+
+    res = client.post(
+        "/preferences/profile",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"user_id": "123"},  # 문자열을 숫자로 바꿔 받지 않는다
+        {"idempotency_key": ""},  # 빈 키끼리는 멱등 처리에서 서로 부딪친다
+        {"onboarding": {"liked_book_ids": ["1088"]}},
+        {"memories": [_memory(vector=["0.1"] * DIM)]},
+        {"memories": {"type": "mood"}},
+    ],
+)
+def test_타입이_계약과_다르면_400이다(overrides: dict) -> None:
+    res = client.post("/preferences/profile", json=_request(**overrides))
+
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize("content", [b"not json", b"\xff\xfe{", b"[1, 2]"])
+def test_본문이_JSON_객체가_아니면_400이다(content: bytes) -> None:
+    res = client.post(
+        "/preferences/profile",
+        content=content,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
