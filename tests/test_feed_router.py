@@ -3,8 +3,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.feed.schemas import MAX_SIZE, parse_query
+from app.feed.schemas import MAX_SIZE, FeedRequest, parse_query
 from app.main import app
+from app.routers import feed as feed_router
 
 client = TestClient(app)
 
@@ -13,6 +14,58 @@ URL = "/recommendations/feed"
 
 def _get(params: dict | list):
     return client.get(URL, params=params)
+
+
+_BOOK = {
+    "book_id": 3310,
+    "title": "아무튼, 산",
+    "author": "장보영",
+    "price": 9900,
+    "cover_url": None,
+    "in_stock": True,
+    "match_score": 0,
+}
+
+
+@pytest.fixture(autouse=True)
+def no_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DB 없이 돈다. 기본은 0건. 목록 자체는 test_feed_cold_start.py 가 본다."""
+
+    async def _feed(req: FeedRequest) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+
+def test_목록_조회가_실패하면_공통_형식의_500을_돌려준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _feed(req: FeedRequest) -> list[dict]:
+        raise RuntimeError("DB 없음")
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+    res = _get({"user_id": 123, "surface": "home"})
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
+
+
+def test_목록을_items_에_싣고_cold_start_로_답한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _feed(req: FeedRequest) -> list[dict]:
+        return [_BOOK]
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+    res = _get({"user_id": 123, "surface": "home"})
+
+    assert res.json()["data"] == {
+        "items": [_BOOK],
+        "next_cursor": None,
+        "cold_start": True,
+    }
 
 
 def test_home_요청이면_200과_응답_모양을_돌려준다() -> None:
