@@ -3,8 +3,8 @@
 명세: docs/wiki/ai/1-model-api/spec.md ④ GET /recommendations/feed
 LLM을 쓰지 않는다. ⑦ agent.act의 "골라 담기"가 이 엔드포인트와 같은 취향
 스코어링을 재사용한다(get_personalized_candidates, 개발 워크플로 위키 §9).
-지금은 모든 사용자에게 개인화를 끈 목록(인기순, 신간순)을 cold_start 로 답한다.
-개인화 채점은 #107, 다음 페이지 커서는 #108 에서 붙인다.
+취향 프로필이 있으면 채점한 목록을, 없으면 개인화를 끈 목록(인기순, 신간순)을 준다.
+다음 페이지 커서는 #108 에서 붙인다.
 """
 
 import logging
@@ -31,15 +31,22 @@ async def feed(request: Request) -> JSONResponse:
         return responses.error(400, "invalid_request")
 
     try:
-        items = await service.feed(req)
+        outcome = await service.feed(req)
     except Exception:
         # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다(①③과 같음).
         logger.exception("피드 목록 조회 실패")
         return responses.error(500, "internal_server_error")
 
+    headers = dict(_NO_STORE)
+    if outcome.degraded:
+        headers["X-Degraded"] = outcome.degraded
     # 다음 페이지는 커서가 붙기 전이라 없다(#108).
     return responses.success(
         "feed_success",
-        {"items": items, "next_cursor": None, "cold_start": True},
-        headers=_NO_STORE,
+        {
+            "items": outcome.items,
+            "next_cursor": None,
+            "cold_start": outcome.cold_start,
+        },
+        headers=headers,
     )

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.feed.schemas import MAX_SIZE, FeedRequest, parse_query
+from app.feed.service import FeedOutcome
 from app.main import app
 from app.routers import feed as feed_router
 
@@ -31,16 +32,34 @@ _BOOK = {
 def no_db(monkeypatch: pytest.MonkeyPatch) -> None:
     """DB 없이 돈다. 기본은 0건. 목록 자체는 test_feed_cold_start.py 가 본다."""
 
-    async def _feed(req: FeedRequest) -> list[dict]:
-        return []
+    async def _feed(req: FeedRequest) -> FeedOutcome:
+        return FeedOutcome(items=[])
 
     monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+
+def test_기능을_줄여_응답했으면_헤더로_알린다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _feed(req: FeedRequest) -> FeedOutcome:
+        return FeedOutcome(items=[_BOOK], degraded="rule-only", cold_start=False)
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+    res = _get({"user_id": 123, "surface": "home"})
+
+    assert res.headers["x-degraded"] == "rule-only"
+    assert res.json()["data"]["cold_start"] is False
+
+
+def test_온전한_응답에는_헤더가_없다() -> None:
+    res = _get({"user_id": 123, "surface": "home"})
+
+    assert "x-degraded" not in res.headers
 
 
 def test_목록_조회가_실패하면_공통_형식의_500을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _feed(req: FeedRequest) -> list[dict]:
+    async def _feed(req: FeedRequest) -> FeedOutcome:
         raise RuntimeError("DB 없음")
 
     monkeypatch.setattr(feed_router.service, "feed", _feed)
@@ -54,8 +73,8 @@ def test_목록_조회가_실패하면_공통_형식의_500을_돌려준다(
 def test_목록을_items_에_싣고_cold_start_로_답한다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _feed(req: FeedRequest) -> list[dict]:
-        return [_BOOK]
+    async def _feed(req: FeedRequest) -> FeedOutcome:
+        return FeedOutcome(items=[_BOOK])
 
     monkeypatch.setattr(feed_router.service, "feed", _feed)
 
