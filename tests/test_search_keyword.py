@@ -121,6 +121,25 @@ def test_제목이_정확히_같은_책이_맨_위고_제목_다음_저자_순�
 
 
 @needs_db
+def test_제목이_검색어와_같은_책을_골라낸다() -> None:
+    # 후보 안에서만 본다. 띄어쓰기만 다른 제목도 같은 것으로 본다(붙여 친 제목, #63).
+    exact = _run_in_rollback(
+        lambda c: keyword.exact_title_ids(c, [9100001, 9100006], "퀼렌보르사나톡")
+    )
+
+    assert exact == {9100006}
+
+
+@needs_db
+def test_제목의_일부만_친_검색어는_완전_일치가_아니다() -> None:
+    exact = _run_in_rollback(
+        lambda c: keyword.exact_title_ids(c, [9100001, 9100006], "퀼렌보르")
+    )
+
+    assert exact == set()
+
+
+@needs_db
 def test_소개글에서만_맞은_책은_키워드_결과에_넣지_않는다() -> None:
     # 그런 책은 뜻으로 찾는 벡터 검색의 몫이다. 넣으면 약하게 맞은 책이 결과를 채운다.
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가람", SearchFilters()))
