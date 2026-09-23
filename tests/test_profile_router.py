@@ -1,13 +1,32 @@
-"""⑥ POST /preferences/profile 라우터 테스트 — 요청 검사와 응답 모양."""
+"""⑥ POST /preferences/profile 라우터 테스트 — 요청 검사와 응답 모양.
+
+계산·저장(service.rebuild)은 가짜로 바꿔 끼운다. 계산은 test_profile_compute.py,
+저장은 test_profile_service.py 가 본다.
+"""
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.profile.schemas import USED_LIKED_BOOKS, USED_MEMORIES
+from app.routers import profile
 from app.routers.profile import parse_request
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def fake_rebuild(monkeypatch: pytest.MonkeyPatch) -> list:
+    """받은 요청을 모아 두고 (cold_start=False, profile_version=3) 을 돌려준다."""
+    calls: list = []
+
+    async def _fake(req):
+        calls.append(req)
+        return False, 3
+
+    monkeypatch.setattr(profile.service, "rebuild", _fake)
+    return calls
+
 
 DIM = 384
 
@@ -41,8 +60,22 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() ->
     assert res.status_code == 200
     assert res.json() == {
         "message": "profile_success",
-        "data": {"cold_start": True, "profile_version": 0},
+        "data": {"cold_start": False, "profile_version": 3},
     }
+
+
+def test_계산이나_저장이_실패하면_공통_형식의_500이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(req):
+        raise RuntimeError("DB 장애")
+
+    monkeypatch.setattr(profile.service, "rebuild", _boom)
+
+    res = client.post("/preferences/profile", json=_request())
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
 
 
 def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() -> None:
