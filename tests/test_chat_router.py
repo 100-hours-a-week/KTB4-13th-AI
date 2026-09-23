@@ -283,6 +283,33 @@ def test_recent_turns가_20턴_넘으면_최근_20개만_쓴다(
     assert "턴0" not in prompt  # 20개를 넘어가 잘려나감
 
 
+def test_SPEC_PROMPT에_톤_조정_지시문과_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분위기·톤 조정 표현을 semantic에 반영하라는 지시문·예시가 실제로 프롬프트에
+
+    나가는지 본다(#132). "너무 무겁지 않은 걸로" 같은 말이 지시문 없이는
+    버려지는 문제였다 — 실제 반영 여부는 가짜 모델로는 확인할 수 없으니(모델이
+    고정 답만 돌려줌), 여기서는 지시문·예시가 프롬프트에 실제로 포함되는지만
+    본다. 실제 LLM(Ollama) 검증 결과는 PR 본문에 남긴다.
+    """
+    sent: list[str] = []
+
+    def _dispatch(prompt_value) -> AIMessage:
+        sent.append(prompt_value.to_messages()[0].content)
+        return AIMessage(content=_spec_reply())
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "분위기나 톤을" in prompt
+    assert "통째로 다시 써라" in prompt
+    assert '"semantic": "비 오는 날 읽을 무겁지 않은 책"' in prompt
+
+
 def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
