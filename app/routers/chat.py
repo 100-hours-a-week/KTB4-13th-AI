@@ -19,7 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
-from app.core import db, responses
+from app.core import db, history, responses
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -207,10 +207,42 @@ async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
     return {r["book_id"]: r["description"] for r in rows}
 
 
-async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
+async def _fetch_history(user_id: int) -> history.History:
+    """user_id의 구매·라이브러리·리뷰 이력을 읽는다.
+
+    ⑥이 취향 벡터를 계산할 때 쓰는 것과 같은 공용 함수(app/core/history.py)를
+    그대로 쓴다 — 이력을 읽는 규칙(가중치, 어느 테이블을 보는지)이 갈라지면
+    안 되기 때문이다.
+    """
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        return await history.read(conn, user_id)
+
+
+def _exclude_owned_or_disliked(pool: list[dict], hist: history.History) -> list[dict]:
+    """이미 구매했거나 별점 1–2점을 준 책은 후보에서 뺀다(명세 2단계).
+
+    history.weights는 책마다 가장 큰 가중치 하나만 남긴다 — PURCHASE(3)는
+    구매 행에만 매겨지는 값이라, weights가 이 값이면 구매한 책이라고 안전하게
+    가를 수 있다(라이브러리 담기·긍정 리뷰만 있는 책은 안 걸린다). 저평점
+    (2.0점 이하)은 hist.disliked_book_ids로 이미 따로 온다.
+    """
+    return [
+        c
+        for c in pool
+        if hist.weights.get(c["book_id"]) != history.PURCHASE
+        and c["book_id"] not in hist.disliked_book_ids
+    ]
+
+
+async def get_candidates(
+    spec: Spec, exclude_book_ids: list[int], user_id: int
+) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
 
-    취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다.
+    취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다(#129,
+    ④와 같이 점수화 공식을 정해야 함). 이미 구매했거나 저평점 준 책 제외는
+    점수와 무관하게 바로 되므로 여기서 한다(#144).
     exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
     직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
 
@@ -231,6 +263,11 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    if not pool:
+        return []
+
+    hist = await _fetch_history(user_id)
+    pool = _exclude_owned_or_disliked(pool, hist)
     if not pool:
         return []
 
@@ -334,7 +371,7 @@ async def chat(request: Request) -> JSONResponse:
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
-        candidates = await get_candidates(spec, req.exclude_book_ids)
+        candidates = await get_candidates(spec, req.exclude_book_ids, req.user_id)
     except Exception:
         # 그대로 두면 FastAPI 기본 500(text/plain)이 나가 공통 응답 형식이 깨진다.
         logger.exception("후보 검색 실패")

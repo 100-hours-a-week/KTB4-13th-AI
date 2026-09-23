@@ -85,7 +85,7 @@ def _request(**overrides) -> dict:
 def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """DB를 안 타고 책 한 권짜리 후보를 돌려준다."""
 
-    async def _fake(spec, exclude_book_ids) -> list[dict]:
+    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
         return [
             {
                 "book_id": 1088,
@@ -150,7 +150,7 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
 def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(spec, exclude_book_ids) -> list[dict]:
+    async def _boom(spec, exclude_book_ids, user_id) -> list[dict]:
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(chat, "get_candidates", _boom)
