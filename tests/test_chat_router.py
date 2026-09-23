@@ -211,6 +211,76 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
 
 
+def _capture_spec_prompt(sent: list[str]) -> RunnableLambda:
+    """1단계(spec 갱신) 프롬프트 글자를 sent에 담아두고, 2단계는 빈 카드로 통과시킨다."""
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            sent.append(prompt_value.to_messages()[0].content)
+            return AIMessage(content=_spec_reply())
+        return AIMessage(content='{"cards": []}')
+
+    return RunnableLambda(_dispatch)
+
+
+def test_recent_turns가_spec_프롬프트에_실린다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """recent_turns가 실제로 1단계 프롬프트에 들어가는지 본다(#124).
+
+    가짜 모델의 답은 항상 고정이라 "이해했는지"는 확인할 수 없다 — 대신
+    프롬프트에 실제로 실렸는지(입력)만 확인한다.
+    """
+    sent: list[str] = []
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _capture_spec_prompt(sent))
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(
+            recent_turns=[
+                {"role": "user", "text": "비 오는 날 읽을 책 추천해줘"},
+                {"role": "assistant", "text": "달러구트 꿈 백화점 추천드려요"},
+            ]
+        ),
+    )
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "비 오는 날 읽을 책 추천해줘" in prompt
+    assert "달러구트 꿈 백화점 추천드려요" in prompt
+
+
+def test_recent_turns가_없으면_안내_문구가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """빈 대화(첫 턴)에서도 프롬프트 자리가 비지 않는지 본다."""
+    sent: list[str] = []
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _capture_spec_prompt(sent))
+
+    res = client.post("/recommendations/chat", json=_request(recent_turns=[]))
+
+    assert res.status_code == 200
+    assert "최근 대화 없음" in sent[0]
+
+
+def test_recent_turns가_20턴_넘으면_최근_20개만_쓴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명세: 최대 20턴, 초과분은 최근 20턴만 사용."""
+    sent: list[str] = []
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _capture_spec_prompt(sent))
+
+    turns = [{"role": "user", "text": f"턴{i}"} for i in range(25)]
+    res = client.post("/recommendations/chat", json=_request(recent_turns=turns))
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "턴24" in prompt  # 가장 최근
+    assert "턴5" in prompt  # 최근 20개(인덱스 5~24)의 첫 턴
+    assert "턴0" not in prompt  # 20개를 넘어가 잘려나감
+
+
 def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
