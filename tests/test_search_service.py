@@ -1,4 +1,4 @@
-"""검색 흐름 테스트 — 언제 합치고, 언제 키워드만으로 줄여 응답하는가.
+"""검색 흐름 테스트 — 두 결과를 어떤 순서로 내보내고, 언제 키워드만으로 줄여 응답하는가.
 
 DB·모델 없이 돈다. 키워드·벡터·임베딩을 전부 가짜로 바꿔 끼운다.
 """
@@ -21,8 +21,8 @@ class _FakePool:
 
 @pytest.fixture
 def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """기본 상태: 키워드 [1, 2], 벡터 [2, 3], 임베딩 정상, 책 벡터 있음."""
-    state = {"keyword": [1, 2], "vector": [2, 3], "has_any": True}
+    """기본 상태: 키워드 [1, 2], 벡터 [2, 3], 제목이 검색어와 같은 책 없음, 책 벡터 있음."""
+    state = {"keyword": [1, 2], "vector": [2, 3], "has_any": True, "exact": set()}
     monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
 
     async def _embed(texts, purpose):
@@ -31,6 +31,9 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     async def _keyword(conn, query, filters):
         return state["keyword"]
+
+    async def _exact(conn, book_ids, query):
+        return state["exact"]
 
     async def _vector(conn, query_vector, filters):
         if isinstance(state["vector"], Exception):
@@ -46,6 +49,7 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool())
     monkeypatch.setattr(service.embedding, "embed", _embed)
     monkeypatch.setattr(service.keyword, "search_ids", _keyword)
+    monkeypatch.setattr(service.keyword, "exact_title_ids", _exact)
     monkeypatch.setattr(service.vector, "search_ids", _vector)
     monkeypatch.setattr(service.vector, "has_any", _has_any)
 
@@ -67,12 +71,19 @@ def _ids(outcome: service.SearchOutcome) -> list[int]:
     return [r["book_id"] for r in outcome.results]
 
 
-def test_둘_다_되면_합치고_헤더가_없다(fakes: dict) -> None:
+def test_둘_다_되면_순위를_합치고_헤더가_없다(fakes: dict) -> None:
     outcome = _search()
 
     # 2 는 두 목록에 다 있어 맨 위, 1 은 키워드 1등(비중 3), 3 은 벡터에만 있다.
     assert _ids(outcome) == [2, 1, 3]
     assert outcome.degraded is None
+
+
+def test_제목이_검색어와_같은_책은_합치기_전에_맨_앞으로_간다(fakes: dict) -> None:
+    # 1 은 키워드 1등이지만 합치면 2 에게 밀린다(위 테스트). 제목이 검색어와 같으면 앞으로 뺀다.
+    fakes["exact"] = {1}
+
+    assert _ids(_search()) == [1, 2, 3]
 
 
 def test_size_만큼만_돌려준다(fakes: dict) -> None:

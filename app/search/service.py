@@ -1,4 +1,4 @@
-"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 순위 합치기 → 정렬."""
+"""① /search 의 검색 흐름: 키워드 검색 + 벡터 검색 → 제목 완전 일치 먼저, 나머지 합치기 → 정렬."""
 
 import asyncio
 import hashlib
@@ -21,7 +21,7 @@ FULL = "full"
 
 # 합칠 때 키워드 쪽 등수를 3배로 쳐 준다. 키워드 결과는 낱말이 실제로 들어 있는 책이라 믿을 만하고,
 # 벡터 결과는 관련이 없어도 "그나마 가까운 책"이 항상 채워지기 때문이다.
-# 1:1 이면 제목을 정확히 쳐도 벡터 쪽 1등과 자리를 다퉈 밀린다(고정 검색어 세트로 확인, 측정 기록은 이슈 #35 코멘트).
+# 1:1 이면 제목을 정확히 쳐도 벡터 쪽 1등과 자리를 다퉈 밀린다(측정 기록은 이슈 #35 코멘트).
 KEYWORD_WEIGHT = 3.0
 VECTOR_WEIGHT = 1.0
 
@@ -76,6 +76,26 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
     return offset, mode
 
 
+def _exact_title_first(
+    exact: set[int], keyword_ids: list[int], vector_ids: list[int]
+) -> list[int]:
+    """제목이 검색어와 (공백 빼고) 같은 책을 맨 앞에 놓고, 나머지는 두 순위를 합쳐 뒤에 붙인다.
+
+    RRF 는 등수만 보고 점수의 크기를 버린다. 그래서 두 목록에 다 나온 책이 점수를 두 번 받아,
+    제목을 통째로 맞혀 키워드에서만 1등인 책을 넘어선다("명상 하는 마음" 1등 → 8등). 제목이
+    똑같은 책만 앞으로 빼면 그 경우가 사라지고, 나머지는 지금까지의 합치기를 그대로 쓴다.
+
+    측정은 이슈 #119 에 있다. 13만 권에서 제목 500개·저자 458명으로 재니, 키워드 결과를 통째로
+    앞에 두는 방식은 제목 검색을 올리는 대신 저자 검색 1등을 48.7% → 43.9% 로 떨어뜨렸다.
+    책 벡터가 "제목 + 저자 + 소개글" 로 만들어져 저자 검색에서는 두 목록이 같은 답을 가리키는데,
+    합치기를 버리면 그 보강이 사라지기 때문이다. 이 방식은 제목 99.8%, 저자 48.9% 로 둘 다 지킨다.
+    """
+    head = [book_id for book_id in keyword_ids if book_id in exact]
+    rest = [book_id for book_id in keyword_ids if book_id not in exact]
+    fused = rrf.fuse([rest, vector_ids], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+    return head + [book_id for book_id in fused if book_id not in exact]
+
+
 async def _embed_query(query: str) -> list[float] | None:
     """검색어를 벡터로 바꾼다. 실패하면 None — 검색은 키워드만으로 계속한다."""
     try:
@@ -127,7 +147,8 @@ async def search(req: SearchRequest) -> SearchOutcome:
             ranked, degraded = keyword_ids, KEYWORD_ONLY
         else:
             pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
-            ranked = rrf.fuse([keyword_ids, pool], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+            exact = await keyword.exact_title_ids(conn, keyword_ids, req.query)
+            ranked = _exact_title_first(exact, keyword_ids, pool)
             degraded = None
 
         # 앞 페이지는 벡터까지 합친 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라
