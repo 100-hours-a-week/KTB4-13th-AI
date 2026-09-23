@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat.schemas import ChatRequest, Spec
+from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
 from app.core import db, responses
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -78,6 +78,8 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
     "넣지 마라. 지금 조건을 옮겨 적을 필요 없다, 안 넣은 값은 그대로 "
     "유지된다.\n\n"
+    "최근 대화(참고용 — 이번 메시지가 가리키는 대상을 파악할 때만 참고하고, "
+    "여기 나온 값을 그대로 옮겨 적지 마라):\n{recent_turns}\n\n"
     "지금 조건(spec):\n{spec_json}\n\n"
     '이번 메시지: "{message}"\n\n'
     "intent를 이번에 새로 정할 때만 아래 둘 중 하나를 그 낱말 그대로 써라"
@@ -95,6 +97,16 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '{{"semantic": "비 오는 날 읽을 잔잔한 책", '
     '"filters": {{"in_stock_only": true}}}}'
 )
+
+
+def _format_recent_turns(turns: list[Turn]) -> str:
+    """최근 대화를 "user: …" 줄로 바꾼다. 없으면 빈 대화임을 알리는 문구.
+
+    명세: 최대 20턴, 초과분은 최근 20턴만 사용 — 뒤에서 MAX_RECENT_TURNS개만 자른다.
+    """
+    if not turns:
+        return "(최근 대화 없음)"
+    return "\n".join(f"{t.role}: {t.text}" for t in turns[-MAX_RECENT_TURNS:])
 
 
 def _merge_spec_patch(current: Spec, patch: dict) -> dict:
@@ -123,12 +135,18 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
     return merged
 
 
-async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
+async def update_spec(
+    message: str, spec: Spec, recent_turns: list[Turn]
+) -> tuple[Spec, bool]:
     """1단계 — 메시지로 spec을 갱신한다. 명세대로 LLM이 한다.
 
     LLM은 지금 조건 전체가 아니라 바뀌는 값만 담은 patch를 돌려주고,
     _merge_spec_patch가 지금 spec 위에 겹쳐 완전한 spec을 만든다(SPEC_PROMPT
     주석 참고).
+
+    recent_turns는 spec에 안 담기는 애매한 참조("아까 그 책 말고")를 이번
+    메시지가 뭘 가리키는지 판단하는 데만 쓴다. 서버는 대화를 저장하지 않으므로
+    (명세) 이번 호출이 끝나면 버려지고, 다음 턴에도 호출자가 다시 실어 보낸다.
 
     실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
     돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
@@ -140,6 +158,7 @@ async def update_spec(message: str, spec: Spec) -> tuple[Spec, bool]:
         patch = await invoke_chain(
             chain,
             {
+                "recent_turns": _format_recent_turns(recent_turns),
                 "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
                 "message": message,
             },
@@ -313,7 +332,7 @@ async def chat(request: Request) -> JSONResponse:
         status, message = req
         return responses.error(status, message)
 
-    spec, spec_degraded = await update_spec(req.message, req.spec)
+    spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
         candidates = await get_candidates(spec, req.exclude_book_ids)
     except Exception:
