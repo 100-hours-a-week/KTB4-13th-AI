@@ -293,6 +293,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
             },
         )
     except LLMUnavailableError:
+        logger.exception("카드 생성 실패")
         return [], True
 
     cards = []
