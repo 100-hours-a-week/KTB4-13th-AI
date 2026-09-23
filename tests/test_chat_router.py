@@ -143,6 +143,8 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     data = res.json()["data"]
     assert data["degraded"] is True
     assert data["cards"] == []
+    # 빈 말풍선을 보여주지 않는다(#123).
+    assert data["reply"] != ""
 
 
 def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
