@@ -123,6 +123,28 @@ def like_pattern(token: str) -> str:
     return f"%{escaped}%"
 
 
+_EXACT_TITLE_SQL = f"""
+SELECT book_id
+FROM v_books
+WHERE book_id = ANY($1::int[])
+  AND {_nospace("title")} = {_nospace("$2")}
+"""
+
+
+async def exact_title_ids(
+    conn: asyncpg.Connection, book_ids: list[int], query: str
+) -> set[int]:
+    """후보 중 제목이 검색어와 (공백 빼고) 똑같은 책.
+
+    13만 권을 다시 훑지 않고 이미 고른 후보 안에서만 본다. 제목이 검색어와 같은 책은 제목·저자를
+    글자 조각으로 훑는 후보 고르기에서 빠질 수 없으므로, 이렇게 해도 놓치는 책이 없다.
+    """
+    if not book_ids:
+        return set()
+    rows = await conn.fetch(_EXACT_TITLE_SQL, book_ids, query)
+    return {r["book_id"] for r in rows}
+
+
 async def search_ids(
     conn: asyncpg.Connection,
     query: str,
