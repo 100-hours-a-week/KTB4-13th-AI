@@ -250,8 +250,12 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "아래 책 목록 중 이 분위기에 어울리는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
+    "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
+    "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
+    "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
-    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)"}}]}}\n\n'
+    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
+    '"match_basis": [{{"label": "분위기", "detail": "잔잔함"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
 
@@ -266,13 +270,30 @@ def _format_listing(candidates: list[dict]) -> str:
     )
 
 
+def _parse_match_basis(raw: Any) -> list[dict]:
+    """모델이 준 match_basis를 정리한다. 형식이 틀리면 빈 배열로 폴백한다.
+
+    label·detail이 둘 다 문자열인 항목만 남긴다 — 모델이 리스트가 아닌 걸
+    주거나 항목에 다른 키를 섞어 보내도 카드 조립이 깨지지 않게 한다.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"label": item["label"], "detail": item["detail"]}
+        for item in raw
+        if isinstance(item, dict)
+        and isinstance(item.get("label"), str)
+        and isinstance(item.get("detail"), str)
+    ]
+
+
 async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict], bool]:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
-    명세는 reason_short·reason_long·match_basis를 한 번의 LLM 호출로 만들라고
-    한다. 지금은 match_basis 없이 reason_short·reason_long만 만드는 최소
-    구현이다. LLM 장애 시 degraded로 빈 카드를 돌려준다(명세 5단계 축소판 —
-    규칙 기반 대체는 아직 없음, 후속 이슈).
+    명세대로 reason_short·reason_long·match_basis를 한 번의 LLM 호출로
+    만든다(이슈 #139). match_basis는 모델이 형식을 안 지키면 빈 배열로
+    폴백한다(_parse_match_basis). LLM 장애 시 degraded로 빈 카드를 돌려준다
+    (명세 5단계 축소판 — 규칙 기반 대체는 아직 없음, 후속 이슈).
 
     돌려주는 튜플의 두 번째 값이 degraded 여부다.
     """
@@ -314,7 +335,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
                 "cover_url": book.get("cover_url"),
                 "reason_short": reason_short,
                 "reason_long": item.get("reason_long"),
-                "match_basis": [],
+                "match_basis": _parse_match_basis(item.get("match_basis")),
             }
         )
     return cards, False

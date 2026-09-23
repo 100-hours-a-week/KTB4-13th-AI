@@ -213,6 +213,84 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
 
 
+def test_카드_프롬프트에_match_basis_지시문과_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명세: reason_short·reason_long과 같은 근거로 match_basis도 한 번에 만든다(#139)."""
+    sent: list[str] = []
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(content=_spec_reply())
+        sent.append(prompt_value.to_messages()[0].content)  # 2단계 = 카드 생성.
+        return AIMessage(content='{"cards": []}')
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "match_basis는 reason_short" in prompt
+    assert '"match_basis": [{"label": "분위기", "detail": "잔잔함"}]' in prompt
+
+
+def test_LLM이_준_match_basis가_카드에_그대로_담긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"cards": [{"book_id": 1088, "reason_short": "이유", '
+        '"match_basis": [{"label": "분위기", "detail": "잔잔함"}, '
+        '{"label": "가격", "detail": "조건 충족"}]}]}'
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    card = res.json()["data"]["cards"][0]
+    assert card["match_basis"] == [
+        {"label": "분위기", "detail": "잔잔함"},
+        {"label": "가격", "detail": "조건 충족"},
+    ]
+
+
+def test_match_basis_형식이_틀리면_빈_배열로_폴백한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"cards": [{"book_id": 1088, "reason_short": "이유", '
+        '"match_basis": "잔잔한 분위기"}]}'  # 리스트가 아님
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.json()["data"]["cards"][0]["match_basis"] == []
+
+
+def test_parse_match_basis_형식_안_맞는_항목은_거른다() -> None:
+    raw = [
+        {"label": "분위기", "detail": "잔잔함"},
+        {"label": "가격"},  # detail 없음
+        {"detail": "판타지"},  # label 없음
+        "그냥 문자열",  # dict가 아님
+        {"label": 1, "detail": "숫자 라벨"},  # 타입이 틀림
+    ]
+    assert chat._parse_match_basis(raw) == [{"label": "분위기", "detail": "잔잔함"}]
+
+
+def test_parse_match_basis_리스트가_아니면_빈_배열() -> None:
+    assert chat._parse_match_basis("문자열") == []
+    assert chat._parse_match_basis(None) == []
+
+
 def _capture_spec_prompt(sent: list[str]) -> RunnableLambda:
     """1단계(spec 갱신) 프롬프트 글자를 sent에 담아두고, 2단계는 빈 카드로 통과시킨다."""
     call_count = 0
