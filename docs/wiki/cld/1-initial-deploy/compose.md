@@ -4,7 +4,7 @@ type: design
 group: cld-1
 owner: 미정
 status: 작성중
-updated: 2026-09-17
+updated: 2026-09-23
 sources:
   - 3-Docker-Compose-기반-배포-구조-설계.md
 order: 5
@@ -146,11 +146,12 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"
-      VECTOR_DB_DSN: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
-      VECTOR_DB_TABLE: "${VECTOR_DB_TABLE}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL}"
       WORKER_COUNT: "${WORKER_COUNT}"
       EXTERNAL_AI_API_KEY: "${EXTERNAL_AI_API_KEY}"
+      CURSOR_SIGNING_KEY: "${CURSOR_SIGNING_KEY}"
+      AI_SERVICE_TOKEN: "${AI_SERVICE_TOKEN}"
       TZ: Asia/Seoul
     networks:
       - ai_net
