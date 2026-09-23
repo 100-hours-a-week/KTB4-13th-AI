@@ -332,7 +332,9 @@ async def chat(request: Request) -> JSONResponse:
     return responses.success(
         "recommend_success",
         {
-            "reply": "" if degraded else "골라봤어요.",
+            "reply": "지금은 추천이 어려워요. 조건에 맞는 책을 찾아볼게요."
+            if degraded
+            else "골라봤어요.",
             "spec": spec.model_dump(),
             "recognition": None,
             "cards": cards,
