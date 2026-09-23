@@ -1,11 +1,12 @@
 """⑥ 취향 프로필 생성: POST /preferences/profile
 
 명세: docs/wiki/ai/1-model-api/spec.md ⑥ POST /preferences/profile
-LLM을 쓰지 않는다. 지금은 요청 검사와 응답 모양까지만 있고, 프로필이 없는 상태
-(cold_start)로 답한다. 이력 읽기·취향 벡터 계산·저장은 후속 이슈에서 붙인다(#89).
+LLM을 쓰지 않는다. 이력과 요청으로 취향 프로필을 다시 계산해 taste_profile 에 저장한다.
+멱등 처리와 같은 사용자의 동시 호출 처리는 후속 이슈다(#93).
 """
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -13,7 +14,10 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core import responses
+from app.profile import service
 from app.profile.schemas import ProfileRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/preferences", tags=["preferences"])
 
@@ -36,10 +40,17 @@ async def profile(request: Request) -> JSONResponse:
         # JSON 문법 오류와, UTF-8 이 아닌 본문(UnicodeDecodeError) 둘 다 ValueError 다.
         return responses.error(400, "invalid_request")
 
-    if parse_request(payload) is None:
+    req = parse_request(payload)
+    if req is None:
         return responses.error(400, "invalid_request")
 
-    # 계산·저장이 붙기 전이라 저장된 프로필이 없다. 0 은 "프로필 없음"이라 첫 실제 판(1)과 겹치지 않는다.
+    try:
+        cold_start, version = await service.rebuild(req)
+    except Exception:
+        # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
+        logger.exception("취향 프로필 생성 실패")
+        return responses.error(500, "internal_server_error")
+
     return responses.success(
-        "profile_success", {"cold_start": True, "profile_version": 0}
+        "profile_success", {"cold_start": cold_start, "profile_version": version}
     )
