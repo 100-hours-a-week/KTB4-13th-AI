@@ -9,6 +9,7 @@ from typing import Any
 import asyncpg
 
 from app.core import history, popularity
+from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
@@ -30,29 +31,47 @@ SELECT b.book_id, b.title, b.author, b.price, b.cover_url, b.in_stock
 FROM v_books b
 LEFT JOIN v_book_popularity p USING (book_id)
 WHERE NOT EXISTS (
-        SELECT 1 FROM v_user_purchases x WHERE x.user_id = $1 AND x.book_id = b.book_id)
+        SELECT 1 FROM v_user_purchases x
+        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.purchased_at <= $3)
   AND NOT EXISTS (
-        SELECT 1 FROM v_user_library x WHERE x.user_id = $1 AND x.book_id = b.book_id)
+        SELECT 1 FROM v_user_library x
+        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.added_at <= $3)
   AND NOT EXISTS (
         SELECT 1 FROM v_user_reviews x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.rating <= $2)
+        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.rating <= $2
+          AND x.created_at <= $3)
   {where}
 ORDER BY {order_by}
-LIMIT $3
+LIMIT $4 OFFSET $5
 """
 
 
-async def fetch(conn: asyncpg.Connection, req: FeedRequest) -> list[dict[str, Any]]:
-    """첫 페이지 size 권. 모두 cold_start 라 match_score 는 0 이다. 이어 붙이기는 #108."""
+async def fetch(
+    conn: asyncpg.Connection, req: FeedRequest, page: Page
+) -> tuple[list[dict[str, Any]], bool]:
+    """(이번 페이지 목록, 다음 페이지가 있는지). 모두 cold_start 라 match_score 는 0 이다.
+
+    커서를 받은 시각 뒤에 생긴 이력은 제외 대상에서 빼고 본다. 카드를 보고 돌아와 산 책이
+    다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
+    """
     # 필터는 ① 검색과 같은 조건식을 쓴다. 출간연도가 비어 있는 책은 연도 필터를 걸면 빠진다.
     filters = SearchFilters(
         category=req.category,
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    where, params = build_where(filters, first_param=4)
+    where, params = build_where(filters, first_param=6)
     sql = _SQL.format(where=where, order_by=_ORDER_BY[req.sort])
+    # 한 권 더 받아 본다. 더 있으면 다음 페이지 커서를 준다.
     rows = await conn.fetch(
-        sql, req.user_id, history.DISLIKED_MAX_RATING, req.size, *params
+        sql,
+        req.user_id,
+        history.DISLIKED_MAX_RATING,
+        page.issued_at,
+        req.size + 1,
+        page.offset,
+        *params,
     )
-    return [{**dict(r), "match_score": 0} for r in rows]
+    has_more = len(rows) > req.size
+    items = [{**dict(r), "match_score": 0} for r in rows[: req.size]]
+    return items, has_more
