@@ -4,6 +4,7 @@
 뽑아 그 안에서 점수를 매긴다. 탐색 폭과 필터는 ① 벡터 검색과 같게 둔다.
 """
 
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 import asyncpg
@@ -98,17 +99,35 @@ async def fetch(
         )
         catalog_max = await catalog_max_popularity(conn)
 
-    items = []
-    for row in rows:
-        score = scoring.match_score(
+    return rank(
+        rows,
+        req,
+        page,
+        lambda row: scoring.match_score(
             row["similarity"],
             tag_weights.get(row["category"]),
             row["popularity"],
             catalog_max,
-        )
-        if req.match_score_min is not None and score < req.match_score_min:
+        ),
+    )
+
+
+def rank(
+    rows: Iterable[Mapping[str, Any]],
+    req: FeedRequest,
+    page: Page,
+    score: Callable[[Mapping[str, Any]], int],
+) -> tuple[list[dict[str, Any]], bool]:
+    """후보를 채점해 점수 하한과 정렬을 적용하고 이번 페이지만 잘라 낸다.
+
+    벡터를 못 쓸 때의 목록(rule-only)도 같은 규칙을 써야 해서 따로 뺐다.
+    """
+    items = []
+    for row in rows:
+        match_score = score(row)
+        if req.match_score_min is not None and match_score < req.match_score_min:
             continue
-        items.append({**dict(row), "match_score": score})
+        items.append({**dict(row), "match_score": match_score})
 
     items.sort(key=_ORDER[req.sort])
     window = items[page.offset : page.offset + req.size]
