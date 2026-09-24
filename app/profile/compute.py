@@ -1,7 +1,7 @@
 """⑥ 취향 프로필 계산 — 취향 벡터, 태그 가중치, 판 번호. DB 없이 돈다.
 
-취향 벡터는 재료 벡터들의 가중평균이다(명세 ⑥). 재료는 좋아한 책·이력 책의 책 벡터와 취향 기억의
-문장 벡터다. 카테고리·태그 벡터는 아직 없다(#94).
+취향 벡터는 재료 벡터들의 가중평균이다(명세 ⑥). 재료는 좋아한 책·이력 책의 책 벡터, 취향 기억의
+문장 벡터, 온보딩에서 고른 카테고리·태그의 라벨 벡터다(#94).
 """
 
 import math
@@ -15,6 +15,11 @@ from app.core import categories
 # 좋아한 책은 사용자가 직접 고른 책이라 좋은 리뷰(2)와 같게 둔다.
 LIKED_BOOK_WEIGHT = 2.0
 MEMORY_WEIGHT = 1.0
+# 온보딩에서 고른 라벨은 몇 개를 고르든 모두 합쳐 이 비중을 나눠 가진다. 하나당 1이면 태그 9개가 책
+# 한 권을 9 : 2로 누른다. 좋아한 책(2)과 같게 두면 결이 다른 카테고리 하나가 그 책 쪽 목록을 거의 다
+# 밀어낸다(피드 위 20권 중 0–15%만 남음, #164). 카테고리는 ④ 채점의 카테고리 점수로도 들어가므로
+# 벡터에서는 기억 한 문장만큼만 둔다.
+LABELS_TOTAL_WEIGHT = 1.0
 ONBOARDING_TAG_WEIGHT = 1
 # 온보딩 카테고리는 대응표(#110)로 카탈로그 분류 점수로 풀어 이력의 카테고리 점수와 합친다. 직접 고른
 # 관심사라 핵심 분류는 좋은 리뷰 한 번(2)과 같게, 다른 내용이 섞인 일부 분류는 그 절반으로 둔다.
@@ -51,6 +56,14 @@ def book_weights(
         for book_id, weight in weights.items()
         if weight > 0 and book_id not in disliked
     }
+
+
+def label_parts(vectors: list[list[float]]) -> list[tuple[list[float], float]]:
+    """고른 라벨 벡터들에 LABELS_TOTAL_WEIGHT 를 똑같이 나눠 준다."""
+    if not vectors:
+        return []
+    each = LABELS_TOTAL_WEIGHT / len(vectors)
+    return [(vector, each) for vector in vectors]
 
 
 def centroid(parts: list[tuple[list[float], float]]) -> list[float] | None:
