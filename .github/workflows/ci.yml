@@ -84,7 +84,7 @@ jobs:
           push: false
           tags: bookjeok-ai:ci
           cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
-          cache-to: type=gha,mode=min,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
+          cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
 
   publish-image:
     name: Publish Docker image to ECR
@@ -119,4 +119,4 @@ jobs:
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
-          cache-to: type=gha,mode=min,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
+          cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
