@@ -12,7 +12,7 @@ from typing import Any
 import asyncpg
 
 from app.core import db
-from app.feed import cold_start, cursor, personalized
+from app.feed import cold_start, cursor, personalized, rule_only
 from app.feed.schemas import FeedRequest
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,9 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             # 답하고 헤더로 알린다(명세 ④). 좁게 잡으면 빠지는 게 생긴다(① 과 같은 판단).
             logger.exception("취향 벡터 조회 실패. 규칙 점수만으로 응답한다")
             cursor.check_mode(page, RULE_ONLY)
-            items, has_more = await cold_start.fetch(conn, req, page)
+            items, has_more = await rule_only.fetch(
+                conn, req, page, profile.tag_weights
+            )
             return _outcome(
                 page, req, items, has_more, RULE_ONLY, profile.version, RULE_ONLY
             )
