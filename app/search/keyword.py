@@ -37,6 +37,9 @@ DESCRIPTION_COVERAGE = 0.5
 # 책 수에 비례해 느려진다(266만 권에서 1초가 넘음, #120). 순서 없이 먼저 찾은 만큼만 가져오므로
 # 제목이 검색어와 똑같은 책은 따로 찾아 늘 넣는다(_same_title).
 LOOKUP_LIMIT = 500
+# 낱말이 여럿이면 모든 낱말이 든 책부터 찾는다. 낱말이 많을수록 그런 책은 오히려 줄어 채점할
+# 것이 몇 권 없다. 이만큼도 안 나오면(오타가 섞였거나 제목에 없는 말을 쳤을 때) 낱말마다 넓힌다.
+MIN_ALL_WORDS = 10
 
 # 후보는 제목·저자의 글자 조각 색인(pg_trgm)으로만 고른다. `<%` 는 낱말이 글 안 어딘가와
 # 비슷하면 참이다(기준은 pg_trgm.word_similarity_threshold, 기본 0.6). 조사가 붙은 말
@@ -52,6 +55,7 @@ LOOKUP_LIMIT = 500
 # 조인하면 낱말이 늘 때 PostgreSQL 이 색인을 버리고 표 전체를 훑는다(#120). 그래서 선을 넘을
 # 책이 전부 후보가 되지는 않는다. 흔한 낱말에서 순서 없이 잘리는 대신 제목이 검색어와 똑같은
 # 책은 늘 넣는다. 고정 표본 300권으로 잰 품질은 전과 같거나 나았다(#120).
+# 낱말이 여럿이면 모든 낱말이 든 책부터 찾고 모자랄 때만 낱말마다 넓힌다(MIN_ALL_WORDS).
 #
 # 제목은 공백을 뺀 형태와도 비교한다. "메타포워즈" 처럼 붙여 치면 "메타포 워즈" 와 글자
 # 조각이 절반만 겹쳐 선을 못 넘는다(이슈 #63). 일반 공백만 빼면 탭·전각공백·nbsp 로 띄어 쓴
@@ -139,6 +143,21 @@ def _cand_each_word(n_tokens: int, where: str) -> str:
     return (
         "cand AS (\n"
         f"    SELECT book_id FROM (\n{lookups}\n    ) each_word\n"
+        f"    UNION\n    {_same_title(where)}\n"
+        ")"
+    )
+
+
+def _cand_all_words(n_tokens: int, where: str) -> str:
+    """모든 낱말이 제목·저자에 든 책을 LOOKUP_LIMIT 권까지 모으고, 제목이 똑같은 책을 더한다."""
+    conds = "\n          AND ".join(_word_matches(i) for i in range(1, n_tokens + 1))
+    return (
+        "cand AS (\n"
+        "    SELECT book_id FROM (\n"
+        "        SELECT b.book_id FROM v_books b\n"
+        f"        WHERE {conds}{where}\n"
+        f"        LIMIT {int(LOOKUP_LIMIT)}\n"
+        "    ) all_words\n"
         f"    UNION\n    {_same_title(where)}\n"
         ")"
     )
@@ -233,5 +252,9 @@ async def search_ids(
         MIN_COVERAGE,
         *filter_params,
     ]
+    if len(tokens) >= 2:
+        rows = await _run(conn, _sql(_cand_all_words(len(tokens), where)), args)
+        if len(rows) >= MIN_ALL_WORDS:
+            return [r["book_id"] for r in rows]
     rows = await _run(conn, _sql(_cand_each_word(len(tokens), where)), args)
     return [r["book_id"] for r in rows]
