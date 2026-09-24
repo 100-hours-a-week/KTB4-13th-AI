@@ -339,7 +339,9 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
-    '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
+    "reply는 고른 책을 언급하며 사용자에게 말하듯 1-2문장으로 답하라(최대 200자).\n"
+    '다음 JSON 형식으로만 답하라: {{"reply": "말풍선에 보여줄 1-2문장", '
+    '"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "분위기", "detail": "잔잔함"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
@@ -373,18 +375,24 @@ def _parse_match_basis(raw: Any) -> list[dict]:
     ]
 
 
-async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict], bool]:
+async def generate_cards(
+    candidates: list[dict], spec: Spec
+) -> tuple[list[dict], str | None, bool]:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
-    명세대로 reason_short·reason_long·match_basis를 한 번의 LLM 호출로
-    만든다(이슈 #139). match_basis는 모델이 형식을 안 지키면 빈 배열로
-    폴백한다(_parse_match_basis). LLM 장애 시 degraded로 빈 카드를 돌려준다
-    (명세 5단계 축소판 — 규칙 기반 대체는 아직 없음, 후속 이슈).
+    명세대로 reason_short·reason_long·match_basis·말풍선 reply를 한 번의
+    LLM 호출로 만든다(이슈 #139, #158 — reply를 위해 새 호출을 늘리지 않고
+    카드 생성 호출에 얹는다). match_basis는 모델이 형식을 안 지키면 빈
+    배열로 폴백하듯(_parse_match_basis), reply도 문자열이 아니면 None으로
+    폴백한다 — candidates가 비어 호출 자체가 없었을 때와 같은 신호라,
+    호출부(chat())가 이 경우들을 규칙 기반 문구로 채운다. LLM 장애 시
+    degraded로 빈 카드를 돌려준다(명세 5단계 축소판 — 규칙 기반 대체는 아직
+    없음, 후속 이슈).
 
-    돌려주는 튜플의 두 번째 값이 degraded 여부다.
+    돌려주는 튜플은 (cards, reply, degraded) 세 값이다.
     """
     if not candidates:
-        return [], False
+        return [], None, False
 
     id_by_book = {c["book_id"]: c for c in candidates}
     # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
@@ -401,7 +409,11 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
         )
     except LLMUnavailableError:
         logger.exception("카드 생성 실패")
-        return [], True
+        return [], None, True
+
+    reply = parsed.get("reply")
+    if not isinstance(reply, str) or not reply.strip():
+        reply = None
 
     cards = []
     for rank, item in enumerate(parsed.get("cards", [])[:CARD_LIMIT], start=1):
@@ -425,7 +437,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
                 "match_basis": _parse_match_basis(item.get("match_basis")),
             }
         )
-    return cards, False
+    return cards, reply, False
 
 
 @router.post("/chat")
@@ -452,16 +464,27 @@ async def chat(request: Request) -> JSONResponse:
         # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위 3권을
         # 규칙으로 채우는 건 candidates에 점수 자체가 아직 없어(⑥ 의존) 못
         # 한다 — 후속 이슈.
-        cards, degraded = [], True
+        cards, llm_reply, degraded = [], None, True
     else:
-        cards, degraded = await generate_cards(candidates, spec)
+        cards, llm_reply, degraded = await generate_cards(candidates, spec)
+
+    # reply 우선순위(#158): LLM 장애 시엔 고정 안내, 정상 호출이면 그 턴의
+    # 추천을 반영한 LLM reply, 카드가 있는데 reply만 비면 최후 폴백, 카드
+    # 자체가 없으면(검색 결과 없음 등 — 이때는 generate_cards가 LLM을 아예
+    # 안 부르므로 llm_reply도 없다) "골라봤어요"가 어색해 못 찾음 안내로 바꾼다.
+    if degraded:
+        reply = "지금은 추천이 어려워요. 조건에 맞는 책을 찾아볼게요."
+    elif llm_reply:
+        reply = llm_reply
+    elif cards:
+        reply = "골라봤어요."
+    else:
+        reply = "조건에 맞는 책을 아직 못 찾았어요. 다른 조건으로 다시 찾아볼까요?"
 
     return responses.success(
         "recommend_success",
         {
-            "reply": "지금은 추천이 어려워요. 조건에 맞는 책을 찾아볼게요."
-            if degraded
-            else "골라봤어요.",
+            "reply": reply,
             "spec": spec.model_dump(),
             "recognition": None,
             "cards": cards,

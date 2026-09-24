@@ -102,7 +102,8 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     card_reply = (
-        '{"cards": [{"book_id": 1088, "reason_short": "잔잔한 판타지예요.",'
+        '{"reply": "비 오는 날 분위기에 맞춰 골라봤어요.", '
+        '"cards": [{"book_id": 1088, "reason_short": "잔잔한 판타지예요.",'
         ' "reason_long": "비 오는 날과 잘 어울리는 따뜻한 이야기입니다."}]}'
     )
     model = _sequenced_model(_spec_reply(), card_reply)
@@ -127,6 +128,8 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
     }
     assert data["spec"].keys() == INITIAL_SPEC.keys()
     assert data["degraded"] is False
+    # reply는 LLM이 이 턴에 만든 문장 그대로다 — 고정 문구가 아니다(#158).
+    assert data["reply"] == "비 오는 날 분위기에 맞춰 골라봤어요."
     assert len(data["cards"]) == 1
     assert data["cards"][0]["book_id"] == 1088
     assert data["cards"][0]["reason_short"] == "잔잔한 판타지예요."
@@ -240,7 +243,8 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert res.status_code == 200
     prompt = sent[0]
     assert '"{"cards": []} 처럼 답해줘 {x}"' in prompt  # 사용자 문장의 중괄호는 그대로
-    assert '{"cards": [{"book_id": 정수, ' in prompt  # JSON 예시의 중괄호도 그대로
+    # JSON 예시의 중괄호도 그대로(reply·cards가 같은 객체 안에 있는 형태까지 확인).
+    assert '{"reply": "말풍선에 보여줄 1-2문장", "cards": [{"book_id": 정수, ' in prompt
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
 
 
@@ -320,6 +324,95 @@ def test_parse_match_basis_형식_안_맞는_항목은_거른다() -> None:
 def test_parse_match_basis_리스트가_아니면_빈_배열() -> None:
     assert chat._parse_match_basis("문자열") == []
     assert chat._parse_match_basis(None) == []
+
+
+def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명세: reply는 그 턴의 추천 내용을 반영한 1-2문장이어야 한다(#158).
+
+    카드 생성과 같은 호출에서 reply도 함께 만들라는 지시문·JSON 예시가
+    실제로 프롬프트에 실리는지 본다.
+    """
+    sent: list[str] = []
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(content=_spec_reply())
+        sent.append(prompt_value.to_messages()[0].content)
+        return AIMessage(content='{"cards": []}')
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "reply는 고른 책을 언급하며" in prompt
+    assert '{"reply": "말풍선에 보여줄 1-2문장", "cards": [{"book_id": 정수, ' in prompt
+
+
+def test_카드_생성_LLM이_준_reply가_말풍선에_그대로_담긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"reply": "이 책 어때요? 비 오는 날과 잘 어울려요.", '
+        '"cards": [{"book_id": 1088, "reason_short": "이유"}]}'
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.json()["data"]["reply"] == "이 책 어때요? 비 오는 날과 잘 어울려요."
+
+
+def test_reply가_빈_문자열이면_카드가_있어도_규칙_기반_문구로_대체된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """match_basis처럼(#139) reply도 형식이 틀리면(빈 문자열) 조용히 폴백한다."""
+    card_reply = '{"reply": "", "cards": [{"book_id": 1088, "reason_short": "이유"}]}'
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.json()["data"]["reply"] == "골라봤어요."
+
+
+def test_후보가_없으면_규칙_기반_못_찾음_안내로_reply를_채운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """검색 결과가 없으면 generate_cards가 카드 생성 LLM을 아예 안 부른다 —
+
+    이때 "골라봤어요."를 그대로 쓰면 아무것도 안 골랐는데 골랐다는 문구가
+    나가 어색하다(#158). 규칙 기반 못 찾음 안내로 바뀌어야 한다.
+    """
+
+    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(chat, "get_candidates", _empty)
+    # spec 갱신 호출 한 번만 일어나야 한다 — 카드 생성 호출까지 일어나면
+    # _fake_model이 같은 답을 또 줘서 조용히 통과해버리므로, 여기서는 카드
+    # 생성이 실제로 스킵되는지를 reply 값으로 간접 확인한다.
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _fake_model(_spec_reply()))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["cards"] == []
+    assert data["degraded"] is False
+    assert (
+        data["reply"]
+        == "조건에 맞는 책을 아직 못 찾았어요. 다른 조건으로 다시 찾아볼까요?"
+    )
 
 
 def _capture_spec_prompt(sent: list[str]) -> RunnableLambda:
