@@ -57,6 +57,28 @@ def test_만들지_못하면_ERROR만_남기고_빈_채로_둔다(
     assert "라벨 벡터를 만들지 못했습니다" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("model_loaded", "already", "expected"),
+    [
+        (True, False, 1),  # 기동 때 못 만들었고 지금은 모델이 떠 있다
+        (True, True, 0),  # 이미 만들어 뒀다
+        (False, False, 0),  # 모델이 아직 없다. 요청 안에서 모델을 새로 읽지 않는다
+    ],
+)
+def test_비어_있고_모델이_떠_있을_때만_나중에_만든다(
+    monkeypatch: pytest.MonkeyPatch, model_loaded: bool, already: bool, expected: int
+) -> None:
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(labels.embedding, "embed", _fake_embed(calls))
+    monkeypatch.setattr(labels.embedding, "is_loaded", lambda: model_loaded)
+    if already:
+        monkeypatch.setattr(labels, "_vectors", {"소설": [1.0, 0.0]})
+
+    asyncio.run(labels.ensure_loaded())
+
+    assert len(calls) == expected
+
+
 class _NoDb:
     """lifespan 이 DB 에 하는 일을 모두 건너뛰는 가짜."""
 
