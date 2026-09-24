@@ -10,6 +10,7 @@ from app.core import cursor, db, responses
 from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding, llm
+from app.profile import labels
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI):
         # 모델이 없어도 DB 작업과 ⑧ /health 는 계속 돌아야 한다.
         # 상태는 /health 의 embedding 칸이 unavailable 로 알린다.
         logger.exception("임베딩 모델 예열 실패")
+    else:
+        # ⑥ 요청 중에는 모델을 부르지 않으므로 라벨 벡터를 여기서 미리 만든다.
+        await labels.load()
     yield
     # 앱이 내려갈 때
     await db.disconnect()
