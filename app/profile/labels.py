@@ -27,12 +27,24 @@ async def load() -> None:
     global _vectors
     try:
         vectors, _, _ = await embedding.embed(list(LABELS), _PURPOSE)
+        # 개수가 어긋나는 것도 실패로 본다. ⑥ 요청 안에서도 불리므로(ensure_loaded) 밖으로 새면 500 이 된다.
+        loaded = dict(zip(LABELS, vectors, strict=True))
     except Exception:
         logger.exception(
             "온보딩 라벨 벡터를 만들지 못했습니다. ⑥은 라벨을 빼고 계산합니다"
         )
         return
-    _vectors = dict(zip(LABELS, vectors, strict=True))
+    _vectors = loaded
+
+
+async def ensure_loaded() -> None:
+    """기동 때 못 만들었는데 지금은 모델이 떠 있으면 만든다. 모델을 새로 읽지는 않는다.
+
+    기동 때 모델이 실패했다가 ② 요청으로 나중에 뜨면, 이게 없을 때는 서버를 다시 켤 때까지 ⑥이
+    조용히 라벨을 빼고 계산한다. 라벨 13개는 0.1초 남짓이라 요청 안에서 만들어도 된다.
+    """
+    if not _vectors and embedding.is_loaded():
+        await load()
 
 
 def vector(label: str) -> list[float] | None:

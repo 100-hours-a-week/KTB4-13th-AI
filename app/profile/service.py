@@ -12,9 +12,9 @@ import asyncpg
 
 from app.core import db, history, idempotency
 from app.core.pgvector import to_vector_literal
-from app.profile import compute
+from app.profile import compute, labels
 from app.profile.compute import Profile
-from app.profile.schemas import ProfileRequest
+from app.profile.schemas import Onboarding, ProfileRequest
 
 # ⑦도 같은 멱등 테이블을 쓰므로 키 앞에 붙여 나눈다.
 IDEMPOTENCY_SCOPE = "profile"
@@ -59,6 +59,13 @@ async def _book_vectors(
     return {r["book_id"]: json.loads(r["embedding"]) for r in rows}
 
 
+async def _label_vectors(onboarding: Onboarding) -> list[list[float]]:
+    """고른 카테고리·태그 중 라벨 벡터가 있는 것. 목록에 없는 라벨은 태그 가중치에만 쓰인다."""
+    await labels.ensure_loaded()
+    picked = dict.fromkeys([*onboarding.categories, *onboarding.tags])
+    return [v for v in map(labels.vector, picked) if v is not None]
+
+
 async def _stored(conn: asyncpg.Connection, user_id: int) -> tuple[Profile, int] | None:
     row = await conn.fetchrow(_READ_SQL, user_id)
     if row is None:
@@ -97,6 +104,7 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
     parts = [(vectors[b], w) for b, w in weights.items() if b in vectors]
     parts += [(m.vector, compute.MEMORY_WEIGHT) for m in req.used_memories()]
+    parts += compute.label_parts(await _label_vectors(req.onboarding))
 
     centroid = compute.centroid(parts)
     profile = Profile(

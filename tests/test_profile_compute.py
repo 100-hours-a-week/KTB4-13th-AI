@@ -61,6 +61,19 @@ def test_사고_나서_싫다고_한_책도_뺀다() -> None:
     assert weights == {2: 3}
 
 
+def test_라벨은_몇_개를_고르든_비중_합이_같다() -> None:
+    one = compute.label_parts([[1.0, 0.0]])
+    three = compute.label_parts([[1.0, 0.0], [0.0, 1.0], [0.6, 0.8]])
+
+    assert [w for _, w in one] == [compute.LABELS_TOTAL_WEIGHT]
+    assert sum(w for _, w in three) == pytest.approx(compute.LABELS_TOTAL_WEIGHT)
+    assert len({w for _, w in three}) == 1
+
+
+def test_고른_라벨이_없으면_재료도_없다() -> None:
+    assert compute.label_parts([]) == []
+
+
 def test_태그_가중치는_온보딩_태그와_카테고리_점수를_합친다() -> None:
     weights = compute.tag_weights(["힐링", "에세이"], [], {"에세이": 3, "기타": -2})
 

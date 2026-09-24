@@ -13,7 +13,7 @@ import pytest
 
 from app.core import idempotency
 from app.core.pgvector import to_vector_literal
-from app.profile import service
+from app.profile import labels, service
 from app.profile.schemas import ProfileRequest
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
@@ -22,6 +22,14 @@ pytestmark = pytest.mark.skipif(
     not _DB_URL,
     reason="실제 PostgreSQL 이 필요하다. SEARCH_TEST_DATABASE_URL 에 주소를 준다",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """라벨 벡터는 테스트마다 직접 넣는다. 다른 테스트가 모델을 읽어 뒀어도 여기서 만들지 않는다."""
+    monkeypatch.setattr(labels, "_vectors", {})
+    monkeypatch.setattr(labels.embedding, "is_loaded", lambda: False)
+
 
 _USER = 9_100_001
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
@@ -119,6 +127,48 @@ def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력�
     assert weights["한국소설"] == 5
     assert weights["문학"] == 1
     assert "소설" not in weights
+
+
+def test_카테고리만_골라도_라벨_벡터로_취향_벡터를_만든다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 명세 ⑥: 이력이 없고 온보딩도 건너뛴 사용자만 cold_start 다.
+    monkeypatch.setattr(labels, "_vectors", {"소설": _unit(5)})
+
+    async def check(conn):
+        result = await service.rebuild_on(
+            conn, _request(onboarding={"categories": ["소설"]})
+        )
+        return result, await _row(conn)
+
+    (cold_start, _), row = _run(check)
+
+    assert cold_start is False
+    assert json.loads(row["centroid"]) == pytest.approx(_unit(5))
+
+
+def test_라벨은_모두_합쳐_기억_한_문장만큼_끌어당긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(labels, "_vectors", {"소설": _unit(5), "에세이": _unit(6)})
+
+    async def check(conn):
+        # 힐링은 라벨 목록에 없는 태그다. 벡터 재료에서만 빠지고 태그 가중치에는 남는다.
+        onboarding = {
+            "categories": ["소설", "에세이"],
+            "tags": ["힐링"],
+            "liked_book_ids": [9100201],
+        }
+        await service.rebuild_on(conn, _request(onboarding=onboarding))
+        return await _row(conn)
+
+    row = _run(check)
+
+    centroid = json.loads(row["centroid"])
+    # 좋아한 책(2) : 소설(1/2) : 에세이(1/2)
+    assert centroid[5] / centroid[0] == pytest.approx(0.25, rel=1e-5)
+    assert centroid[6] / centroid[0] == pytest.approx(0.25, rel=1e-5)
+    assert json.loads(row["tag_weights"])["힐링"] == 1
 
 
 def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_오른다() -> None:
