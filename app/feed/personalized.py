@@ -53,8 +53,14 @@ JOIN v_books b USING (book_id)
 LEFT JOIN v_book_popularity p USING (book_id)
 """
 
+# 점수는 정수라 같은 점수가 흔하다. 같으면 개인화를 끈 목록과 같게 인기 → 신간 → 번호 순이다.
 _ORDER = {
-    "match": lambda row: (-row["match_score"], row["book_id"]),
+    "match": lambda row: (
+        -row["match_score"],
+        -row["popularity"],
+        -(row["pub_year"] or 0),
+        row["book_id"],
+    ),
     "newest": lambda row: (-(row["pub_year"] or 0), row["book_id"]),
     "price_asc": lambda row: (row["price"], row["book_id"]),
 }
