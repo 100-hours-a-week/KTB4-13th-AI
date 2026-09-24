@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 
@@ -237,3 +238,33 @@ def test_벡터가_돌아오면_임시_목록의_커서는_끊는다(
             monkeypatch,
             personalized__fetch=_vector_up,
         )
+
+
+def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ⑥ 은 온보딩 때만 불려서, 그 뒤에 산 책은 여기서 더해야 순서에 들어간다(#175).
+    reflected = datetime(2026, 9, 1, tzinfo=UTC)
+    row = {**_PROFILE_ROW, "tag_weights": '{"에세이": 3}', "computed_at": reflected}
+    calls: list[tuple] = []
+
+    async def _recent(conn, user_id, reflected_at, until=None):
+        calls.append((user_id, reflected_at, until))
+        return {"에세이": 2, "경제학": 3}
+
+    async def _personalized(conn, req, page, centroid, tag_weights):
+        assert tag_weights == {"에세이": 5, "경제학": 3}
+        return [{"book_id": 9, "match_score": 80}], False
+
+    _run(
+        _req(),
+        row,
+        monkeypatch,
+        history__category_scores_since=_recent,
+        personalized__fetch=_personalized,
+    )
+
+    # 프로필이 반영한 시각 뒤부터, 이 목록을 처음 받은 시각까지만 본다.
+    ((user_id, after, until),) = calls
+    assert (user_id, after) == (1, reflected)
+    assert until is not None
