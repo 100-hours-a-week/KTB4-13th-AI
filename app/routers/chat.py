@@ -11,6 +11,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -38,6 +39,17 @@ CANDIDATE_LIMIT = 10
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
+
+# 출판사 비교용 잡음 — "(주)"·"주식회사"·공백. 카탈로그 표기가 "(주)현암사",
+# "현암주니어 :현암사"처럼 들쭉날쭉해, 이걸 지우고 포함 관계로 봐야 같은
+# 출판사가 표기 차이로 조용히 빠지지 않는다(리뷰 지적).
+_PUBLISHER_NOISE = re.compile(r"\(주\)|주식회사|\s+")
+
+
+def _normalize_publisher(name: str) -> str:
+    return _PUBLISHER_NOISE.sub("", name)
+
+
 CARD_LIMIT = 3
 
 
@@ -238,8 +250,14 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     if spec.exact.publisher:
         # _query_text()는 출판사를 검색어에 안 섞는다(위 docstring) — 그래서 여기서
         # 결과를 따로 거른다. exclude와 같은 이유로 CANDIDATE_LIMIT 전에 거른다.
-        publisher = spec.exact.publisher.strip()
-        pool = [r for r in pool if (r.get("publisher") or "").strip() == publisher]
+        # 완전 일치가 아니라 포함 관계로 본다 — "(주)현암사", "현암주니어 :현암사"처럼
+        # 표기가 섞여 있어 완전 일치면 같은 출판사가 조용히 빠진다(리뷰 지적).
+        publisher = _normalize_publisher(spec.exact.publisher)
+        pool = [
+            r
+            for r in pool
+            if publisher in _normalize_publisher(r.get("publisher") or "")
+        ]
     if not pool:
         return []
 

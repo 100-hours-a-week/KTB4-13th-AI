@@ -229,6 +229,36 @@ def test_publisher_비교는_공백을_무시한다(
     assert [c["book_id"] for c in result] == [1]
 
 
+def test_publisher_비교는_주식회사_표기_차이를_무시한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 리뷰에서 지적된 실제 표기 차이 — "(주)현암사"는 6,649권이 쓰는 "(주)"/주식회사
+    # 표기의 예, "현암주니어 :현암사"는 "브랜드 :출판사" 형태의 예다.
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(
+            results=[
+                _book(1, publisher="(주)현암사"),
+                _book(2, publisher="현암주니어 :현암사"),
+                _book(3, publisher="다른출판사"),
+            ],
+            degraded=None,
+        )
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, []))
+
+    assert [c["book_id"] for c in result] == [1, 2]
+
+
 def test_publisher_없는_책은_출판사_지정_시_후보에서_빠진다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
