@@ -29,6 +29,26 @@ def test_낱말은_MAX_TOKENS_개까지만_쓴다() -> None:
     assert len(keyword.tokenize(query)) == keyword.MAX_TOKENS
 
 
+def test_문장부호만_있는_낱말은_뺀다() -> None:
+    # 글자 조각 색인은 글자·숫자로만 조각을 만든다. `-` 같은 낱말은 색인을 못 타고 표 전체를 훑는다.
+    assert keyword.tokenize("- 워크북 : ·") == ["워크북"]
+
+
+def test_기호가_섞인_낱말은_남긴다() -> None:
+    assert keyword.tokenize("C++ (주)현암사") == ["c++", "(주)현암사"]
+
+
+def test_문장부호만_친_검색어는_DB에_묻지_않고_빈_결과다() -> None:
+    # 낱말이 없으면 DB 에 가기 전에 끝난다. 그래서 연결 없이도 돈다.
+    assert asyncio.run(keyword.search_ids(None, "- · :", SearchFilters())) == []
+
+
+def test_문장부호는_낱말_수_한도를_먹지_않는다() -> None:
+    words = [f"낱말{i}" for i in range(keyword.MAX_TOKENS)]
+
+    assert keyword.tokenize("- " + " ".join(words)) == words
+
+
 def test_낱말_속_와일드카드_글자를_막는다() -> None:
     assert keyword.like_pattern("100%_") == "%100\\%\\_%"
 
