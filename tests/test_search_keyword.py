@@ -110,6 +110,9 @@ _BOOKS = [
     (9100006, "퀼렌보르 사나톡", "아무개", 11000, True, "소설", 2021, None),
     # 전각공백으로 띄어 쓴 제목. 일반 공백만 지우면 붙여 친 검색어와 맞지 않는다.
     (9100007, "도리안토\u3000미르벨", "아무개", 11000, True, "소설", 2021, None),
+    # 모든 낱말이 든 책을 먼저 찾는지 본다. 둘째 책은 세 낱말 중 둘만 들어 있다.
+    (9100008, "벨로누아 헤스티르 카담네르", "아무개", 10000, True, "소설", 2020, None),
+    (9100009, "벨로누아 헤스티르", "아무개", 10000, True, "소설", 2020, None),
 ]
 
 
@@ -300,6 +303,36 @@ def _explain(query: str, cand_sql) -> str:
 def test_낱말마다_찾을_때_표_전체를_훑지_않는다(query: str) -> None:
     # 표 전체를 훑으면 느린 데다, 상한으로 자를 때마다 다른 책이 남아 페이지가 어긋난다(#148).
     assert "Seq Scan" not in _explain(query, keyword._cand_each_word)
+
+
+@needs_db
+def test_모든_낱말이_든_책이_충분하면_넓히지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 기준을 1권으로 낮춘다. 세 낱말이 모두 든 책이 한 권 있으니 넓히지 않고, 둘만 든 책은 빠진다.
+    monkeypatch.setattr(keyword, "MIN_ALL_WORDS", 1)
+
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "벨로누아 헤스티르 카담네르", SearchFilters())
+    )
+
+    assert ids == [9100008]
+
+
+@needs_db
+def test_모든_낱말이_든_책이_모자라면_낱말마다_넓힌다() -> None:
+    # 기본 기준(10권)보다 적으니 넓힌다. 둘만 든 책도 선(0.6)을 넘어 뒤에 붙는다.
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "벨로누아 헤스티르 카담네르", SearchFilters())
+    )
+
+    assert ids == [9100008, 9100009]
+
+
+@needs_db
+@pytest.mark.parametrize("query", ["즈믄가람 이야기", "즈믄가람 이야기 모음"])
+def test_모든_낱말을_찾을_때도_표_전체를_훑지_않는다(query: str) -> None:
+    assert "Seq Scan" not in _explain(query, keyword._cand_all_words)
 
 
 @needs_db
