@@ -103,6 +103,24 @@ def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다()
     assert row["computed_at"] == _T0
 
 
+def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        onboarding = {"categories": ["소설"], "liked_book_ids": [9100201]}
+        await service.rebuild_on(conn, _request(onboarding=onboarding))
+        return await _row(conn)
+
+    row = _run(check)
+
+    weights = json.loads(row["tag_weights"])
+    # 한국소설: 구매(3) + 소설의 핵심 분류(2). 문학은 소설의 일부 분류(1).
+    assert weights["한국소설"] == 5
+    assert weights["문학"] == 1
+    assert "소설" not in weights
+
+
 def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_오른다() -> None:
     async def check(conn):
         first = await service.rebuild_on(conn, _request())

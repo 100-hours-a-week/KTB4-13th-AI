@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.feed import cursor as cursor_module
 from app.feed.schemas import MAX_SIZE, FeedRequest, parse_query
 from app.feed.service import FeedOutcome
 from app.main import app
@@ -54,6 +55,29 @@ def test_온전한_응답에는_헤더가_없다() -> None:
     res = _get({"user_id": 123, "surface": "home"})
 
     assert "x-degraded" not in res.headers
+
+
+def test_못_쓰는_커서면_410이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _feed(req: FeedRequest) -> FeedOutcome:
+        raise cursor_module.CursorExpired
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+    res = _get({"user_id": 123, "surface": "home", "cursor": "아무개"})
+
+    assert res.status_code == 410
+    assert res.json() == {"message": "cursor_expired", "data": None}
+
+
+def test_다음_페이지_커서를_응답에_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _feed(req: FeedRequest) -> FeedOutcome:
+        return FeedOutcome(items=[_BOOK], next_cursor="eyJ.abc")
+
+    monkeypatch.setattr(feed_router.service, "feed", _feed)
+
+    res = _get({"user_id": 123, "surface": "home"})
+
+    assert res.json()["data"]["next_cursor"] == "eyJ.abc"
 
 
 def test_목록_조회가_실패하면_공통_형식의_500을_돌려준다(

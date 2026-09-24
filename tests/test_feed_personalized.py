@@ -13,6 +13,7 @@ import pytest
 
 from app.core.pgvector import to_vector_literal
 from app.feed import personalized
+from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
@@ -25,6 +26,7 @@ pytestmark = pytest.mark.skipif(
 _USER = 9_100_701
 _CATEGORY = "피드채점분류"
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
+_NOW = datetime(2026, 9, 30, tzinfo=UTC)
 DIM = 384
 
 
@@ -91,9 +93,12 @@ def _request(**params):
     )
 
 
-def _fetch(req, tag_weights=None):
+def _fetch(req, tag_weights=None, page=None):
     async def check(conn):
-        return await personalized.fetch(conn, req, _CENTROID, tag_weights or {})
+        items, _ = await personalized.fetch(
+            conn, req, page or Page(issued_at=_NOW), _CENTROID, tag_weights or {}
+        )
+        return items
 
     return _run(check)
 

@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, Literal
 
 import openai
 from langchain_core.language_models import BaseChatModel, FakeListChatModel
@@ -17,6 +17,18 @@ class LLMUnavailableError(Exception):
     provider 전용 예외(openai.APIError 등)를 여기서 이 타입으로 바꿔 던져서,
     호출하는 쪽은 어떤 provider를 쓰는지 몰라도 되게 한다(게이트웨이 원칙).
     """
+
+
+# ⑧ /health 의 llm 칸이 읽는 값. health가 호출될 때마다 LLM에 핑을 보내면
+# 비용·지연이 붙으므로, ③ 등 실제 요청이 invoke_chain을 지날 때 관측한 최근
+# 성공/실패를 대신 재사용한다. 기동 직후(첫 채팅 요청 전)엔 아직 관측된 실패가
+# 없으니 낙관적으로 ok로 시작한다.
+_llm_ok = True
+
+
+def last_known_status() -> Literal["ok", "unavailable"]:
+    """⑧ /health 의 llm 칸에 쓰는 값. 실시간 점검이 아니라 최근 관측값이다."""
+    return "ok" if _llm_ok else "unavailable"
 
 
 def get_chat_model() -> BaseChatModel:
@@ -64,20 +76,34 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
 
     체인을 직접 ainvoke 하면 호출부가 openai 예외를 알아야 한다. 체인은 반드시
     이 함수로 실행해서 게이트웨이 원칙(호출부는 provider를 모른다)을 지킨다.
+
+    성공·실패를 last_known_status()가 읽는 _llm_ok에도 남긴다 — ⑧ /health가
+    이 값을 재사용하므로, 이 함수를 거치지 않고 체인을 부르면 health가 최근
+    상태를 놓친다.
     """
+    global _llm_ok
     try:
-        return await chain.ainvoke(inputs)
+        result = await chain.ainvoke(inputs)
     except (openai.APIError, OpenAIRefusalError) as e:
         # 연결 끊김·타임아웃·rate limit·5xx 전부 APIError 하위. langchain-openai는
         # 이걸 OpenAIConnectionError·OpenAITimeoutError 등으로 감싸 던지는데,
         # 그중 OpenAIRefusalError만 Exception을 직접 상속해서 APIError로는 안
         # 잡히므로 따로 적는다. 이건 with_structured_output 경로에서 던져진다
         # (지금 json_object 경로에선 거부가 빈 content로 와서 parse 단계에서 걸림).
+        _llm_ok = False
         raise LLMUnavailableError(str(e)) from e
     except (IndexError, KeyError, TypeError) as e:
         # OpenAI 호환 서버가 choices를 빈 목록·null로 줄 때,
         # langchain-openai는 이걸 감싸지 않고 그대로 던진다.
+        _llm_ok = False
         raise LLMUnavailableError(f"LLM 응답 형식이 잘못됨: {e}") from e
+    except LLMUnavailableError:
+        # message_text·parse_json_response가 체인 안(같은 ainvoke 호출)에서 직접
+        # 던진 경우 — 위 두 except에 안 걸리고 여기로 온다.
+        _llm_ok = False
+        raise
+    _llm_ok = True
+    return result
 
 
 async def complete(prompt: str) -> str:

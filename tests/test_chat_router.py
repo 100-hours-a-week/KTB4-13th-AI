@@ -85,7 +85,7 @@ def _request(**overrides) -> dict:
 def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """DB를 안 타고 책 한 권짜리 후보를 돌려준다."""
 
-    async def _fake(spec, exclude_book_ids) -> list[dict]:
+    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
         return [
             {
                 "book_id": 1088,
@@ -150,10 +150,41 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     assert data["reply"] != ""
 
 
+def test_카드_생성_LLM_실패가_로그에_남는다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """1단계는 성공하고 3단계(카드 생성)만 실패하는 경우 — 로그가 남는지 본다(#141).
+
+    1단계 실패는 이미 logger.exception으로 남는데 3단계만 조용히 삼켰다 —
+    그러면 이 경로의 LLM 장애를 감지할 방법이 로그도 상태코드도 없다.
+    """
+    call_count = 0
+
+    def _dispatch(_prompt) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(content=_spec_reply())  # 1단계는 성공.
+        raise openai.APIConnectionError(  # 3단계에서 실패.
+            request=httpx.Request("POST", "http://localhost:11434/v1")
+        )
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    with caplog.at_level("ERROR", logger="app.routers.chat"):
+        res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is True
+    assert data["cards"] == []
+    assert "카드 생성 실패" in caplog.text
+
+
 def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(spec, exclude_book_ids) -> list[dict]:
+    async def _boom(spec, exclude_book_ids, user_id) -> list[dict]:
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(chat, "get_candidates", _boom)
@@ -363,7 +394,7 @@ def test_후보가_없으면_규칙_기반_못_찾음_안내로_reply를_채운�
     나가 어색하다(#158). 규칙 기반 못 찾음 안내로 바뀌어야 한다.
     """
 
-    async def _empty(spec, exclude_book_ids) -> list[dict]:
+    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
         return []
 
     monkeypatch.setattr(chat, "get_candidates", _empty)
