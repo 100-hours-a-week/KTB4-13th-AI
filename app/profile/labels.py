@@ -35,6 +35,16 @@ async def load() -> None:
     _vectors = dict(zip(LABELS, vectors, strict=True))
 
 
+async def ensure_loaded() -> None:
+    """기동 때 못 만들었는데 지금은 모델이 떠 있으면 만든다. 모델을 새로 읽지는 않는다.
+
+    기동 때 모델이 실패했다가 ② 요청으로 나중에 뜨면, 이게 없을 때는 서버를 다시 켤 때까지 ⑥이
+    조용히 라벨을 빼고 계산한다. 라벨 13개는 0.1초 남짓이라 요청 안에서 만들어도 된다.
+    """
+    if not _vectors and embedding.is_loaded():
+        await load()
+
+
 def vector(label: str) -> list[float] | None:
     """라벨의 벡터. 목록에 없는 라벨이거나 아직 못 만들었으면 None."""
     return _vectors.get(label)
