@@ -20,6 +20,9 @@ async def lifespan(app: FastAPI):
     # 앱이 뜰 때
     cursor.check_key()
     await db.connect()
+    # 색인이 빠지면 에러 없이 검색만 느려진다. 배포 로그에서 바로 보이게 한다.
+    async with db.get_pool().acquire() as conn:
+        await db.report_missing_search_indexes(conn)
     # 임베딩 모델을 미리 읽어 둔다. 첫 요청에서 읽으면 그 요청만 수 초 걸리고,
     # 모델 파일이 없거나 차원이 어긋난 것도 첫 호출에서야 드러난다.
     try:
