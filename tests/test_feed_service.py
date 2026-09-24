@@ -151,3 +151,72 @@ def test_마지막_페이지면_커서를_주지_않는다(monkeypatch: pytest.M
     outcome = _run(_req(), None, monkeypatch, cold_start__fetch=_cold)
 
     assert outcome.next_cursor is None
+
+
+_PROFILE_ROW = {
+    "centroid": "[0.1]",
+    "tag_weights": "{}",
+    "cold_start": False,
+    "profile_version": 1,
+}
+
+
+async def _vector_down(conn, req, page, centroid, tag_weights):
+    raise RuntimeError("벡터 색인 이상")
+
+
+async def _vector_up(conn, req, page, centroid, tag_weights):
+    return [{"book_id": 9, "match_score": 80}], False
+
+
+async def _rule_only_page(conn, req, page):
+    return [{"book_id": page.offset + 1, "match_score": 0}], True
+
+
+def _rule_only_cursor(monkeypatch: pytest.MonkeyPatch) -> str:
+    """벡터가 안 될 때 받은 첫 페이지의 다음 커서."""
+    first = _run(
+        _req(),
+        _PROFILE_ROW,
+        monkeypatch,
+        personalized__fetch=_vector_down,
+        cold_start__fetch=_rule_only_page,
+    )
+    assert first.degraded == service.RULE_ONLY
+    return first.next_cursor
+
+
+def test_벡터가_계속_안_되면_더보기도_이어서_준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 모드를 목록을 만들기 전에 비교하면 "이번엔 개인화겠지"로 단정해 410 을 낸다.
+    # 그러면 벡터 장애가 이어지는 동안 첫 페이지만 되풀이하게 된다(#135 리뷰).
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    cursor = _rule_only_cursor(monkeypatch)
+
+    second = _run(
+        _req(cursor=cursor),
+        _PROFILE_ROW,
+        monkeypatch,
+        personalized__fetch=_vector_down,
+        cold_start__fetch=_rule_only_page,
+    )
+
+    assert second.degraded == service.RULE_ONLY
+    assert [item["book_id"] for item in second.items] != [1]
+
+
+def test_벡터가_돌아오면_임시_목록의_커서는_끊는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 임시 목록과 개인화 목록은 순서가 달라 이어 붙일 수 없다(명세 ④).
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    cursor = _rule_only_cursor(monkeypatch)
+
+    with pytest.raises(service.cursor.CursorExpired):
+        _run(
+            _req(cursor=cursor),
+            _PROFILE_ROW,
+            monkeypatch,
+            personalized__fetch=_vector_up,
+        )
