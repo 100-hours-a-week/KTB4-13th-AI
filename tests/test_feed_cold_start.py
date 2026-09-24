@@ -5,12 +5,13 @@
 
 import asyncio
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
 from app.feed import cold_start
+from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
@@ -23,6 +24,8 @@ pytestmark = pytest.mark.skipif(
 _USER = 9100601
 _CATEGORY = "피드테스트분류"
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
+# 커서를 받은 시각. 위 이력보다 뒤라 제외가 그대로 걸린다.
+_NOW = datetime(2026, 9, 30, tzinfo=UTC)
 
 # (book_id, 가격, 출간연도)
 _BOOKS = [
@@ -39,7 +42,7 @@ _BOOKS = [
 _SALES = [(9100601, 10), (9100604, 5000)]
 
 
-def _list(params: list[tuple[str, str]], user_id: int = _USER) -> list[int]:
+def _fetch(params, user_id: int = _USER, page=None):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         tx = conn.transaction()
@@ -80,13 +83,19 @@ def _list(params: list[tuple[str, str]], user_id: int = _USER) -> list[int]:
                     *params,
                 ]
             )
-            rows = await cold_start.fetch(conn, req)
-            return [r["book_id"] for r in rows]
+            items, has_more = await cold_start.fetch(
+                conn, req, page or Page(issued_at=_NOW)
+            )
+            return [item["book_id"] for item in items], has_more
         finally:
             await tx.rollback()
             await conn.close()
 
     return asyncio.run(_go())
+
+
+def _list(params, user_id: int = _USER, page=None) -> list[int]:
+    return _fetch(params, user_id, page)[0]
 
 
 def test_기본은_인기순이고_인기_행이_없는_책은_신간순으로_뒤에_온다() -> None:
@@ -129,3 +138,25 @@ def test_다른_사용자의_이력으로는_빼지_않는다() -> None:
     ids = _list([], user_id=_USER + 1)
 
     assert {9100605, 9100606, 9100607} <= set(ids)
+
+
+def test_다음_페이지는_이어서_준다() -> None:
+    첫쪽, 더_있나 = _fetch([("size", "2")])
+    둘째쪽, _ = _fetch([("size", "2")], page=Page(offset=2, issued_at=_NOW))
+
+    assert 더_있나 is True
+    assert 첫쪽 == [9100604, 9100601]
+    assert 둘째쪽 == [9100602, 9100608]
+
+
+def test_마지막_페이지면_더_없다고_알린다() -> None:
+    _, 더_있나 = _fetch([("size", "50")])
+
+    assert 더_있나 is False
+
+
+def test_커서를_받은_뒤에_생긴_이력은_제외하지_않는다() -> None:
+    # 카드를 보고 돌아와 산 책이 다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
+    이전 = Page(issued_at=_T0 - timedelta(days=1))
+
+    assert 9100605 in _list([], page=이전)

@@ -11,6 +11,7 @@ import asyncpg
 from app.core import history, popularity
 from app.core.pgvector import to_vector_literal
 from app.feed import scoring
+from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
@@ -31,13 +32,14 @@ WITH nearest AS (
     JOIN v_books b USING (book_id)
     WHERE NOT EXISTS (
             SELECT 1 FROM v_user_purchases x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id)
+            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.purchased_at <= $5)
       AND NOT EXISTS (
             SELECT 1 FROM v_user_library x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id)
+            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.added_at <= $5)
       AND NOT EXISTS (
             SELECT 1 FROM v_user_reviews x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.rating <= $3)
+            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.rating <= $3
+              AND x.created_at <= $5)
       {{where}}
     ORDER BY distance
     LIMIT $4
@@ -65,16 +67,20 @@ async def catalog_max_popularity(conn: asyncpg.Connection) -> float | None:
 async def fetch(
     conn: asyncpg.Connection,
     req: FeedRequest,
+    page: Page,
     centroid: list[float],
     tag_weights: dict[str, float],
-) -> list[dict[str, Any]]:
-    """취향 벡터와 가까운 책을 뽑아 채점한 목록. 점수 하한과 정렬을 적용해 size 권을 돌려준다."""
+) -> tuple[list[dict[str, Any]], bool]:
+    """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다.
+
+    커서를 받은 시각 뒤에 생긴 이력은 제외 대상에서 빼고 본다(명세 ④).
+    """
     filters = SearchFilters(
         category=req.category,
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    where, filter_params = build_where(filters, first_param=5)
+    where, filter_params = build_where(filters, first_param=6)
     sql = _SQL.format(where=where)
 
     # SET LOCAL 은 트랜잭션 안에서만 먹는다(① 벡터 검색과 같은 방식).
@@ -87,6 +93,7 @@ async def fetch(
             req.user_id,
             history.DISLIKED_MAX_RATING,
             CANDIDATE_LIMIT,
+            page.issued_at,
             *filter_params,
         )
         catalog_max = await catalog_max_popularity(conn)
@@ -104,7 +111,9 @@ async def fetch(
         items.append({**dict(row), "match_score": score})
 
     items.sort(key=_ORDER[req.sort])
-    return [_response_item(row) for row in items[: req.size]]
+    window = items[page.offset : page.offset + req.size]
+    has_more = len(items) > page.offset + req.size
+    return [_response_item(row) for row in window], has_more
 
 
 def _response_item(row: dict[str, Any]) -> dict[str, Any]:
