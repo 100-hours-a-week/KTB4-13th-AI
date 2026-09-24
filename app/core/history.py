@@ -99,10 +99,43 @@ FROM (
     SELECT book_id, 'review', rating, created_at FROM v_user_reviews WHERE user_id = $1
 ) h
 LEFT JOIN v_books b USING (book_id)
+WHERE $2::timestamptz IS NULL OR h.at <= $2
 """
+
+
+async def _rows(
+    conn: asyncpg.Connection, user_id: int, until: datetime | None
+) -> list[dict[str, Any]]:
+    return [dict(r) for r in await conn.fetch(_SQL, user_id, until)]
 
 
 async def read(conn: asyncpg.Connection, user_id: int) -> History:
     """user_id 의 복제된 이력 3종을 읽어 모은다."""
-    rows = await conn.fetch(_SQL, user_id)
-    return summarize([dict(r) for r in rows])
+    return summarize(await _rows(conn, user_id, None))
+
+
+async def category_scores_since(
+    conn: asyncpg.Connection,
+    user_id: int,
+    reflected_at: datetime | None,
+    until: datetime | None = None,
+) -> dict[str, int]:
+    """프로필이 반영한 뒤(reflected_at 이후) 생긴 이력이 카테고리 점수를 얼마나 바꾸는지.
+
+    ③④ 가 채점할 때 프로필의 태그 가중치에 더한다(명세 ⑥). 뒤에 생긴 행만 따로 모아 더하지 않고
+    "until 까지 전체로 낸 점수 − reflected_at 까지로 낸 점수"로 낸다. 이미 산 책(3)에 나중에 좋은
+    리뷰(2)가 달리면 따로 모은 쪽은 2 를 더 더하지만, 책마다 큰 값 하나(명세)로는 그대로 3 이다.
+    이렇게 하면 ⑥ 을 다시 부른 것과 같은 값이 된다. reflected_at 이 비면 반영한 이력이 없다는 뜻이라
+    전부 더한다.
+    """
+    rows = await _rows(conn, user_id, until)
+    now = summarize(rows).category_scores
+    if reflected_at is None:
+        return now
+    before = summarize([r for r in rows if r["at"] <= reflected_at]).category_scores
+    changed = {}
+    for category in now.keys() | before.keys():
+        diff = now.get(category, 0) - before.get(category, 0)
+        if diff:
+            changed[category] = diff
+    return changed
