@@ -75,8 +75,9 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await cold_start.fetch(conn, req, page)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
-        # 앞 페이지와 모드가 같은지는 목록을 만들기 전에 본다(① 검색과 같은 순서).
-        cursor.check_mode(page, PERSONALIZED)
+        # 앞 페이지와 모드가 같은지는 목록을 만든 뒤에 본다(① 검색과 같은 순서). 먼저 보면
+        # 벡터가 안 되는 동안 받은 커서를 "이번엔 개인화겠지"로 단정해 끊어서, 장애가 이어지는
+        # 동안 첫 페이지만 되풀이하게 된다.
         try:
             items, has_more = await personalized.fetch(
                 conn, req, page, profile.centroid, profile.tag_weights
@@ -90,6 +91,7 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             return _outcome(
                 page, req, items, has_more, RULE_ONLY, profile.version, RULE_ONLY
             )
+        cursor.check_mode(page, PERSONALIZED)
 
     return _outcome(page, req, items, has_more, PERSONALIZED, profile.version)
 
