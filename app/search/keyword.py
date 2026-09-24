@@ -110,10 +110,15 @@ LIMIT $4
 
 
 def tokenize(query: str) -> list[str]:
-    """띄어쓰기로 나누고, 같은 낱말은 한 번만, 앞에서부터 MAX_TOKENS 개까지."""
+    """띄어쓰기로 나누고, 같은 낱말은 한 번만, 앞에서부터 MAX_TOKENS 개까지.
+
+    글자나 숫자가 하나도 없는 조각(`-`, `·`)은 뺀다. 글자 조각 색인은 글자·숫자로만 조각을
+    만들어서, 이런 낱말이 끼면 그 낱말은 색인을 못 타고 표 전체를 훑는다(#147).
+    """
     seen: dict[str, None] = {}
     for token in query.split():
-        seen.setdefault(token.lower(), None)
+        if any(ch.isalnum() for ch in token):
+            seen.setdefault(token.lower(), None)
     return list(seen)[:MAX_TOKENS]
 
 
