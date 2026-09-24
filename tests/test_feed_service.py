@@ -26,8 +26,14 @@ class _FakeConn:
         return self._row
 
 
+async def _no_recent_history(conn, user_id, reflected_at, until=None):
+    return {}
+
+
 def _run(req, profile_row, monkeypatch, **fakes):
     monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool(profile_row))
+    # 프로필 뒤에 생긴 이력(#175)은 따로 보는 테스트가 아니면 없다고 둔다.
+    fakes.setdefault("history__category_scores_since", _no_recent_history)
     for name, fn in fakes.items():
         module, attr = name.split("__")
         monkeypatch.setattr(getattr(service, module), attr, fn)
@@ -61,6 +67,7 @@ def test_취향_벡터를_못_만든_사용자도_같은_길로_간다(
         "tag_weights": "{}",
         "cold_start": True,
         "profile_version": 0,
+        "computed_at": None,
     }
 
     async def _cold(conn, req, page):
@@ -90,6 +97,7 @@ def test_프로필이_있으면_채점한_목록을_준다(monkeypatch: pytest.M
         "tag_weights": '{"에세이": 3}',
         "cold_start": False,
         "profile_version": 2,
+        "computed_at": None,
     }
 
     async def _personalized(conn, req, page, centroid, tag_weights):
@@ -111,6 +119,7 @@ def test_벡터_조회가_안_되면_규칙_점수만으로_답하고_알린다(
         "tag_weights": "{}",
         "cold_start": False,
         "profile_version": 1,
+        "computed_at": None,
     }
 
     async def _personalized(conn, req, page, centroid, tag_weights):
@@ -165,6 +174,7 @@ _PROFILE_ROW = {
     "tag_weights": "{}",
     "cold_start": False,
     "profile_version": 1,
+    "computed_at": None,
 }
 
 
