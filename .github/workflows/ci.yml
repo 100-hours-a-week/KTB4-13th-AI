@@ -4,7 +4,10 @@ on:
   pull_request:
     branches:
       - main
-      - "feature/**"
+    types: [opened, reopened, synchronize]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -16,6 +19,7 @@ concurrency:
 jobs:
   quality:
     name: Lint and test
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -59,6 +63,7 @@ jobs:
 
   docker-build:
     name: Verify Docker build
+    if: github.event_name == 'pull_request'
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -79,4 +84,39 @@ jobs:
           push: false
           tags: bookjeok-ai:ci
           cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
-          cache-to: type=gha,mode=min,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
+          cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
+
+  publish-image:
+    name: Publish Docker image to ECR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0 # v4.3.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+
+      - name: Build and push SHA image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
+          cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
