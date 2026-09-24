@@ -27,12 +27,14 @@ async def load() -> None:
     global _vectors
     try:
         vectors, _, _ = await embedding.embed(list(LABELS), _PURPOSE)
+        # 개수가 어긋나는 것도 실패로 본다. ⑥ 요청 안에서도 불리므로(ensure_loaded) 밖으로 새면 500 이 된다.
+        loaded = dict(zip(LABELS, vectors, strict=True))
     except Exception:
         logger.exception(
             "온보딩 라벨 벡터를 만들지 못했습니다. ⑥은 라벨을 빼고 계산합니다"
         )
         return
-    _vectors = dict(zip(LABELS, vectors, strict=True))
+    _vectors = loaded
 
 
 async def ensure_loaded() -> None:
