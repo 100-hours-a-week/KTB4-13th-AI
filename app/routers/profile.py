@@ -2,7 +2,7 @@
 
 명세: docs/wiki/ai/1-model-api/spec.md ⑥ POST /preferences/profile
 LLM을 쓰지 않는다. 이력과 요청으로 취향 프로필을 다시 계산해 taste_profile 에 저장한다.
-멱등 처리와 같은 사용자의 동시 호출 처리는 후속 이슈다(#93).
+같은 멱등 키·같은 본문이면 저장한 응답을, 같은 키·다른 본문이면 409 를 돌려준다.
 """
 
 import json
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core import responses
+from app.core import idempotency, responses
 from app.profile import service
 from app.profile.schemas import ProfileRequest
 
@@ -45,12 +45,13 @@ async def profile(request: Request) -> JSONResponse:
         return responses.error(400, "invalid_request")
 
     try:
-        cold_start, version = await service.rebuild(req)
+        response = await service.rebuild(req, idempotency.body_hash(payload))
+    except idempotency.IdempotencyConflict:
+        # 재시도가 아니라 다른 요청이다. 호출자는 재시도를 멈춰야 한다(명세 ⑥).
+        return responses.error(409, "idempotency_conflict")
     except Exception:
         # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
         logger.exception("취향 프로필 생성 실패")
         return responses.error(500, "internal_server_error")
 
-    return responses.success(
-        "profile_success", {"cold_start": cold_start, "profile_version": version}
-    )
+    return responses.success(response["message"], response["data"])

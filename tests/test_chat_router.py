@@ -147,6 +147,37 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     assert data["reply"] != ""
 
 
+def test_카드_생성_LLM_실패가_로그에_남는다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """1단계는 성공하고 3단계(카드 생성)만 실패하는 경우 — 로그가 남는지 본다(#141).
+
+    1단계 실패는 이미 logger.exception으로 남는데 3단계만 조용히 삼켰다 —
+    그러면 이 경로의 LLM 장애를 감지할 방법이 로그도 상태코드도 없다.
+    """
+    call_count = 0
+
+    def _dispatch(_prompt) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(content=_spec_reply())  # 1단계는 성공.
+        raise openai.APIConnectionError(  # 3단계에서 실패.
+            request=httpx.Request("POST", "http://localhost:11434/v1")
+        )
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    with caplog.at_level("ERROR", logger="app.routers.chat"):
+        res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is True
+    assert data["cards"] == []
+    assert "카드 생성 실패" in caplog.text
+
+
 def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,6 +242,84 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert '"{"cards": []} 처럼 답해줘 {x}"' in prompt  # 사용자 문장의 중괄호는 그대로
     assert '{"cards": [{"book_id": 정수, ' in prompt  # JSON 예시의 중괄호도 그대로
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
+
+
+def test_카드_프롬프트에_match_basis_지시문과_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명세: reason_short·reason_long과 같은 근거로 match_basis도 한 번에 만든다(#139)."""
+    sent: list[str] = []
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(content=_spec_reply())
+        sent.append(prompt_value.to_messages()[0].content)  # 2단계 = 카드 생성.
+        return AIMessage(content='{"cards": []}')
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "match_basis는 reason_short" in prompt
+    assert '"match_basis": [{"label": "분위기", "detail": "잔잔함"}]' in prompt
+
+
+def test_LLM이_준_match_basis가_카드에_그대로_담긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"cards": [{"book_id": 1088, "reason_short": "이유", '
+        '"match_basis": [{"label": "분위기", "detail": "잔잔함"}, '
+        '{"label": "가격", "detail": "조건 충족"}]}]}'
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    card = res.json()["data"]["cards"][0]
+    assert card["match_basis"] == [
+        {"label": "분위기", "detail": "잔잔함"},
+        {"label": "가격", "detail": "조건 충족"},
+    ]
+
+
+def test_match_basis_형식이_틀리면_빈_배열로_폴백한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"cards": [{"book_id": 1088, "reason_short": "이유", '
+        '"match_basis": "잔잔한 분위기"}]}'  # 리스트가 아님
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.json()["data"]["cards"][0]["match_basis"] == []
+
+
+def test_parse_match_basis_형식_안_맞는_항목은_거른다() -> None:
+    raw = [
+        {"label": "분위기", "detail": "잔잔함"},
+        {"label": "가격"},  # detail 없음
+        {"detail": "판타지"},  # label 없음
+        "그냥 문자열",  # dict가 아님
+        {"label": 1, "detail": "숫자 라벨"},  # 타입이 틀림
+    ]
+    assert chat._parse_match_basis(raw) == [{"label": "분위기", "detail": "잔잔함"}]
+
+
+def test_parse_match_basis_리스트가_아니면_빈_배열() -> None:
+    assert chat._parse_match_basis("문자열") == []
+    assert chat._parse_match_basis(None) == []
 
 
 def _capture_spec_prompt(sent: list[str]) -> RunnableLambda:
@@ -281,6 +390,33 @@ def test_recent_turns가_20턴_넘으면_최근_20개만_쓴다(
     assert "턴24" in prompt  # 가장 최근
     assert "턴5" in prompt  # 최근 20개(인덱스 5~24)의 첫 턴
     assert "턴0" not in prompt  # 20개를 넘어가 잘려나감
+
+
+def test_SPEC_PROMPT에_톤_조정_지시문과_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분위기·톤 조정 표현을 semantic에 반영하라는 지시문·예시가 실제로 프롬프트에
+
+    나가는지 본다(#132). "너무 무겁지 않은 걸로" 같은 말이 지시문 없이는
+    버려지는 문제였다 — 실제 반영 여부는 가짜 모델로는 확인할 수 없으니(모델이
+    고정 답만 돌려줌), 여기서는 지시문·예시가 프롬프트에 실제로 포함되는지만
+    본다. 실제 LLM(Ollama) 검증 결과는 PR 본문에 남긴다.
+    """
+    sent: list[str] = []
+
+    def _dispatch(prompt_value) -> AIMessage:
+        sent.append(prompt_value.to_messages()[0].content)
+        return AIMessage(content=_spec_reply())
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "분위기나 톤을" in prompt
+    assert "통째로 다시 써라" in prompt
+    assert '"semantic": "비 오는 날 읽을 무겁지 않은 책"' in prompt
 
 
 def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(

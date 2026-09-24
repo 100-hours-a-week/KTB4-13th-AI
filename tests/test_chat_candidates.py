@@ -86,6 +86,15 @@ def test_아무것도_없으면_빈_문자열() -> None:
     assert chat._query_text(_spec()) == ""
 
 
+def test_출판사만_있으면_출판사를_검색어로_쓴다() -> None:
+    # 제목·저자·semantic이 다 비면, 출판사라도 검색어로 써야 service.search()까지
+    # 가서 get_candidates()의 publisher 후처리 필터가 걸릴 기회가 생긴다(이슈 #137).
+    spec = _spec(
+        intent="exact", exact=SpecExact(title=None, author=None, publisher="현암사")
+    )
+    assert chat._query_text(spec) == "현암사"
+
+
 def test_검색어가_없으면_service_search를_안_부르고_빈_후보(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,6 +189,107 @@ def test_소개글_없는_책은_CANDIDATE_LIMIT_자리를_안_먹는다(
     book_ids = [c["book_id"] for c in result]
     assert 1 not in book_ids
     assert chat.CANDIDATE_LIMIT + 1 in book_ids  # 밀려난 책이 빈 자리를 채운다
+
+
+def test_publisher가_지정되면_다른_출판사_책은_후보에서_빠진다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(
+            results=[
+                _book(1, publisher="현암사"),
+                _book(2, publisher="다른출판사"),
+                _book(3, publisher="현암사"),
+            ],
+            degraded=None,
+        )
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1, 3]
+
+
+def test_publisher_비교는_공백을_무시한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=[_book(1, publisher=" 현암사 ")], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1]
+
+
+def test_publisher_비교는_주식회사_표기_차이를_무시한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 리뷰에서 지적된 실제 표기 차이 — "(주)현암사"는 6,649권이 쓰는 "(주)"/주식회사
+    # 표기의 예, "현암주니어 :현암사"는 "브랜드 :출판사" 형태의 예다.
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(
+            results=[
+                _book(1, publisher="(주)현암사"),
+                _book(2, publisher="현암주니어 :현암사"),
+                _book(3, publisher="다른출판사"),
+            ],
+            degraded=None,
+        )
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1, 2]
+
+
+def test_publisher_없는_책은_출판사_지정_시_후보에서_빠진다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # books.py 주석대로 publisher가 null인 책이 있다 — .get()이 없으면 AttributeError.
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=[_book(1, publisher=None)], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="마음", author=None, publisher="현암사"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert result == []
 
 
 def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(

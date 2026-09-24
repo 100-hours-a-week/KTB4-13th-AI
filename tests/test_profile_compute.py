@@ -62,13 +62,20 @@ def test_사고_나서_싫다고_한_책도_뺀다() -> None:
 
 
 def test_태그_가중치는_온보딩_태그와_카테고리_점수를_합친다() -> None:
-    weights = compute.tag_weights(["힐링", "에세이"], {"에세이": 3, "기타": -2})
+    weights = compute.tag_weights(["힐링", "에세이"], [], {"에세이": 3, "기타": -2})
 
     assert weights == {"힐링": 1, "에세이": 4, "기타": -2}
 
 
+def test_온보딩_카테고리는_카탈로그_분류로_풀어_이력_점수에_더한다() -> None:
+    # 여행은 지리(핵심)로 풀린다. 이름 그대로("여행")는 넣지 않는다 — ④는 책의 분류로 찾는다.
+    weights = compute.tag_weights([], ["여행"], {"지리": 3})
+
+    assert weights == {"지리": 3 + compute.ONBOARDING_CORE_WEIGHT}
+
+
 def test_합이_0인_태그는_뺀다() -> None:
-    assert compute.tag_weights([], {"에세이": 0}) == {}
+    assert compute.tag_weights([], [], {"에세이": 0}) == {}
 
 
 def _profile(centroid=None, tags=None, cold_start=False) -> Profile:

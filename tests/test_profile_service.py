@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from app.core import idempotency
 from app.core.pgvector import to_vector_literal
 from app.profile import service
 from app.profile.schemas import ProfileRequest
@@ -102,6 +103,24 @@ def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다()
     assert row["computed_at"] == _T0
 
 
+def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        onboarding = {"categories": ["소설"], "liked_book_ids": [9100201]}
+        await service.rebuild_on(conn, _request(onboarding=onboarding))
+        return await _row(conn)
+
+    row = _run(check)
+
+    weights = json.loads(row["tag_weights"])
+    # 한국소설: 구매(3) + 소설의 핵심 분류(2). 문학은 소설의 일부 분류(1).
+    assert weights["한국소설"] == 5
+    assert weights["문학"] == 1
+    assert "소설" not in weights
+
+
 def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_오른다() -> None:
     async def check(conn):
         first = await service.rebuild_on(conn, _request())
@@ -131,3 +150,86 @@ def test_재료가_없으면_cold_start로_저장한다() -> None:
     assert (cold_start, version) == (True, 1)
     assert row["centroid"] is None
     assert row["computed_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# 멱등 처리와 사용자별 차례 처리 (#93)
+# ---------------------------------------------------------------------------
+
+
+def test_같은_키와_본문이면_다시_계산하지_않고_저장한_응답을_준다() -> None:
+    async def check(conn):
+        first = await service.rebuild_once_on(conn, _request(), "hash-a")
+        # 그사이 구매가 생겨도, 재시도는 처음 응답을 그대로 받고 프로필도 다시 쓰지 않는다.
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        again = await service.rebuild_once_on(conn, _request(), "hash-a")
+        return first, again, await _row(conn)
+
+    first, again, row = _run(check)
+
+    assert again == first
+    assert first["data"] == {"cold_start": False, "profile_version": 1}
+    assert json.loads(row["tag_weights"]) == {"힐링": 1}
+
+
+def test_같은_키에_다른_본문이면_409이고_프로필을_바꾸지_않는다() -> None:
+    async def check(conn):
+        await service.rebuild_once_on(conn, _request(), "hash-a")
+        with pytest.raises(idempotency.IdempotencyConflict):
+            await service.rebuild_once_on(
+                conn, _request(onboarding={"tags": ["성장"]}), "hash-b"
+            )
+        return await _row(conn)
+
+    row = _run(check)
+
+    assert json.loads(row["tag_weights"]) == {"힐링": 1}
+    assert row["profile_version"] == 1
+
+
+def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_번호가_두_번_오른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 두 연결이 서로의 기록을 봐야 해서 트랜잭션을 되돌리는 방식을 못 쓴다. 넣고 끝나면 지운다.
+    user = 9_100_301
+    real_read = service.history.read
+
+    async def slow_read(conn, user_id):
+        # 둘이 확실히 겹치게, 이력을 읽은 뒤 잠깐 멈춘다. 잠금이 없으면 둘 다 판 번호 0을 보고 1을 쓴다.
+        result = await real_read(conn, user_id)
+        await asyncio.sleep(0.3)
+        return result
+
+    monkeypatch.setattr(service.history, "read", slow_read)
+
+    async def go():
+        conns = [await asyncpg.connect(_DB_URL) for _ in range(2)]
+        try:
+            requests = [
+                ProfileRequest.model_validate(
+                    {
+                        "user_id": user,
+                        "idempotency_key": key,
+                        "onboarding": {"tags": [tag]},
+                    }
+                )
+                for key, tag in (("k1", "힐링"), ("k2", "성장"))
+            ]
+            results = await asyncio.gather(
+                *(
+                    service.rebuild_once_on(conn, req, req.idempotency_key)
+                    for conn, req in zip(conns, requests, strict=True)
+                )
+            )
+            return sorted(r["data"]["profile_version"] for r in results)
+        finally:
+            await conns[0].execute("DELETE FROM taste_profile WHERE user_id = $1", user)
+            await conns[0].execute(
+                "DELETE FROM idempotency_records WHERE idempotency_key LIKE 'profile:k_'"
+            )
+            for conn in conns:
+                await conn.close()
+
+    assert asyncio.run(go()) == [1, 2]

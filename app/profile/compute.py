@@ -8,12 +8,18 @@ import math
 import struct
 from dataclasses import dataclass
 
-# 명세는 이력의 비중(구매 3, 리뷰 4.0점 이상 2, 담기 1)만 정했다. 아래 셋은 우리가 정한 임시값이다(#94).
+from app.core import categories
+
+# 명세는 이력의 비중(구매 3, 리뷰 4.0점 이상 2, 담기 1)만 정했다. 아래는 우리가 정한 임시값이다(#94, #109).
 # 바꿀 때는 여기만 고친다. 저장된 프로필은 ⑥이 다시 불릴 때까지 옛 값이다.
 # 좋아한 책은 사용자가 직접 고른 책이라 좋은 리뷰(2)와 같게 둔다.
 LIKED_BOOK_WEIGHT = 2.0
 MEMORY_WEIGHT = 1.0
 ONBOARDING_TAG_WEIGHT = 1
+# 온보딩 카테고리는 대응표(#110)로 카탈로그 분류 점수로 풀어 이력의 카테고리 점수와 합친다. 직접 고른
+# 관심사라 핵심 분류는 좋은 리뷰 한 번(2)과 같게, 다른 내용이 섞인 일부 분류는 그 절반으로 둔다.
+ONBOARDING_CORE_WEIGHT = 2
+ONBOARDING_PARTIAL_WEIGHT = 1
 
 
 @dataclass
@@ -67,12 +73,21 @@ def centroid(parts: list[tuple[list[float], float]]) -> list[float] | None:
     return [x / norm for x in total]
 
 
-def tag_weights(tags: list[str], category_scores: dict[str, int]) -> dict[str, int]:
-    """온보딩 태그와 이력의 카테고리 점수를 한 맵으로 합친다. 합이 0인 칸은 뺀다.
+def tag_weights(
+    tags: list[str], onboarding_categories: list[str], category_scores: dict[str, int]
+) -> dict[str, int]:
+    """온보딩 태그·카테고리와 이력의 카테고리 점수를 한 맵으로 합친다. 합이 0인 칸은 뺀다.
 
-    기억 종류 집계와 읽는 시간대·고르는 기준은 명세에 합치는 방법이 없어 아직 넣지 않는다(#92).
+    온보딩 카테고리는 이름 그대로가 아니라 카탈로그 분류로 풀어 넣는다. ④가 책의 `category` 로 점수를
+    찾기 때문이다. 기억 종류 집계와 읽는 시간대·고르는 기준은 명세에 합치는 방법이 없어 아직 넣지
+    않는다(#92).
     """
     weights = dict(category_scores)
+    picked = categories.catalog_scores(
+        onboarding_categories, ONBOARDING_CORE_WEIGHT, ONBOARDING_PARTIAL_WEIGHT
+    )
+    for category, points in picked.items():
+        weights[category] = weights.get(category, 0) + points
     for tag in tags:
         weights[tag] = weights.get(tag, 0) + ONBOARDING_TAG_WEIGHT
     return {key: value for key, value in weights.items() if value}

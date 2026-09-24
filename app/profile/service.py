@@ -1,18 +1,28 @@
 """⑥ 취향 프로필을 다시 만들어 taste_profile 에 저장한다.
 
-부를 때마다 전부 다시 계산한다(명세 ⑥). 멱등 처리와 같은 사용자의 동시 호출 처리는 #93 이다.
+부를 때마다 전부 다시 계산한다(명세 ⑥). 같은 멱등 키로 다시 오면 계산하지 않고 저장한 응답을
+돌려주고, 같은 사용자의 요청은 하나씩 차례로 처리한다(명세 ⑥, #93).
 """
 
 import json
 from datetime import datetime
+from typing import Any
 
 import asyncpg
 
-from app.core import db, history
+from app.core import db, history, idempotency
 from app.core.pgvector import to_vector_literal
 from app.profile import compute
 from app.profile.compute import Profile
 from app.profile.schemas import ProfileRequest
+
+# ⑦도 같은 멱등 테이블을 쓰므로 키 앞에 붙여 나눈다.
+IDEMPOTENCY_SCOPE = "profile"
+
+# 사용자별 잠금. pg_advisory_xact_lock(앞, 뒤) 두 숫자 형태의 앞 숫자로, 다른 곳의 잠금과
+# 번호가 겹치지 않게 API 번호(⑥)를 쓴다. 행 잠금이 아니라 숫자에 거는 잠금이라 첫 호출(프로필 행이
+# 아직 없음)에도 걸리고, 트랜잭션이 끝나면 저절로 풀린다.
+_LOCK_SPACE = 6
 
 _EMBEDDINGS_SQL = """
 SELECT book_id, embedding::text AS embedding
@@ -78,7 +88,7 @@ async def _save(
 
 
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
-    """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다."""
+    """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다."""
     hist = await history.read(conn, req.user_id)
     # 같은 책을 두 번 적어 보내도 한 번만 친다.
     liked = list(dict.fromkeys(req.used_liked_book_ids()))
@@ -91,17 +101,44 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     centroid = compute.centroid(parts)
     profile = Profile(
         centroid=centroid,
-        tag_weights=compute.tag_weights(req.onboarding.tags, hist.category_scores),
+        tag_weights=compute.tag_weights(
+            req.onboarding.tags, req.onboarding.categories, hist.category_scores
+        ),
         # 취향 벡터를 만들지 못했으면 개인화를 끈다. ③④도 벡터가 없으면 채점할 수 없다(#92).
         cold_start=centroid is None,
     )
 
-    async with conn.transaction():
-        version = compute.next_version(await _stored(conn, req.user_id), profile)
-        await _save(conn, req.user_id, profile, version, hist.computed_at)
+    version = compute.next_version(await _stored(conn, req.user_id), profile)
+    await _save(conn, req.user_id, profile, version, hist.computed_at)
     return profile.cold_start, version
 
 
-async def rebuild(req: ProfileRequest) -> tuple[bool, int]:
+async def rebuild_once_on(
+    conn: asyncpg.Connection, req: ProfileRequest, body_hash: str
+) -> dict[str, Any]:
+    """멱등 키와 사용자별 잠금을 걸고 처리한 뒤 응답 본문을 돌려준다.
+
+    같은 키·다른 본문이면 idempotency.IdempotencyConflict(409).
+    잠금 없이 두 요청이 동시에 돌면 둘 다 같은 profile_version 을 읽고 +1 을 써서, 프로필이 두 번
+    바뀌었는데 판 번호는 한 번만 오른다. 프로필 저장과 멱등 기록은 한 트랜잭션이라 함께 남거나 함께 빠진다.
+    """
+    key = idempotency.scoped_key(IDEMPOTENCY_SCOPE, req.idempotency_key)
+    async with conn.transaction():
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock($1, $2)", _LOCK_SPACE, req.user_id
+        )
+        stored = await idempotency.lookup(conn, key, body_hash)
+        if stored is not None:
+            return stored
+        cold_start, version = await rebuild_on(conn, req)
+        response = {
+            "message": "profile_success",
+            "data": {"cold_start": cold_start, "profile_version": version},
+        }
+        await idempotency.remember(conn, key, body_hash, response)
+    return response
+
+
+async def rebuild(req: ProfileRequest, body_hash: str) -> dict[str, Any]:
     async with db.get_pool().acquire() as conn:
-        return await rebuild_on(conn, req)
+        return await rebuild_once_on(conn, req, body_hash)

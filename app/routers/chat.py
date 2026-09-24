@@ -11,6 +11,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -38,6 +39,17 @@ CANDIDATE_LIMIT = 10
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
+
+# 출판사 비교용 잡음 — "(주)"·"주식회사"·공백. 카탈로그 표기가 "(주)현암사",
+# "현암주니어 :현암사"처럼 들쭉날쭉해, 이걸 지우고 포함 관계로 봐야 같은
+# 출판사가 표기 차이로 조용히 빠지지 않는다(리뷰 지적).
+_PUBLISHER_NOISE = re.compile(r"\(주\)|주식회사|\s+")
+
+
+def _normalize_publisher(name: str) -> str:
+    return _PUBLISHER_NOISE.sub("", name)
+
+
 CARD_LIMIT = 3
 
 
@@ -73,6 +85,12 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 여지 자체를 없앤다. exclude도 같은 이유로 매번 전체 목록을 다시 쓰게 하면
 # 모델이 옛 항목을 빠뜨렸을 때 이미 제외했던 책이 되살아난다 — 새로 빼고 싶은
 # 것만 받아 서버가 기존 목록에 더한다.
+#
+# "너무 무겁지 않은 걸로" 같은 분위기·톤 조정 표현은 제목·저자·가격·장르·재고·
+# 제외 어디에도 안 맞아 지시문이 없으면 그냥 버려진다(실제 Ollama/qwen2.5:7b로
+# 재현, 이슈 #132). exact·filters와 달리 semantic은 문장 하나짜리라 하위 키
+# patch가 안 되고, 반영하려면 지금 문장을 바탕으로 전체를 다시 써야 한다 —
+# 그래서 "언제 semantic을 통째로 다시 쓰는지"를 별도로 못박아둔다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -91,11 +109,27 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "다른 하위 키는 넣지 마라.\n"
     "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
     "그대로 유지하니 다시 적을 필요 없다.\n\n"
+    "이번 메시지가 제목·저자·가격·장르·재고·제외처럼 구체적인 조건이 아니라 "
+    '"너무 무겁지 않게", "더 재밌는 걸로", "덜 슬프게"처럼 분위기나 톤을 '
+    "조정하는 말이면, 지금 semantic 문장을 바탕으로 그 톤을 반영한 "
+    "완전한 새 문장을 semantic에 통째로 다시 써라 — 다른 필드처럼 바뀐 "
+    "조각만 넣는 게 아니라 문장 전체를 새로 써야 한다.\n"
+    '한 메시지에 구체적인 조건과 분위기·톤이 같이 오면(예: "가벼운 걸로, '
+    '1만원 이하로") 둘 다 반영해라 — 조건은 해당 필드에, 톤은 semantic에 '
+    "각각 넣고 한쪽만 고르지 마라. 아래 마지막 예시가 이 경우다.\n\n"
     "이번 메시지로 바뀌는 게 없으면 빈 객체 {{}}로 답하라. 숫자는 따옴표 "
     "없이 써라. 아래는 형식 예시일 뿐 실제 값이 아니다 — 그대로 베끼지 "
     "말고 실제로 바뀌는 값만 채워라:\n"
     '{{"semantic": "비 오는 날 읽을 잔잔한 책", '
-    '"filters": {{"in_stock_only": true}}}}'
+    '"filters": {{"in_stock_only": true}}}}\n\n'
+    "톤 조정 예시(형식일 뿐 실제 값 아님) — 지금 semantic이 "
+    '"비 오는 날 읽을 책"이고 메시지가 "너무 무겁지 않은 걸로"면:\n'
+    '{{"semantic": "비 오는 날 읽을 무겁지 않은 책"}}\n\n'
+    "조건+톤 혼합 예시(형식일 뿐 실제 값 아님) — 지금 semantic이 "
+    '"비 오는 날 읽을 책"이고 메시지가 "가벼운 걸로, 1만원 이하로"면 '
+    "둘 다 넣어라:\n"
+    '{{"semantic": "비 오는 날 읽을 가벼운 책", '
+    '"filters": {{"price_max": 10000}}}}'
 )
 
 
@@ -176,15 +210,18 @@ def _query_text(spec: Spec) -> str:
     키워드 검색은 제목·저자·소개글에서만 낱말을 찾고 평균 커버리지가 기준
     (0.6)을 못 채우면 후보가 통째로 빠지는데, 출판사는 이 셋 어디에도 없는
     낱말이라 평균만 깎아 정확한 책을 탈락시킨다(예: "마음 현암사", 리뷰 지적).
-    출판사로 거를 필요가 있으면 검색 결과의 publisher 필드로 걸러야 한다.
-    그 조합이 비어 있거나 intent가 semantic이면 semantic 문장을 쓴다.
+    출판사는 검색 결과를 받은 뒤 get_candidates()가 publisher 필드로 거른다
+    (이슈 #137). 제목·저자·semantic이 전부 비어 출판사만 남으면, 출판사를
+    최후 수단으로 검색어에 써서 최소한 service.search()까지는 가게 한다 —
+    안 그러면 빈 검색어로 바로 return [] 돼 그 뒤의 publisher 필터가 걸릴
+    기회조차 없다.
     어느 쪽도 없으면 빈 문자열(호출부가 후보 없음으로 처리).
     """
     exact_query = " ".join(p for p in (spec.exact.title, spec.exact.author) if p)
     text = (
         exact_query
         if spec.intent == "exact" and exact_query
-        else spec.semantic or exact_query
+        else spec.semantic or exact_query or spec.exact.publisher
     )
     return (text or "").strip()[:MAX_QUERY_CHARS]
 
@@ -243,8 +280,9 @@ async def get_candidates(
     취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다(#129,
     ④와 같이 점수화 공식을 정해야 함). 이미 구매했거나 저평점 준 책 제외는
     점수와 무관하게 바로 되므로 여기서 한다(#144).
-    exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
-    직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
+    exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
+    뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
+    (후속 판단).
 
     semantic이면 소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로
     카드를 쓰는데, 빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를
@@ -263,6 +301,17 @@ async def get_candidates(
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    if spec.exact.publisher:
+        # _query_text()는 출판사를 검색어에 안 섞는다(위 docstring) — 그래서 여기서
+        # 결과를 따로 거른다. exclude와 같은 이유로 CANDIDATE_LIMIT 전에 거른다.
+        # 완전 일치가 아니라 포함 관계로 본다 — "(주)현암사", "현암주니어 :현암사"처럼
+        # 표기가 섞여 있어 완전 일치면 같은 출판사가 조용히 빠진다(리뷰 지적).
+        publisher = _normalize_publisher(spec.exact.publisher)
+        pool = [
+            r
+            for r in pool
+            if publisher in _normalize_publisher(r.get("publisher") or "")
+        ]
     if not pool:
         return []
 
@@ -287,8 +336,12 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "아래 책 목록 중 이 분위기에 어울리는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
+    "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
+    "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
+    "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
-    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)"}}]}}\n\n'
+    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
+    '"match_basis": [{{"label": "분위기", "detail": "잔잔함"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
 
@@ -303,13 +356,30 @@ def _format_listing(candidates: list[dict]) -> str:
     )
 
 
+def _parse_match_basis(raw: Any) -> list[dict]:
+    """모델이 준 match_basis를 정리한다. 형식이 틀리면 빈 배열로 폴백한다.
+
+    label·detail이 둘 다 문자열인 항목만 남긴다 — 모델이 리스트가 아닌 걸
+    주거나 항목에 다른 키를 섞어 보내도 카드 조립이 깨지지 않게 한다.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"label": item["label"], "detail": item["detail"]}
+        for item in raw
+        if isinstance(item, dict)
+        and isinstance(item.get("label"), str)
+        and isinstance(item.get("detail"), str)
+    ]
+
+
 async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict], bool]:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
-    명세는 reason_short·reason_long·match_basis를 한 번의 LLM 호출로 만들라고
-    한다. 지금은 match_basis 없이 reason_short·reason_long만 만드는 최소
-    구현이다. LLM 장애 시 degraded로 빈 카드를 돌려준다(명세 5단계 축소판 —
-    규칙 기반 대체는 아직 없음, 후속 이슈).
+    명세대로 reason_short·reason_long·match_basis를 한 번의 LLM 호출로
+    만든다(이슈 #139). match_basis는 모델이 형식을 안 지키면 빈 배열로
+    폴백한다(_parse_match_basis). LLM 장애 시 degraded로 빈 카드를 돌려준다
+    (명세 5단계 축소판 — 규칙 기반 대체는 아직 없음, 후속 이슈).
 
     돌려주는 튜플의 두 번째 값이 degraded 여부다.
     """
@@ -330,6 +400,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
             },
         )
     except LLMUnavailableError:
+        logger.exception("카드 생성 실패")
         return [], True
 
     cards = []
@@ -351,7 +422,7 @@ async def generate_cards(candidates: list[dict], spec: Spec) -> tuple[list[dict]
                 "cover_url": book.get("cover_url"),
                 "reason_short": reason_short,
                 "reason_long": item.get("reason_long"),
-                "match_basis": [],
+                "match_basis": _parse_match_basis(item.get("match_basis")),
             }
         )
     return cards, False

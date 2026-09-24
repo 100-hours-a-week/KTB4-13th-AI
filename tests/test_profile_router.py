@@ -4,9 +4,12 @@
 저장은 test_profile_service.py 가 본다.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core import idempotency
 from app.main import app
 from app.profile.schemas import USED_LIKED_BOOKS, USED_MEMORIES
 from app.routers import profile
@@ -17,12 +20,15 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def fake_rebuild(monkeypatch: pytest.MonkeyPatch) -> list:
-    """받은 요청을 모아 두고 (cold_start=False, profile_version=3) 을 돌려준다."""
+    """받은 (요청, 본문 해시) 를 모아 두고 cold_start=False, profile_version=3 을 돌려준다."""
     calls: list = []
 
-    async def _fake(req):
-        calls.append(req)
-        return False, 3
+    async def _fake(req, body_hash):
+        calls.append((req, body_hash))
+        return {
+            "message": "profile_success",
+            "data": {"cold_start": False, "profile_version": 3},
+        }
 
     monkeypatch.setattr(profile.service, "rebuild", _fake)
     return calls
@@ -67,7 +73,7 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() ->
 def test_계산이나_저장이_실패하면_공통_형식의_500이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(req):
+    async def _boom(req, body_hash):
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(profile.service, "rebuild", _boom)
@@ -76,6 +82,32 @@ def test_계산이나_저장이_실패하면_공통_형식의_500이다(
 
     assert res.status_code == 500
     assert res.json() == {"message": "internal_server_error", "data": None}
+
+
+def test_같은_키에_다른_본문이면_409다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _conflict(req, body_hash):
+        raise idempotency.IdempotencyConflict
+
+    monkeypatch.setattr(profile.service, "rebuild", _conflict)
+
+    res = client.post("/preferences/profile", json=_request())
+
+    assert res.status_code == 409
+    assert res.json() == {"message": "idempotency_conflict", "data": None}
+
+
+def test_본문_해시는_키_순서와_공백이_달라도_같다(fake_rebuild: list) -> None:
+    body = _request()
+    client.post("/preferences/profile", json=body)
+    reordered = json.dumps(dict(reversed(list(body.items()))), indent=2)
+    client.post(
+        "/preferences/profile",
+        content=reordered.encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    first, second = (body_hash for _, body_hash in fake_rebuild)
+    assert first == second
 
 
 def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() -> None:

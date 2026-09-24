@@ -29,6 +29,26 @@ def test_낱말은_MAX_TOKENS_개까지만_쓴다() -> None:
     assert len(keyword.tokenize(query)) == keyword.MAX_TOKENS
 
 
+def test_문장부호만_있는_낱말은_뺀다() -> None:
+    # 글자 조각 색인은 글자·숫자로만 조각을 만든다. `-` 같은 낱말은 색인을 못 타고 표 전체를 훑는다.
+    assert keyword.tokenize("- 워크북 : ·") == ["워크북"]
+
+
+def test_기호가_섞인_낱말은_남긴다() -> None:
+    assert keyword.tokenize("C++ (주)현암사") == ["c++", "(주)현암사"]
+
+
+def test_문장부호만_친_검색어는_DB에_묻지_않고_빈_결과다() -> None:
+    # 낱말이 없으면 DB 에 가기 전에 끝난다. 그래서 연결 없이도 돈다.
+    assert asyncio.run(keyword.search_ids(None, "- · :", SearchFilters())) == []
+
+
+def test_문장부호는_낱말_수_한도를_먹지_않는다() -> None:
+    words = [f"낱말{i}" for i in range(keyword.MAX_TOKENS)]
+
+    assert keyword.tokenize("- " + " ".join(words)) == words
+
+
 def test_낱말_속_와일드카드_글자를_막는다() -> None:
     assert keyword.like_pattern("100%_") == "%100\\%\\_%"
 
@@ -226,6 +246,60 @@ def test_필터를_적용한다(filters: SearchFilters, expected: list[int]) -> 
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가람", filters))
 
     assert ids == expected
+
+
+@needs_db
+def test_후보_상한에_걸려도_제목이_똑같은_책은_맨_위다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 즈믄가람이 든 책은 셋인데 한 번에 한 권만 가져오게 줄인다. 어느 책이 그 자리를 차지하든,
+    # 제목이 검색어와 똑같은 책은 따로 찾아 넣으므로 맨 위에 있어야 한다.
+    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 1)
+
+    ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가람", SearchFilters()))
+
+    assert ids[0] == 9100001
+    assert len(ids) <= 2
+
+
+@needs_db
+def test_후보_상한은_필터를_건_뒤에_건다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 필터보다 먼저 자르면 소설이 아닌 책이 한 자리를 먹고 필터에서 빠져 결과가 빈다.
+    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 1)
+
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "즈믄가람", SearchFilters(category="소설"))
+    )
+
+    assert ids == [9100002]
+
+
+def _explain(query: str, cand_sql) -> str:
+    """search_ids 와 같은 설정(_run)으로 후보 쿼리의 실행 계획을 받는다."""
+
+    async def _go(conn: asyncpg.Connection) -> str:
+        tokens = keyword.tokenize(query)
+        where, params = build_where(SearchFilters(), first_param=6)
+        sql = "EXPLAIN " + keyword._sql(cand_sql(len(tokens), where))
+        args = [
+            tokens,
+            [keyword.like_pattern(t) for t in tokens],
+            query,
+            keyword.CANDIDATE_LIMIT,
+            keyword.MIN_COVERAGE,
+            *params,
+        ]
+        rows = await keyword._run(conn, sql, args)
+        return "\n".join(r[0] for r in rows)
+
+    return _run_in_rollback(_go)
+
+
+@needs_db
+@pytest.mark.parametrize("query", ["즈믄가람", "즈믄가람 이야기 모음"])
+def test_낱말마다_찾을_때_표_전체를_훑지_않는다(query: str) -> None:
+    # 표 전체를 훑으면 느린 데다, 상한으로 자를 때마다 다른 책이 남아 페이지가 어긋난다(#148).
+    assert "Seq Scan" not in _explain(query, keyword._cand_each_word)
 
 
 @needs_db
