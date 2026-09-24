@@ -116,19 +116,26 @@ def test_벡터_조회가_안_되면_규칙_점수만으로_답하고_알린다(
     async def _personalized(conn, req, page, centroid, tag_weights):
         raise RuntimeError("벡터 색인 이상")
 
-    async def _cold(conn, req, page):
-        return [{"book_id": 3, "match_score": 0}], False
+    got: list[dict] = []
 
+    async def _rule_only(conn, req, page, tag_weights):
+        got.append(tag_weights)
+        return [{"book_id": 3, "match_score": 25}], False
+
+    row = {**row, "tag_weights": '{"한국문학": 4}'}
     outcome = _run(
         _req(),
         row,
         monkeypatch,
         personalized__fetch=_personalized,
-        cold_start__fetch=_cold,
+        rule_only__fetch=_rule_only,
     )
 
     assert outcome.degraded == service.RULE_ONLY
     assert outcome.cold_start is False
+    # 개인화를 끈 목록(모두 0점)이 아니라, 프로필의 카테고리 점수로 채점한 목록이다(#171).
+    assert got == [{"한국문학": 4}]
+    assert [item["match_score"] for item in outcome.items] == [25]
 
 
 def test_더_볼_것이_있으면_다음_페이지_커서를_준다(
@@ -169,7 +176,7 @@ async def _vector_up(conn, req, page, centroid, tag_weights):
     return [{"book_id": 9, "match_score": 80}], False
 
 
-async def _rule_only_page(conn, req, page):
+async def _rule_only_page(conn, req, page, tag_weights):
     return [{"book_id": page.offset + 1, "match_score": 0}], True
 
 
@@ -180,7 +187,7 @@ def _rule_only_cursor(monkeypatch: pytest.MonkeyPatch) -> str:
         _PROFILE_ROW,
         monkeypatch,
         personalized__fetch=_vector_down,
-        cold_start__fetch=_rule_only_page,
+        rule_only__fetch=_rule_only_page,
     )
     assert first.degraded == service.RULE_ONLY
     return first.next_cursor
@@ -199,7 +206,7 @@ def test_벡터가_계속_안_되면_더보기도_이어서_준다(
         _PROFILE_ROW,
         monkeypatch,
         personalized__fetch=_vector_down,
-        cold_start__fetch=_rule_only_page,
+        rule_only__fetch=_rule_only_page,
     )
 
     assert second.degraded == service.RULE_ONLY
