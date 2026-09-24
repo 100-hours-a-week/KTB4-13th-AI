@@ -22,9 +22,17 @@ from app.gateway.llm import (
     LLMUnavailableError,
     complete,
     invoke_chain,
+    last_known_status,
     message_text,
     parse_json_response,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_status() -> None:
+    # last_known_status()는 모듈 전역이라 테스트끼리 값이 새면 순서에 따라
+    # 결과가 흔들린다. 매 테스트를 ok로 시작해 서로 독립되게 한다.
+    llm_gateway._llm_ok = True
 
 
 def test_순수_json이면_그대로_파싱한다() -> None:
@@ -105,6 +113,45 @@ def test_invoke_chain은_모르는_예외는_그대로_던진다() -> None:
 
     with pytest.raises(ValueError):
         asyncio.run(invoke_chain(chain, None))
+
+
+def test_invoke_chain_성공하면_last_known_status가_ok다() -> None:
+    llm_gateway._llm_ok = False  # 직전 실패가 있었다고 가정하고 시작.
+    chain = RunnableLambda(lambda x: x)
+
+    asyncio.run(invoke_chain(chain, None))
+
+    assert last_known_status() == "ok"
+
+
+def test_invoke_chain_실패하면_last_known_status가_unavailable이다() -> None:
+    request = httpx.Request("POST", "http://localhost:11434/v1")
+    chain = _raising(openai.APIConnectionError(request=request))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+    assert last_known_status() == "unavailable"
+
+
+def test_체인이_LLMUnavailableError를_직접_던져도_status가_unavailable이다() -> None:
+    # message_text·parse_json_response는 위 두 except에 안 걸리고 이 경로로 온다.
+    chain = _raising(LLMUnavailableError("LLM 응답에서 JSON을 찾을 수 없음"))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+    assert last_known_status() == "unavailable"
+
+
+def test_모르는_예외는_last_known_status를_안_바꾼다() -> None:
+    # 설정 오류·코드 버그는 LLM 가용성 문제가 아니므로 health 판정에 안 섞는다.
+    chain = _raising(ValueError("설정 오류"))
+
+    with pytest.raises(ValueError):
+        asyncio.run(invoke_chain(chain, None))
+
+    assert last_known_status() == "ok"
 
 
 _OK_BODY = {"id": "1", "object": "chat.completion", "created": 1, "model": "m"}

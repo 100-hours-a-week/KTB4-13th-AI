@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from app.core import cursor, db, responses
 from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
-from app.gateway import embedding
+from app.gateway import embedding, llm
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
 
 logger = logging.getLogger(__name__)
@@ -76,14 +76,16 @@ async def health():
         # 모델이 메모리에 올라와 있는지만 본다. 점검마다 실제로 임베딩을 돌리면
         # 헬스체크가 CPU 를 잡아먹어 정작 요청 처리가 느려진다.
         "embedding": "ok" if embedding.is_loaded() else "unavailable",
-        # ③ 을 만들면 실제 점검으로 바꾼다
-        "llm": "unavailable",
+        # health 호출마다 LLM에 핑을 보내면 비용·지연이 붙으므로, ③이 실제
+        # 요청에서 관측한 최근 성공/실패를 재사용한다(app/gateway/llm.py).
+        "llm": llm.last_known_status(),
     }
 
     # database 가 죽으면 조회 경로가 통째로 불가능해 트래픽에서 빼야 한다.
     # embedding 이 없으면 ① 은 키워드 전용(X-Degraded: keyword-only)으로,
     # ④ 는 규칙 점수만으로 강등해 계속 응답하므로 down 이 아니라 degraded 다.
-    # llm 은 아직 구현 전이라 항상 unavailable 이다. ③ 을 만들 때 다시 정한다.
+    # llm 이 죽어도 ③이 degraded 200으로 흡수해 응답은 계속되므로 마찬가지로
+    # down 이 아니라 degraded 다.
     if components["database"] != "ok":
         status = "down"
     elif all(v == "ok" for v in components.values()):
