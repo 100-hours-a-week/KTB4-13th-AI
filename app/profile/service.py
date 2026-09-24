@@ -101,7 +101,9 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     centroid = compute.centroid(parts)
     profile = Profile(
         centroid=centroid,
-        tag_weights=compute.tag_weights(req.onboarding.tags, hist.category_scores),
+        tag_weights=compute.tag_weights(
+            req.onboarding.tags, req.onboarding.categories, hist.category_scores
+        ),
         # 취향 벡터를 만들지 못했으면 개인화를 끈다. ③④도 벡터가 없으면 채점할 수 없다(#92).
         cold_start=centroid is None,
     )
