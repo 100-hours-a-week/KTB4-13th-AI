@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -25,6 +26,27 @@ def empty_history(monkeypatch: pytest.MonkeyPatch) -> None:
         return history.History()
 
     monkeypatch.setattr(chat, "_fetch_history", _fake)
+
+
+@pytest.fixture(autouse=True)
+def no_match_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    """match_score 조회(_attach_match_scores)는 DB가 필요하다(tests/test_chat_scoring.py에서 본다).
+
+    get_candidates()가 db.get_pool().acquire()로 연결을 연 뒤 그 conn을
+    _attach_match_scores에 넘기므로, get_pool 자체도 가짜로 바꿔야 이
+    테스트 파일의 "DB 없이 돈다"가 유지된다(app/feed/service.py 테스트와
+    같은 방식 — _FakePool).
+    """
+
+    class _NoPool:
+        def acquire(self):
+            return contextlib.nullcontext()
+
+    async def _noop(conn, candidates: list[dict], user_id: int) -> None:
+        pass
+
+    monkeypatch.setattr(chat.db, "get_pool", lambda: _NoPool())
+    monkeypatch.setattr(chat, "_attach_match_scores", _noop)
 
 
 def _spec(**overrides) -> Spec:

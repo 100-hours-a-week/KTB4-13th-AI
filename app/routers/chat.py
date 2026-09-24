@@ -14,13 +14,15 @@ import logging
 import re
 from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
-from app.core import db, history, responses
+from app.core import db, history, popularity, responses
+from app.feed import personalized, scoring
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -272,14 +274,92 @@ def _exclude_owned_or_disliked(pool: list[dict], hist: history.History) -> list[
     ]
 
 
+async def _attach_match_scores(
+    conn: asyncpg.Connection, candidates: list[dict], user_id: int
+) -> None:
+    """후보마다 match_score를 채운다(명세 2단계 축소판, #129).
+
+    ①의 검색 결과에는 카테고리·인기 점수가 없다(응답 계약 밖이라 ①의 파일은
+    안 건드리고 여기서 직접 조회한다 — _fetch_descriptions와 같은 이유,
+    엔드포인트 소유권 교차 금지). 취향 벡터 유사도(책 임베딩 대 취향
+    centroid)는 아직 안 붙인다 — ①의 후보는 벡터 검색이 아니라 키워드
+    검색이라 애초에 유사도가 없다. ④가 벡터 조회 실패 때 쓰는 것과 같은
+    공식(app.feed.scoring.match_score, with_similarity=False)으로 카테고리·
+    인기 점수만 합친다. 취향 프로필이 없는 사용자는 인기 점수만 반영된다.
+
+    candidates를 그 자리에서 고친다(각 항목에 match_score·popularity 칸을
+    더한다) — _fetch_descriptions가 description을 더하는 것과 같은 방식이다.
+    conn을 받는다(app.feed의 함수들과 같은 방식) — 테스트가 트랜잭션 하나로
+    묶어 흔적 없이 돌릴 수 있게 한다.
+    """
+    if not candidates:
+        return
+    book_ids = [c["book_id"] for c in candidates]
+    rows = await conn.fetch(
+        f"""
+        SELECT b.book_id, b.category,
+               coalesce({popularity.score_sql("p")}, 0) AS popularity
+        FROM v_books b
+        LEFT JOIN v_book_popularity p USING (book_id)
+        WHERE b.book_id = ANY($1::int[])
+        """,
+        book_ids,
+    )
+    profile_row = await conn.fetchrow(
+        "SELECT tag_weights::text AS tag_weights FROM taste_profile WHERE user_id = $1",
+        user_id,
+    )
+    catalog_max = await personalized.catalog_max_popularity(conn)
+
+    fields = {r["book_id"]: r for r in rows}
+    tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
+    for c in candidates:
+        f = fields.get(c["book_id"])
+        category = f["category"] if f else None
+        c["popularity"] = f["popularity"] if f else 0
+        c["match_score"] = scoring.match_score(
+            None,
+            tag_weights.get(category),
+            c["popularity"],
+            catalog_max,
+            with_similarity=False,
+        )
+
+
+def _rule_based_cards(candidates: list[dict]) -> list[dict]:
+    """LLM 장애 시 match_score 상위 CARD_LIMIT권으로 카드를 채운다(명세 3단계 축소판).
+
+    명세: 이때 reason_short는 규칙으로 만들고 reason_long은 null이다. 동점이면
+    ④(#172)와 같은 규칙으로 인기 → 번호 순으로 가른다(candidates에는 신간
+    여부(pub_year)가 없어 그 항만 뺀다).
+    """
+    ranked = sorted(
+        candidates, key=lambda c: (-c["match_score"], -c["popularity"], c["book_id"])
+    )
+    return [
+        {
+            "book_id": c["book_id"],
+            "rank": rank,
+            "match_score": c["match_score"],
+            "title": c["title"],
+            "author": c["author"],
+            "price": c.get("price"),
+            "cover_url": c.get("cover_url"),
+            "reason_short": "지금 조건에 잘 맞는 책이에요.",
+            "reason_long": None,
+            "match_basis": [],
+        }
+        for rank, c in enumerate(ranked[:CARD_LIMIT], start=1)
+    ]
+
+
 async def get_candidates(
     spec: Spec, exclude_book_ids: list[int], user_id: int
 ) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
 
-    취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다(#129,
-    ④와 같이 점수화 공식을 정해야 함). 이미 구매했거나 저평점 준 책 제외는
-    점수와 무관하게 바로 되므로 여기서 한다(#144).
+    match_score는 _attach_match_scores가 채운다(#129). 이미 구매했거나
+    저평점 준 책 제외는 점수와 무관하게 바로 되므로 여기서 한다(#144).
     exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
     뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
     (후속 판단).
@@ -326,7 +406,10 @@ async def get_candidates(
 
     if spec.intent == "semantic":
         pool = [c for c in pool if c["description"]]
-    return pool[:CANDIDATE_LIMIT]
+    pool = pool[:CANDIDATE_LIMIT]
+    async with db.get_pool().acquire() as conn:
+        await _attach_match_scores(conn, pool, user_id)
+    return pool
 
 
 def _card_prompt_intro(spec: Spec) -> str:
@@ -411,8 +494,8 @@ async def generate_cards(
     배열로 폴백하듯(_parse_match_basis), reply도 문자열이 아니면 None으로
     폴백한다 — candidates가 비어 호출 자체가 없었을 때와 같은 신호라,
     호출부(chat())가 이 경우들을 규칙 기반 문구로 채운다. LLM 장애 시
-    degraded로 빈 카드를 돌려준다(명세 5단계 축소판 — 규칙 기반 대체는 아직
-    없음, 후속 이슈).
+    degraded로 match_score 상위 카드를 대신 돌려준다(명세: reason_short는
+    규칙, reason_long은 null. #129).
 
     돌려주는 튜플은 (cards, reply, degraded) 세 값이다.
     """
@@ -434,7 +517,7 @@ async def generate_cards(
         )
     except LLMUnavailableError:
         logger.exception("카드 생성 실패")
-        return [], None, True
+        return _rule_based_cards(candidates), None, True
 
     reply = parsed.get("reply")
     if not isinstance(reply, str) or not reply.strip():
@@ -452,7 +535,7 @@ async def generate_cards(
             {
                 "book_id": book_id,
                 "rank": rank,
-                "match_score": None,  # ②의 취향 스코어링이 붙기 전까지는 없음
+                "match_score": book["match_score"],
                 "title": book["title"],
                 "author": book["author"],
                 "price": book.get("price"),
@@ -486,10 +569,9 @@ async def chat(request: Request) -> JSONResponse:
         return responses.error(500, "internal_server_error")
 
     if spec_degraded:
-        # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위 3권을
-        # 규칙으로 채우는 건 candidates에 점수 자체가 아직 없어(⑥ 의존) 못
-        # 한다 — 후속 이슈.
-        cards, llm_reply, degraded = [], None, True
+        # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위
+        # CARD_LIMIT권을 규칙으로 낸다(#129).
+        cards, llm_reply, degraded = _rule_based_cards(candidates), None, True
     else:
         cards, llm_reply, degraded = await generate_cards(candidates, spec)
 
