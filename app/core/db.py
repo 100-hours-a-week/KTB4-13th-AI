@@ -4,11 +4,23 @@
 요청마다 새로 연결하면 접속 비용(수십 ms)이 매 요청에 붙는다.
 """
 
+import logging
+
 import asyncpg
 
 from app.core.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 _pool: asyncpg.Pool | None = None
+
+# ① 검색이 기대는 글자 조각 색인. 마이그레이션을 손으로 적용해서(위키 #160) 빠져도 에러가
+# 나지 않고 검색이 표 전체를 훑어 느려지기만 한다. 그래서 기동할 때 확인한다(#154).
+SEARCH_INDEXES = (
+    "v_books_title_trgm_idx",
+    "v_books_author_trgm_idx",
+    "v_books_title_nospace_trgm_idx",
+)
 
 
 async def connect() -> None:
@@ -35,6 +47,37 @@ def get_pool() -> asyncpg.Pool:
     if _pool is None:
         raise RuntimeError("DB 풀이 없습니다. 앱 시작 시 connect()를 호출해야 합니다.")
     return _pool
+
+
+async def missing_search_indexes(conn: asyncpg.Connection) -> list[str]:
+    """SEARCH_INDEXES 중 없거나 깨진(재색인 중) 색인 이름."""
+    rows = await conn.fetch(
+        "SELECT name FROM unnest($1::text[]) WITH ORDINALITY AS s(name, n)"
+        " LEFT JOIN pg_index i ON i.indexrelid = to_regclass('public.' || name)"
+        " WHERE i.indisvalid IS NOT TRUE ORDER BY n",
+        list(SEARCH_INDEXES),
+    )
+    return [r["name"] for r in rows]
+
+
+async def report_missing_search_indexes(conn: asyncpg.Connection) -> None:
+    """빠진 검색 색인이 있으면 ERROR 로 남긴다. 서버는 그대로 뜬다.
+
+    색인이 없어도 검색 결과는 같고 느릴 뿐이라, 기동을 막으면 오히려 전체가 멈춘다.
+    확인 자체가 실패해도 같은 이유로 로그만 남긴다.
+    """
+    try:
+        missing = await missing_search_indexes(conn)
+    except Exception:
+        # 확인이 안 돼도 기동은 계속한다
+        logger.exception("검색 색인을 확인하지 못했습니다")
+        return
+    if missing:
+        logger.error(
+            "검색 색인이 없거나 깨졌습니다: %s. 검색이 표 전체를 훑어 느려집니다."
+            " db/migrations 의 마이그레이션을 적용하세요(위키 #160).",
+            ", ".join(missing),
+        )
 
 
 async def check_database() -> bool:
