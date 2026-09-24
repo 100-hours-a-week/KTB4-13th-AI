@@ -57,6 +57,21 @@ def test_만들지_못하면_ERROR만_남기고_빈_채로_둔다(
     assert "라벨 벡터를 만들지 못했습니다" in caplog.text
 
 
+def test_벡터_개수가_라벨과_다르면_실패로_보고_빈_채로_둔다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def short(texts: list[str], purpose: str):
+        return [[1.0, 0.0]], 2, "fake"
+
+    monkeypatch.setattr(labels.embedding, "embed", short)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(labels.load())
+
+    assert labels.vector("소설") is None
+    assert "라벨 벡터를 만들지 못했습니다" in caplog.text
+
+
 @pytest.mark.parametrize(
     ("model_loaded", "already", "expected"),
     [
