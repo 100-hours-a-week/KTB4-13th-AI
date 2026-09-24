@@ -11,6 +11,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -38,6 +39,17 @@ CANDIDATE_LIMIT = 10
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
+
+# 출판사 비교용 잡음 — "(주)"·"주식회사"·공백. 카탈로그 표기가 "(주)현암사",
+# "현암주니어 :현암사"처럼 들쭉날쭉해, 이걸 지우고 포함 관계로 봐야 같은
+# 출판사가 표기 차이로 조용히 빠지지 않는다(리뷰 지적).
+_PUBLISHER_NOISE = re.compile(r"\(주\)|주식회사|\s+")
+
+
+def _normalize_publisher(name: str) -> str:
+    return _PUBLISHER_NOISE.sub("", name)
+
+
 CARD_LIMIT = 3
 
 
@@ -198,15 +210,18 @@ def _query_text(spec: Spec) -> str:
     키워드 검색은 제목·저자·소개글에서만 낱말을 찾고 평균 커버리지가 기준
     (0.6)을 못 채우면 후보가 통째로 빠지는데, 출판사는 이 셋 어디에도 없는
     낱말이라 평균만 깎아 정확한 책을 탈락시킨다(예: "마음 현암사", 리뷰 지적).
-    출판사로 거를 필요가 있으면 검색 결과의 publisher 필드로 걸러야 한다.
-    그 조합이 비어 있거나 intent가 semantic이면 semantic 문장을 쓴다.
+    출판사는 검색 결과를 받은 뒤 get_candidates()가 publisher 필드로 거른다
+    (이슈 #137). 제목·저자·semantic이 전부 비어 출판사만 남으면, 출판사를
+    최후 수단으로 검색어에 써서 최소한 service.search()까지는 가게 한다 —
+    안 그러면 빈 검색어로 바로 return [] 돼 그 뒤의 publisher 필터가 걸릴
+    기회조차 없다.
     어느 쪽도 없으면 빈 문자열(호출부가 후보 없음으로 처리).
     """
     exact_query = " ".join(p for p in (spec.exact.title, spec.exact.author) if p)
     text = (
         exact_query
         if spec.intent == "exact" and exact_query
-        else spec.semantic or exact_query
+        else spec.semantic or exact_query or spec.exact.publisher
     )
     return (text or "").strip()[:MAX_QUERY_CHARS]
 
@@ -233,8 +248,9 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
 
     취향 유사도 점수(⑥ 의존)는 아직 없다 — match_score는 계속 null이다.
-    exclude는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은 뒤 여기서
-    직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다(후속 판단).
+    exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
+    뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
+    (후속 판단).
 
     semantic이면 소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로
     카드를 쓰는데, 빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를
@@ -253,6 +269,17 @@ async def get_candidates(spec: Spec, exclude_book_ids: list[int]) -> list[dict]:
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    if spec.exact.publisher:
+        # _query_text()는 출판사를 검색어에 안 섞는다(위 docstring) — 그래서 여기서
+        # 결과를 따로 거른다. exclude와 같은 이유로 CANDIDATE_LIMIT 전에 거른다.
+        # 완전 일치가 아니라 포함 관계로 본다 — "(주)현암사", "현암주니어 :현암사"처럼
+        # 표기가 섞여 있어 완전 일치면 같은 출판사가 조용히 빠진다(리뷰 지적).
+        publisher = _normalize_publisher(spec.exact.publisher)
+        pool = [
+            r
+            for r in pool
+            if publisher in _normalize_publisher(r.get("publisher") or "")
+        ]
     if not pool:
         return []
 
