@@ -349,3 +349,25 @@ def test_책_정보는_받은_순서대로_돌려주고_없는_책은_빠진다(
         "in_stock": False,
         "cover_url": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("n_tokens", "limit"), [(1, 500), (2, 500), (3, 333), (5, 200), (10, 100)]
+)
+def test_낱말이_많을수록_낱말마다_모으는_권수를_줄인다(
+    n_tokens: int, limit: int
+) -> None:
+    # 문장으로 친 검색어는 후보가 낱말 수 × 500권까지 늘어 채점이 느렸다(#198). 합계를 1,000권으로 나눈다.
+    assert keyword.lookup_limit(n_tokens) == limit
+
+
+def test_낱말마다_넓힐_때_나눈_권수로_자른다() -> None:
+    sql = keyword._cand_each_word(5, "")
+
+    assert sql.count("LIMIT 200)") == 5
+    assert f"LIMIT {keyword.LOOKUP_LIMIT})" not in sql
+
+
+def test_모든_낱말이_든_책을_먼저_찾을_때는_줄이지_않는다() -> None:
+    # 이 경로는 결과가 적어 싸다. 줄이면 제목이 긴 책을 찾을 때 후보만 줄어든다.
+    assert f"LIMIT {keyword.LOOKUP_LIMIT}" in keyword._cand_all_words(5, "")
