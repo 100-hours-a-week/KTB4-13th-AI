@@ -200,10 +200,30 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
         {"onboarding": {"liked_book_ids": ["1088"]}},
         {"memories": [_memory(vector=["0.1"] * DIM)]},
         {"memories": {"type": "mood"}},
+        # #201 — int32 범위·NUL·짝 없는 서로게이트.
+        {"user_id": 2_147_483_648},
+        {"onboarding": {"liked_book_ids": [2_147_483_648]}},
+        {"onboarding": {"tags": ["힐링\x00"]}},
     ],
 )
 def test_타입이_계약과_다르면_400이다(overrides: dict) -> None:
     res = client.post("/preferences/profile", json=_request(**overrides))
+
+    assert res.status_code == 400
+
+
+def test_idempotency_key에_짝_없는_서로게이트가_있으면_400이다() -> None:
+    """#201 — httpx 클라이언트는 실제 서로게이트를 담은 str을 그대로 못 보낸다.
+    실제 공격 벡터(JSON escape가 와이어를 타고 서버에서 풀리는 경우)를 재현하려면
+    본문을 raw bytes로 직접 보내야 한다(search 라우터 테스트와 같은 이유).
+    """
+    body = _request(idempotency_key="__MARKER__")
+    payload = json.dumps(body, ensure_ascii=False).replace('"__MARKER__"', '"\\ud800"')
+    res = client.post(
+        "/preferences/profile",
+        content=payload.encode(),
+        headers={"Content-Type": "application/json"},
+    )
 
     assert res.status_code == 400
 

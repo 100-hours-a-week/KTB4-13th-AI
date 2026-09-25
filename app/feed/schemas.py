@@ -6,7 +6,16 @@
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 
 DEFAULT_SIZE = 15
 MAX_SIZE = 50
@@ -29,15 +38,22 @@ class FeedRequest(BaseModel):
     # 허용 파라미터 밖의 키가 오면 400(명세 ④).
     model_config = ConfigDict(extra="forbid")
 
-    user_id: int
+    user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
     surface: Surface
     sort: Sort = "match"
     category: str | None = Field(default=None, min_length=1)
-    pub_year_from: int | None = None
-    pub_year_to: int | None = None
+    pub_year_from: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
+    pub_year_to: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
     match_score_min: int | None = Field(default=None, ge=0, le=100)
     size: int = Field(default=DEFAULT_SIZE, ge=1, le=MAX_SIZE)
     cursor: str | None = Field(default=None, min_length=1)
+
+    # NUL·짝 없는 서로게이트가 DB나 인코딩 단계에서야 터지면 500이 난다.
+    # 여기서 걸러 400으로 만든다(#201).
+    @field_validator("category", "cursor", mode="after")
+    @classmethod
+    def _sanitize(cls, value: str | None) -> str | None:
+        return sanitize_string(value) if value is not None else value
 
     @model_validator(mode="after")
     def _check_rules(self) -> Self:

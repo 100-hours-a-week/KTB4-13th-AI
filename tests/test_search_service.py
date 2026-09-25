@@ -221,6 +221,25 @@ def test_위조하거나_깨진_커서는_못_쓴다(fakes: dict) -> None:
         _search(cursor="아무글자.서명아님")
 
 
+def test_cursor_decode가_ValueError를_던져도_커서_만료로_처리한다(
+    fakes: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#201 — ④(app/feed/cursor.py)는 ValueError도 CursorExpired로 잡는데 ①만 빠져 있었다.
+
+    짝 없는 서로게이트처럼 base64·JSON 디코딩 과정에서 나는 ValueError(그 하위인
+    UnicodeDecodeError·json.JSONDecodeError 포함)가 그대로 올라가면, 라우터의
+    공통 500 처리기까지 가서 410 대신 500이 난다. ④와 같은 잣대로 맞췄다.
+    """
+
+    def _raise(token):
+        raise ValueError("짝 없는 서로게이트")
+
+    monkeypatch.setattr(service.cursor, "decode", _raise)
+
+    with pytest.raises(service.CursorExpired):
+        _search(cursor="아무글자.서명아님")
+
+
 def test_못_쓰는_커서는_검색을_돌리기_전에_거른다(fakes: dict, monkeypatch) -> None:
     async def _must_not_run(conn, query, filters):
         raise AssertionError("검색이 돌았다")
