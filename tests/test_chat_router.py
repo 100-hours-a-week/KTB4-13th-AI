@@ -213,32 +213,6 @@ def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준�
     assert res.json() == {"message": "internal_server_error", "data": None}
 
 
-def test_cards가_null이면_500이지만_공통_JSON_형식으로_나간다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#201 — generate_cards() 호출은 chat()의 어떤 try/except에도 안 걸려 있었다.
-
-    LLM이 `"cards": null`처럼 명세를 어긴 모양으로 답하면 `parsed.get("cards", [])`가
-    None을 돌려줘(키가 있으니 기본값이 안 먹는다) `None[:CARD_LIMIT]`에서 TypeError가
-    난다. main.py에 전역 예외 처리기를 걸기 전엔 이게 그대로 올라가 FastAPI 기본
-    500(text/plain, 공통 형식 아님)이 나갔다 — 이제 최소한 형식은 지켜야 한다.
-    """
-    card_reply = '{"cards": null}'
-    model = _sequenced_model(_spec_reply(), card_reply)
-    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
-
-    # main.py의 전역 핸들러는 Starlette ServerErrorMiddleware를 타는데, 이 미들웨어는
-    # 핸들러로 응답을 보낸 "뒤에" 원래 예외를 다시 던진다(서버 로그용) — 기본 TestClient는
-    # 그걸 그대로 드러내 테스트가 실패한 것처럼 보인다. raise_server_exceptions=False로
-    # 실제 배포에서 클라이언트가 받는 응답(200 아니라 500 JSON)을 본다.
-    no_raise_client = TestClient(app, raise_server_exceptions=False)
-    res = no_raise_client.post("/recommendations/chat", json=_request())
-
-    assert res.status_code == 500
-    assert res.headers["content-type"].startswith("application/json")
-    assert res.json() == {"message": "internal_server_error", "data": None}
-
-
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
@@ -837,6 +811,27 @@ def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_�
         "in_stock_only": False,
     }
     assert {**data["spec"], "filters": {}} == INITIAL_SPEC
+
+
+def test_spec_검증_실패_로그에_틀린_값이_안_실린다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#202 리뷰 지적 — pydantic ValidationError 문자열은 각 오류에 input_value=...로
+
+    틀린 값을 그대로 싣는다. LLM이 patch에 사용자 발화를 옮겨 적어 여기 걸리면
+    (SPEC_PROMPT 주석의 실제 재현 사례들처럼), logger.exception()을 그대로 쓰면
+    그 발화가 ERROR 로그에 남는다. 틀린 낱말 자체가 로그에 없어야 한다.
+    """
+    bad_intent = "사용자가 실제로 친 문장이 그대로 옮겨진 경우"
+    model = _sequenced_model(f'{{"intent": "{bad_intent}"}}', '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    with caplog.at_level("ERROR", logger="app.routers.chat"):
+        res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert bad_intent not in caplog.text
+    assert "spec 갱신 실패" in caplog.text
 
 
 def test_message와_image_ref가_둘다_있으면_400이다() -> None:

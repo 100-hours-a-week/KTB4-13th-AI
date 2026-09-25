@@ -253,8 +253,19 @@ async def update_spec(
             },
         )
         return Spec.model_validate(_merge_spec_patch(spec, patch)), False
-    except (LLMUnavailableError, ValidationError):
+    except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
+        return spec, True
+    except ValidationError as exc:
+        # pydantic ValidationError의 문자열 표현은 각 오류에 input_value=...로 실제
+        # 값을 싣는다. LLM이 patch에 사용자 발화를 옮겨 적어 여기 걸리면(SPEC_PROMPT
+        # 주석의 실제 재현 사례들처럼), logger.exception()을 그대로 쓰면 그 값이
+        # ERROR 로그에 남는다(리뷰 지적, #202). 어느 필드가 왜 틀렸는지(loc·type)만
+        # 남긴다.
+        logger.error(
+            "spec 갱신 실패: 병합 결과가 Spec 모양이 아님 %s",
+            [(err["loc"], err["type"]) for err in exc.errors()],
+        )
         return spec, True
 
 

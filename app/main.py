@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core import cursor, db, responses
+from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding, llm
@@ -14,6 +14,12 @@ from app.profile import labels
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
 
 logger = logging.getLogger(__name__)
+
+# 전엔 이걸 아무도 안 불러서 LOG_LEVEL 설정값이 무시되고(파이썬 로깅 기본
+# 레벨은 WARNING) INFO 로그가 하나도 안 나갔다(#202). 요청 처리 전에 한 번만
+# 걸면 된다 — 각 모듈의 logging.getLogger(__name__)는 핸들러를 안 갖고 루트로
+# 전파만 하므로, import 순서와 무관하게 여기 건 핸들러를 그대로 물려받는다.
+request_log.configure(get_settings().log_level)
 
 
 @asynccontextmanager
@@ -52,15 +58,41 @@ async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResp
 async def _unhandled_exception_handler(
     request: Request, exc: Exception
 ) -> JSONResponse:
-    """마지막 방어선 — 라우터가 자기 `except Exception`으로 못 잡은 예외까지 공통 형식으로 맞춘다.
+    """마지막 방어선 — `_request_id_middleware`보다 바깥(Starlette ServerErrorMiddleware)에서 돈다.
 
     안 걸면 FastAPI 기본 500(text/plain `Internal Server Error`)이 나가 계약이
-    깨진다(#201). 라우터가 이미 자기 try/except로 잡는 경로는 거기서 끝나 여기까지
-    안 온다 — 이건 그 try 블록 밖에서 난 예외(예: LLM 응답 모양이 스키마와 달라
-    카드 조립 중 터지는 경우)를 막는 용도다.
+    깨진다(#201). `_request_id_middleware`가 대부분의 예외를 이미 잡아 처리하므로
+    보통은 여기까지 안 온다 — 미들웨어 자체가 실패하는 극히 드문 경우를 위한
+    안전망이다.
     """
     logger.exception("처리하지 못한 예외")
     return responses.error(500, "internal_server_error")
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    """X-Request-Id를 받거나 만들어 로그에 잇고 응답 헤더로 돌려준다(#202, 명세 공통 규약).
+
+    BE 로그와 AI 로그를 이 값으로 잇는다(인프라 설계 문서). request_log의
+    ContextVar에 담아두면, 이 요청을 처리하는 동안 어디서 로그를 찍든(라우터 ·
+    게이트웨이 등, logger 인스턴스를 따로 안 넘겨도) 같은 request_id가 찍힌다.
+
+    처리 못 한 예외는 여기서 직접 잡는다 — 위 `@app.exception_handler(Exception)`은
+    Starlette `ServerErrorMiddleware`가 이 미들웨어 "바깥"에서 돌려서, 거기로 넘기면
+    응답에 X-Request-Id를 못 붙이고 그 오류 로그의 request_id도 이미 reset된 뒤라
+    null로 남는다(리뷰 지적 — #201+#202를 합쳐 실측 확인됨). 여기서 잡아야 둘 다 붙는다.
+    """
+    request_id = request_log.incoming_request_id(request.headers.get("X-Request-Id"))
+    token = request_log.set_request_id(request_id)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("처리하지 못한 예외")
+        response = responses.error(500, "internal_server_error")
+    finally:
+        request_log.reset_request_id(token)
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 _auth_required = [Depends(verify_service_token)]
