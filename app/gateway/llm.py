@@ -123,7 +123,11 @@ def parse_json_response(raw: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise LLMUnavailableError(f"LLM 응답에서 JSON을 찾을 수 없음: {raw[:200]!r}")
+        # 답 글자를 그대로 예외 메시지에 실으면 logger.exception(chat.py)이 그걸
+        # 그대로 ERROR 로그에 남긴다. 모델이 JSON 대신 사용자 발화를 되풀이해
+        # 답할 때가 있어(실제 재현), 대화 원문이 로그에 남는 셈이 된다 — 명세는
+        # 대화 원문을 로그에서 가리라고 한다(#202). 글자 수만 남긴다.
+        raise LLMUnavailableError(f"LLM 응답에서 JSON을 찾을 수 없음(길이 {len(raw)})")
 
     try:
         return json.loads(raw[start : end + 1])

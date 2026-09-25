@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core import cursor, db, responses
+from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token
 from app.core.config import get_settings
 from app.gateway import embedding, llm
@@ -14,6 +14,12 @@ from app.profile import labels
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
 
 logger = logging.getLogger(__name__)
+
+# 전엔 이걸 아무도 안 불러서 LOG_LEVEL 설정값이 무시되고(파이썬 로깅 기본
+# 레벨은 WARNING) INFO 로그가 하나도 안 나갔다(#202). 요청 처리 전에 한 번만
+# 걸면 된다 — 각 모듈의 logging.getLogger(__name__)는 핸들러를 안 갖고 루트로
+# 전파만 하므로, import 순서와 무관하게 여기 건 핸들러를 그대로 물려받는다.
+request_log.configure(get_settings().log_level)
 
 
 @asynccontextmanager
@@ -46,6 +52,24 @@ app = FastAPI(lifespan=lifespan)
 @app.exception_handler(Unauthorized)
 async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResponse:
     return responses.error(401, "unauthorized")
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    """X-Request-Id를 받거나 만들어 로그에 잇고 응답 헤더로 돌려준다(#202, 명세 공통 규약).
+
+    BE 로그와 AI 로그를 이 값으로 잇는다(인프라 설계 문서). request_log의
+    ContextVar에 담아두면, 이 요청을 처리하는 동안 어디서 로그를 찍든(라우터 ·
+    게이트웨이 등, logger 인스턴스를 따로 안 넘겨도) 같은 request_id가 찍힌다.
+    """
+    request_id = request.headers.get("X-Request-Id") or request_log.new_request_id()
+    token = request_log.set_request_id(request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        request_log.reset_request_id(token)
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 _auth_required = [Depends(verify_service_token)]

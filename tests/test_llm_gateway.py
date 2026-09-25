@@ -60,6 +60,18 @@ def test_중괄호는_있지만_형식이_깨지면_LLMUnavailableError를_던�
         parse_json_response('{"mood": 잔잔함 (따옴표 없음)}')
 
 
+def test_json이_없으면_예외_메시지에_원문이_안_실린다() -> None:
+    """#202 — 모델이 JSON 대신 사용자 발화를 되풀이해 답할 때가 있다(실제 재현).
+
+    이 예외는 chat.py의 logger.exception()이 그대로 ERROR 로그에 남기므로,
+    메시지에 원문을 실으면 대화 원문이 로그에 남는 셈이 된다(명세: 로그에서 가림).
+    """
+    raw = "사용자가 물어본 비 오는 날 읽을 책 추천해달라는 그 말 그대로 되풀이함"
+    with pytest.raises(LLMUnavailableError) as exc_info:
+        parse_json_response(raw)
+    assert raw not in str(exc_info.value)
+
+
 def test_message_text는_문자열_content를_그대로_꺼낸다() -> None:
     assert message_text(AIMessage(content='{"mood": "잔잔함"}')) == '{"mood": "잔잔함"}'
 
