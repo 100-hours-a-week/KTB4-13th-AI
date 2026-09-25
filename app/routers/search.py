@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core import responses
+from app.core import body, responses
 from app.search import service
 from app.search.schemas import SearchRequest
 
@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
 
 FALLBACK_MESSAGE = "원하는 책을 못 찾았어요. AI 추천에게 물어볼까요?"
+
+# 명세 에러표엔 ①의 413 행이 없다 — query 1–200자 등 필드가 다 작아 사실상 안 걸릴
+# 값이다. 그래도 상한 없이 통째로 메모리에 올리면 거절 자체가 공격 수단이 될 수
+# 있어(#99), 정상 요청이면 절대 안 닿을 만큼 넉넉하게 잡는다.
+MAX_BODY_BYTES = 64 * 1024
 
 
 def parse_request(payload: Any) -> SearchRequest | None:
@@ -39,8 +44,12 @@ def parse_request(payload: Any) -> SearchRequest | None:
 
 @router.post("/search")
 async def search(request: Request) -> JSONResponse:
+    raw = await body.read_limited(request, MAX_BODY_BYTES)
+    if raw is None:
+        return responses.error(413, "payload_too_large")
+
     try:
-        payload = json.loads(await request.body())
+        payload = json.loads(raw)
     except ValueError:
         # JSON 문법 오류와, UTF-8 이 아닌 본문(UnicodeDecodeError) 둘 다 ValueError 다.
         # JSONDecodeError 만 잡으면 뒤의 것이 500 으로 샌다.

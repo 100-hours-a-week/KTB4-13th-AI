@@ -21,7 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
-from app.core import categories, db, history, popularity, responses
+from app.core import body, categories, db, history, popularity, responses
 from app.feed import personalized, scoring
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -41,6 +41,12 @@ CANDIDATE_LIMIT = 10
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
+
+# 명세 에러표의 413은 (V2) 이미지 10MB 상한이라 V1(텍스트 턴)엔 숫자가 없다(#99).
+# message(200자)·recent_turns(20턴)는 작지만, exclude_book_ids처럼 길이 상한이
+# 없는 배열도 있어 상한 없이 통째로 메모리에 올리면 거절 자체가 공격 수단이 될
+# 수 있다. 정상 요청이면 절대 안 닿을 만큼 넉넉하게 잡는다.
+MAX_BODY_BYTES = 64 * 1024
 
 # 출판사 비교용 잡음 — "(주)"·"주식회사"·공백. 카탈로그 표기가 "(주)현암사",
 # "현암주니어 :현암사"처럼 들쭉날쭉해, 이걸 지우고 포함 관계로 봐야 같은
@@ -675,8 +681,12 @@ async def generate_cards(
 
 @router.post("/chat")
 async def chat(request: Request) -> JSONResponse:
+    raw = await body.read_limited(request, MAX_BODY_BYTES)
+    if raw is None:
+        return responses.error(413, "payload_too_large")
+
     try:
-        payload = json.loads(await request.body())
+        payload = json.loads(raw)
     except ValueError:
         return responses.error(400, "invalid_request")
 

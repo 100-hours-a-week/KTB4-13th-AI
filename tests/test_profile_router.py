@@ -238,3 +238,18 @@ def test_본문이_JSON_객체가_아니면_400이다(content: bytes) -> None:
 
     assert res.status_code == 400
     assert res.json() == {"message": "invalid_request", "data": None}
+
+
+def test_본문이_상한을_넘으면_413이다() -> None:
+    # 헤더만 크게 속여도 본문을 읽기 전에 막아야 한다(#99).
+    res = client.post(
+        "/preferences/profile",
+        content=b'{"user_id":1}',
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(profile.MAX_BODY_BYTES + 1),
+        },
+    )
+
+    assert res.status_code == 413
+    assert res.json() == {"message": "payload_too_large", "data": None}

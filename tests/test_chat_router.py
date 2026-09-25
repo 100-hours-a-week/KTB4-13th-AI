@@ -904,6 +904,21 @@ def test_본문이_JSON이_아니면_400이다() -> None:
     assert res.status_code == 400
 
 
+def test_본문이_상한을_넘으면_413이다() -> None:
+    # 헤더만 크게 속여도 본문을 읽기 전에 막아야 한다(#99).
+    res = client.post(
+        "/recommendations/chat",
+        content=b'{"user_id":1}',
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(chat.MAX_BODY_BYTES + 1),
+        },
+    )
+
+    assert res.status_code == 413
+    assert res.json() == {"message": "payload_too_large", "data": None}
+
+
 def _spec(**overrides) -> "chat.Spec":
     """카드 프롬프트 intro 테스트용 Spec. 필요한 필드만 덮어쓴다."""
     body = {**INITIAL_SPEC, **overrides}

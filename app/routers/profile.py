@@ -13,13 +13,18 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core import idempotency, responses
+from app.core import body, idempotency, responses
 from app.profile import service
 from app.profile.schemas import ProfileRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/preferences", tags=["preferences"])
+
+# 명세 에러표는 숫자 없이 "상한 초과"라고만 적혀 있다(#99) — memories 최대 500개,
+# 각각 embedding_dim(384) 벡터가 있어 이론상 최대치가 4MB 안팎이다. 그 두 배쯤
+# 여유를 둔다. 정확한 값은 명세 담당과 확인 필요.
+MAX_BODY_BYTES = 8 * 1024 * 1024
 
 
 def parse_request(payload: Any) -> ProfileRequest | None:
@@ -34,8 +39,12 @@ def parse_request(payload: Any) -> ProfileRequest | None:
 
 @router.post("/profile")
 async def profile(request: Request) -> JSONResponse:
+    raw = await body.read_limited(request, MAX_BODY_BYTES)
+    if raw is None:
+        return responses.error(413, "payload_too_large")
+
     try:
-        payload = json.loads(await request.body())
+        payload = json.loads(raw)
     except ValueError:
         # JSON 문법 오류와, UTF-8 이 아닌 본문(UnicodeDecodeError) 둘 다 ValueError 다.
         return responses.error(400, "invalid_request")
