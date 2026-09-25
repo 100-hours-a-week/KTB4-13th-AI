@@ -212,7 +212,9 @@ curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
 curl -G <https://ai.internal.bookjeok.com/recommendations/feed> \
   -H "Authorization: Bearer$SERVICE_TOKEN" \
   --data-urlencode "user_id=123" --data-urlencode "surface=home" \
-  --data-urlencode "sort=match" --data-urlencode "size=15"
+  --data-urlencode "size=15"
+# home은 정렬·필터 파라미터를 받지 않는다(#105) — 보내면 무시가 아니라 400이다.
+# sort=match를 포함해 보내면 안 된다.
 ```
 
 ```json
