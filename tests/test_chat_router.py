@@ -631,3 +631,83 @@ def test_본문이_JSON이_아니면_400이다() -> None:
         headers={"Content-Type": "application/json"},
     )
     assert res.status_code == 400
+
+
+def _spec(**overrides) -> "chat.Spec":
+    """카드 프롬프트 intro 테스트용 Spec. 필요한 필드만 덮어쓴다."""
+    body = {**INITIAL_SPEC, **overrides}
+    if "exact" in overrides:
+        body["exact"] = {**INITIAL_SPEC["exact"], **overrides["exact"]}
+    return chat.Spec.model_validate(body)
+
+
+def test_카드_프롬프트_intro_semantic이_있으면_분위기_문장을_쓴다() -> None:
+    spec = _spec(intent="semantic", semantic="비 오는 날과 어울리는 잔잔한 이야기")
+    intro = chat._card_prompt_intro(spec)
+    assert intro == '사용자가 원하는 책 분위기: "비 오는 날과 어울리는 잔잔한 이야기"'
+
+
+def test_카드_프롬프트_intro_semantic이_없고_제목_저자가_있으면_None_대신_콕집어_문장을_쓴다() -> (
+    None
+):
+    """#153 — 예전엔 이 경우 "분위기: None"이 그대로 나가 카드가 거의 0장이었다."""
+    spec = _spec(
+        intent="exact", exact={"title": "달러구트 꿈 백화점", "author": "이미예"}
+    )
+    intro = chat._card_prompt_intro(spec)
+    assert "None" not in intro
+    assert "달러구트 꿈 백화점" in intro
+    assert "이미예" in intro
+
+
+def test_카드_프롬프트_intro_제목만_있으면_제목만_담은_문장을_쓴다() -> None:
+    spec = _spec(intent="exact", exact={"title": "달러구트 꿈 백화점"})
+    intro = chat._card_prompt_intro(spec)
+    assert "None" not in intro
+    assert "달러구트 꿈 백화점" in intro
+
+
+def test_카드_프롬프트_intro_저자만_있으면_저자만_담은_문장을_쓴다() -> None:
+    spec = _spec(intent="exact", exact={"author": "이미예"})
+    intro = chat._card_prompt_intro(spec)
+    assert "None" not in intro
+    assert "이미예" in intro
+
+
+def test_카드_프롬프트_intro_아무것도_없으면_중립_문장을_쓴다() -> None:
+    """예: 출판사만 있는 경우(#155). 분위기·제목을 지어내지 않고 중립 문구를 쓴다."""
+    spec = _spec(intent="exact", exact={"publisher": "현암사"})
+    intro = chat._card_prompt_intro(spec)
+    assert "None" not in intro
+    assert intro == "아래는 사용자 조건에 맞는 책 후보 목록이다."
+
+
+def test_exact_의도로_제목만_있어도_카드_프롬프트에_None이_안_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#153 회귀 테스트 — 라우터를 끝까지 태워 실제 카드 생성 프롬프트를 가로챈다."""
+    sent: list[str] = []
+    call_count = 0
+
+    def _dispatch(prompt_value) -> AIMessage:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AIMessage(
+                content=_spec_reply(
+                    intent="exact", exact={"title": "달러구트 꿈 백화점"}
+                )
+            )
+        sent.append(prompt_value.to_messages()[0].content)  # 2단계 = 카드 생성.
+        return AIMessage(content='{"cards": []}')
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+
+    res = client.post(
+        "/recommendations/chat", json=_request(message="달러구트 꿈 백화점 추천해줘")
+    )
+
+    assert res.status_code == 200
+    prompt = sent[0]
+    assert "None" not in prompt
+    assert "달러구트 꿈 백화점" in prompt

@@ -329,11 +329,36 @@ async def get_candidates(
     return pool[:CANDIDATE_LIMIT]
 
 
-# {semantic}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
+def _card_prompt_intro(spec: Spec) -> str:
+    """카드 생성 프롬프트 첫 줄 — spec 상태에 따라 다른 문장을 쓴다(#153).
+
+    semantic이 없는데도 예전처럼 "분위기: None"을 그대로 박아 넣으면 모델이
+    카드를 거의 못 만든다(실측: semantic만 채워 넣으면 카드 3장, null이면
+    0장). exact 의도는 애초에 semantic이 없는 게 정상이라 대부분의 exact
+    대화가 여기 걸렸다 — semantic 유무뿐 아니라 exact.title/author 유무까지
+    봐서, 상황에 맞는 문장을 고른다.
+    """
+    if spec.semantic:
+        return f'사용자가 원하는 책 분위기: "{spec.semantic}"'
+    if spec.exact.title and spec.exact.author:
+        return (
+            f'사용자가 "{spec.exact.title}"(저자: {spec.exact.author})를 '
+            "콕 집어 찾았다. 아래는 그 후보 목록이다."
+        )
+    if spec.exact.title:
+        return (
+            f'사용자가 "{spec.exact.title}"를 콕 집어 찾았다. 아래는 그 후보 목록이다.'
+        )
+    if spec.exact.author:
+        return f'사용자가 저자 "{spec.exact.author}"의 책을 찾았다. 아래는 그 후보 목록이다.'
+    return "아래는 사용자 조건에 맞는 책 후보 목록이다."
+
+
+# {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
 # 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
 CARD_PROMPT = ChatPromptTemplate.from_template(
-    '사용자가 원하는 책 분위기: "{semantic}"\n\n'
-    "아래 책 목록 중 이 분위기에 어울리는 책을 최대 {limit}권 골라라.\n"
+    "{intro}\n\n"
+    "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
     "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
@@ -402,7 +427,7 @@ async def generate_cards(
         parsed = await invoke_chain(
             chain,
             {
-                "semantic": spec.semantic,
+                "intro": _card_prompt_intro(spec),
                 "limit": CARD_LIMIT,
                 "listing": _format_listing(candidates),
             },
