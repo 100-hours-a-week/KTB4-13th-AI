@@ -1,7 +1,6 @@
 """인기 점수 테스트. 값을 확인하는 쪽은 실제 PostgreSQL 이 있어야 돈다."""
 
 import asyncio
-import math
 import os
 
 import asyncpg
@@ -17,16 +16,11 @@ needs_db = pytest.mark.skipif(
 )
 
 
-def test_전체_평균을_식에_한_번만_넣는다() -> None:
-    # 두 번 넣으면 같은 값인데도 DB 가 v_book_popularity 전체 집계를 쿼리마다 두 번 돈다.
-    assert popularity.score_sql().count("FROM v_book_popularity") == 1
-
-
 # (book_id, 판매 수, 평점, 리뷰 수). 9100005 는 인기 행이 없는 책이다.
 _ROWS = [
-    (9100001, 100, 4.0, 1000),  # 전체 평균을 4.0 근처로 잡아 주는 책
-    (9100002, 100, 1.0, 2),  # 별점 테러: 리뷰 2개가 모두 1점
-    (9100003, 100, 1.0, 1000),  # 리뷰가 많은 진짜 낮은 평점
+    (9100001, 100, 1.0, 1000),  # 많이 팔렸지만 평점이 낮은 책
+    (9100002, 10, 5.0, 1000),  # 덜 팔렸지만 평점이 높은 책
+    (9100003, 10, None, 0),  # 판매 수가 같고 리뷰는 없는 책
     (9100004, 0, None, 0),  # 판매도 리뷰도 없음
 ]
 
@@ -61,31 +55,25 @@ def _scores() -> dict[int, float]:
 
 
 @needs_db
-def test_식대로_계산한다() -> None:
-    mean = (4.0 * 1000 + 1.0 * 2 + 1.0 * 1000) / 2002
-    adjusted = (popularity.PRIOR_REVIEWS * mean + 4.0 * 1000) / (
-        popularity.PRIOR_REVIEWS + 1000
-    )
-
-    assert _scores()[9100001] == pytest.approx(math.log(101) + adjusted - mean)
-
-
-@needs_db
-def test_리뷰_몇_개의_별점_테러는_리뷰_많은_낮은_평점보다_덜_깎인다() -> None:
+def test_판매_수가_곧_점수다() -> None:
     scores = _scores()
 
-    assert scores[9100002] > scores[9100003]
-    # 평점 항만 떼어 보면(점수 − ln(1 + 판매 수)) 1점짜리 리뷰 2개로는 평균에서 0.5점도 못 깎는다.
-    # 리뷰 1000개가 1점이면 평균(약 2.5)에서 거의 그대로 1.5점이 깎인다.
-    assert scores[9100002] - math.log(101) > -0.5
-    assert scores[9100003] - math.log(101) < -1.4
+    assert scores[9100001] == 100
+    # 평점은 쓰지 않는다(백엔드 MVP 가 판매량 기준, BE #68).
+    assert scores[9100002] == scores[9100003]
 
 
 @needs_db
-def test_판매도_리뷰도_없으면_0점이다() -> None:
-    assert _scores()[9100004] == pytest.approx(0.0)
+def test_순서는_판매_수_순서와_같다() -> None:
+    scores = _scores()
+
+    # 평점이 낮아도 많이 팔린 책이 앞이다.
+    assert scores[9100001] > scores[9100002] > scores[9100004]
 
 
 @needs_db
-def test_인기_행이_없는_책은_0점이다() -> None:
-    assert _scores()[9100005] == 0
+def test_판매가_없거나_행이_없는_책은_0점이다() -> None:
+    scores = _scores()
+
+    assert scores[9100004] == 0
+    assert scores[9100005] == 0
