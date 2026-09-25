@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.feed import rule_only
+from app.feed import cold_start, rule_only
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -107,3 +107,25 @@ def test_점수가_0_이하인_분류는_좋아하는_분류로_치지_않는다
     # 카테고리 점수가 없으면 인기·신간순 후보만 남고 모두 0점이다.
     assert got[0] == (9100801, 0)
     assert all(score == 0 for _, score in got)
+
+
+def test_책_표를_통째로_훑지_않는다() -> None:
+    # 후보를 모을 때 카탈로그 전체를 읽고 정렬하면 261만 권에서 2초가 넘는다(#186, #189).
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        try:
+            rows = await cold_start.run_ordered(
+                conn,
+                "EXPLAIN " + rule_only._SQL.format(where=""),
+                _USER,
+                2.0,
+                _NOW,
+                500,
+                [_LIKED, "한국문학"],
+                [4.0, 2.0],
+            )
+            return "\n".join(r[0] for r in rows)
+        finally:
+            await conn.close()
+
+    assert "Seq Scan on v_books" not in asyncio.run(_go())
