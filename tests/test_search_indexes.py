@@ -1,4 +1,4 @@
-"""기동할 때 검색 색인을 확인하는지 본다.
+"""기동할 때 검색·피드 색인을 확인하는지 본다.
 
 색인은 마이그레이션을 손으로 적용해야 해서(위키 #160) 빠져도 에러가 나지 않고 검색만
 느려진다. 뒷부분은 실제 PostgreSQL 이 있어야 해서 SEARCH_TEST_DATABASE_URL 에 주소를 주면
@@ -21,10 +21,10 @@ def test_빠진_색인이_있으면_이름과_조치를_ERROR로_남긴다(
     async def _missing(conn) -> list[str]:
         return ["v_books_author_trgm_idx"]
 
-    monkeypatch.setattr(db, "missing_search_indexes", _missing)
+    monkeypatch.setattr(db, "missing_indexes", _missing)
 
     with caplog.at_level(logging.ERROR, logger="app.core.db"):
-        asyncio.run(db.report_missing_search_indexes(None))
+        asyncio.run(db.report_missing_indexes(None))
 
     assert "v_books_author_trgm_idx" in caplog.text
     assert "마이그레이션" in caplog.text
@@ -36,10 +36,10 @@ def test_색인이_다_있으면_아무것도_남기지_않는다(
     async def _none(conn) -> list[str]:
         return []
 
-    monkeypatch.setattr(db, "missing_search_indexes", _none)
+    monkeypatch.setattr(db, "missing_indexes", _none)
 
     with caplog.at_level(logging.WARNING, logger="app.core.db"):
-        asyncio.run(db.report_missing_search_indexes(None))
+        asyncio.run(db.report_missing_indexes(None))
 
     assert caplog.text == ""
 
@@ -51,12 +51,12 @@ def test_확인하다_실패해도_서버를_멈추지_않는다(
     async def _boom(conn) -> list[str]:
         raise RuntimeError("DB 끊김")
 
-    monkeypatch.setattr(db, "missing_search_indexes", _boom)
+    monkeypatch.setattr(db, "missing_indexes", _boom)
 
     with caplog.at_level(logging.ERROR, logger="app.core.db"):
-        asyncio.run(db.report_missing_search_indexes(None))
+        asyncio.run(db.report_missing_indexes(None))
 
-    assert "검색 색인" in caplog.text
+    assert "색인을 확인하지 못했습니다" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -86,14 +86,14 @@ def _run_in_rollback(check):
 
 
 @needs_db
-def test_로컬_DB에는_빠진_검색_색인이_없다() -> None:
-    assert _run_in_rollback(db.missing_search_indexes) == []
+def test_로컬_DB에는_빠진_색인이_없다() -> None:
+    assert _run_in_rollback(db.missing_indexes) == []
 
 
 @needs_db
 def test_색인을_지우면_그_이름이_빠진_것으로_나온다() -> None:
     async def _check(conn: asyncpg.Connection) -> list[str]:
         await conn.execute("DROP INDEX v_books_author_trgm_idx")
-        return await db.missing_search_indexes(conn)
+        return await db.missing_indexes(conn)
 
     assert _run_in_rollback(_check) == ["v_books_author_trgm_idx"]
