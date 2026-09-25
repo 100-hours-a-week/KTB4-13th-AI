@@ -150,3 +150,8 @@ def filter_categories(name: str) -> tuple[str, ...] | None:
     """
     match = ONBOARDING_TO_CATALOG.get(name)
     return None if match is None else match.core
+
+
+def is_onboarding(name: str) -> bool:
+    """대응표에 있는 온보딩 값인지. ①④ 요청의 category 는 이 값만 받는다(#219)."""
+    return name in ONBOARDING_TO_CATALOG
