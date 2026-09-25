@@ -7,11 +7,12 @@
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import asyncpg
 
-from app.core import db
+from app.core import db, history
 from app.feed import cold_start, cursor, personalized, rule_only
 from app.feed.schemas import FeedRequest
 
@@ -24,7 +25,7 @@ RULE_ONLY = "rule-only"
 
 _PROFILE_SQL = """
 SELECT centroid::text AS centroid, tag_weights::text AS tag_weights,
-       cold_start, profile_version
+       cold_start, profile_version, computed_at
 FROM taste_profile
 WHERE user_id = $1
 """
@@ -46,6 +47,8 @@ class _Profile:
     centroid: list[float]
     tag_weights: dict[str, float]
     version: int
+    # 프로필이 반영한 이력의 가장 늦은 시각. 반영한 이력이 없으면 None(명세 ⑥).
+    computed_at: datetime | None
 
 
 async def _profile(conn: asyncpg.Connection, user_id: int) -> _Profile | None:
@@ -57,7 +60,26 @@ async def _profile(conn: asyncpg.Connection, user_id: int) -> _Profile | None:
         centroid=json.loads(row["centroid"]),
         tag_weights=json.loads(row["tag_weights"]),
         version=row["profile_version"],
+        computed_at=row["computed_at"],
     )
+
+
+async def _tag_weights(
+    conn: asyncpg.Connection, req: FeedRequest, page: cursor.Page, profile: _Profile
+) -> dict[str, float]:
+    """프로필의 태그 가중치에, 프로필이 반영한 뒤 생긴 이력의 카테고리 점수를 더한다(명세 ⑥, #175).
+
+    ⑥ 은 온보딩과 취향 기억이 바뀔 때만 불려서, 그 사이에 산 책·리뷰·담기는 여기서 더해야 순서에
+    들어간다. 커서를 받은 시각 뒤의 이력은 빼고 본다 — 제외 규칙과 같게 해야 스크롤 중에 점수가
+    바뀌어 목록이 밀리지 않는다.
+    """
+    recent = await history.category_scores_since(
+        conn, req.user_id, profile.computed_at, page.issued_at
+    )
+    weights = dict(profile.tag_weights)
+    for category, points in recent.items():
+        weights[category] = weights.get(category, 0) + points
+    return weights
 
 
 async def feed(req: FeedRequest) -> FeedOutcome:
@@ -75,21 +97,21 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await cold_start.fetch(conn, req, page)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
+        tag_weights = await _tag_weights(conn, req, page, profile)
+
         # 앞 페이지와 모드가 같은지는 목록을 만든 뒤에 본다(① 검색과 같은 순서). 먼저 보면
         # 벡터가 안 되는 동안 받은 커서를 "이번엔 개인화겠지"로 단정해 끊어서, 장애가 이어지는
         # 동안 첫 페이지만 되풀이하게 된다.
         try:
             items, has_more = await personalized.fetch(
-                conn, req, page, profile.centroid, profile.tag_weights
+                conn, req, page, profile.centroid, tag_weights
             )
         except Exception:
             # 벡터 조회가 어떤 이유로 안 되든 할 일은 같다 — 유사도를 빼고 규칙 점수만으로
             # 답하고 헤더로 알린다(명세 ④). 좁게 잡으면 빠지는 게 생긴다(① 과 같은 판단).
             logger.exception("취향 벡터 조회 실패. 규칙 점수만으로 응답한다")
             cursor.check_mode(page, RULE_ONLY)
-            items, has_more = await rule_only.fetch(
-                conn, req, page, profile.tag_weights
-            )
+            items, has_more = await rule_only.fetch(conn, req, page, tag_weights)
             return _outcome(
                 page, req, items, has_more, RULE_ONLY, profile.version, RULE_ONLY
             )

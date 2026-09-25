@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 
@@ -26,8 +27,14 @@ class _FakeConn:
         return self._row
 
 
+async def _no_recent_history(conn, user_id, reflected_at, until=None):
+    return {}
+
+
 def _run(req, profile_row, monkeypatch, **fakes):
     monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool(profile_row))
+    # 프로필 뒤에 생긴 이력(#175)은 따로 보는 테스트가 아니면 없다고 둔다.
+    fakes.setdefault("history__category_scores_since", _no_recent_history)
     for name, fn in fakes.items():
         module, attr = name.split("__")
         monkeypatch.setattr(getattr(service, module), attr, fn)
@@ -61,6 +68,7 @@ def test_취향_벡터를_못_만든_사용자도_같은_길로_간다(
         "tag_weights": "{}",
         "cold_start": True,
         "profile_version": 0,
+        "computed_at": None,
     }
 
     async def _cold(conn, req, page):
@@ -90,6 +98,7 @@ def test_프로필이_있으면_채점한_목록을_준다(monkeypatch: pytest.M
         "tag_weights": '{"에세이": 3}',
         "cold_start": False,
         "profile_version": 2,
+        "computed_at": None,
     }
 
     async def _personalized(conn, req, page, centroid, tag_weights):
@@ -111,6 +120,7 @@ def test_벡터_조회가_안_되면_규칙_점수만으로_답하고_알린다(
         "tag_weights": "{}",
         "cold_start": False,
         "profile_version": 1,
+        "computed_at": None,
     }
 
     async def _personalized(conn, req, page, centroid, tag_weights):
@@ -165,6 +175,7 @@ _PROFILE_ROW = {
     "tag_weights": "{}",
     "cold_start": False,
     "profile_version": 1,
+    "computed_at": None,
 }
 
 
@@ -227,3 +238,33 @@ def test_벡터가_돌아오면_임시_목록의_커서는_끊는다(
             monkeypatch,
             personalized__fetch=_vector_up,
         )
+
+
+def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ⑥ 은 온보딩 때만 불려서, 그 뒤에 산 책은 여기서 더해야 순서에 들어간다(#175).
+    reflected = datetime(2026, 9, 1, tzinfo=UTC)
+    row = {**_PROFILE_ROW, "tag_weights": '{"에세이": 3}', "computed_at": reflected}
+    calls: list[tuple] = []
+
+    async def _recent(conn, user_id, reflected_at, until=None):
+        calls.append((user_id, reflected_at, until))
+        return {"에세이": 2, "경제학": 3}
+
+    async def _personalized(conn, req, page, centroid, tag_weights):
+        assert tag_weights == {"에세이": 5, "경제학": 3}
+        return [{"book_id": 9, "match_score": 80}], False
+
+    _run(
+        _req(),
+        row,
+        monkeypatch,
+        history__category_scores_since=_recent,
+        personalized__fetch=_personalized,
+    )
+
+    # 프로필이 반영한 시각 뒤부터, 이 목록을 처음 받은 시각까지만 본다.
+    ((user_id, after, until),) = calls
+    assert (user_id, after) == (1, reflected)
+    assert until is not None

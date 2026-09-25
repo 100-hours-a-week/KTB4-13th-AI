@@ -179,3 +179,54 @@ def test_세_테이블을_user_id로_읽어_모은다() -> None:
     assert h.weights == {9100101: 3, 9100102: 2}
     assert h.category_scores == {"에세이": 3, "한국소설": 2}
     assert h.computed_at == _T0 + timedelta(days=2)
+
+
+@needs_db
+def test_프로필_이후_이력이_바꾼_카테고리_점수만_낸다() -> None:
+    # 1일 구매 · 2일 담기 · 3일 같은 책에 좋은 리뷰. 프로필이 1일까지 반영했다(computed_at).
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.executemany(
+                "INSERT INTO v_books (book_id, title, author, publisher, price, in_stock,"
+                " cover_url, category, pub_year, description)"
+                " VALUES ($1, $2, '저자', '출판사', 10000, true, NULL, $3, 2024, NULL)",
+                [(9100101, "책1", "에세이"), (9100102, "책2", "한국소설")],
+            )
+            await conn.execute(
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)",
+                _USER,
+                _T0 + timedelta(days=1),
+            )
+            await conn.execute(
+                "INSERT INTO v_user_library VALUES ($1, 9100102, $2)",
+                _USER,
+                _T0 + timedelta(days=2),
+            )
+            await conn.execute(
+                "INSERT INTO v_user_reviews VALUES ($1, 9100101, 4.5, $2)",
+                _USER,
+                _T0 + timedelta(days=3),
+            )
+            reflected = _T0 + timedelta(days=1)
+            return (
+                await history.category_scores_since(conn, _USER, reflected),
+                await history.category_scores_since(
+                    conn, _USER, reflected, _T0 + timedelta(days=1, hours=12)
+                ),
+                await history.category_scores_since(conn, _USER, None),
+            )
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    since, until_before_new, everything = asyncio.run(_go())
+
+    # 담기(+1)만 더해진다. 산 책에 달린 좋은 리뷰는 큰 값 하나(3) 그대로라 에세이는 바뀌지 않는다.
+    assert since == {"한국소설": 1}
+    # until 뒤의 이력(커서를 받은 뒤 생긴 것)은 빼고 본다.
+    assert until_before_new == {}
+    # 반영한 이력이 없으면(computed_at 이 비면) 전부 더한다.
+    assert everything == {"에세이": 3, "한국소설": 1}
