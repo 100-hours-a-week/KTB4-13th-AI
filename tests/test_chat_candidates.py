@@ -135,7 +135,9 @@ def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
 ) -> None:
     async def _search(req: SearchRequest) -> SearchOutcome:
         assert req.query == "비 오는 날 읽을 책"
-        assert req.filters.category == "에세이"
+        # 온보딩 대응표(#110)에 없는 값(이미 카탈로그 분류명)이면 그대로 ①에 넘긴다
+        # — 장르 정규화 자체는 tests/test_chat_category.py가 따로 본다.
+        assert req.filters.category == "한국문학"
         return SearchOutcome(results=[_book(1088), _book(2000)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -148,7 +150,7 @@ def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
     spec = _spec(
         intent="semantic",
         semantic="비 오는 날 읽을 책",
-        filters=SearchFilters(category="에세이"),
+        filters=SearchFilters(category="한국문학"),
     )
     result = asyncio.run(chat.get_candidates(spec, [], 1))
 
@@ -157,6 +159,75 @@ def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
     assert result[0]["description"] == "잠든 사이 꿈을 사고파는 상점 이야기."
     assert result[0]["price"] == 10000
     assert result[0]["cover_url"] == "https://example.com/1088.jpg"
+
+
+def test_온보딩_장르는_카탈로그_분류로_바꿔_거른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — filters.category에 온보딩 값("소설")이 그대로 오면 ①의 정확 일치
+
+    필터는 카탈로그 분류명("한국문학" 등)과 안 맞아 0건이 된다. 대응표(#110)에
+    있는 값이면 ①에는 category를 안 보내고(정확 일치를 걸면 처음부터 0건이라
+    넓게 받아야 한다) 카탈로그 분류로 직접 거른다.
+    """
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        # "소설"은 ①에 안 넘어가야 한다 — 그대로 넘기면 정확 일치라 0건이 된다.
+        assert req.filters.category is None
+        return SearchOutcome(results=[_book(1088), _book(2000)], degraded=None)
+
+    async def _categories(book_ids: list[int]) -> dict[int, str | None]:
+        assert set(book_ids) == {1088, 2000}
+        return {1088: "한국소설", 2000: "경제학"}  # 1088만 "소설" 대응표에 걸림
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {bid: "설명" for bid in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_categories", _categories)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="아무 제목", author=None, publisher=None),
+        filters=SearchFilters(category="소설"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1088]
+
+
+def test_대응표에_없는_카테고리는_예전처럼_정확_일치로_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대응표에 없는 값(이미 카탈로그 분류명이거나 모르는 값)은 그대로 ①에 보낸다
+
+    (categories.py: "여기 없는 값은 쓰는 쪽에서 건너뛴다") — 카탈로그 조회를
+    새로 안 하고 예전 동작을 그대로 유지한다.
+    """
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        assert req.filters.category == "한국문학"
+        return SearchOutcome(results=[_book(1088)], degraded=None)
+
+    async def _must_not_run(book_ids: list[int]) -> dict[int, str | None]:
+        raise AssertionError("대응표에 없는 값인데 카탈로그 조회를 했다")
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {1088: "설명"}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_categories", _must_not_run)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(
+        intent="exact",
+        exact=SpecExact(title="아무 제목", author=None, publisher=None),
+        filters=SearchFilters(category="한국문학"),
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1088]
 
 
 def test_exact이면_소개글_없는_책도_후보에_남긴다(
