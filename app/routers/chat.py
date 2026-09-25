@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
 from app.core import categories, db, history, popularity, responses
+from app.core.pgvector import to_vector_literal
 from app.feed import personalized, scoring
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -368,6 +369,32 @@ def _exclude_owned_or_disliked(pool: list[dict], hist: history.History) -> list[
     ]
 
 
+async def _fetch_similarities(
+    conn: asyncpg.Connection, book_ids: list[int], centroid: list[float]
+) -> dict[int, float]:
+    """후보 book_id들과 취향 centroid의 코사인 유사도(#180).
+
+    ④(app.feed.personalized)는 centroid와 가까운 책을 벡터 색인으로 "찾는다"(수십만
+    권 중 500권). ③은 후보가 이미 정해져 있어(①의 키워드 검색 결과, 최대
+    CANDIDATE_LIMIT권) 그 책들의 거리만 "재는" 거라 색인 튜닝 없이 WHERE IN 하나로
+    충분하다 — book_embeddings는 book_id가 PK라 어차피 색인을 탄다.
+
+    pgvector `<=>`는 코사인 거리라 1을 빼야 유사도다(④와 같은 식, personalized.py 참고).
+    """
+    if not book_ids:
+        return {}
+    rows = await conn.fetch(
+        """
+        SELECT book_id, 1 - (embedding <=> $1::vector) AS similarity
+        FROM book_embeddings
+        WHERE book_id = ANY($2::int[])
+        """,
+        to_vector_literal(centroid),
+        book_ids,
+    )
+    return {r["book_id"]: r["similarity"] for r in rows}
+
+
 async def _attach_match_scores(
     conn: asyncpg.Connection, candidates: list[dict], user_id: int
 ) -> None:
@@ -376,10 +403,10 @@ async def _attach_match_scores(
     ①의 검색 결과에는 카테고리·인기 점수가 없다(응답 계약 밖이라 ①의 파일은
     안 건드리고 여기서 직접 조회한다 — _fetch_descriptions와 같은 이유,
     엔드포인트 소유권 교차 금지). 취향 벡터 유사도(책 임베딩 대 취향
-    centroid)는 아직 안 붙인다 — ①의 후보는 벡터 검색이 아니라 키워드
-    검색이라 애초에 유사도가 없다. ④가 벡터 조회 실패 때 쓰는 것과 같은
-    공식(app.feed.scoring.match_score, with_similarity=False)으로 카테고리·
-    인기 점수만 합친다. 취향 프로필이 없는 사용자는 인기 점수만 반영된다.
+    centroid)는 프로필이 있는 사용자만 붙는다(#180) — cold_start(프로필이
+    없거나 아직 벡터를 못 만든 사용자)는 ④의 cold_start 목록과 같은 이유로
+    유사도가 없어 카테고리·인기만으로 계산한다(app.feed.scoring.match_score,
+    with_similarity=False).
 
     candidates를 그 자리에서 고친다(각 항목에 match_score·popularity 칸을
     더한다) — _fetch_descriptions가 description을 더하는 것과 같은 방식이다.
@@ -400,10 +427,21 @@ async def _attach_match_scores(
         book_ids,
     )
     profile_row = await conn.fetchrow(
-        "SELECT tag_weights::text AS tag_weights FROM taste_profile WHERE user_id = $1",
+        "SELECT centroid::text AS centroid, tag_weights::text AS tag_weights, "
+        "cold_start FROM taste_profile WHERE user_id = $1",
         user_id,
     )
     catalog_max = await personalized.catalog_max_popularity(conn)
+
+    # ④의 _profile()과 같은 조건(app/feed/service.py) — cold_start거나 centroid가
+    # 없으면 벡터를 못 쓰는 사용자다.
+    has_centroid = bool(
+        profile_row and not profile_row["cold_start"] and profile_row["centroid"]
+    )
+    similarities: dict[int, float] = {}
+    if has_centroid:
+        centroid = json.loads(profile_row["centroid"])
+        similarities = await _fetch_similarities(conn, book_ids, centroid)
 
     fields = {r["book_id"]: r for r in rows}
     tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
@@ -412,11 +450,11 @@ async def _attach_match_scores(
         category = f["category"] if f else None
         c["popularity"] = f["popularity"] if f else 0
         c["match_score"] = scoring.match_score(
-            None,
+            similarities.get(c["book_id"]),
             tag_weights.get(category),
             c["popularity"],
             catalog_max,
-            with_similarity=False,
+            with_similarity=has_centroid,
         )
 
 
