@@ -2,13 +2,14 @@
 
 import asyncpg
 
-from app.core import popularity
+from app.core import popularity, products
 
-# 값이 같으면 관련도 등수(pos)가 앞선 책이 먼저다. pub_year 가 없는 책은 최신순에서 맨 뒤로 간다.
+# 값이 같으면 관련도 등수(pos)가 앞선 책이 먼저다. pub_year 가 없는 책은 최신순에서, 상품이 없어
+# 가격이 없는 책은 가격순에서 맨 뒤로 간다. 가격은 상품 표에서 읽는다(#206).
 _ORDER_BY = {
     "newest": "b.pub_year DESC NULLS LAST, ids.pos",
-    "price_asc": "b.price ASC, ids.pos",
-    "price_desc": "b.price DESC, ids.pos",
+    "price_asc": f"{products.price_sql('b')} ASC NULLS LAST, ids.pos",
+    "price_desc": f"{products.price_sql('b')} DESC NULLS LAST, ids.pos",
     "popular": f"{popularity.score_sql('p')} DESC, ids.pos",
 }
 
