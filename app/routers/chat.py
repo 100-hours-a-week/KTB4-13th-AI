@@ -21,7 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
-from app.core import db, history, popularity, responses
+from app.core import categories, db, history, popularity, responses
 from app.feed import personalized, scoring
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -145,18 +145,71 @@ def _format_recent_turns(turns: list[Turn]) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in turns[-MAX_RECENT_TURNS:])
 
 
+def _clear_stale_exact(merged_exact: dict, sub_patch: dict) -> None:
+    """새 제목을 찾을 때 이전 턴의 저자·출판사가 남으면 엉뚱한 책이 되거나 0건이 된다(#203).
+
+    title이 이번 patch에 새로 오면, 같이 안 온 author·publisher는 이전 턴 값을
+    지운다 — 다른 책을 찾는 것이니 이전 저자·출판사는 이제 안 맞다. 같은 patch에
+    author·publisher도 같이 왔으면(예: "이 저자의 이 책") 그 값은 그대로 쓴다.
+    """
+    if "title" not in sub_patch:
+        return
+    if "author" not in sub_patch:
+        merged_exact["author"] = None
+    if "publisher" not in sub_patch:
+        merged_exact["publisher"] = None
+
+
+def _clear_inverted_range(
+    merged_filters: dict, sub_patch: dict, low: str, high: str
+) -> None:
+    """가격·연도 구간의 한쪽만 새로 오면, 반대쪽에 남아 있던 이전 값과 뒤집힐 수 있다(#203).
+
+    뒤집힌 채로 두면 Spec 검증(SearchFilters._ranges_are_ordered)이 실패해
+    update_spec이 이걸 LLM 장애와 똑같이 spec_degraded로 처리한다 — LLM은
+    멀쩡히 답했는데 병합 로직 때문에 대화가 막힌다. 이번에 안 건드린 반대쪽이
+    새 값과 뒤집히면, 그 반대쪽은 더 이상 유효하지 않은 이전 조건이므로 지운다.
+    """
+    low_given, high_given = low in sub_patch, high in sub_patch
+    if low_given and not high_given:
+        old_high = merged_filters.get(high)
+        new_low = merged_filters.get(low)
+        if old_high is not None and new_low is not None and new_low > old_high:
+            merged_filters[high] = None
+    elif high_given and not low_given:
+        old_low = merged_filters.get(low)
+        new_high = merged_filters.get(high)
+        if old_low is not None and new_high is not None and old_low > new_high:
+            merged_filters[low] = None
+
+
 def _merge_spec_patch(current: Spec, patch: dict) -> dict:
     """이번 턴에 LLM이 바꾼 값만 담긴 patch를 지금 spec 위에 겹쳐 완전한 spec dict를 만든다.
 
     patch에 없는 키(하위 키 포함)는 지금 값을 그대로 두고, 있는 키만
     덮어쓴다. exclude는 겹쳐 쓰지 않고 더한다 — 모델이 옛 항목을 안 실어도
-    사라지지 않는다.
+    사라지지 않는다. 단순 겹쳐쓰기만으로는 안 맞는 두 경우(#203)는 겹쳐쓴
+    뒤 따로 손본다 — 새 제목에 이전 저자·출판사가 남는 경우, 구간 한쪽만
+    새로 와 반대쪽과 뒤집히는 경우.
     """
     merged = current.model_dump()
     for key in ("exact", "filters"):
         sub_patch = patch.get(key)
         if isinstance(sub_patch, dict):
             merged[key] = {**merged[key], **sub_patch}
+
+    exact_patch = patch.get("exact")
+    if isinstance(exact_patch, dict):
+        _clear_stale_exact(merged["exact"], exact_patch)
+
+    filters_patch = patch.get("filters")
+    if isinstance(filters_patch, dict):
+        _clear_inverted_range(
+            merged["filters"], filters_patch, "price_min", "price_max"
+        )
+        _clear_inverted_range(
+            merged["filters"], filters_patch, "pub_year_from", "pub_year_to"
+        )
 
     new_exclude = patch.get("exclude")
     if isinstance(new_exclude, list):
@@ -244,6 +297,36 @@ async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
             book_ids,
         )
     return {r["book_id"]: r["description"] for r in rows}
+
+
+async def _fetch_categories(book_ids: list[int]) -> dict[int, str | None]:
+    """①의 book_id 목록에 카탈로그 분류(v_books.category)를 붙인다.
+
+    _fetch_descriptions와 같은 이유로 ①의 파일은 안 건드리고 여기서 직접 조회한다
+    (엔드포인트 소유권 교차 금지). 장르 필터 정규화(_catalog_categories_for)에서 쓴다.
+    """
+    if not book_ids:
+        return {}
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT book_id, category FROM v_books WHERE book_id = ANY($1::int[])",
+            book_ids,
+        )
+    return {r["book_id"]: r["category"] for r in rows}
+
+
+def _catalog_categories_for(category: str) -> tuple[str, ...] | None:
+    """온보딩 장르 값(예: "소설")이면 대응하는 카탈로그 분류들(핵심+일부, #110).
+
+    대응표에 없는 값(예: 이미 카탈로그 분류명 그대로거나, 대응표가 모르는 값)이면
+    None — 호출부가 예전처럼 ①의 정확 일치 필터를 그대로 쓴다(categories.py
+    docstring: "여기 없는 값은 쓰는 쪽에서 건너뛴다").
+    """
+    match = categories.ONBOARDING_TO_CATALOG.get(category)
+    if match is None:
+        return None
+    return match.core + match.partial
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -376,11 +459,27 @@ async def get_candidates(
     if not query:
         return []
 
+    # 장르는 온보딩 값(예: "소설")으로 오는데 ①의 category 필터는 카탈로그 분류명과
+    # 정확히 같아야 해서 그대로 넘기면 0건이 된다(#203). 대응표에 있는 값이면 ①에는
+    # category를 안 보내고(정확 일치를 걸면 애초에 0건이라 넓게 받아야 한다) 아래에서
+    # 카탈로그 분류로 직접 거른다 — publisher와 같은 패턴(엔드포인트 소유권 교차 금지).
+    search_filters = spec.filters
+    catalog_categories = None
+    if spec.filters.category is not None:
+        catalog_categories = _catalog_categories_for(spec.filters.category)
+        if catalog_categories is not None:
+            search_filters = spec.filters.model_copy(update={"category": None})
+
     outcome = await service.search(
-        SearchRequest(query=query, filters=spec.filters, size=SEARCH_SIZE)
+        SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    if catalog_categories is not None:
+        book_categories = await _fetch_categories([c["book_id"] for c in pool])
+        pool = [
+            r for r in pool if book_categories.get(r["book_id"]) in catalog_categories
+        ]
     if spec.exact.publisher:
         # _query_text()는 출판사를 검색어에 안 섞는다(위 docstring) — 그래서 여기서
         # 결과를 따로 거른다. exclude와 같은 이유로 CANDIDATE_LIMIT 전에 거른다.
@@ -519,12 +618,27 @@ async def generate_cards(
         logger.exception("카드 생성 실패")
         return _rule_based_cards(candidates), None, True
 
+    raw_cards = parsed.get("cards")
+    if not isinstance(raw_cards, list):
+        # 명세를 어긴 모양(cards가 null·문자열 등)을 그냥 슬라이스하면 TypeError가
+        # 나 라우터의 어떤 try/except도 안 거치고 그대로 샌다(#201에서 실제로 확인).
+        # LLM 장애와 똑같이 degraded로 규칙 기반 카드를 대신 낸다(#203) — 원문은
+        # 안 남기고 타입만 로그에 남긴다(#202처럼 대화 내용을 로그에 남기지 않는다).
+        logger.error(
+            "카드 생성 응답의 cards가 배열이 아님: %s", type(raw_cards).__name__
+        )
+        return _rule_based_cards(candidates), None, True
+
     reply = parsed.get("reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
 
     cards = []
-    for rank, item in enumerate(parsed.get("cards", [])[:CARD_LIMIT], start=1):
+    for rank, item in enumerate(raw_cards[:CARD_LIMIT], start=1):
+        if not isinstance(item, dict):
+            # 개별 항목이 문자열 등 dict가 아니면 그 카드만 건너뛴다(#203) — 다른
+            # 항목이 멀쩡하면 그것까지 통째로 degraded 처리할 이유는 없다.
+            continue
         book_id = item.get("book_id")
         book = id_by_book.get(book_id)
         reason_short = item.get("reason_short")

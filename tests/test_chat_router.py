@@ -252,6 +252,50 @@ def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.Monkey
     assert res.json()["data"]["cards"] == []
 
 
+def test_cards가_null이면_degraded로_규칙_기반_카드를_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — LLM이 명세를 어기고 "cards": null을 주면, 그걸 그냥 슬라이스하면
+
+    None[:CARD_LIMIT]에서 TypeError가 나 라우터의 어떤 try/except도 안 거치고
+    그대로 샜다(#201). LLM 장애와 똑같이 degraded로 처리해야 한다.
+    """
+    card_reply = '{"cards": null}'
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is True
+    assert len(data["cards"]) == 1
+    assert data["cards"][0]["book_id"] == 1088
+
+
+def test_cards_항목이_문자열이면_그_카드만_건너뛴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — cards 배열 자체는 맞는데 개별 항목이 dict가 아니면(예: 문자열),
+
+    item.get(...)에서 AttributeError가 난다. 그 항목만 건너뛰고(다른 항목이
+    멀쩡하면 통째로 degraded 처리할 이유는 없다) 정상 처리한다.
+    """
+    card_reply = (
+        '{"cards": ["이상한 문자열 항목", {"book_id": 1088, "reason_short": "이유"}]}'
+    )
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is False
+    assert len(data["cards"]) == 1
+    assert data["cards"][0]["book_id"] == 1088
+
+
 def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -628,6 +672,112 @@ def test_patch가_안_건드린_필터는_요청_spec_값이_유지된다(
     data = res.json()["data"]
     assert data["spec"]["filters"]["in_stock_only"] is True
     assert data["spec"]["semantic"] == "품절 아닌 책"
+
+
+def test_새_제목이_오면_이전_턴_저자_출판사를_지운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — 새 제목을 찾을 때 이전 턴의 저자·출판사가 남으면 엉뚱한 책이 되거나 0건이 된다.
+
+    "김영하 책 찾아줘"(author=김영하) 다음에 "달러구트 꿈 백화점 찾아줘"라고 하면,
+    patch에 author가 안 실려도 이전 author가 그대로 남으면 안 된다.
+    """
+    spec_reply = _spec_reply(exact={"title": "달러구트 꿈 백화점"})
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {
+        **INITIAL_SPEC,
+        "intent": "exact",
+        "exact": {"title": None, "author": "김영하", "publisher": None},
+    }
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    exact = res.json()["data"]["spec"]["exact"]
+    assert exact["title"] == "달러구트 꿈 백화점"
+    assert exact["author"] is None
+
+
+def test_제목과_저자가_같이_오면_저자를_그대로_쓴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — title 새로 옴 = 무조건 author 삭제가 아니라, 같은 patch에 author도
+
+    왔으면(예: "이 저자의 이 책") 그 값을 그대로 쓴다.
+    """
+    spec_reply = _spec_reply(exact={"title": "달러구트 꿈 백화점", "author": "이미예"})
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    exact = res.json()["data"]["spec"]["exact"]
+    assert exact["title"] == "달러구트 꿈 백화점"
+    assert exact["author"] == "이미예"
+
+
+def test_가격_상한만_새로_오면_뒤집히는_이전_하한을_지운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — "3만원 이상"(price_min=30000) 다음에 "2만원 이하"(patch: price_max=20000)라고
+
+    하면, 이전 price_min(30000)을 그대로 두면 min > max로 뒤집혀 Spec 검증이
+    실패하고 update_spec이 이걸 LLM 장애와 똑같이 spec_degraded로 처리해 대화가
+    막힌다(#203). 뒤집히는 이전 하한은 지워야 한다.
+    """
+    spec_reply = _spec_reply(filters={"price_max": 20000})
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "filters": {"price_min": 30000}}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert (
+        data["degraded"] is False
+    )  # 뒤집힌 채로 검증 실패해 degraded 되던 것이 고쳐짐
+    filters = data["spec"]["filters"]
+    assert filters["price_max"] == 20000
+    assert filters["price_min"] is None
+
+
+def test_연도_구간도_한쪽만_오면_뒤집히는_반대쪽을_지운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#203 — 가격과 같은 문제가 pub_year_from/to에도 있다."""
+    spec_reply = _spec_reply(filters={"pub_year_from": 2024})
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "filters": {"pub_year_to": 2020}}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["degraded"] is False
+    filters = data["spec"]["filters"]
+    assert filters["pub_year_from"] == 2024
+    assert filters["pub_year_to"] is None
+
+
+def test_뒤집히지_않는_구간_갱신은_반대쪽을_그대로_둔다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """뒤집히지 않으면(정상 구간) 이전 반대쪽 값을 지울 이유가 없다 — 회귀 방지."""
+    spec_reply = _spec_reply(filters={"price_max": 30000})
+    model = _sequenced_model(spec_reply, '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    request_spec = {**INITIAL_SPEC, "filters": {"price_min": 10000}}
+    res = client.post("/recommendations/chat", json=_request(spec=request_spec))
+
+    assert res.status_code == 200
+    filters = res.json()["data"]["spec"]["filters"]
+    assert filters["price_min"] == 10000
+    assert filters["price_max"] == 30000
 
 
 def test_exclude는_patch로_받은_id를_기존_목록에_더한다(
