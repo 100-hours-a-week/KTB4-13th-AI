@@ -38,3 +38,15 @@ def test_한_온보딩_값_안에서_핵심과_일부가_겹치지_않는다(pic
     names = [*match.core, *match.partial]
 
     assert len(names) == len(set(names))
+
+
+def test_필터용_분류는_핵심만이다() -> None:
+    # 일부 분류는 필터에 넣지 않는다(#110). 에세이의 일부인 한국문학이 빠진다.
+    assert categories.filter_categories("에세이") == (
+        "강연집·수필집·연설문집",
+        "에세이",
+    )
+
+
+def test_대응표에_없는_값은_필터용_분류가_없다() -> None:
+    assert categories.filter_categories("한국문학") is None
