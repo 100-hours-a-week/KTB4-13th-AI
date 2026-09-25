@@ -11,7 +11,7 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history, popularity
+from app.core import history, popularity, products
 from app.feed import cold_start, personalized, scoring
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
@@ -39,7 +39,8 @@ WITH liked AS (
     {cold_start.popular_first_sql("{where}", columns="u.book_id")}
     LIMIT $4
 )
-SELECT b.book_id, b.title, b.author, b.price, b.cover_url, b.in_stock, b.category, b.pub_year,
+SELECT b.book_id, b.title, b.author, {products.price_sql("b")} AS price, b.cover_url,
+       {products.in_stock_sql("b")} AS in_stock, b.category, b.pub_year,
        {_POPULARITY} AS popularity
 FROM v_books b
 LEFT JOIN v_book_popularity p USING (book_id)
