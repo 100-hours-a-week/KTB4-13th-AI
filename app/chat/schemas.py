@@ -1,9 +1,10 @@
 """③ /recommendations/chat 의 요청 모양과 spec 스키마. 라우터와 후보검색·카드생성이 같이 쓴다."""
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 from app.search.schemas import SearchFilters
 
 # 명세 ③
@@ -14,6 +15,17 @@ MAX_TURN_CHARS = 200
 
 class _Strict(BaseModel):
     model_config = ConfigDict(strict=True)
+
+    # NUL·짝 없는 서로게이트가 DB나 인코딩 단계에서야 터지면 500이 난다.
+    # 여기서 걸러 400으로 만든다(#201).
+    @field_validator("*", mode="after")
+    @classmethod
+    def _sanitize(cls, value: object) -> object:
+        if isinstance(value, str):
+            return sanitize_string(value)
+        if isinstance(value, list):
+            return [sanitize_string(v) if isinstance(v, str) else v for v in value]
+        return value
 
 
 class SpecExact(_Strict):
@@ -34,8 +46,9 @@ class Spec(_Strict):
     exact: SpecExact
     filters: SearchFilters
     semantic: str | None
-    anchor_book: int | None
-    exclude: list[int]
+    # book_id. int32 상한을 넘으면 DB(integer 컬럼)에서 500이 난다(#201) — 여기서 400으로.
+    anchor_book: int | None = Field(ge=INT32_MIN, le=INT32_MAX)
+    exclude: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]]
 
 
 class Turn(_Strict):
@@ -44,12 +57,14 @@ class Turn(_Strict):
 
 
 class ChatRequest(_Strict):
-    user_id: int
+    user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
     consented: bool
     spec: Spec
     message: str | None = Field(default=None, max_length=MAX_MESSAGE_CHARS)
     recent_turns: list[Turn] = Field(default_factory=list)
-    exclude_book_ids: list[int] = Field(default_factory=list)
+    exclude_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
+        default_factory=list
+    )
     image_ref: str | None = None
 
     @model_validator(mode="after")

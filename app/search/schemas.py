@@ -2,7 +2,9 @@
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 
 # 명세 ①
 MAX_QUERY_CHARS = 200
@@ -16,13 +18,24 @@ class _Strict(BaseModel):
     # "15" 같은 문자열을 숫자로 슬쩍 바꿔 받지 않는다. 타입이 계약과 다르면 400 이다.
     model_config = ConfigDict(strict=True)
 
+    # NUL·짝 없는 서로게이트가 DB나 인코딩 단계에서야 터지면 500이 난다.
+    # 여기서 걸러 400으로 만든다(#201).
+    @field_validator("*", mode="after")
+    @classmethod
+    def _sanitize(cls, value: object) -> object:
+        if isinstance(value, str):
+            return sanitize_string(value)
+        if isinstance(value, list):
+            return [sanitize_string(v) if isinstance(v, str) else v for v in value]
+        return value
+
 
 class SearchFilters(_Strict):
     category: str | None = None
-    price_min: int | None = Field(default=None, ge=0)
-    price_max: int | None = Field(default=None, ge=0)
-    pub_year_from: int | None = None
-    pub_year_to: int | None = None
+    price_min: int | None = Field(default=None, ge=0, le=INT32_MAX)
+    price_max: int | None = Field(default=None, ge=0, le=INT32_MAX)
+    pub_year_from: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
+    pub_year_to: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
     in_stock_only: bool = False
 
     @model_validator(mode="after")

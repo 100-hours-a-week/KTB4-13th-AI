@@ -48,6 +48,21 @@ async def _unauthorized_handler(request: Request, exc: Unauthorized) -> JSONResp
     return responses.error(401, "unauthorized")
 
 
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """마지막 방어선 — 라우터가 자기 `except Exception`으로 못 잡은 예외까지 공통 형식으로 맞춘다.
+
+    안 걸면 FastAPI 기본 500(text/plain `Internal Server Error`)이 나가 계약이
+    깨진다(#201). 라우터가 이미 자기 try/except로 잡는 경로는 거기서 끝나 여기까지
+    안 온다 — 이건 그 try 블록 밖에서 난 예외(예: LLM 응답 모양이 스키마와 달라
+    카드 조립 중 터지는 경우)를 막는 용도다.
+    """
+    logger.exception("처리하지 못한 예외")
+    return responses.error(500, "internal_server_error")
+
+
 _auth_required = [Depends(verify_service_token)]
 
 # --- 로컬 개발 전용 CORS 시작 — dev/ 테스트 화면이 브라우저에서 직접 이 서버를

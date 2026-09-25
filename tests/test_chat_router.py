@@ -213,6 +213,32 @@ def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준�
     assert res.json() == {"message": "internal_server_error", "data": None}
 
 
+def test_cards가_null이면_500이지만_공통_JSON_형식으로_나간다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#201 — generate_cards() 호출은 chat()의 어떤 try/except에도 안 걸려 있었다.
+
+    LLM이 `"cards": null`처럼 명세를 어긴 모양으로 답하면 `parsed.get("cards", [])`가
+    None을 돌려줘(키가 있으니 기본값이 안 먹는다) `None[:CARD_LIMIT]`에서 TypeError가
+    난다. main.py에 전역 예외 처리기를 걸기 전엔 이게 그대로 올라가 FastAPI 기본
+    500(text/plain, 공통 형식 아님)이 나갔다 — 이제 최소한 형식은 지켜야 한다.
+    """
+    card_reply = '{"cards": null}'
+    model = _sequenced_model(_spec_reply(), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    # main.py의 전역 핸들러는 Starlette ServerErrorMiddleware를 타는데, 이 미들웨어는
+    # 핸들러로 응답을 보낸 "뒤에" 원래 예외를 다시 던진다(서버 로그용) — 기본 TestClient는
+    # 그걸 그대로 드러내 테스트가 실패한 것처럼 보인다. raise_server_exceptions=False로
+    # 실제 배포에서 클라이언트가 받는 응답(200 아니라 500 JSON)을 본다.
+    no_raise_client = TestClient(app, raise_server_exceptions=False)
+    res = no_raise_client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 500
+    assert res.headers["content-type"].startswith("application/json")
+    assert res.json() == {"message": "internal_server_error", "data": None}
+
+
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
@@ -679,6 +705,46 @@ def test_message가_비어있으면_400이다() -> None:
 def test_spec이_6개_키를_안_갖추면_422_spec_schema_violation이다() -> None:
     res = client.post(
         "/recommendations/chat", json=_request(spec={"intent": "semantic"})
+    )
+    assert res.status_code == 422
+    assert res.json()["message"] == "spec_schema_violation"
+
+
+def test_user_id가_int32_범위를_넘으면_400이다() -> None:
+    res = client.post("/recommendations/chat", json=_request(user_id=2_147_483_648))
+    assert res.status_code == 400
+    assert res.json()["message"] == "invalid_request"
+
+
+def test_message에_짝_없는_서로게이트가_있으면_400이다() -> None:
+    """#201 — httpx 클라이언트는 실제 서로게이트를 담은 str을 그대로 못 보낸다.
+    실제 공격 벡터(JSON escape가 와이어를 타고 서버에서 풀리는 경우)를 재현하려면
+    본문을 raw bytes로 직접 보내야 한다(search 라우터 테스트와 같은 이유).
+    """
+    body = _request(message="__MARKER__")
+    payload = json.dumps(body, ensure_ascii=False).replace('"__MARKER__"', '"\\ud800"')
+    res = client.post(
+        "/recommendations/chat",
+        content=payload.encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert res.status_code == 400
+    assert res.json()["message"] == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "spec_override",
+    [
+        {"anchor_book": 2_147_483_648},  # int32 상한 초과 — #201
+        {"exact": {**INITIAL_SPEC["exact"], "title": "김영\x00하"}},  # NUL — #201
+    ],
+)
+def test_spec_안의_int32나_NUL_위반도_422_spec_schema_violation이다(
+    spec_override: dict,
+) -> None:
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(spec={**INITIAL_SPEC, **spec_override}),
     )
     assert res.status_code == 422
     assert res.json()["message"] == "spec_schema_violation"
