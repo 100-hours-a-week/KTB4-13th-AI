@@ -27,17 +27,21 @@ RUN /app/.venv/bin/python -c "import sys; from sentence_transformers import Sent
 # 실행 단계
 FROM python:3.12-slim
 
+# 모델은 이미지 안의 것만 쓴다. 없으면 내려받으러 가지 않고 곧바로 실패한다.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    HF_HOME=/app/hf \
+    HF_HUB_OFFLINE=1
 
 WORKDIR /app
 
+RUN addgroup --system app && adduser --system --ingroup app app
+
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /app/hf /app/hf
 COPY app ./app
 COPY main.py ./main.py
-
-RUN addgroup --system app && adduser --system --ingroup app app
 
 USER app
 
