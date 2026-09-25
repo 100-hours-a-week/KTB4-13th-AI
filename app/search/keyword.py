@@ -37,6 +37,12 @@ DESCRIPTION_COVERAGE = 0.5
 # 책 수에 비례해 느려진다(266만 권에서 1초가 넘음, #120). 순서 없이 먼저 찾은 만큼만 가져오므로
 # 제목이 검색어와 똑같은 책은 따로 찾아 늘 넣는다(_same_title).
 LOOKUP_LIMIT = 500
+# 낱말마다 넓힐 때 모으는 후보의 합. 낱말 수로 나눠 낱말마다 이만큼씩만 모은다(최소 LOOKUP_MIN).
+# 후보마다 낱말별로 소개글을 뒤져 채점하므로 비용은 후보 수에 비례한다. 문장으로 친 검색어("초등학생이
+# 읽기 쉬운 과학 책")는 거의 늘 이 경로로 와서, 낱말마다 500권이면 261만 권에서 키워드 단계만 p95 298ms
+# 였다. 1,000권으로 나누면 131ms 이고, 제목·제목+저자 검색 600개의 1등은 그대로였다(#198).
+LOOKUP_BUDGET = 1000
+LOOKUP_MIN = 100
 # 낱말이 여럿이면 모든 낱말이 든 책부터 찾는다. 낱말이 많을수록 그런 책은 오히려 줄어 채점할
 # 것이 몇 권 없다. 이만큼도 안 나오면(오타가 섞였거나 제목에 없는 말을 쳤을 때) 낱말마다 넓힌다.
 MIN_ALL_WORDS = 10
@@ -130,14 +136,19 @@ def _same_title(where: str) -> str:
     )
 
 
+def lookup_limit(n_tokens: int) -> int:
+    """낱말마다 넓힐 때 낱말 하나에 모으는 권수. 낱말 1–2개면 LOOKUP_LIMIT 그대로다."""
+    return min(LOOKUP_LIMIT, max(LOOKUP_MIN, LOOKUP_BUDGET // n_tokens))
+
+
 def _cand_each_word(n_tokens: int, where: str) -> str:
-    """낱말마다 색인을 따로 조회해 LOOKUP_LIMIT 권씩 모으고, 제목이 똑같은 책을 더한다.
+    """낱말마다 색인을 따로 조회해 lookup_limit 권씩 모으고, 제목이 똑같은 책을 더한다.
 
     필터(where)는 자르기 전에 건다. 뒤에 걸면 필터에 안 맞는 책이 자리를 먹는다.
     """
     lookups = "\n        UNION ALL\n".join(
         f"        (SELECT b.book_id FROM v_books b"
-        f" WHERE {_word_matches(i)}{where} LIMIT {int(LOOKUP_LIMIT)})"
+        f" WHERE {_word_matches(i)}{where} LIMIT {lookup_limit(n_tokens)})"
         for i in range(1, n_tokens + 1)
     )
     return (
