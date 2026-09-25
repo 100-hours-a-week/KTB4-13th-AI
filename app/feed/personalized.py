@@ -21,9 +21,9 @@ from app.search.vector import EF_SEARCH
 # 채점할 후보 수. 첫 페이지(최대 50권)보다 넉넉해야 필터로 걸러지고도 남는다.
 CANDIDATE_LIMIT = 500
 
-_MAX_POPULARITY_SQL = (
-    f"SELECT max({popularity.score_sql('p')}) FROM v_book_popularity p"
-)
+# 카탈로그 최고 인기 점수. 인기 점수가 판매 수라(popularity.py) 판매 수 색인으로 바로 읽는다.
+# 식(coalesce)으로 감싸면 색인을 못 타 인기 표 전체를 훑는다.
+_MAX_POPULARITY_SQL = "SELECT max(sales) FROM v_book_popularity"
 
 # 제외 규칙은 cold_start 목록(#106)과 같다. 산 책·담은 책·2.0점 이하 리뷰를 단 책.
 _SQL = f"""
