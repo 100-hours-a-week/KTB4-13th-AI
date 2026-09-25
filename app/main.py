@@ -82,7 +82,7 @@ async def _request_id_middleware(request: Request, call_next):
     응답에 X-Request-Id를 못 붙이고 그 오류 로그의 request_id도 이미 reset된 뒤라
     null로 남는다(리뷰 지적 — #201+#202를 합쳐 실측 확인됨). 여기서 잡아야 둘 다 붙는다.
     """
-    request_id = request.headers.get("X-Request-Id") or request_log.new_request_id()
+    request_id = request_log.incoming_request_id(request.headers.get("X-Request-Id"))
     token = request_log.set_request_id(request_id)
     try:
         response = await call_next(request)

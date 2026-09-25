@@ -18,9 +18,22 @@ _request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
 )
 
+# 받은 X-Request-Id를 길이 제한 없이 그대로 로그·응답 헤더에 쓰면, 아주 긴 값을
+# 보내는 호출자 하나가 로그를 부풀릴 수 있다(리뷰 지적, #202). 다른 필드들의
+# 상한(MAX_QUERY_CHARS 등)과 맞춰 200자로 둔다 — 이 값을 넘기면 BE가 보낸 값이
+# 아니라고 보고 새로 만든다.
+MAX_REQUEST_ID_LEN = 200
+
 
 def new_request_id() -> str:
     return uuid.uuid4().hex
+
+
+def incoming_request_id(header_value: str | None) -> str:
+    """요청 헤더의 X-Request-Id를 쓸지, 새로 만들지 정한다."""
+    if header_value and len(header_value) <= MAX_REQUEST_ID_LEN:
+        return header_value
+    return new_request_id()
 
 
 def set_request_id(request_id: str) -> contextvars.Token:
