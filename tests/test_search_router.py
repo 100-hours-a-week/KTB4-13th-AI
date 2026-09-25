@@ -110,6 +110,9 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
         {"query": "김영\x00하"},
         {"query": "책", "filters": {"price_min": 2_147_483_648}},
         {"query": "책", "filters": {"pub_year_from": -2_147_483_649}},
+        # #219 — category 는 온보딩 값만. 카탈로그 분류명·없는 값은 400.
+        {"query": "책", "filters": {"category": "한국문학"}},
+        {"query": "책", "filters": {"category": "없는분류"}},
     ],
 )
 def test_계약을_어기면_400이다(payload: object) -> None:
