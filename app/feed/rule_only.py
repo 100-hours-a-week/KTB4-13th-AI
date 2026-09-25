@@ -12,7 +12,7 @@ from typing import Any
 import asyncpg
 
 from app.core import history, popularity
-from app.feed import personalized, scoring
+from app.feed import cold_start, personalized, scoring
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
@@ -20,39 +20,27 @@ from app.search.schemas import SearchFilters
 
 _POPULARITY = popularity.score_sql("p")
 
-# 제외 규칙은 개인화 목록·개인화를 끈 목록과 같다. 산 책·담은 책·2.0점 이하 리뷰를 단 책.
-_EXCLUDED = """
-NOT EXISTS (
-        SELECT 1 FROM v_user_purchases x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.purchased_at <= $3)
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_library x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.added_at <= $3)
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_reviews x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.rating <= $2
-          AND x.created_at <= $3)
-"""
+# 순서를 정하는 칸까지 내보낸다. 좋아하는 분류가 여럿이면 분류 점수 → 인기 → 신간 → 번호로 모은다.
+_ORDER_COLUMNS = "u.book_id, u.seg, u.sales, u.pub_year"
 
+# 후보는 개인화를 끈 목록과 같은 순서(판매 수 → 신간 → 번호)로 색인에서 앞부분만 읽는다(#189).
+# 좋아하는 분류마다 그 분류 안에서 같은 순서로 CANDIDATE_LIMIT 권씩 읽고, 분류 점수가 높은 것부터 모은다.
 _SQL = f"""
 WITH liked AS (
-    SELECT b.book_id
-    FROM v_books b
-    JOIN unnest($5::text[], $6::float8[]) AS w(category, points) ON w.category = b.category
-    LEFT JOIN v_book_popularity p USING (book_id)
-    WHERE {_EXCLUDED} {{where}}
-    ORDER BY w.points DESC, {_POPULARITY} DESC, b.pub_year DESC NULLS LAST, b.book_id
+    SELECT c.book_id
+    FROM unnest($5::text[], $6::float8[]) AS w(category, points)
+    CROSS JOIN LATERAL (
+        {cold_start.popular_first_sql("{where}", extra="AND b.category = w.category", columns=_ORDER_COLUMNS)}
+        LIMIT $4
+    ) c
+    ORDER BY w.points DESC, c.seg, c.sales DESC, c.pub_year DESC NULLS LAST, c.book_id
     LIMIT $4
 ), popular AS (
-    SELECT b.book_id
-    FROM v_books b
-    LEFT JOIN v_book_popularity p USING (book_id)
-    WHERE {_EXCLUDED} {{where}}
-    ORDER BY {_POPULARITY} DESC, b.pub_year DESC NULLS LAST, b.book_id
+    {cold_start.popular_first_sql("{where}", columns="u.book_id")}
     LIMIT $4
 )
 SELECT b.book_id, b.title, b.author, b.price, b.cover_url, b.in_stock, b.category, b.pub_year,
-       coalesce({_POPULARITY}, 0) AS popularity
+       {_POPULARITY} AS popularity
 FROM v_books b
 LEFT JOIN v_book_popularity p USING (book_id)
 WHERE b.book_id IN (SELECT book_id FROM liked UNION SELECT book_id FROM popular)
@@ -73,7 +61,8 @@ async def fetch(
     )
     where, filter_params = build_where(filters, first_param=7)
     liked = {category: points for category, points in tag_weights.items() if points > 0}
-    rows = await conn.fetch(
+    rows = await cold_start.run_ordered(
+        conn,
         _SQL.format(where=where),
         req.user_id,
         history.DISLIKED_MAX_RATING,

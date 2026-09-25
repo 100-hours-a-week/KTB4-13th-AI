@@ -160,3 +160,83 @@ def test_커서를_받은_뒤에_생긴_이력은_제외하지_않는다() -> No
     이전 = Page(issued_at=_T0 - timedelta(days=1))
 
     assert 9100605 in _list([], page=이전)
+
+
+def test_500권에서_끝난다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 쪽을 OFFSET 으로 넘겨서 상한이 없으면 깊은 쪽일수록 느려진다. 개인화 목록과 같게 끝낸다(#189).
+    monkeypatch.setattr(cold_start, "MAX_BOOKS", 3)
+
+    첫쪽, 첫쪽_더 = _fetch([("size", "2")])
+    둘째쪽, 둘째쪽_더 = _fetch([("size", "2")], page=Page(offset=2, issued_at=_NOW))
+    셋째쪽, 셋째쪽_더 = _fetch([("size", "2")], page=Page(offset=4, issued_at=_NOW))
+
+    assert (첫쪽, 첫쪽_더) == ([9100604, 9100601], True)
+    assert (둘째쪽, 둘째쪽_더) == ([9100602], False)
+    assert (셋째쪽, 셋째쪽_더) == ([], False)
+
+
+def test_최신순에서_같은_연도는_번호순이다() -> None:
+    # 연도 안을 인기순으로 세우면 매번 그 연도 전체를 읽어야 한다(#186). 판매 수와 상관없이 번호순.
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            for book_id in (9100611, 9100612):
+                await conn.execute(
+                    "INSERT INTO v_books (book_id, title, price, in_stock, category, pub_year)"
+                    " VALUES ($1, '책', 10000, true, '피드테스트같은연도', 2099)",
+                    book_id,
+                )
+            await conn.execute(
+                "INSERT INTO v_book_popularity VALUES (9100612, 9999, NULL, 0, now())"
+            )
+            req = parse_query(
+                [
+                    ("user_id", str(_USER)),
+                    ("surface", "recommend_more"),
+                    ("category", "피드테스트같은연도"),
+                    ("sort", "newest"),
+                ]
+            )
+            items, _ = await cold_start.fetch(conn, req, Page(issued_at=_NOW))
+            return [item["book_id"] for item in items]
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    assert asyncio.run(_go()) == [9100611, 9100612]
+
+
+@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
+def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
+    # 통째로 읽고 정렬하면 261만 권에서 한 쪽에 1초가 넘는다(#186). 색인 순서대로 앞부분만 읽는다.
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        try:
+            req = parse_query(
+                [("user_id", str(_USER)), ("surface", "recommend_more"), ("sort", sort)]
+            )
+            where = ""
+            if sort == "match":
+                sql = cold_start.popular_first_sql(where, limit="$4::int + $5::int")
+            else:
+                sql = cold_start._SIMPLE_SQL.format(
+                    where=where, order_by=cold_start._ORDER_BY[req.sort]
+                )
+            rows = await cold_start.run_ordered(
+                conn,
+                "EXPLAIN " + sql + "LIMIT $4 OFFSET $5",
+                req.user_id,
+                2.0,
+                _NOW,
+                16,
+                0,
+            )
+            return "\n".join(r[0] for r in rows)
+        finally:
+            await conn.close()
+
+    plan = asyncio.run(_go())
+
+    assert "Seq Scan on v_books" not in plan
