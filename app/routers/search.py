@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.core import body, responses
+from app.core import body, categories, responses
 from app.search import service
 from app.search.schemas import SearchRequest
 
@@ -38,6 +38,11 @@ def parse_request(payload: Any) -> SearchRequest | None:
         return None
     # 공백뿐인 검색어는 1자 이상이라는 조건을 글자 수로만 통과한다.
     if not req.query.strip():
+        return None
+    # category 는 온보딩 값(소설, 에세이 등 13개)만 받는다. 앱에 없는 값은 잘못 보낸 것이라 조용히 0건을
+    # 주지 않고 알린다(#219). ③ 챗봇은 이 함수를 거치지 않고 검색을 부르므로 분류명을 그대로 넘길 수 있다.
+    category = req.filters.category
+    if category is not None and not categories.is_onboarding(category):
         return None
     return req
 
