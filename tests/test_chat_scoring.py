@@ -15,6 +15,7 @@ import os
 import asyncpg
 import pytest
 
+from app.core.pgvector import to_vector_literal
 from app.routers import chat
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
@@ -27,6 +28,20 @@ pytestmark = pytest.mark.skipif(
 _USER = 9_100_901
 _LIKED = "채점테스트좋아함"
 _OTHER = "채점테스트다른분류"
+DIM = 384
+
+
+def _vector(first: float) -> list[float]:
+    """첫 칸만 다른 단위 벡터(app/feed/personalized.py 테스트와 같은 방식).
+
+    두 단위 벡터를 이렇게 만들면 내적(코사인 유사도)이 정확히 first가 된다 —
+    유사도를 원하는 값으로 쉽게 만드는 용도.
+    """
+    rest = (1 - first**2) ** 0.5
+    vector = [0.0] * DIM
+    vector[0] = first
+    vector[1] = rest
+    return vector
 
 
 def _run(check):
@@ -135,3 +150,65 @@ def test_후보가_없으면_아무_일도_안_한다() -> None:
         return candidates
 
     assert _run(check) == []
+
+
+async def _insert_embedding(
+    conn: asyncpg.Connection, book_id: int, first: float
+) -> None:
+    await conn.execute(
+        "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
+        book_id,
+        to_vector_literal(_vector(first)),
+        DIM,
+    )
+
+
+def test_취향_프로필이_있으면_유사도가_점수에_반영된다() -> None:
+    """#180 — 후보가 이미 정해져 있어도(①의 키워드 검색 결과) 취향 centroid와의
+
+    유사도를 계산해 반영해야 한다. 카테고리·인기 재료를 없앤 채(둘 다 0점) 유사도만
+    다른 책 둘을 비교해, 유사도 항만으로 점수가 갈리는지 본다.
+    """
+
+    async def check(conn):
+        await _insert_book(conn, 9100905, None)  # 카테고리 없음 → 카테고리 항 0
+        await _insert_book(conn, 9100906, None)
+        await _insert_embedding(conn, 9100905, 0.95)  # SIMILARITY_CEILING 이상 → 만점
+        await _insert_embedding(conn, 9100906, 0.5)  # SIMILARITY_FLOOR 미만 → 0점
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, centroid, tag_weights, cold_start,"
+            " profile_version) VALUES ($1, $2::vector, '{}'::jsonb, false, 1)",
+            _USER,
+            to_vector_literal(_vector(1.0)),
+        )
+        candidates = _candidates(9100905, 9100906)
+        await chat._attach_match_scores(conn, candidates, _USER)
+        return candidates
+
+    candidates = _run(check)
+    # SIMILARITY_WEIGHT(0.6) 만큼만 붙는다 — 카테고리·인기 항은 둘 다 0.
+    assert candidates[0]["match_score"] == 60
+    assert candidates[1]["match_score"] == 0
+
+
+def test_cold_start면_centroid가_있어도_유사도를_안_쓴다() -> None:
+    """cold_start 플래그가 참이면(④의 _profile()과 같은 기준) centroid가 실제로
+
+    있어도 유사도를 계산하지 않는다 — 데이터가 남아있는 낡은 프로필 같은 경우를 방어한다.
+    """
+
+    async def check(conn):
+        await _insert_book(conn, 9100907, None)
+        await _insert_embedding(conn, 9100907, 1.0)
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, centroid, tag_weights, cold_start,"
+            " profile_version) VALUES ($1, $2::vector, '{}'::jsonb, true, 1)",
+            _USER,
+            to_vector_literal(_vector(1.0)),
+        )
+        candidates = _candidates(9100907)
+        await chat._attach_match_scores(conn, candidates, _USER)
+        return candidates
+
+    candidates = _run(check)
+    assert candidates[0]["match_score"] == 0
