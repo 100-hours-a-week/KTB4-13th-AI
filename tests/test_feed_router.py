@@ -206,6 +206,9 @@ def test_home은_정렬이나_필터를_보내면_400이다(param: dict) -> None
         {"user_id": str(2_147_483_648)},
         {"pub_year_from": str(-2_147_483_649)},
         {"category": "김영\x00하"},
+        # #219 — category 는 온보딩 값만. 카탈로그 분류명·없는 값은 400.
+        {"category": "한국문학"},
+        {"category": "없는분류"},
     ],
 )
 def test_값이_계약과_다르면_400이다(override: dict) -> None:

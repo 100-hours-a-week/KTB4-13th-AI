@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.core import responses
+from app.core import categories, responses
 from app.feed import cursor, service
 from app.feed.schemas import parse_query
 
@@ -27,6 +27,9 @@ _NO_STORE = {"Cache-Control": "private, no-store"}
 async def feed(request: Request) -> JSONResponse:
     req = parse_query(request.query_params.multi_items())
     if req is None:
+        return responses.error(400, "invalid_request")
+    # category 는 온보딩 값(13개)만 받는다(#219). 앱에 없는 값은 잘못 보낸 것이라 조용히 0건을 주지 않는다.
+    if req.category is not None and not categories.is_onboarding(req.category):
         return responses.error(400, "invalid_request")
 
     try:
