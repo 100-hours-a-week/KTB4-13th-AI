@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history, popularity
+from app.core import history, popularity, products
 from app.core.pgvector import to_vector_literal
 from app.feed import scoring
 from app.feed.cursor import Page
@@ -45,7 +45,8 @@ WITH nearest AS (
     ORDER BY distance
     LIMIT $4
 )
-SELECT b.book_id, b.title, b.author, b.price, b.cover_url, b.in_stock, b.category, b.pub_year,
+SELECT b.book_id, b.title, b.author, {products.price_sql("b")} AS price, b.cover_url,
+       {products.in_stock_sql("b")} AS in_stock, b.category, b.pub_year,
        1 - n.distance AS similarity,
        coalesce({popularity.score_sql("p")}, 0) AS popularity
 FROM nearest n
@@ -62,7 +63,8 @@ _ORDER = {
         row["book_id"],
     ),
     "newest": lambda row: (-(row["pub_year"] or 0), row["book_id"]),
-    "price_asc": lambda row: (row["price"], row["book_id"]),
+    # 상품이 없어 가격이 없는 책은 맨 뒤다(① 가격순과 같음).
+    "price_asc": lambda row: (row["price"] is None, row["price"] or 0, row["book_id"]),
 }
 
 

@@ -59,11 +59,18 @@ def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = No
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, author, publisher, price,"
                     " in_stock, cover_url, category, pub_year, description)"
-                    " VALUES ($1, '책', '저자', '출판사', $2, true, NULL, $3, $4, '소개')",
+                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개')",
                     book_id,
-                    price,
                     _CATEGORY,
                     year,
+                )
+                # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣었다.
+                await conn.execute(
+                    "INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)"
+                    " VALUES ($1, $2, $3, 1)",
+                    book_id,
+                    book_id,
+                    price,
                 )
                 await conn.execute(
                     "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
@@ -134,6 +141,11 @@ def test_최신순과_가격순은_후보_안에서_다시_줄_세운다() -> No
 
     assert [item["book_id"] for item in newest] == [9100702, 9100703, 9100701]
     assert [item["book_id"] for item in cheapest] == [9100703, 9100702, 9100701]
+    assert [(i["price"], i["in_stock"]) for i in cheapest] == [
+        (10000, True),
+        (15000, True),
+        (20000, True),
+    ]
 
 
 def test_size_만큼만_준다() -> None:

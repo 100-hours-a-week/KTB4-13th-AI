@@ -42,6 +42,13 @@ VALUES
     (9000005, '[TEST] 재미없는 책', '테스트작가5', '테스트출판사', 9900, true, NULL, '기타', 2020, '비선호 리뷰 테스트용 책.')
 ON CONFLICT (book_id) DO NOTHING;
 
+-- 가격·재고는 상품 표에서 읽는다(#207). 책마다 상품 하나, 상품 번호는 책 번호와 같게 둔다.
+INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)
+SELECT book_id, book_id, price, 999999
+FROM v_books
+WHERE book_id BETWEEN 9000001 AND 9000005
+ON CONFLICT (id) DO NOTHING;
+
 -- ── 유저 9001 (A) — 이력 없음 ────────────────────────────────────────────────
 -- 아무것도 넣지 않는다. cold_start 테스트가 목적이므로 비워두는 것 자체가 데이터다.
 

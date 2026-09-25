@@ -94,6 +94,14 @@ SELECT
 FROM filtered
 ON CONFLICT (book_id) DO NOTHING;
 
+-- 가격·재고는 상품 표에서 읽는다(#207). 서버처럼 책마다 상품 하나를 만들고,
+-- 재고는 BE 더미값(999999)과 같게 채운다. 상품 번호는 책 번호를 그대로 쓴다.
+DELETE FROM v_products WHERE book_id < 9000000;
+INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)
+SELECT book_id, book_id, price, 999999
+FROM v_books
+WHERE book_id < 9000000;
+
 COMMIT;
 SQL
 
