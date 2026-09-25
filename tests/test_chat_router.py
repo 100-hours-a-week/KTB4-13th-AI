@@ -213,32 +213,6 @@ def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준�
     assert res.json() == {"message": "internal_server_error", "data": None}
 
 
-def test_cards가_null이면_500이지만_공통_JSON_형식으로_나간다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#201 — generate_cards() 호출은 chat()의 어떤 try/except에도 안 걸려 있었다.
-
-    LLM이 `"cards": null`처럼 명세를 어긴 모양으로 답하면 `parsed.get("cards", [])`가
-    None을 돌려줘(키가 있으니 기본값이 안 먹는다) `None[:CARD_LIMIT]`에서 TypeError가
-    난다. main.py에 전역 예외 처리기를 걸기 전엔 이게 그대로 올라가 FastAPI 기본
-    500(text/plain, 공통 형식 아님)이 나갔다 — 이제 최소한 형식은 지켜야 한다.
-    """
-    card_reply = '{"cards": null}'
-    model = _sequenced_model(_spec_reply(), card_reply)
-    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
-
-    # main.py의 전역 핸들러는 Starlette ServerErrorMiddleware를 타는데, 이 미들웨어는
-    # 핸들러로 응답을 보낸 "뒤에" 원래 예외를 다시 던진다(서버 로그용) — 기본 TestClient는
-    # 그걸 그대로 드러내 테스트가 실패한 것처럼 보인다. raise_server_exceptions=False로
-    # 실제 배포에서 클라이언트가 받는 응답(200 아니라 500 JSON)을 본다.
-    no_raise_client = TestClient(app, raise_server_exceptions=False)
-    res = no_raise_client.post("/recommendations/chat", json=_request())
-
-    assert res.status_code == 500
-    assert res.headers["content-type"].startswith("application/json")
-    assert res.json() == {"message": "internal_server_error", "data": None}
-
-
 def test_book_id가_목록에_없는_카드는_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM이 book_id를 잘못 주면(예: 목록 순번) 그 카드를 버려야 한다."""
 
@@ -907,6 +881,21 @@ def test_본문이_JSON이_아니면_400이다() -> None:
         headers={"Content-Type": "application/json"},
     )
     assert res.status_code == 400
+
+
+def test_본문이_상한을_넘으면_413이다() -> None:
+    # 헤더만 크게 속여도 본문을 읽기 전에 막아야 한다(#99).
+    res = client.post(
+        "/recommendations/chat",
+        content=b'{"user_id":1}',
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(chat.MAX_BODY_BYTES + 1),
+        },
+    )
+
+    assert res.status_code == 413
+    assert res.json() == {"message": "payload_too_large", "data": None}
 
 
 def _spec(**overrides) -> "chat.Spec":

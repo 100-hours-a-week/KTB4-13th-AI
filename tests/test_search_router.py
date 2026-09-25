@@ -157,6 +157,21 @@ def test_본문이_UTF8이_아니면_500이_아니라_400이다() -> None:
     assert res.status_code == 400
 
 
+def test_본문이_상한을_넘으면_413이다() -> None:
+    # 헤더만 크게 속여도 본문을 읽기 전에 막아야 한다(#99).
+    res = client.post(
+        "/search",
+        content=b'{"query":"book"}',
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(search_router.MAX_BODY_BYTES + 1),
+        },
+    )
+
+    assert res.status_code == 413
+    assert res.json() == {"message": "payload_too_large", "data": None}
+
+
 def test_결과가_있으면_책을_싣고_안내_문구는_null이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
