@@ -152,3 +152,23 @@ def test_응답에는_명세의_칸만_나간다() -> None:
         "in_stock",
         "match_score",
     }
+
+
+@pytest.mark.parametrize(
+    ("distance", "uses_index"),
+    [(personalized._INDEX_DISTANCE, True), (personalized._EXACT_DISTANCE, False)],
+)
+def test_정확_계산은_벡터_색인을_쓰지_않는다(distance: str, uses_index: bool) -> None:
+    # 거리 식을 바꿔 벡터 색인을 막는다. 막히지 않으면 필터 안에서도 근사로 뽑아 모자랄 수 있다(#196).
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        try:
+            sql = "EXPLAIN " + personalized._SQL.format(distance=distance, where="")
+            rows = await conn.fetch(
+                sql, to_vector_literal(_CENTROID), _USER, 2.0, 500, _NOW
+            )
+            return "\n".join(r[0] for r in rows)
+        finally:
+            await conn.close()
+
+    assert ("book_embeddings_hnsw_idx" in asyncio.run(_go())) is uses_index
