@@ -75,7 +75,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 - **복제 지연(lag)**: BE 원본의 변경이 AI 복제본에 도착하기까지의 시간. 지연 중에는 아직 도착하지 않은 행이 있을 수 있다. 오류가 아니고 축소 응답도 아니다
 - **신선도 예산**: 복제본이 원본보다 얼마나 늦어도 되는지 테이블마다 정한 값. ERD §3에 전체 목록이 있다
 - **이력**: 한 사용자의 구매, 나의 도서관 담기, 리뷰를 묶어 부르는 말. 피드 규칙 점수의 항 이름이기도 하다
-- **인기**: 도서 단위 집계값. 최근 판매 수와 리뷰 평점·건수 둘뿐이다. v_book_popularity 하나에서만 읽는다
+- **인기**: 도서 단위 집계값. MVP는 최근 판매 수 단일 기준이다(BE #68 합의). 리뷰 반영 공식은 BE가 복제 칼럼으로 주면 그때 반영한다. v_book_popularity 하나에서만 읽는다
 
 ## 2. 입력/출력 형식 명세
 
@@ -110,7 +110,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 | filters.price_min, .price_max | int | N | 판매가 구간(원) |
 | filters.pub_year_from, .pub_year_to | int | N | 출간연도 구간 |
 | filters.in_stock_only | bool | N | 품절 도서 제외 |
-| sort | enum | N | relevance(기본, 관련도), newest, price_asc, price_desc, popular(판매·리뷰 집계) |
+| sort | enum | N | relevance(기본, 관련도), newest, price_asc, price_desc, popular(판매 수 기준, BE #68 합의) |
 | cursor | string? | N | 페이지 커서. 직전 응답의 next_cursor를 그대로 싣는다. 첫 턴은 생략. 30분 지나면 만료 |
 | size | int | N | 한 페이지 개수. 기본 15, 최대 50 |
 
@@ -154,12 +154,13 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| results | object[] | 검색 결과. 없으면 [] |
+| results | object[] | 검색 결과. 없으면 []. 키워드 200권+벡터 50권 후보 안에서만 나와 최대 약 250권 |
 | results[].book_id | int | 도서 ID |
-| results[].title, .author, .publisher | string | 제목, 저자, 출판사 |
+| results[].title | string | 제목 |
+| results[].author, .publisher | string? | 저자, 출판사. 카탈로그에 값이 없는 도서는 null |
 | results[].price | int | 판매가(원). 할인 적용 후 |
 | results[].in_stock | bool | 재고 여부 |
-| results[].cover_url | string | 표지 이미지 URL |
+| results[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | next_cursor | string? | 다음 페이지 커서. 마지막이면 null. 다음 요청의 cursor에 그대로 싣는다 |
 | fallback | object? | 결과가 0건일 때만 값이 있고 그 외 null |
 | fallback.message | string | 호출자에게 전달할 안내 문구 |
@@ -179,7 +180,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 ² 키워드 검색 결과만 반환한다. 임베딩 업스트림 장애, 벡터 인덱스 이상, 초기 적재 중일 때 나온다. 복제 지연·행 부재는 해당하지 않는다
 
-- `popular`(인기순)은 `v_book_popularity`의 최근 판매 수와 리뷰 평점·건수로 산출한다. 챗봇의 후보 채점, 피드의 인기 항, cold_start 목록도 같은 테이블을 읽는다.
+- `popular`(인기순)은 `v_book_popularity`의 최근 판매 수로 산출한다(MVP, BE #68 합의). 챗봇의 후보 채점, 피드의 인기 항, cold_start 목록도 같은 테이블을 읽는다. 리뷰까지 반영한 공식은 BE가 복제 칼럼으로 주면 그때 반영한다.
 - 검색은 개인화하지 않으므로 사용자 이력(구매, 도서관, 리뷰)을 읽지 않는다. 누가 검색하든 같은 순위다. 인기는 사용자와 무관한 도서 단위 값이라 이 원칙을 깨지 않는다.
 
 </details>
@@ -453,9 +454,10 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | cards[].book_id | int | 도서 ID |
 | cards[].rank | int | 추천 순위 1–3. 배열 순서와 같다 |
 | cards[].match_score | int | 매칭 점수 0–100 ² |
-| cards[].title, .author | string | 제목, 저자 |
+| cards[].title | string | 제목 |
+| cards[].author | string? | 저자. 카탈로그에 값이 없는 도서는 null |
 | cards[].price | int | 판매가(원) |
-| cards[].cover_url | string | 표지 이미지 URL |
+| cards[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | cards[].reason_short | string | 한 줄 추천 이유(카드용). 최대 80자. 근거 없는 내용은 넣지 않음 |
 | cards[].reason_long | string? | 긴 추천 이유(도서 상세 페이지용) 2–4문장, 최대 300자 ³ |
 | cards[].match_basis | object[] | 근거 항목 {label, detail}. 두 이유 문장과 같은 근거다 |
@@ -499,7 +501,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 취향 프로필로 개인화 추천 목록을 만든다. 검색어를 받지 않는다. 점수는 규칙 기반 점수(작가, 카테고리, 태그, 이력, 인기)와 취향 벡터 유사도의 가중합이며 LLM을 호출하지 않는다.
 
-규칙 점수의 두 항은 각각 출처가 있다. **이력**은 `v_user_purchases`, `v_user_library`, `v_user_reviews`를 `user_id`로 읽은 것이고, **인기**는 `v_book_popularity`(최근 판매 수, 리뷰 평점·건수)다. 둘 다 요청에 담기지 않고 서버가 복제 테이블에서 읽는다. 행이 없는 도서는 인기 항 0점으로 계산한다.
+규칙 점수의 두 항은 각각 출처가 있다. **이력**은 `v_user_purchases`, `v_user_library`, `v_user_reviews`를 `user_id`로 읽은 것이고, **인기**는 `v_book_popularity`(최근 판매 수, MVP는 판매 수 단일 기준)다. 둘 다 요청에 담기지 않고 서버가 복제 테이블에서 읽는다. 행이 없는 도서는 인기 항 0점으로 계산한다. 유사도 항(0.6)을 빼는 rule-only 응답은 남은 비중(카테고리 0.25+인기 0.15)을 1로 재분배하지 않아 **최대 40점**이다(축소 응답도 같은 잣대라는 원칙).
 
 개인화가 없는 판매량 순위 목록은 이 API의 범위가 아니다.
 
@@ -561,12 +563,13 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 |---|---|---|
 | items | object[] | 추천 목록. 없으면 [] |
 | items[].book_id | int | 도서 ID |
-| items[].title, .author | string | 제목, 저자 |
+| items[].title | string | 제목 |
+| items[].author | string? | 저자. 카탈로그에 값이 없는 도서는 null |
 | items[].price, .in_stock | int, bool | 판매가(원), 재고 여부 |
-| items[].cover_url | string | 표지 이미지 URL |
+| items[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | items[].match_score | int | 규칙 점수와 취향 유사도의 가중합, 0–100. 정렬과 필터에 쓴다. cold_start가 true면 0 |
 | next_cursor | string? | 다음 페이지 커서. 마지막이면 null |
-| cold_start | bool | true면 취향 정보가 없어 개인화를 끄고 인기, 신간으로 채운 목록 |
+| cold_start | bool | true면 취향 정보가 없어 개인화를 끄고, 판매 수 있는 도서를 색인 순서로 먼저·나머지는 신간순으로 이어 붙여 채움(최대 500권) |
 
 - **피드 항목에는 추천 이유 문구가 없다.** 순서와 `match_score`만 낸다. 이유는 대화형 추천 카드에서만 나온다(③의 `reason_short`·`reason_long`). 피드가 LLM을 호출하지 않는다는 원칙을 지키기 위해서다.
 - 커서 제외 규칙의 ’조회, 구매 이력’은 `v_user_purchases`, `v_user_library`를 말한다. 이미 산 책과 담은 책, 별점 1–2점을 준 책은 목록에서 빼되, 커서 발급 이후에 생긴 것은 제외 대상에서 뺀다(카드를 보고 돌아와 스크롤해도 목록이 밀리지 않게).
@@ -580,12 +583,12 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 |---|---|---|
 | 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, home에 정렬·필터, size 50 초과 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
-| 410 | cursor_expired | 커서가 만료됐거나 필터, 정렬, 축소 모드가 발급 때와 다름. 첫 페이지부터 다시 |
+| 410 | cursor_expired | 커서가 만료됐거나 필터, 정렬, surface, 응답 모드(personalized/cold_start/rule-only)가 발급 때와 다름. 첫 페이지부터 다시 |
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
 | 500 | internal_server_error | 서버 내부 오류. 프로필이 없는 건 오류가 아니라 200 + cold_start: true |
 | 200 | feed_success, X-Degraded: rule-only | 벡터 조회 불가 ¹ |
 
-¹ 취향 유사도를 빼고 규칙 기반 점수만으로 정렬한다. 벡터 인덱스 이상과 모델 교체 구간에만 나온다. `centroid`가 없으면 이 값이 아니라 `cold_start: true`이고, 복제 지연·행 부재도 해당하지 않는다
+¹ 취향 유사도를 빼고 규칙 기반 점수만으로 정렬한다. 남은 비중을 1로 재분배하지 않아 match_score는 최대 40점이다. 벡터 인덱스 이상과 모델 교체 구간에만 나온다. `centroid`가 없으면 이 값이 아니라 `cold_start: true`이고, 복제 지연·행 부재도 해당하지 않는다
 
 </details>
 
@@ -716,7 +719,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | onboarding | object | Y | 온보딩 응답 전체 ² |
 | onboarding.reading_times | string[] | N | 읽는 시간대. 최대 5개 |
 | onboarding.criteria | string[] | N | 책 고르는 기준. 최대 3개(보기: 좋아하는 출판사 / 베스트셀러 / 리뷰, 별점) |
-| onboarding.categories | string[] | N | 관심 대분류. 최대 3개. 검색, 피드 필터의 카테고리와 같은 값 |
+| onboarding.categories | string[] | N | 관심 대분류(앱 화면 값). 최대 3개. 검색·피드 필터의 카탈로그 분류(도서관 분류)와는 글자 체계가 달라 대응표로 잇는다 — 대응표에 없는 값은 건너뛴다 |
 | onboarding.tags | string[] | N | 세부 태그. 최대 9개 |
 | onboarding.liked_book_ids | int[] | N | 마음에 드는 책 ID. 0권 가능, 상한 없음. 서버는 앞 50권만 씀 |
 | memories | object[] | N | 저장된 취향 기억 전체 {type, value, vector, dim} ³ |
@@ -1228,7 +1231,7 @@ flowchart TB
 - **커서, 방식**: 목록 API(검색, 피드)는 커서 방식. 요청 cursor / 응답 next_cursor, 마지막은 null
 - **커서, 불투명**: 서버가 서명한 문자열이라 클라이언트는 해석, 생성하지 않음. 위조, 변조는 410
 - **커서, 전달**: ① 검색은 요청 본문, ④ 피드는 쿼리 파라미터로 싣는다. 쿼리로 보낼 때는 `+`·`/`·`=`가 섞이므로 URL 인코딩한다
-- **커서, 만료**: 발급 후 30분. 만료됐거나 검색어, 필터, 정렬, 축소 모드가 다르면 410
+- **커서, 만료**: 발급 후 30분. 만료됐거나 검색어, 필터, 정렬, 축소 모드가 다르면 410. ④는 여기에 더해 surface나 응답 모드(personalized/cold_start/rule-only)가 바뀌어도 410 — 목록을 만드는 방식 자체가 달라 이어 붙일 수 없다
 - **커서, 이어 붙이기**: 피드만, 커서 발급 이후 생긴 조회, 구매 이력은 제외 대상에서 뺌(스크롤이 밀리지 않게)
 
 ### action 값 목록

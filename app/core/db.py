@@ -25,6 +25,9 @@ REQUIRED_INDEXES = (
     "v_books_newest_idx",
     "v_books_category_newest_idx",
     "v_books_price_order_idx",
+    # 가격·재고를 읽는 상품 표(#205)
+    "v_products_book_id_idx",
+    "v_products_price_order_idx",
 )
 
 

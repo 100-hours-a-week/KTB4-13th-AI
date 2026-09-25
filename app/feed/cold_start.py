@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history
+from app.core import history, products
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
@@ -34,7 +34,11 @@ NOT EXISTS (
           AND x.created_at <= $3)
 """
 
-_COLUMNS = "b.book_id, b.title, b.author, b.price, b.cover_url, b.in_stock"
+# 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#207).
+_COLUMNS = (
+    "b.book_id, b.title, b.author,"
+    f" {products.price_sql('b')} AS price, b.cover_url, {products.in_stock_sql('b')} AS in_stock"
+)
 
 
 _OUTPUT = "u.book_id, u.title, u.author, u.price, u.cover_url, u.in_stock"
@@ -69,20 +73,28 @@ ORDER BY u.seg, u.sales DESC, u.pub_year DESC NULLS LAST, u.book_id
 """
 
 
-# 최신순·가격순은 인기와 상관없어 한 쿼리로 색인 순서대로 읽는다(#188 색인).
-# 최신순의 동점은 번호순이다. 출간일이 연도 단위라 한 연도에 수십만 권이 몰리는데, 그 안을
-# 인기순으로 세우면 매번 그 연도 전체를 읽어야 한다(261만 권 320ms, #186).
-_ORDER_BY = {
-    "newest": "b.pub_year DESC NULLS LAST, b.book_id",
-    "price_asc": "b.price ASC, b.book_id",
-}
-
-_SIMPLE_SQL = f"""
+# 최신순·가격순은 인기와 상관없어 한 쿼리로 색인 순서대로 읽는다.
+# 최신순은 책 표의 색인(#188)이다. 동점은 번호순이다. 출간일이 연도 단위라 한 연도에 수십만 권이
+# 몰리는데, 그 안을 인기순으로 세우면 매번 그 연도 전체를 읽어야 한다(261만 권 320ms, #186).
+# 가격순은 상품 표를 가격 색인(#205) 순서로 읽으며 책을 붙인다. 가격·재고도 읽는 그 상품의 값을 써서
+# 순서와 보이는 가격이 어긋나지 않게 한다. 상품이 없는 책은 가격이 없어 가격순 목록에 나오지 않는다.
+# 책 하나에 상품이 여럿이면 여기서만 같은 책이 두 번 나올 수 있다(지금 데이터는 1:1, #208).
+ORDERED_SQL = {
+    "newest": f"""
 SELECT {_COLUMNS}
 FROM v_books b
 WHERE {EXCLUDED_SQL} {{where}}
-ORDER BY {{order_by}}
-"""
+ORDER BY b.pub_year DESC NULLS LAST, b.book_id
+""",
+    "price_asc": f"""
+SELECT b.book_id, b.title, b.author, pr.discounted_price::int AS price, b.cover_url,
+       pr.stock_quantity > 0 AS in_stock
+FROM v_products pr
+JOIN v_books b ON b.book_id = pr.book_id
+WHERE {EXCLUDED_SQL} {{where}}
+ORDER BY pr.discounted_price, pr.book_id
+""",
+}
 
 
 async def run_ordered(conn: asyncpg.Connection, sql: str, *args: Any) -> list:
@@ -120,8 +132,7 @@ async def fetch(
     if req.sort == "match":
         sql = popular_first_sql(where, limit="$4::int + $5::int") + "LIMIT $4 OFFSET $5"
     else:
-        sql = _SIMPLE_SQL.format(where=where, order_by=_ORDER_BY[req.sort])
-        sql += "LIMIT $4 OFFSET $5"
+        sql = ORDERED_SQL[req.sort].format(where=where) + "LIMIT $4 OFFSET $5"
     # 한 권 더 받아 본다. 더 있으면 다음 페이지 커서를 준다.
     rows = await run_ordered(
         conn,

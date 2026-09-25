@@ -47,10 +47,17 @@ def _run(check):
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, author, publisher, price,"
                     " in_stock, cover_url, category, pub_year, description)"
-                    " VALUES ($1, '책', '저자', '출판사', 10000, true, NULL, $2, $3, '소개')",
+                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개')",
                     book_id,
                     category,
                     year,
+                )
+                # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣었다.
+                await conn.execute(
+                    "INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)"
+                    " VALUES ($1, $2, 10000, 1)",
+                    book_id,
+                    book_id,
                 )
             await conn.execute(
                 "INSERT INTO v_user_purchases VALUES ($1, 9100804, $2)", _USER, _T0
@@ -99,6 +106,16 @@ def test_산_책은_빠진다() -> None:
     got = _fetch(_request(), {_LIKED: 4})
 
     assert 9100804 not in [book_id for book_id, _ in got]
+
+
+def test_가격과_재고는_상품_표에서_읽는다() -> None:
+    async def check(conn):
+        items, _ = await rule_only.fetch(
+            conn, _request(size="1"), Page(issued_at=_NOW), {_LIKED: 4}
+        )
+        return [(item["price"], item["in_stock"]) for item in items]
+
+    assert _run(check) == [(10000, True)]
 
 
 def test_점수가_0_이하인_분류는_좋아하는_분류로_치지_않는다() -> None:

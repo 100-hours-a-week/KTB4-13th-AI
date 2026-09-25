@@ -106,10 +106,30 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
         {"query": "책", "filters": {"in_stock_only": "yes"}},
         {"query": "책", "filters": "에세이"},
         ["책"],
+        # #201 — int32 범위·NUL.
+        {"query": "김영\x00하"},
+        {"query": "책", "filters": {"price_min": 2_147_483_648}},
+        {"query": "책", "filters": {"pub_year_from": -2_147_483_649}},
     ],
 )
 def test_계약을_어기면_400이다(payload: object) -> None:
     res = client.post("/search", json=payload)
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
+
+
+def test_검색어에_짝_없는_서로게이트가_있으면_400이다() -> None:
+    """#201 — httpx 테스트 클라이언트는 파이썬 str에 실제 서로게이트가 있으면 그 자체를
+    보내지도 못한다(클라이언트 쪽 UTF-8 인코딩 에러). 실제 공격 벡터는 JSON 문자열
+    escape(`\\ud800`)가 와이어를 타고 서버 json.loads()에서 그 문자로 풀리는 경우라,
+    본문을 raw bytes로 직접 보내 재현한다.
+    """
+    res = client.post(
+        "/search",
+        content=b'{"query": "\\ud800"}',
+        headers={"Content-Type": "application/json"},
+    )
 
     assert res.status_code == 400
     assert res.json() == {"message": "invalid_request", "data": None}

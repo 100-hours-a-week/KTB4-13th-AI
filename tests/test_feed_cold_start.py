@@ -42,21 +42,30 @@ _BOOKS = [
 _SALES = [(9100601, 10), (9100604, 5000)]
 
 
-def _fetch(params, user_id: int = _USER, page=None):
+def _fetch(params, user_id: int = _USER, page=None, without_product=(), full=False):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         tx = conn.transaction()
         await tx.start()
         try:
             for book_id, price, year in _BOOKS:
+                # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣는다.
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, price, in_stock, category, pub_year)"
-                    " VALUES ($1, '책', $2, true, $3, $4)",
+                    " VALUES ($1, '책', 0, false, $2, $3)",
                     book_id,
-                    price,
                     _CATEGORY,
                     year,
                 )
+                if book_id not in without_product:
+                    await conn.execute(
+                        "INSERT INTO v_products"
+                        " (id, book_id, discounted_price, stock_quantity)"
+                        " VALUES ($1, $2, $3, 1)",
+                        book_id,
+                        book_id,
+                        price,
+                    )
             for book_id, sales in _SALES:
                 await conn.execute(
                     "INSERT INTO v_book_popularity VALUES ($1, $2, NULL, 0, now())",
@@ -86,6 +95,8 @@ def _fetch(params, user_id: int = _USER, page=None):
             items, has_more = await cold_start.fetch(
                 conn, req, page or Page(issued_at=_NOW)
             )
+            if full:
+                return items, has_more
             return [item["book_id"] for item in items], has_more
         finally:
             await tx.rollback()
@@ -94,8 +105,8 @@ def _fetch(params, user_id: int = _USER, page=None):
     return asyncio.run(_go())
 
 
-def _list(params, user_id: int = _USER, page=None) -> list[int]:
-    return _fetch(params, user_id, page)[0]
+def _list(params, user_id: int = _USER, page=None, without_product=()) -> list[int]:
+    return _fetch(params, user_id, page, without_product)[0]
 
 
 def test_기본은_인기순이고_인기_행이_없는_책은_신간순으로_뒤에_온다() -> None:
@@ -120,6 +131,24 @@ def test_가격순() -> None:
         9100603,
         9100601,
         9100604,
+    ]
+
+
+@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
+def test_가격과_재고는_상품_표에서_읽는다(sort: str) -> None:
+    items, _ = _fetch([("sort", sort)], full=True)
+    by_id = {item["book_id"]: item for item in items}
+
+    assert (by_id[9100602]["price"], by_id[9100602]["in_stock"]) == (9000, True)
+
+
+def test_상품이_없는_책은_가격순에는_빠지고_다른_목록에는_가격_없이_나온다() -> None:
+    cheapest = _list([("sort", "price_asc")], without_product=(9100602,))
+    newest, _ = _fetch([("sort", "newest")], without_product=(9100602,), full=True)
+
+    assert 9100602 not in cheapest
+    assert [(i["price"], i["in_stock"]) for i in newest if i["book_id"] == 9100602] == [
+        (None, False)
     ]
 
 
@@ -221,9 +250,7 @@ def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
             if sort == "match":
                 sql = cold_start.popular_first_sql(where, limit="$4::int + $5::int")
             else:
-                sql = cold_start._SIMPLE_SQL.format(
-                    where=where, order_by=cold_start._ORDER_BY[req.sort]
-                )
+                sql = cold_start.ORDERED_SQL[req.sort].format(where=where)
             rows = await cold_start.run_ordered(
                 conn,
                 "EXPLAIN " + sql + "LIMIT $4 OFFSET $5",
@@ -240,3 +267,5 @@ def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
     plan = asyncio.run(_go())
 
     assert "Seq Scan on v_books" not in plan
+    # 가격순은 상품 표를 가격 색인 순서로 읽는다(#207)
+    assert "Seq Scan on v_products" not in plan

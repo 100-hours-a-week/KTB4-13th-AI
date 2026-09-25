@@ -69,7 +69,11 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
     try:
         data = cursor.decode(req.cursor)
         offset, mode, issued_for = data["o"], data["m"], data["f"]
-    except (cursor.CursorError, KeyError, TypeError) as exc:
+    except (cursor.CursorError, KeyError, TypeError, ValueError) as exc:
+        # ValueError는 base64 디코딩 실패·짝 없는 서로게이트처럼 cursor.decode 밖(_unb64·
+        # json.loads)에서도 날 수 있다. ④(app/feed/cursor.py)는 이미 같이 잡는데 ①만
+        # 빠져 있었다 — 같은 입력이 ④는 410, ①은 아래 어떤 except에도 안 걸려 그대로
+        # 올라가 라우터의 `except Exception`이 500으로 뭉뚱그렸다(#201).
         raise CursorExpired from exc
     if issued_for != fingerprint or not isinstance(offset, int) or offset < 0:
         raise CursorExpired

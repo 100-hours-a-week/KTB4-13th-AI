@@ -201,6 +201,11 @@ def test_home은_정렬이나_필터를_보내면_400이다(param: dict) -> None
         {"match_score_min": -1},
         {"pub_year_from": 2024, "pub_year_to": 2020},
         {"category": ""},
+        # #201 — int32 범위·NUL. (짝 없는 서로게이트는 쿼리 파라미터 인코딩 특성상
+        # search/chat/profile의 raw-bytes 테스트로 대신 커버한다.)
+        {"user_id": str(2_147_483_648)},
+        {"pub_year_from": str(-2_147_483_649)},
+        {"category": "김영\x00하"},
     ],
 )
 def test_값이_계약과_다르면_400이다(override: dict) -> None:
