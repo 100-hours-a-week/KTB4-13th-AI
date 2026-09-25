@@ -21,18 +21,27 @@ logger = logging.getLogger(__name__)
 # 명세 ② 의 한 번 호출 상한과 같다.
 BATCH_SIZE = 256
 
-# 소개글이 없는 책은 고르지 않는다(ERD: 벡터 검색 대상에서 빠지고 키워드로만 찾힌다).
-# 저장된 벡터가 지금 모델 것이 아니면 다시 만든다 — 모델이 다르면 서로 비교할 수 없다.
-# book_id > $1 로 앞에서부터 훑어, 실패한 묶음을 끝없이 다시 집는 일을 막는다.
-_SELECT_BATCH = """
-SELECT b.book_id, b.title, b.author, b.description
-FROM v_books b
-LEFT JOIN book_embeddings e ON e.book_id = b.book_id
-WHERE b.description IS NOT NULL
-  AND b.book_id > $1
-  AND (e.book_id IS NULL OR e.model <> $2)
-ORDER BY b.book_id
-LIMIT $3
+# 한 번에 훑는 책 수. 번호 순으로 이만큼 가져와 그중 채울 책만 임베딩한다.
+SCAN_SIZE = 2000
+
+# 번호 순으로 다음 책을 가져온다. 소개글이 없는 책은 고르지 않는다(ERD: 벡터 검색 대상에서 빠지고
+# 키워드로만 찾힌다). book_id > $1 로 앞에서부터 훑어, 실패한 묶음을 끝없이 다시 집는 일을 막는다.
+#
+# "벡터가 없는 책"을 한 쿼리로 고르지 않는다. book_embeddings 에 통계가 잡히면 PostgreSQL 이 조건에
+# 맞는 책을 1권으로 짐작해, 묶음마다 두 표를 통째로 읽어 맞춰 본다(13만 권에서 묶음당 130–210MB,
+# #194). 번호 색인으로 앞부분만 읽고, 이미 채운 책은 아래 쿼리로 따로 빼면 그럴 일이 없다.
+_SCAN = """
+SELECT book_id, title, author, description
+FROM v_books
+WHERE book_id > $1 AND description IS NOT NULL
+ORDER BY book_id
+LIMIT $2
+"""
+
+# 이미 지금 모델로 만든 책. 저장된 벡터가 다른 모델 것이면 다시 만든다 — 모델이 다르면 서로 비교할 수 없다.
+_DONE = """
+SELECT book_id FROM book_embeddings
+WHERE book_id = ANY($1::int[]) AND model = $2
 """
 
 _UPSERT = """
@@ -80,18 +89,30 @@ async def embed_batch(conn: asyncpg.Connection, rows: list[asyncpg.Record]) -> i
     return len(rows)
 
 
-async def run(conn: asyncpg.Connection, batch_size: int = BATCH_SIZE) -> int:
-    """채울 책이 없을 때까지 묶음 단위로 반복한다. 저장한 총 권수를 돌려준다."""
+async def run(
+    conn: asyncpg.Connection,
+    batch_size: int = BATCH_SIZE,
+    scan_size: int = SCAN_SIZE,
+) -> int:
+    """카탈로그 끝까지 훑으며 채울 책을 묶음 단위로 임베딩한다. 저장한 총 권수를 돌려준다."""
     model = get_settings().embedding_model
     last_id = 0
     total = 0
     while True:
-        rows = await conn.fetch(_SELECT_BATCH, last_id, model, batch_size)
-        if not rows:
+        books = await conn.fetch(_SCAN, last_id, scan_size)
+        if not books:
             return total
-        total += await embed_batch(conn, rows)
-        last_id = rows[-1]["book_id"]
-        logger.info("책 벡터 %d권 저장 (마지막 book_id=%d)", total, last_id)
+        done = await conn.fetch(_DONE, [b["book_id"] for b in books], model)
+        done_ids = {r["book_id"] for r in done}
+        todo = [b for b in books if b["book_id"] not in done_ids]
+        for start in range(0, len(todo), batch_size):
+            batch = todo[start : start + batch_size]
+            total += await embed_batch(conn, batch)
+            logger.info(
+                "책 벡터 %d권 저장 (마지막 book_id=%d)", total, batch[-1]["book_id"]
+            )
+        # 훑은 책이 모두 채워져 있어도 다음 구간으로 넘어간다. 빈 결과를 끝으로 보면 안 된다.
+        last_id = books[-1]["book_id"]
 
 
 async def main() -> None:

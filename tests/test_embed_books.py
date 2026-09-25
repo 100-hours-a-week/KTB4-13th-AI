@@ -12,16 +12,22 @@ from app.jobs import embed_books
 
 
 class FakeConn:
-    """fetch 는 book_id > last_id 인 책을 앞에서부터 돌려주고, executemany 는 받은 걸 적어 둔다."""
+    """책 조회는 book_id > last_id 인 책을 앞에서부터, 벡터 조회는 이미 채운 책을 돌려준다.
 
-    def __init__(self, books: list[dict]) -> None:
+    executemany 는 받은 걸 적어 둔다.
+    """
+
+    def __init__(self, books: list[dict], done: set[int] = frozenset()) -> None:
         self.books = books
+        self.done = done
         self.saved: list[tuple] = []
 
-    async def fetch(
-        self, _sql: str, last_id: int, _model: str, limit: int
-    ) -> list[dict]:
-        return [b for b in self.books if b["book_id"] > last_id][:limit]
+    async def fetch(self, sql: str, *args) -> list[dict]:
+        if "FROM v_books" in sql:
+            last_id, limit = args
+            return [b for b in self.books if b["book_id"] > last_id][:limit]
+        ids, _model = args
+        return [{"book_id": i} for i in ids if i in self.done]
 
     async def executemany(self, _sql: str, args: list[tuple]) -> None:
         self.saved.extend(args)
