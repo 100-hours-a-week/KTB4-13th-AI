@@ -92,6 +92,8 @@ def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
                 "title": "달러구트 꿈 백화점",
                 "author": "이미예",
                 "description": "잠든 사이 꿈을 사고파는 상점 이야기.",
+                "match_score": 25,
+                "popularity": 3.0,
             }
         ]
 
@@ -133,11 +135,15 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
     assert len(data["cards"]) == 1
     assert data["cards"][0]["book_id"] == 1088
     assert data["cards"][0]["reason_short"] == "잔잔한 판타지예요."
+    # match_score는 candidates에 get_candidates가 이미 채워 둔 값 그대로다(#129).
+    assert data["cards"][0]["match_score"] == 25
 
 
-def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
+def test_LLM이_실패하면_degraded_true로_규칙_기반_카드를_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """명세: LLM 장애면 점수 상위 카드를 규칙으로 낸다. reason_short는 규칙 문구,
+    reason_long은 null이다(#129)."""
     monkeypatch.setattr(chat, "get_chat_model", _failing_model)
 
     res = client.post("/recommendations/chat", json=_request())
@@ -145,7 +151,13 @@ def test_LLM이_실패하면_degraded_true로_200을_돌려준다(
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["degraded"] is True
-    assert data["cards"] == []
+    assert len(data["cards"]) == 1
+    card = data["cards"][0]
+    assert card["book_id"] == 1088
+    assert card["match_score"] == 25
+    assert card["reason_short"]
+    assert card["reason_long"] is None
+    assert card["match_basis"] == []
     # 빈 말풍선을 보여주지 않는다(#123).
     assert data["reply"] != ""
 
@@ -177,7 +189,9 @@ def test_카드_생성_LLM_실패가_로그에_남는다(
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["degraded"] is True
-    assert data["cards"] == []
+    # 카드 생성만 실패해도 후보는 이미 있으니 규칙 기반 카드로 채운다(#129).
+    assert len(data["cards"]) == 1
+    assert data["cards"][0]["book_id"] == 1088
     assert "카드 생성 실패" in caplog.text
 
 
@@ -324,6 +338,47 @@ def test_parse_match_basis_형식_안_맞는_항목은_거른다() -> None:
 def test_parse_match_basis_리스트가_아니면_빈_배열() -> None:
     assert chat._parse_match_basis("문자열") == []
     assert chat._parse_match_basis(None) == []
+
+
+def _candidate(book_id: int, match_score: int, popularity: float = 0.0) -> dict:
+    return {
+        "book_id": book_id,
+        "title": f"책{book_id}",
+        "author": "작가",
+        "price": 10000,
+        "cover_url": None,
+        "match_score": match_score,
+        "popularity": popularity,
+    }
+
+
+def test_rule_based_cards는_match_score_상위_CARD_LIMIT개만_담는다() -> None:
+    candidates = [
+        _candidate(1, 10),
+        _candidate(2, 30),
+        _candidate(3, 20),
+        _candidate(4, 5),
+    ]
+    cards = chat._rule_based_cards(candidates)
+
+    assert [c["book_id"] for c in cards] == [2, 3, 1]
+    assert [c["rank"] for c in cards] == [1, 2, 3]
+    # 명세: LLM 장애 시 reason_short는 규칙, reason_long은 null, match_basis는 없음.
+    assert all(c["reason_short"] for c in cards)
+    assert all(c["reason_long"] is None for c in cards)
+    assert all(c["match_basis"] == [] for c in cards)
+
+
+def test_rule_based_cards는_동점이면_인기_다음_번호_순이다() -> None:
+    candidates = [_candidate(5, 10, popularity=1.0), _candidate(2, 10, popularity=5.0)]
+
+    cards = chat._rule_based_cards(candidates)
+
+    assert [c["book_id"] for c in cards] == [2, 5]
+
+
+def test_rule_based_cards는_후보가_없으면_빈_배열() -> None:
+    assert chat._rule_based_cards([]) == []
 
 
 def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
@@ -589,7 +644,12 @@ def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_�
     assert res.status_code == 200
     data = res.json()["data"]
     assert data["degraded"] is True
-    assert data["cards"] == []
+    # 3단계(카드 생성 LLM)는 안 불렀지만, 2단계 후보는 이미 있어 규칙 기반
+    # 카드로 채운다(#129) — 두 번째 대사(book_id 1088짜리)를 그대로 삼킨 게
+    # 아니라는 것은 reason_long이 null인 것으로 구분된다(LLM 카드라면 채워짐).
+    assert len(data["cards"]) == 1
+    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["reason_long"] is None
     # 갱신 안 되고 요청에 보낸 spec 그대로. model_dump()는 filters의 생략된
     # 키도 채워 돌려주므로 요청 그대로의 {} 와는 모양이 다르다 — 파싱해서 비교.
     assert data["spec"]["filters"] == {
