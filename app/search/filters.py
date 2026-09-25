@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from app.core import products
 from app.search.schemas import SearchFilters
 
 
@@ -15,10 +16,11 @@ def build_where(
     conditions: list[tuple[str, Any]] = []
     if filters.category is not None:
         conditions.append((f"{alias}.category = ", filters.category))
+    # 가격·재고는 상품 표에서 읽는다(#206). 상품이 없는 책은 가격 조건을 걸면 빠지고 품절로 친다.
     if filters.price_min is not None:
-        conditions.append((f"{alias}.price >= ", filters.price_min))
+        conditions.append((f"{products.price_sql(alias)} >= ", filters.price_min))
     if filters.price_max is not None:
-        conditions.append((f"{alias}.price <= ", filters.price_max))
+        conditions.append((f"{products.price_sql(alias)} <= ", filters.price_max))
     # 출간연도가 비어 있는 책은 연도 조건을 걸면 빠진다(NULL 비교는 참이 아니다).
     if filters.pub_year_from is not None:
         conditions.append((f"{alias}.pub_year >= ", filters.pub_year_from))
@@ -31,5 +33,5 @@ def build_where(
         sql += f" AND {prefix}${first_param + i}"
         params.append(value)
     if filters.in_stock_only:
-        sql += f" AND {alias}.in_stock"
+        sql += f" AND {products.in_stock_sql(alias)}"
     return sql, params

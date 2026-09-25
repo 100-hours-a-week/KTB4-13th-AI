@@ -10,6 +10,7 @@ import os
 import asyncpg
 import pytest
 
+from app.core import products
 from app.search import books, keyword
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
@@ -62,7 +63,11 @@ def test_필터는_값을_자리표시자로_넘긴다() -> None:
 
     sql, params = build_where(filters, first_param=5)
 
-    assert sql == " AND b.category = $5 AND b.price <= $6 AND b.in_stock"
+    # 가격·재고는 상품 표에서 읽는다(#206)
+    assert sql == (
+        f" AND b.category = $5 AND {products.price_sql('b')} <= $6"
+        f" AND {products.in_stock_sql('b')}"
+    )
     assert params == ["에세이", 20000]
 
 
@@ -122,11 +127,17 @@ def _run_in_rollback(check):
         tx = conn.transaction()
         await tx.start()
         try:
+            # 책 표의 가격·재고는 읽지 않는다(#206). 일부러 0원·품절을 넣고 상품 표에 진짜 값을 둔다.
             await conn.executemany(
                 "INSERT INTO v_books (book_id, title, author, publisher, price, in_stock,"
                 " cover_url, category, pub_year, description)"
-                " VALUES ($1, $2, $3, '테스트출판사', $4, $5, NULL, $6, $7, $8)",
-                _BOOKS,
+                " VALUES ($1, $2, $3, '테스트출판사', 0, false, NULL, $4, $5, $6)",
+                [(b[0], b[1], b[2], b[5], b[6], b[7]) for b in _BOOKS],
+            )
+            await conn.executemany(
+                "INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)"
+                " VALUES ($1, $2, $3, $4)",
+                [(b[0], b[0], b[3], 1 if b[4] else 0) for b in _BOOKS],
             )
             return await check(conn)
         finally:

@@ -44,13 +44,20 @@ def _run_in_rollback(check):
         await tx.start()
         try:
             for book_id, price, in_stock, axis in _BOOKS:
+                # 가격·재고는 상품 표에서 읽는다(#206). 책 표에는 일부러 0원·품절을 넣는다.
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, price, in_stock, category)"
-                    " VALUES ($1, '테스트', $2, $3, $4)",
+                    " VALUES ($1, '테스트', 0, false, $2)",
+                    book_id,
+                    _CATEGORY,
+                )
+                await conn.execute(
+                    "INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)"
+                    " VALUES ($1, $2, $3, $4)",
+                    book_id,
                     book_id,
                     price,
-                    in_stock,
-                    _CATEGORY,
+                    1 if in_stock else 0,
                 )
                 await conn.execute(
                     "INSERT INTO book_embeddings VALUES ($1, $2::vector, 384, 'test')",
