@@ -1,0 +1,34 @@
+name: Pull Request Discord Notification
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, review_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Notify pull request activity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ACTION: ${{ github.event.action }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo 'DISCORD_WEBHOOK_URL secret is not configured; skipping notification.'
+            exit 0
+          fi
+          payload=$(jq -n \
+            --arg content "📣 PR ${ACTION}\n저장소: ${REPOSITORY}\n작성자: ${AUTHOR}\n제목: ${PR_TITLE}\n링크: ${PR_URL}" \
+            '{content: $content}')
+          curl --fail-with-body --silent --show-error \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$DISCORD_WEBHOOK_URL"
