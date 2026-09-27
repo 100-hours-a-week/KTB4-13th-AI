@@ -26,8 +26,12 @@ jobs:
             exit 0
           fi
           payload=$(jq -n \
-            --arg content "📣 PR ${ACTION}\n저장소: ${REPOSITORY}\n작성자: ${AUTHOR}\n제목: ${PR_TITLE}\n링크: ${PR_URL}" \
-            '{content: $content}')
+            --arg action "$ACTION" \
+            --arg repo "$REPOSITORY" \
+            --arg author "$AUTHOR" \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            '{content: ("📣 PR " + $action + "\n저장소: " + $repo + "\n작성자: " + $author + "\n제목: " + $title + "\n링크: " + $url)}')
           curl --fail-with-body --silent --show-error \
             -H 'Content-Type: application/json' \
             --data "$payload" \
