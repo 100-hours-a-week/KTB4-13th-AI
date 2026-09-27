@@ -136,5 +136,9 @@ jobs:
             echo 'DISCORD_WEBHOOK_URL secret is not configured; skipping external alert.'
             exit 0
           fi
-          payload=$(jq -n --arg content "🚨 AI CI 실패\n저장소: $GITHUB_REPOSITORY\n커밋: $GITHUB_SHA\n로그: $RUN_URL" '{content: $content}')
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$GITHUB_SHA" \
+            --arg url "$RUN_URL" \
+            '{content: ("🚨 AI CI 실패\n저장소: " + $repo + "\n커밋: " + $sha + "\n로그: " + $url)}')
           curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' --data "$payload" "$DISCORD_WEBHOOK_URL"
