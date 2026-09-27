@@ -86,6 +86,28 @@ jobs:
           cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
           cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
 
+  notify-failure:
+    name: Notify CI failure
+    if: ${{ always() && (needs.quality.result == 'failure' || needs.docker-build.result == 'failure' || needs.publish-image.result == 'failure') }}
+    needs: [quality, docker-build, publish-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord alert
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo 'DISCORD_WEBHOOK_URL secret is not configured; skipping external alert.'
+            exit 0
+          fi
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$GITHUB_SHA" \
+            --arg url "$RUN_URL" \
+            '{content: ("🚨 AI CI 실패\n저장소: " + $repo + "\n커밋: " + $sha + "\n로그: " + $url)}')
+          curl --fail-with-body --silent --show-error -H 'Content-Type: application/json' --data "$payload" "$DISCORD_WEBHOOK_URL"
+
   publish-image:
     name: Publish Docker image to ECR
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
