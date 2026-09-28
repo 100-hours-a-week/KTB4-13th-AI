@@ -67,3 +67,33 @@ def test_세부_태그는_BE_보기_49개에서_겹친_하나를_뺀_48개다() 
     # 여행 에세이가 에세이와 여행 밑에 둘 다 있다. 개수가 바뀌면 BE 보기가 바뀐 것이다(#165).
     assert len(categories.ONBOARDING_TAGS) == 48
     assert len(set(categories.ONBOARDING_TAGS)) == 48
+
+
+def test_세부_태그마다_대응하는_분류를_적어_두었다() -> None:
+    # 태그 목록이 바뀌었는데 대응표를 안 고치면 그 태그는 조용히 점수에서 빠진다.
+    assert set(categories.TAG_TO_CATALOG) == set(categories.ONBOARDING_TAGS)
+
+
+def test_세부_태그를_카탈로그_분류_점수로_푼다() -> None:
+    assert categories.tag_scores(["재테크", "마케팅", "우주"], 1) == {
+        "경제학": 2,
+        "천문학": 1,
+    }
+
+
+def test_맞는_분류가_없는_태그는_부모_관심_분류의_핵심_분류를_쓴다() -> None:
+    assert set(categories.tag_scores(["추리/스릴러"], 1)) == set(
+        ONBOARDING_TO_CATALOG["소설"].core
+    )
+
+
+def test_윤리학_태그는_처세_책이_많은_윤리학_도덕철학에_잇지_않는다() -> None:
+    assert "윤리학·도덕철학" not in categories.tag_scores(["윤리학"], 1)
+
+
+def test_어린이_태그와_목록에_없는_태그는_점수가_없다() -> None:
+    assert categories.tag_scores(["그림책", "힐링"], 1) == {}
+
+
+def test_같은_태그를_두_번_보내도_한_번만_친다() -> None:
+    assert categories.tag_scores(["재테크", "재테크"], 1) == {"경제학": 1}
