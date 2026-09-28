@@ -75,9 +75,15 @@ def test_고른_라벨이_없으면_재료도_없다() -> None:
 
 
 def test_태그_가중치는_온보딩_태그와_카테고리_점수를_합친다() -> None:
-    weights = compute.tag_weights(["힐링", "에세이"], [], {"에세이": 3, "기타": -2})
+    # 세부 태그도 카탈로그 분류로 풀어 넣는다(#165). 재테크는 경제학이다.
+    weights = compute.tag_weights(["재테크"], [], {"경제학": 3, "기타": -2})
 
-    assert weights == {"힐링": 1, "에세이": 4, "기타": -2}
+    assert weights == {"경제학": 3 + compute.ONBOARDING_TAG_WEIGHT, "기타": -2}
+
+
+def test_목록에_없는_태그는_태그_가중치에_넣지_않는다() -> None:
+    # 이름 그대로 넣어도 ③④ 는 책의 분류로 찾아 쓰이지 않는다. 온보딩 카테고리와 같게 건너뛴다.
+    assert compute.tag_weights(["힐링"], [], {}) == {}
 
 
 def test_온보딩_카테고리는_카탈로그_분류로_풀어_이력_점수에_더한다() -> None:

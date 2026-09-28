@@ -20,6 +20,7 @@ MEMORY_WEIGHT = 1.0
 # 밀어낸다(피드 위 20권 중 0–15%만 남음, #164). 카테고리는 ④ 채점의 카테고리 점수로도 들어가므로
 # 벡터에서는 기억 한 문장만큼만 둔다.
 LABELS_TOTAL_WEIGHT = 1.0
+# 세부 태그는 이어진 카탈로그 분류마다 이만큼 준다(#165). 부모 분류째 잇는 태그가 많아 카테고리 핵심(2)보다 약하게 둔다.
 ONBOARDING_TAG_WEIGHT = 1
 # 온보딩 카테고리는 대응표(#110)로 카탈로그 분류 점수로 풀어 이력의 카테고리 점수와 합친다. 직접 고른
 # 관심사라 핵심 분류는 좋은 리뷰 한 번(2)과 같게, 다른 내용이 섞인 일부 분류는 그 절반으로 둔다.
@@ -91,8 +92,8 @@ def tag_weights(
 ) -> dict[str, int]:
     """온보딩 태그·카테고리와 이력의 카테고리 점수를 한 맵으로 합친다. 합이 0인 칸은 뺀다.
 
-    온보딩 카테고리는 이름 그대로가 아니라 카탈로그 분류로 풀어 넣는다. ④가 책의 `category` 로 점수를
-    찾기 때문이다. 기억 종류 집계와 읽는 시간대·고르는 기준은 명세에 합치는 방법이 없어 아직 넣지
+    온보딩 카테고리와 세부 태그는 이름 그대로가 아니라 카탈로그 분류로 풀어 넣는다(#110, #165). ③④가
+    책의 `category` 로 점수를 찾기 때문이다. 기억 종류 집계와 읽는 시간대·고르는 기준은 명세에 합치는 방법이 없어 아직 넣지
     않는다(#92).
     """
     weights = dict(category_scores)
@@ -101,8 +102,8 @@ def tag_weights(
     )
     for category, points in picked.items():
         weights[category] = weights.get(category, 0) + points
-    for tag in tags:
-        weights[tag] = weights.get(tag, 0) + ONBOARDING_TAG_WEIGHT
+    for category, points in categories.tag_scores(tags, ONBOARDING_TAG_WEIGHT).items():
+        weights[category] = weights.get(category, 0) + points
     return {key: value for key, value in weights.items() if value}
 
 
