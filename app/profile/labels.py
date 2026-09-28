@@ -1,7 +1,7 @@
 """⑥ 온보딩 라벨 벡터 — 서버가 뜰 때 한 번 만들어 메모리에 둔다(#94).
 
 명세 ⑥에는 503·504가 없어, 요청 중에 임베딩 모델을 부르지 않는다. 라벨은 대응표(#110)에 있는
-온보딩 카테고리다. 세부 태그는 전체 목록이 아직 없어 넣지 않았다(#165).
+온보딩 카테고리와 세부 태그(#165)다. 목록에 없는 값은 벡터 없이 태그 가중치에만 쓰인다.
 """
 
 import logging
@@ -11,7 +11,9 @@ from app.gateway import embedding
 
 logger = logging.getLogger(__name__)
 
-LABELS: tuple[str, ...] = tuple(categories.ONBOARDING_TO_CATALOG)
+LABELS: tuple[str, ...] = tuple(
+    dict.fromkeys([*categories.ONBOARDING_TO_CATALOG, *categories.ONBOARDING_TAGS])
+)
 
 # 기억 문장처럼 사용자가 고른 관심사를 나타내므로 기억과 같은 용도로 만든다.
 _PURPOSE = "query"
@@ -41,7 +43,7 @@ async def ensure_loaded() -> None:
     """기동 때 못 만들었는데 지금은 모델이 떠 있으면 만든다. 모델을 새로 읽지는 않는다.
 
     기동 때 모델이 실패했다가 ② 요청으로 나중에 뜨면, 이게 없을 때는 서버를 다시 켤 때까지 ⑥이
-    조용히 라벨을 빼고 계산한다. 라벨 13개는 0.1초 남짓이라 요청 안에서 만들어도 된다.
+    조용히 라벨을 빼고 계산한다. 라벨 61개가 로컬 CPU 에서 34ms 라 요청 안에서 만들어도 된다.
     """
     if not _vectors and embedding.is_loaded():
         await load()
