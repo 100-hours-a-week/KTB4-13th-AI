@@ -88,6 +88,11 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
     assert req.filters.price_max == 20000
 
 
+def test_어린이는_거르지_않지만_400도_아니다() -> None:
+    # 온보딩 보기에 있는 값이라 받는다. 분류로 가를 수 없어 거르지는 않는다(#228).
+    assert parse_request({"query": "책", "filters": {"category": "어린이"}}) is not None
+
+
 @pytest.mark.parametrize(
     "payload",
     [

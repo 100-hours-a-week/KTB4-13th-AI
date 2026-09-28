@@ -145,6 +145,13 @@ def test_recommend_more는_정렬과_필터를_모두_받는다() -> None:
     assert res.status_code == 200
 
 
+def test_어린이는_거르지_않지만_400도_아니다() -> None:
+    # 온보딩 보기에 있는 값이라 받는다. 분류로 가를 수 없어 거르지는 않는다(#228).
+    res = _get({"user_id": 123, "surface": "recommend_more", "category": "어린이"})
+
+    assert res.status_code == 200
+
+
 def test_기본값은_정렬_match_개수_15다() -> None:
     req = parse_query([("user_id", "1"), ("surface", "home")])
 

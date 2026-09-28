@@ -17,12 +17,15 @@ def build_where(
     if filters.category is not None:
         # 온보딩 값("소설")이면 대응표의 핵심 분류들로 푼다(#219). 카탈로그 분류명("한국문학")은 지금처럼
         # 정확히 일치하는 것만 거른다. ③ 챗봇은 LLM 이 준 분류명을 그대로 넘길 수 있다.
-        catalog = categories.filter_categories(filters.category) or (filters.category,)
+        catalog = categories.filter_categories(filters.category)
+        if catalog is None:
+            catalog = (filters.category,)
+        # 빈 튜플은 어린이처럼 분류로 가를 수 없는 온보딩 값이라 거르지 않는다(#228).
         if len(catalog) == 1:
             # 분류 하나는 = 로 건다. ANY 로 걸면 PostgreSQL 이 분류 + 신간순 색인을 못 골라 느려진다
             # (261만 권 여행 10쪽 61ms, #219).
             conditions.append((f"{alias}.category = {{}}", catalog[0]))
-        else:
+        elif catalog:
             conditions.append((f"{alias}.category = ANY({{}}::text[])", list(catalog)))
     # 가격·재고는 상품 표에서 읽는다(#206). 상품이 없는 책은 가격 조건을 걸면 빠지고 품절로 친다.
     if filters.price_min is not None:

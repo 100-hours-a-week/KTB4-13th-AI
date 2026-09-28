@@ -88,6 +88,11 @@ def test_분류_하나로_풀리면_같다로_건다() -> None:
     )
 
 
+def test_어린이는_분류_조건을_걸지_않는다() -> None:
+    # 분류로 가를 수 없어 거르지 않은 목록을 준다(#228).
+    assert build_where(SearchFilters(category="어린이"), first_param=5) == ("", [])
+
+
 def test_대응표에_없는_값은_지금처럼_정확히_일치하는_것만_거른다() -> None:
     # ③ 챗봇은 LLM 이 준 카탈로그 분류명을 그대로 넘길 수 있다.
     assert build_where(SearchFilters(category="법학"), first_param=5) == (
