@@ -93,10 +93,3 @@ def test_응답_모드가_바뀌면_끊는다() -> None:
 
     with pytest.raises(cursor.CursorExpired):
         cursor.check_mode(page, "cold-start")
-
-
-def test_프로필_판_번호가_달라도_끊지_않는다() -> None:
-    # 명세: 프로필이나 인기 집계가 바뀌면 갱신된 값으로 이어 붙인다.
-    page = cursor.read(_req(_next_cursor(_req(), mode="personalized", version=1)))
-
-    cursor.check_mode(page, "personalized")

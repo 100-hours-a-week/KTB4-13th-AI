@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.feed import cold_start, rule_only
+from app.feed import cold_start, personalized, rule_only
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -124,6 +124,29 @@ def test_점수가_0_이하인_분류는_좋아하는_분류로_치지_않는다
     # 카테고리 점수가 없으면 인기·신간순 후보만 남고 모두 0점이다.
     assert got[0] == (9100801, 0)
     assert all(score == 0 for _, score in got)
+
+
+def test_인기순_후보에_못_드는_책도_좋아하는_분류면_후보로_모은다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 테스트 책은 신간이라 인기·신간순 후보에도 든다. 그러면 좋아하는 분류를 따로 모으는 부분을
+    # 지워도 위 테스트가 통과한다(#210). 후보를 한 권씩으로 줄여 인기·신간순으로는 못 들게 한다.
+    monkeypatch.setattr(personalized, "CANDIDATE_LIMIT", 1)
+
+    got = _fetch(_request(), {_LIKED: 4})
+
+    assert (9100802, 25) in got
+
+
+def test_점수가_0_이하인_분류의_책은_후보로_모으지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 싫어하는 분류의 책을 좋아하는 분류처럼 따로 모으면 인기 없는 그 분류 책이 목록에 끼어든다.
+    monkeypatch.setattr(personalized, "CANDIDATE_LIMIT", 1)
+
+    got = _fetch(_request(), {_LIKED: -2})
+
+    assert not {9100802, 9100803} & {book_id for book_id, _ in got}
 
 
 def test_책_표를_통째로_훑지_않는다() -> None:
