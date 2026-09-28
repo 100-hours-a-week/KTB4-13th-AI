@@ -50,3 +50,14 @@ def test_필터용_분류는_핵심만이다() -> None:
 
 def test_대응표에_없는_값은_필터용_분류가_없다() -> None:
     assert categories.filter_categories("한국문학") is None
+
+
+def test_온보딩_값인지_가린다() -> None:
+    assert categories.is_onboarding("에세이")
+    assert not categories.is_onboarding("한국문학")
+
+
+def test_어린이는_온보딩_값이지만_거르지_않는다() -> None:
+    # 어린이책은 여러 분류에 흩어져 있어 분류로 가를 수 없다(#110, #228).
+    assert categories.is_onboarding("어린이")
+    assert categories.filter_categories("어린이") == ()

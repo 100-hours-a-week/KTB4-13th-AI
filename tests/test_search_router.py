@@ -88,6 +88,11 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
     assert req.filters.price_max == 20000
 
 
+def test_어린이는_거르지_않지만_400도_아니다() -> None:
+    # 온보딩 보기에 있는 값이라 받는다. 분류로 가를 수 없어 거르지는 않는다(#228).
+    assert parse_request({"query": "책", "filters": {"category": "어린이"}}) is not None
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -110,6 +115,9 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
         {"query": "김영\x00하"},
         {"query": "책", "filters": {"price_min": 2_147_483_648}},
         {"query": "책", "filters": {"pub_year_from": -2_147_483_649}},
+        # #219 — category 는 온보딩 값만. 카탈로그 분류명·없는 값은 400.
+        {"query": "책", "filters": {"category": "한국문학"}},
+        {"query": "책", "filters": {"category": "없는분류"}},
     ],
 )
 def test_계약을_어기면_400이다(payload: object) -> None:

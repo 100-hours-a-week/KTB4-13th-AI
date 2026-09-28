@@ -7,7 +7,8 @@
 - 일부: 다른 내용이 섞여 있는 분류. 예) 한국문학은 소설·시·에세이가 한 분류(810)라 에세이에는 일부다
 
 한 분류가 여러 온보딩 값에 들어갈 수 있다. 온보딩 보기는 BE 가 만들어 바뀔 수 있으므로, 여기 없는 값은
-쓰는 쪽에서 건너뛴다. 어린이는 분류로 가를 수 없어(여러 분류에 흩어져 있다) 넣지 않았다(#110).
+쓰는 쪽에서 건너뛴다. 어린이는 분류로 가를 수 없어(여러 분류에 흩어져 있다) 넣지 않았다(#110). ①④ 필터로는
+어린이를 받되 거르지 않는다(#228).
 """
 
 from dataclasses import dataclass
@@ -143,10 +144,22 @@ def catalog_scores(
     return scores
 
 
+# 온보딩 보기에 있지만 분류로 가를 수 없는 값. ①④ 는 400 을 내지 않고 거르지 않은 목록을 준다(#228).
+UNFILTERED_ONBOARDING = frozenset({"어린이"})
+
+
 def filter_categories(name: str) -> tuple[str, ...] | None:
     """①④ 의 category 필터로 쓸 카탈로그 분류. 온보딩 값이면 핵심 분류만, 대응표에 없으면 None.
 
     일부 분류는 필터에 넣지 않는다. "에세이"로 걸렀는데 한국문학의 소설이 섞여 나오면 안 된다(#110).
+    어린이처럼 분류로 가를 수 없는 온보딩 값은 빈 튜플이다. 거르지 않는다는 뜻이다(#228).
     """
+    if name in UNFILTERED_ONBOARDING:
+        return ()
     match = ONBOARDING_TO_CATALOG.get(name)
     return None if match is None else match.core
+
+
+def is_onboarding(name: str) -> bool:
+    """온보딩 값인지. ①④ 요청의 category 는 이 값만 받는다(#219). 거르지 않는 어린이도 포함한다(#228)."""
+    return name in ONBOARDING_TO_CATALOG or name in UNFILTERED_ONBOARDING

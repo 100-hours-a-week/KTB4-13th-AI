@@ -145,6 +145,13 @@ def test_recommend_more는_정렬과_필터를_모두_받는다() -> None:
     assert res.status_code == 200
 
 
+def test_어린이는_거르지_않지만_400도_아니다() -> None:
+    # 온보딩 보기에 있는 값이라 받는다. 분류로 가를 수 없어 거르지는 않는다(#228).
+    res = _get({"user_id": 123, "surface": "recommend_more", "category": "어린이"})
+
+    assert res.status_code == 200
+
+
 def test_기본값은_정렬_match_개수_15다() -> None:
     req = parse_query([("user_id", "1"), ("surface", "home")])
 
@@ -206,6 +213,9 @@ def test_home은_정렬이나_필터를_보내면_400이다(param: dict) -> None
         {"user_id": str(2_147_483_648)},
         {"pub_year_from": str(-2_147_483_649)},
         {"category": "김영\x00하"},
+        # #219 — category 는 온보딩 값만. 카탈로그 분류명·없는 값은 400.
+        {"category": "한국문학"},
+        {"category": "없는분류"},
     ],
 )
 def test_값이_계약과_다르면_400이다(override: dict) -> None:
