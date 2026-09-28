@@ -130,12 +130,21 @@ def _word_matches(i: int) -> str:
     )
 
 
+def _same_title_as(title: str, query: str) -> str:
+    """제목이 검색어와 공백·영문 대소문자를 빼면 똑같으면 참(#210). 공백 뺀 제목 색인을 탄다.
+
+    lower() 로 양쪽을 바꿔 같다(=)로 견주면 색인 식과 달라져 색인을 못 탄다. 그래서 대소문자를
+    가리지 않는 ILIKE 로 견주고, 검색어의 %·_·\\ 는 글자 그대로 읽게 막아 같다와 같게 쓴다.
+    """
+    pattern = _nospace(query)
+    for ch in ("\\", "%", "_"):
+        pattern = f"replace({pattern}, '{ch}', '\\{ch}')"
+    return f"{_nospace(title)} ILIKE {pattern}"
+
+
 def _same_title(where: str) -> str:
-    """제목이 검색어($3)와 공백 빼고 똑같은 책. 공백 뺀 제목 색인으로 찾는다."""
-    return (
-        f"SELECT b.book_id FROM v_books b"
-        f" WHERE {_nospace('b.title')} = {_nospace('$3')}{where}"
-    )
+    """제목이 검색어($3)와 똑같은 책(_same_title_as). 공백 뺀 제목 색인으로 찾는다."""
+    return f"SELECT b.book_id FROM v_books b WHERE {_same_title_as('b.title', '$3')}{where}"
 
 
 def lookup_limit(n_tokens: int) -> int:
@@ -239,14 +248,14 @@ _EXACT_TITLE_SQL = f"""
 SELECT book_id
 FROM v_books
 WHERE book_id = ANY($1::int[])
-  AND {_nospace("title")} = {_nospace("$2")}
+  AND {_same_title_as("title", "$2")}
 """
 
 
 async def exact_title_ids(
     conn: asyncpg.Connection, book_ids: list[int], query: str
 ) -> set[int]:
-    """후보 중 제목이 검색어와 (공백 빼고) 똑같은 책.
+    """후보 중 제목이 검색어와 (공백·영문 대소문자 빼고) 똑같은 책.
 
     13만 권을 다시 훑지 않고 이미 고른 후보 안에서만 본다. 제목이 검색어와 같은 책은 제목·저자를
     글자 조각으로 훑는 후보 고르기에서 빠질 수 없으므로, 이렇게 해도 놓치는 책이 없다.
