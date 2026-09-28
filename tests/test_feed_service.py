@@ -36,12 +36,18 @@ async def _no_history_taste(conn, user_id, until=None):
     return HistoryTaste(centroid=None, tag_weights={})
 
 
+async def _has_book_vectors(conn):
+    return True
+
+
 def _run(req, profile_row, monkeypatch, **fakes):
     monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool(profile_row))
     # 프로필 뒤에 생긴 이력(#175)은 따로 보는 테스트가 아니면 없다고 둔다.
     fakes.setdefault("history__category_scores_since", _no_recent_history)
     # 저장된 벡터가 없을 때 이력으로 만드는 임시 취향(#246)도 따로 보는 테스트가 아니면 없다고 둔다.
     fakes.setdefault("history_taste__from_history", _no_history_taste)
+    # 책 벡터는 따로 보는 테스트가 아니면 있다고 둔다.
+    fakes.setdefault("vector__has_any", _has_book_vectors)
     for name, fn in fakes.items():
         module, attr = name.split("__")
         monkeypatch.setattr(getattr(service, module), attr, fn)
@@ -316,6 +322,51 @@ def test_벡터가_돌아오면_임시_목록의_커서는_끊는다(
             monkeypatch,
             personalized__fetch=_vector_up,
         )
+
+
+def test_책_벡터가_한_권도_없으면_규칙_점수만으로_답하고_알린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 모델을 바꾸며 책 벡터를 다시 채우는 동안에는 벡터 조회가 에러 없이 0건이다.
+    # 빈 목록으로 두지 않고 벡터를 못 쓸 때와 같이 규칙 점수로 채운다(명세 ④, #210).
+    async def _no_match(conn, req, page, centroid, tag_weights):
+        return [], False
+
+    async def _no_book_vectors(conn):
+        return False
+
+    outcome = _run(
+        _req(),
+        _PROFILE_ROW,
+        monkeypatch,
+        personalized__fetch=_no_match,
+        vector__has_any=_no_book_vectors,
+        rule_only__fetch=_rule_only_page,
+    )
+
+    assert outcome.degraded == service.RULE_ONLY
+    assert [item["book_id"] for item in outcome.items] == [1]
+
+
+def test_책_벡터가_있는데_0건이면_빈_목록_그대로다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 필터에 맞는 책이 없어 0건인 것은 축소가 아니다(명세: 필터로 0건이면 빈 목록으로 200).
+    async def _no_match(conn, req, page, centroid, tag_weights):
+        return [], False
+
+    async def _rule_only(conn, req, page, tag_weights):
+        raise AssertionError("규칙 점수로 넘어가면 안 된다")
+
+    outcome = _run(
+        _req(),
+        _PROFILE_ROW,
+        monkeypatch,
+        personalized__fetch=_no_match,
+        rule_only__fetch=_rule_only,
+    )
+
+    assert (outcome.items, outcome.degraded) == ([], None)
 
 
 def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점한다(
