@@ -32,6 +32,7 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
 )
+from app.profile import history_taste
 from app.search import service
 from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
 
@@ -508,9 +509,21 @@ async def _attach_match_scores(
     has_centroid = bool(
         profile_row and not profile_row["cold_start"] and profile_row["centroid"]
     )
+    tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
+    centroid = json.loads(profile_row["centroid"]) if has_centroid else None
+    if centroid is None:
+        # #246 — 저장된 벡터가 없으면 구매·리뷰 이력으로 임시 취향을 만든다. 명세 ⑥ "구매나
+        # 리뷰가 하나라도 있으면 개인화"를 지키려는 것으로 ④와 같은 규칙이다(app/feed/service.py).
+        # 이력으로도 벡터를 못 만들면 지금처럼 취향 없이 채점한다.
+        taste = await history_taste.from_history(conn, user_id)
+        if taste.centroid is not None:
+            centroid, tag_weights, has_centroid = (
+                taste.centroid,
+                taste.tag_weights,
+                True,
+            )
     similarities: dict[int, float] = {}
     if has_centroid:
-        centroid = json.loads(profile_row["centroid"])
         similarities = await _fetch_similarities(conn, book_ids, centroid)
 
     # #222 — semantic이 있으면(이번 요청의 조건) 그 임베딩과 후보 책들의 유사도를
@@ -525,7 +538,6 @@ async def _attach_match_scores(
             query_similarities = await _fetch_similarities(conn, book_ids, query_vector)
 
     fields = {r["book_id"]: r for r in rows}
-    tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
     for c in candidates:
         f = fields.get(c["book_id"])
         category = f["category"] if f else None
