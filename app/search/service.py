@@ -83,7 +83,7 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
 def _exact_title_first(
     exact: set[int], keyword_ids: list[int], vector_ids: list[int]
 ) -> list[int]:
-    """제목이 검색어와 (공백 빼고) 같은 책을 맨 앞에 놓고, 나머지는 두 순위를 합쳐 뒤에 붙인다.
+    """제목이 검색어와 (공백·영문 대소문자 빼고) 같은 책을 맨 앞에 놓고, 나머지는 두 순위를 합쳐 뒤에 붙인다.
 
     RRF 는 등수만 보고 점수의 크기를 버린다. 그래서 두 목록에 다 나온 책이 점수를 두 번 받아,
     제목을 통째로 맞혀 키워드에서만 1등인 책을 넘어선다("명상 하는 마음" 1등 → 8등). 제목이

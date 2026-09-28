@@ -242,6 +242,25 @@ def test_기호_숫자로_친_검색어도_제목_완전_일치로_본다() -> N
 
 
 @needs_db
+def test_영문_제목은_대소문자만_달라도_제목_완전_일치로_본다() -> None:
+    # 대소문자를 가리면 harry potter 로 쳤을 때 『Harry Potter』가 1등이라는 보장이 없다(#210).
+    exact = _run_in_rollback(
+        lambda c: keyword.exact_title_ids(c, [9100005], "zephyrine quillfeather")
+    )
+
+    assert exact == {9100005}
+
+
+@needs_db
+@pytest.mark.parametrize("query", ["즈믄_람", "즈믄%", "%"])
+def test_검색어의_와일드카드_글자는_글자_그대로_견준다(query: str) -> None:
+    # 대소문자를 가리지 않으려고 ILIKE 로 견주므로, _ 와 % 가 아무 글자로 읽히면 안 된다.
+    exact = _run_in_rollback(lambda c: keyword.exact_title_ids(c, [9100001], query))
+
+    assert exact == set()
+
+
+@needs_db
 def test_제목의_일부만_친_검색어는_완전_일치가_아니다() -> None:
     exact = _run_in_rollback(
         lambda c: keyword.exact_title_ids(c, [9100001, 9100006], "퀼렌보르")
