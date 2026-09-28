@@ -166,10 +166,10 @@ flowchart LR
 - **이력·인기는 요청에 없다.**
     1. 서버가 `user_id`로 `v_user_purchases`·`v_user_library`·`v_user_reviews`를, `book_id`로 `v_book_popularity`를 복제 테이블에서 직접 읽는다. 프로필 `computed_at`(= 반영한 이력 행들의 최대 시각) 이후 이력은 이 채점 스텝에서 복제 테이블을 읽어 같은 가중치 표로 더한다. 단 복제 지연(이력 3종 허용 5분) 동안은 방금 산 책이 아직 사본에 없어 카드에 잠깐 다시 뜰 수 있다 — 명세가 수용한 유일한 체감 지연이다.
 - **LLM 장애 강등**: 델타 추출과 이유 생성(호출 1·2)을 건너뛰고 **요청의 spec으로 후보 검색·채점만** 수행해 상위 3권을 낸다.
-    1. `degraded:true`, `reason_short`는 규칙으로, `reason_long`은 `null`. 스트리밍이라 헤더를 못 붙여 본문 `data.degraded`로 알린다.
+    1. `degraded:true`, `reason_short`는 규칙으로, `reason_long`은 `null`. V2 스트리밍 때 헤더를 못 붙이므로 V1부터 본문 `data.degraded`로 알린다.
 - **스트리밍**:
 
-    이벤트 타입은 `delta`·`done`·`error` 셋이지만 **V1은 `done` 하나만 보낸다**(envelope 전체).
+    **V2에서 만든다.** V1은 SSE 없이 JSON envelope 한 번으로 응답한다(AI #236). 이벤트 타입은 `delta`·`done`·`error` 셋이다.
 
     `error`가 따로 있는 이유는 200 헤더가 나간 뒤엔 상태 코드를 못 바꾸기 때문 — 클라이언트는 `error` 이벤트의 `message`를 상태 코드 자리에 쓴다.
 

@@ -10,6 +10,7 @@ updated: 2026-09-28
 
 | 날짜 | 파트 | 결정 | 영향 파트 | 상세 |
 |---|---|---|---|---|
+| 09-28 | AI | ③ 챗봇 스트리밍(SSE)은 V2. V1은 JSON envelope 한 번으로 응답(AI #236) | AI, BE, FE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
 | 09-28 | AI | 취향 벡터가 없어도 구매·리뷰가 있으면 ③④가 이력으로 개인화(AI #246) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 09-28 | AI | ⑥ 읽는 시간대·고르는 기준·기억 type 집계는 V1 미구현(받기만 함, AI #237) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 09-26 | AI | ①②④⑥은 V1에서 429를 내지 않는다(호출 한도 없음) | AI, BE | [모델 API 명세](../ai/1-model-api/spec.md) |

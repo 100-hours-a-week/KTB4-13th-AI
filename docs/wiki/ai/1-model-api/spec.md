@@ -449,7 +449,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| reply | string | 말풍선 1–2문장(이미지 턴은 책 소개). 최대 200자. 스트리밍 시 이 필드만 흘려보냄 |
+| reply | string | 말풍선 1–2문장(이미지 턴은 책 소개). 최대 200자. 스트리밍(V2) 시 이 필드만 흘려보냄 |
 | spec | object | 업데이트된 spec(6개 키). 다음 턴 요청에 그대로 싣는다 |
 | cards | object[] | 추천 카드 최대 3장, 배열 순서가 순위 ¹ |
 | cards[].book_id | int | 도서 ID |
@@ -468,7 +468,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | recognition.recognized | bool | 카탈로그의 책 한 권으로 매칭했는지 |
 | recognition.book_id | int? | 매칭된 도서 ID. 못 하면 null. 나의 도서관 추가 여부는 BE가 이 값으로 판단 |
 | recognition.candidates | object[] | recognized: false일 때 후보 최대 3개, confidence 내림차순 ⁴ |
-| degraded | bool | true면 LLM 장애로 규칙만으로(직전 조건으로 검색만) 만든 응답. 다른 API는 헤더로 알리지만 이 API는 스트리밍 때문에 본문에 넣음 |
+| degraded | bool | true면 LLM 장애로 규칙만으로(직전 조건으로 검색만) 만든 응답. 다른 API는 헤더로 알리지만 이 API는 스트리밍(V2) 때 헤더를 못 붙여 V1부터 본문에 넣음 |
 
 ¹ 한 줄 이유를 못 만든 책은 뺌(긴 이유만 비면 카드는 남고 reason_long이 null). 이미지 턴은 책이 매칭된 경우(recognized: true)에만 채우고 그 외 []
 
@@ -1214,7 +1214,7 @@ flowchart TB
 - **점수 필드**: 사용자에게 보이는 점수는 match_score(0–100)뿐. 인기 집계(판매, 평점, 리뷰 수)는 순위 계산 입력이며 그대로 노출하지 않는다
 - **점수 필드 예외**: 응답에 싣되 사용자에게 노출하지 않는 0–1 값: 취향 추출 confidence, 지시 표현 해석 confidence, 표지 후보 confidence
 - **축소 알림 헤더**: X-Degraded. 축소 응답일 때만 붙는다. keyword-only(검색), rule-only(피드). BE가 FE로 전달. **값은 이 둘뿐이며 복제 지연·행 부재에는 붙이지 않는다**
-- **축소 알림, 본문**: 챗봇 추천은 헤더 대신 본문 data.degraded로 알림. 스트리밍이면 200 헤더가 먼저 나가 헤더를 못 붙이기 때문
+- **축소 알림, 본문**: 챗봇 추천은 헤더 대신 본문 data.degraded로 알림. V2에서 스트리밍하면 200 헤더가 먼저 나가 헤더를 못 붙이기 때문
 - **재시도 헤더**: Retry-After. 429, 503에만
 - **대화 원문**: AI 서버는 저장하지 않고 로그에서도 가림. V1은 세션 안에서만, V2 스레드 보관은 BE 몫. **V2 대화 스레드는 복제 대상이 아니다**
 - **식별자**: book_id, user_id는 커머스의 정수 ID
@@ -1264,7 +1264,9 @@ flowchart TB
 
 ### 스트리밍 전송 (SSE)
 
-챗봇 추천은 `Content-Type: text/event-stream`으로 응답할 수 있다. 이벤트는 셋뿐이다.
+**V2에서 만든다. V1 챗봇 추천은 SSE를 쓰지 않고 다른 API와 같이 `application/json` envelope 한 번으로 응답한다**(AI #236). 아래는 V2 계약이다.
+
+V2의 챗봇 추천은 `Content-Type: text/event-stream`으로 응답할 수 있다. 이벤트는 셋뿐이다.
 
 | 이벤트 | data | 언제 |
 |---|---|---|
@@ -1272,6 +1274,5 @@ flowchart TB
 | done | {message, data} envelope 전체. cards, spec, buttons, degraded 포함 | 정상 종료. 반드시 1회 |
 | error | 오류 envelope 그대로 ({message, data: null}) | 실패 종료 |
 
-- **V1은 `done`만 보낸다.**
 - `error` 이벤트가 따로 있는 이유는 **200 OK 헤더가 나간 뒤에는 상태 코드를 바꿀 수 없기 때문**이다. 상태 코드로 판정하던 클라이언트는 `error` 이벤트의 **`message`** 값을 같은 자리에 쓰면 된다(에러 식별자는 응답 envelope의 `message` 필드 하나로 통일한다. 별도 `code` 필드는 없다).
 - `EventSource`는 끊기면 재연결해 LLM을 다시 부르므로, `fetch` + `ReadableStream`으로 읽는다.
