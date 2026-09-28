@@ -141,3 +141,12 @@ def catalog_scores(
         for category in match.partial:
             scores[category] = scores.get(category, 0) + partial_points
     return scores
+
+
+def filter_categories(name: str) -> tuple[str, ...] | None:
+    """①④ 의 category 필터로 쓸 카탈로그 분류. 온보딩 값이면 핵심 분류만, 대응표에 없으면 None.
+
+    일부 분류는 필터에 넣지 않는다. "에세이"로 걸렀는데 한국문학의 소설이 섞여 나오면 안 된다(#110).
+    """
+    match = ONBOARDING_TO_CATALOG.get(name)
+    return None if match is None else match.core

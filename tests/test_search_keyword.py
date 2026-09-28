@@ -59,7 +59,7 @@ def test_필터가_없으면_조건도_없다() -> None:
 
 
 def test_필터는_값을_자리표시자로_넘긴다() -> None:
-    filters = SearchFilters(category="에세이", price_max=20000, in_stock_only=True)
+    filters = SearchFilters(category="한국문학", price_max=20000, in_stock_only=True)
 
     sql, params = build_where(filters, first_param=5)
 
@@ -68,7 +68,32 @@ def test_필터는_값을_자리표시자로_넘긴다() -> None:
         f" AND b.category = $5 AND {products.price_sql('b')} <= $6"
         f" AND {products.in_stock_sql('b')}"
     )
-    assert params == ["에세이", 20000]
+    assert params == ["한국문학", 20000]
+
+
+def test_온보딩_값은_대응표의_핵심_분류들로_푼다() -> None:
+    # 앱은 온보딩과 같은 값("에세이")으로 거른다. 카탈로그 분류명과 글자가 달라 그대로는 0건이다(#219).
+    sql, params = build_where(SearchFilters(category="에세이"), first_param=5)
+
+    assert sql == " AND b.category = ANY($5::text[])"
+    # 일부 분류(한국문학·문학)는 넣지 않는다. 에세이로 걸렀는데 소설이 섞이면 안 된다(#110).
+    assert params == [["강연집·수필집·연설문집", "에세이"]]
+
+
+def test_분류_하나로_풀리면_같다로_건다() -> None:
+    # ANY 로 걸면 분류 + 신간순 색인을 못 골라 느려진다(#219). 여행 → 지리 하나.
+    assert build_where(SearchFilters(category="여행"), first_param=5) == (
+        " AND b.category = $5",
+        ["지리"],
+    )
+
+
+def test_대응표에_없는_값은_지금처럼_정확히_일치하는_것만_거른다() -> None:
+    # ③ 챗봇은 LLM 이 준 카탈로그 분류명을 그대로 넘길 수 있다.
+    assert build_where(SearchFilters(category="법학"), first_param=5) == (
+        " AND b.category = $5",
+        ["법학"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +112,7 @@ needs_db = pytest.mark.skipif(
 # 실제 카탈로그에 없을 낱말로 책을 만들어, 다른 책이 결과에 끼어들지 않게 한다.
 _BOOKS = [
     (9100001, "즈믄가람", "온새미 지음", 12000, True, "에세이", 2024, None),
-    (9100002, "즈믄가람 이야기 모음", "다른이", 30000, True, "소설", 2010, None),
+    (9100002, "즈믄가람 이야기 모음", "다른이", 30000, True, "한국소설", 2010, None),
     (9100003, "딴 제목", "즈믄가람", 15000, False, "에세이", 2022, None),
     (
         9100004,
@@ -112,12 +137,21 @@ _BOOKS = [
         None,
     ),
     # 띄어 쓴 제목. 검색어를 붙여 쳐도 찾는지 본다. 실제 제목과 겹치지 않게 지어낸 낱말이다.
-    (9100006, "퀼렌보르 사나톡", "아무개", 11000, True, "소설", 2021, None),
+    (9100006, "퀼렌보르 사나톡", "아무개", 11000, True, "한국소설", 2021, None),
     # 전각공백으로 띄어 쓴 제목. 일반 공백만 지우면 붙여 친 검색어와 맞지 않는다.
-    (9100007, "도리안토\u3000미르벨", "아무개", 11000, True, "소설", 2021, None),
+    (9100007, "도리안토\u3000미르벨", "아무개", 11000, True, "한국소설", 2021, None),
     # 모든 낱말이 든 책을 먼저 찾는지 본다. 둘째 책은 세 낱말 중 둘만 들어 있다.
-    (9100008, "벨로누아 헤스티르 카담네르", "아무개", 10000, True, "소설", 2020, None),
-    (9100009, "벨로누아 헤스티르", "아무개", 10000, True, "소설", 2020, None),
+    (
+        9100008,
+        "벨로누아 헤스티르 카담네르",
+        "아무개",
+        10000,
+        True,
+        "한국소설",
+        2020,
+        None,
+    ),
+    (9100009, "벨로누아 헤스티르", "아무개", 10000, True, "한국소설", 2020, None),
 ]
 
 
@@ -250,6 +284,8 @@ def test_제목과_저자를_섞어_쳐도_둘_다_맞는_책이_위다() -> Non
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
+        (SearchFilters(category="한국소설"), [9100002]),
+        # 온보딩 값은 대응표로 풀어 거른다(#219). 한국소설은 "소설"의 핵심 분류다.
         (SearchFilters(category="소설"), [9100002]),
         (SearchFilters(price_min=10000, price_max=20000), [9100001, 9100003]),
         (SearchFilters(pub_year_from=2020), [9100001, 9100003]),
