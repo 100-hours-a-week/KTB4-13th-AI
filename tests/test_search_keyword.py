@@ -375,6 +375,20 @@ def test_후보_상한에_걸려도_제목이_똑같은_책은_맨_위다(
 
 
 @needs_db
+def test_후보_상한에_걸려도_대소문자만_다른_제목은_맨_위다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 낱말로 찾는 후보를 아예 막아, 제목이 똑같은 책을 따로 찾는 쪽만 남긴다.
+    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 0)
+
+    ids = _run_in_rollback(
+        lambda c: keyword.search_ids(c, "zephyrine quillfeather", SearchFilters())
+    )
+
+    assert ids == [9100005]
+
+
+@needs_db
 def test_후보_상한은_필터를_건_뒤에_건다(monkeypatch: pytest.MonkeyPatch) -> None:
     # 필터보다 먼저 자르면 소설이 아닌 책이 한 자리를 먹고 필터에서 빠져 결과가 빈다.
     monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 1)

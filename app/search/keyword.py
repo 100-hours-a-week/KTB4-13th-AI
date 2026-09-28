@@ -143,11 +143,8 @@ def _same_title_as(title: str, query: str) -> str:
 
 
 def _same_title(where: str) -> str:
-    """제목이 검색어($3)와 공백 빼고 똑같은 책. 공백 뺀 제목 색인으로 찾는다."""
-    return (
-        f"SELECT b.book_id FROM v_books b"
-        f" WHERE {_nospace('b.title')} = {_nospace('$3')}{where}"
-    )
+    """제목이 검색어($3)와 똑같은 책(_same_title_as). 공백 뺀 제목 색인으로 찾는다."""
+    return f"SELECT b.book_id FROM v_books b WHERE {_same_title_as('b.title', '$3')}{where}"
 
 
 def lookup_limit(n_tokens: int) -> int:
