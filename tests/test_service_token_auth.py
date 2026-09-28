@@ -49,19 +49,20 @@ def test_토큰이_맞으면_통과한다() -> None:
     assert res.status_code != 401
 
 
-def test_설정에_토큰이_비어있으면_뭘_보내도_401이다(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Authorization": "Bearer "}, {"Authorization": "Bearer anything"}],
+)
+def test_설정에_토큰이_비어있으면_검사하지_않고_통과한다(
+    monkeypatch: pytest.MonkeyPatch, headers: dict
 ) -> None:
+    # 임시로 AI 서버에서 토큰을 비워 두면 검사를 끈다(#261). BE는 헤더를 붙이든 말든 된다.
     monkeypatch.setenv("AI_SERVICE_TOKEN", "")
     get_settings.cache_clear()
 
-    res = client.post(
-        "/search",
-        json={"query": "아무 검색어"},
-        headers={"Authorization": "Bearer "},
-    )
+    res = client.post("/search", json={"query": "아무 검색어"}, headers=headers)
 
-    assert res.status_code == 401
+    assert res.status_code != 401
 
 
 def test_토큰에_비ASCII_문자가_있어도_500이_아니라_401이다() -> None:
