@@ -113,6 +113,13 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 재현, 이슈 #132). exact·filters와 달리 semantic은 문장 하나짜리라 하위 키
 # patch가 안 되고, 반영하려면 지금 문장을 바탕으로 전체를 다시 써야 한다 —
 # 그래서 "언제 semantic을 통째로 다시 쓰는지"를 별도로 못박아둔다.
+#
+# "2만원 이하 아니어도돼"처럼 조건을 없애 달라는 말도 지시문이 없으면 그냥
+# 버려진다(이슈 #239) — patch에 그 키를 안 넣는 것과 "없애라"를 모델이
+# 구분 못 해서, _merge_spec_patch가 "patch에 없으면 기존 값 유지"로 처리해
+# 이전 조건이 안 풀리고 눌러앉는다. 그래서 없애는 의도는 그 키를 JSON null로
+# 명시하라고 따로 가르친다 — null이 명시되면 _merge_spec_patch가 정상적으로
+# 지운다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -129,6 +136,11 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "exact·filters는 바뀌는 하위 키만 넣어라 — 예를 들어 가격 상한만 새로 "
     '말했으면 {{"filters": {{"price_max": 20000}}}}처럼 그 키 하나만 담고, '
     "다른 하위 키는 넣지 마라.\n"
+    "이번 메시지가 어떤 조건을 없애 달라는 뜻이면(예: \"가격 상관없어\", "
+    '"2만원 이하 아니어도돼", "장르 상관없이 다 보여줘") 그 하위 키 값을 '
+    '"JSON null"로 명시해서 넣어라 — 예를 들어 가격 상한을 없애 달라면 '
+    '{{"filters": {{"price_max": null}}}}처럼 그 키를 null로 채워라. 그냥 '
+    "안 넣으면 이전 값이 그대로 남으니, 없애려면 반드시 null을 명시해야 한다.\n"
     "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
     "그대로 유지하니 다시 적을 필요 없다.\n\n"
     "이번 메시지가 제목·저자·가격·장르·재고·제외처럼 구체적인 조건이 아니라 "
@@ -151,7 +163,11 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '"비 오는 날 읽을 책"이고 메시지가 "가벼운 걸로, 1만원 이하로"면 '
     "둘 다 넣어라:\n"
     '{{"semantic": "비 오는 날 읽을 가벼운 책", '
-    '"filters": {{"price_max": 10000}}}}'
+    '"filters": {{"price_max": 10000}}}}\n\n'
+    "조건 제거 예시(형식일 뿐 실제 값 아님) — 지금 filters.price_max가 "
+    '20000이고 메시지가 "2만원 이하 아니어도돼"면, 키를 빼지 말고 null로 '
+    "명시해라:\n"
+    '{{"filters": {{"price_max": null}}}}'
 )
 
 
