@@ -43,7 +43,10 @@
 
 ## 풀스택
 
-(변환 후 추가)
+- [FS-1 테이블 명세](fs/1-table-spec/spec.md)
+- [FS-2 API 명세](fs/2-api/spec.md)
+- [FS-3 기술 스택 정의](fs/3-tech-stack/design.md)
+- [FS-4 비즈니스 정책](fs/4-business-policy/spec.md)
 
 ## 기획
 
