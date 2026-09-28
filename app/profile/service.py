@@ -49,10 +49,10 @@ ON CONFLICT (user_id) DO UPDATE SET
 """
 
 
-async def _book_vectors(
+async def book_vectors(
     conn: asyncpg.Connection, book_ids: list[int]
 ) -> dict[int, list[float]]:
-    """책 벡터. 소개글이 없어 벡터가 없는 책은 빠진다."""
+    """책 벡터. 소개글이 없어 벡터가 없는 책은 빠진다. 이력으로 만드는 임시 취향(#246)도 쓴다."""
     if not book_ids:
         return {}
     rows = await conn.fetch(_EMBEDDINGS_SQL, book_ids)
@@ -100,7 +100,7 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     # 같은 책을 두 번 적어 보내도 한 번만 친다.
     liked = list(dict.fromkeys(req.used_liked_book_ids()))
     weights = compute.book_weights(liked, hist.weights, hist.disliked_book_ids)
-    vectors = await _book_vectors(conn, list(weights))
+    vectors = await book_vectors(conn, list(weights))
 
     parts = [(vectors[b], w) for b, w in weights.items() if b in vectors]
     parts += [(m.vector, compute.MEMORY_WEIGHT) for m in req.used_memories()]

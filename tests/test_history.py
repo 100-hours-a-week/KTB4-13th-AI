@@ -182,6 +182,39 @@ def test_세_테이블을_user_id로_읽어_모은다() -> None:
 
 
 @needs_db
+def test_until을_주면_그_시각까지의_이력만_읽는다() -> None:
+    async def _go() -> history.History:
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(
+                "INSERT INTO v_books (book_id, title, author, publisher, price, in_stock,"
+                " cover_url, category, pub_year, description)"
+                " VALUES (9100101, '책1', '저자', '출판사', 10000, true, NULL, '에세이',"
+                " 2024, NULL)"
+            )
+            await conn.execute(
+                "INSERT INTO v_user_library VALUES ($1, 9100101, $2)", _USER, _T0
+            )
+            # until 뒤의 구매는 빠진다
+            await conn.execute(
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)",
+                _USER,
+                _T0 + timedelta(days=2),
+            )
+            return await history.read(conn, _USER, _T0 + timedelta(days=1))
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    h = asyncio.run(_go())
+
+    assert h.weights == {9100101: 1}
+    assert h.computed_at == _T0
+
+
+@needs_db
 def test_프로필_이후_이력이_바꾼_카테고리_점수만_낸다() -> None:
     # 1일 구매 · 2일 담기 · 3일 같은 책에 좋은 리뷰. 프로필이 1일까지 반영했다(computed_at).
     async def _go():
