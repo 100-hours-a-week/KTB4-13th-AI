@@ -17,6 +17,7 @@ from app.core import db, history
 from app.feed import cold_start, cursor, personalized, rule_only
 from app.feed.schemas import FeedRequest
 from app.profile import history_taste
+from app.search import vector
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +125,17 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await personalized.fetch(
                 conn, req, page, profile.centroid, tag_weights
             )
+            # 모델을 바꾸며 책 벡터를 다시 채우는 동안에는 에러 없이 0건이 온다. 필터로 0건인
+            # 것과 가르려고, 0건일 때만 책 벡터가 있는지 본다(① 검색의 초기 적재와 같은 판단).
+            vectors_ok = bool(items) or await vector.has_any(conn)
+            if not vectors_ok:
+                logger.warning("책 벡터가 한 권도 없다. 규칙 점수만으로 응답한다")
         except Exception:
             # 벡터 조회가 어떤 이유로 안 되든 할 일은 같다 — 유사도를 빼고 규칙 점수만으로
             # 답하고 헤더로 알린다(명세 ④). 좁게 잡으면 빠지는 게 생긴다(① 과 같은 판단).
             logger.exception("취향 벡터 조회 실패. 규칙 점수만으로 응답한다")
+            vectors_ok = False
+        if not vectors_ok:
             cursor.check_mode(page, RULE_ONLY)
             items, has_more = await rule_only.fetch(conn, req, page, tag_weights)
             return _outcome(
