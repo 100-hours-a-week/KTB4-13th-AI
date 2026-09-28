@@ -50,6 +50,23 @@ def test_문장부호는_낱말_수_한도를_먹지_않는다() -> None:
     assert keyword.tokenize("- " + " ".join(words)) == words
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # 기호 숫자는 pg_trgm 이 글자 조각을 만들지 않아 보통 글자로 바꾼다(#200).
+        ("해리포터 ②", ["해리포터", "2"]),
+        ("삼국지 Ⅱ", ["삼국지", "ii"]),
+        ("수학 x²", ["수학", "x2"]),
+        # 전각 영숫자도 보통 글자가 된다.
+        ("ＡＢＣ 영어", ["abc", "영어"]),
+    ],
+)
+def test_기호_숫자와_전각_글자는_보통_글자로_바꾼다(
+    query: str, expected: list[str]
+) -> None:
+    assert keyword.tokenize(query) == expected
+
+
 def test_낱말_속_와일드카드_글자를_막는다() -> None:
     assert keyword.like_pattern("100%_") == "%100\\%\\_%"
 
@@ -157,6 +174,8 @@ _BOOKS = [
         None,
     ),
     (9100009, "벨로누아 헤스티르", "아무개", 10000, True, "한국소설", 2020, None),
+    # 권수를 보통 숫자로 적은 제목. 검색어를 ②·Ⅱ 같은 기호로 쳐도 찾는지 본다(#200).
+    (9100010, "리벨타온 2", "아무개", 10000, True, "한국소설", 2020, None),
 ]
 
 
@@ -201,6 +220,25 @@ def test_제목이_검색어와_같은_책을_골라낸다() -> None:
     )
 
     assert exact == {9100006}
+
+
+@needs_db
+@pytest.mark.parametrize("query", ["리벨타온 ②", "리벨타온 ²"])
+def test_권수를_기호_숫자로_쳐도_찾는다(query: str) -> None:
+    # 기호를 그대로 두면 그 낱말이 0점이라 평균 적중률이 0.5 가 돼 결과가 통째로 빈다(#200).
+    # "2" 는 흔한 낱말이라 실제 카탈로그 책이 뒤에 붙을 수 있어 맨 위만 본다.
+    ids = _run_in_rollback(lambda c: keyword.search_ids(c, query, SearchFilters()))
+
+    assert ids[0] == 9100010
+
+
+@needs_db
+def test_기호_숫자로_친_검색어도_제목_완전_일치로_본다() -> None:
+    exact = _run_in_rollback(
+        lambda c: keyword.exact_title_ids(c, [9100010], "리벨타온 ②")
+    )
+
+    assert exact == {9100010}
 
 
 @needs_db

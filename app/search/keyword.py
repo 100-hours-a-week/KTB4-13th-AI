@@ -4,6 +4,8 @@
 검색어를 띄어쓰기로 나눈 뒤, 낱말마다 제목·저자·소개글 중 가장 잘 맞는 곳의 점수를 준다.
 """
 
+import unicodedata
+
 import asyncpg
 
 from app.search.filters import build_where
@@ -203,14 +205,25 @@ async def _run(conn: asyncpg.Connection, sql: str, args: list) -> list[asyncpg.R
         return await conn.fetch(sql, *args)
 
 
+def normalize_query(query: str) -> str:
+    """검색어를 NFKC 로 바꾼다. ②·²·Ⅱ 같은 기호 숫자가 보통 글자(2, 2, II)가 된다(#200).
+
+    pg_trgm 은 이런 기호로 글자 조각을 만들지 않는다(`show_trgm('②')` 는 빈 결과). 그대로 두면 그
+    낱말은 어떤 제목과도 맞지 않아 평균 적중률을 깎고, 낱말이 둘이면 결과가 통째로 빈다
+    ("해리포터 ②" → 0권). 전각 영숫자(ＡＢＣ)도 같이 보통 글자가 된다.
+    """
+    return unicodedata.normalize("NFKC", query)
+
+
 def tokenize(query: str) -> list[str]:
     """띄어쓰기로 나누고, 같은 낱말은 한 번만, 앞에서부터 MAX_TOKENS 개까지.
 
     글자나 숫자가 하나도 없는 조각(`-`, `·`)은 뺀다. 글자 조각 색인은 글자·숫자로만 조각을
     만들어서, 이런 낱말이 끼면 그 낱말은 색인을 못 타고 표 전체를 훑는다(#147).
+    검색어는 먼저 NFKC 로 바꾼다(normalize_query).
     """
     seen: dict[str, None] = {}
-    for token in query.split():
+    for token in normalize_query(query).split():
         if any(ch.isalnum() for ch in token):
             seen.setdefault(token.lower(), None)
     return list(seen)[:MAX_TOKENS]
@@ -240,7 +253,7 @@ async def exact_title_ids(
     """
     if not book_ids:
         return set()
-    rows = await conn.fetch(_EXACT_TITLE_SQL, book_ids, query)
+    rows = await conn.fetch(_EXACT_TITLE_SQL, book_ids, normalize_query(query))
     return {r["book_id"] for r in rows}
 
 
@@ -251,6 +264,8 @@ async def search_ids(
     limit: int = CANDIDATE_LIMIT,
 ) -> list[int]:
     """잘 맞는 순서대로 book_id 를 돌려준다."""
+    # 낱말뿐 아니라 제목 전체와 견주는 값($3)도 같은 모양이어야 한다(#200).
+    query = normalize_query(query)
     tokens = tokenize(query)
     if not tokens:
         return []
