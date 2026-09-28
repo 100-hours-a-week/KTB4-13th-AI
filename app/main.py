@@ -136,8 +136,9 @@ async def health():
     }
 
     # database 가 죽으면 조회 경로가 통째로 불가능해 트래픽에서 빼야 한다.
-    # embedding 이 없으면 ① 은 키워드 전용(X-Degraded: keyword-only)으로,
-    # ④ 는 규칙 점수만으로 강등해 계속 응답하므로 down 이 아니라 degraded 다.
+    # embedding 이 없으면 ① 은 키워드 전용(X-Degraded: keyword-only)으로 계속 응답하므로
+    # down 이 아니라 degraded 다. ④ 는 임베딩 모델을 쓰지 않는다 — 책 벡터 조회가 안 될 때
+    # 규칙 점수만으로(X-Degraded: rule-only) 답한다.
     # llm 이 죽어도 ③이 degraded 200으로 흡수해 응답은 계속되므로 마찬가지로
     # down 이 아니라 degraded 다.
     if components["database"] != "ok":
