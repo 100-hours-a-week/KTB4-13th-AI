@@ -15,8 +15,10 @@ import os
 import asyncpg
 import pytest
 
+from app.chat.schemas import Spec, SpecExact
 from app.core.pgvector import to_vector_literal
 from app.routers import chat
+from app.search.schemas import SearchFilters
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
 
@@ -74,6 +76,22 @@ def _candidates(*book_ids: int) -> list[dict]:
     return [{"book_id": book_id} for book_id in book_ids]
 
 
+def _spec(semantic: str | None = None) -> Spec:
+    """semantic이 없으면(기본값) 옛 식(취향+카테고리+인기)으로 폴백하는 spec.
+
+    기존 테스트 대부분은 이 폴백 경로를 그대로 본다 — #222 이전과 같은 계산이라
+    기존 기대값이 안 바뀐다.
+    """
+    return Spec(
+        intent="semantic" if semantic else "exact",
+        exact=SpecExact(title=None, author=None, publisher=None),
+        filters=SearchFilters(),
+        semantic=semantic,
+        anchor_book=None,
+        exclude=[],
+    )
+
+
 def test_취향_프로필의_카테고리_점수를_반영한다() -> None:
     async def check(conn):
         await _insert_book(conn, 9100901, _LIKED)
@@ -84,7 +102,7 @@ def test_취향_프로필의_카테고리_점수를_반영한다() -> None:
             json.dumps({_LIKED: 4}, ensure_ascii=False),
         )
         candidates = _candidates(9100901)
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
@@ -104,7 +122,7 @@ def test_결이_다른_분류면_카테고리_점수가_안_붙는다() -> None:
             json.dumps({_LIKED: 4}, ensure_ascii=False),
         )
         candidates = _candidates(9100902)
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
@@ -121,7 +139,7 @@ def test_취향_프로필이_없으면_인기_점수만_반영한다() -> None:
         )
         candidates = _candidates(9100903)
         # taste_profile 행을 아예 안 만든다 — 프로필 없는 사용자.
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
@@ -135,7 +153,7 @@ def test_인기_집계가_없는_책은_0점_재료로_본다() -> None:
     async def check(conn):
         await _insert_book(conn, 9100904, None)
         candidates = _candidates(9100904)
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
@@ -146,7 +164,7 @@ def test_인기_집계가_없는_책은_0점_재료로_본다() -> None:
 def test_후보가_없으면_아무_일도_안_한다() -> None:
     async def check(conn):
         candidates: list[dict] = []
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     assert _run(check) == []
@@ -182,7 +200,7 @@ def test_취향_프로필이_있으면_유사도가_점수에_반영된다() -> 
             to_vector_literal(_vector(1.0)),
         )
         candidates = _candidates(9100905, 9100906)
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
@@ -207,8 +225,128 @@ def test_cold_start면_centroid가_있어도_유사도를_안_쓴다() -> None:
             to_vector_literal(_vector(1.0)),
         )
         candidates = _candidates(9100907)
-        await chat._attach_match_scores(conn, candidates, _USER)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
 
     candidates = _run(check)
     assert candidates[0]["match_score"] == 0
+
+
+def test_semantic이_없으면_임베딩_없이_옛_식으로_계산한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#222 — exact 의도라 semantic이 없으면 비교할 조건이 없다. 임베딩을 아예
+
+    안 불러야 한다 — 실패 시 로그만 남기고 넘어가는 방어 코드가 있다고 필요도
+    없는데 매번 부르면 안 된다.
+    """
+
+    def _boom(texts, purpose):
+        raise AssertionError("semantic이 없으면 embedding.embed를 부르면 안 됨")
+
+    async def check(conn):
+        monkeypatch.setattr(chat.embedding, "embed", _boom)
+        await _insert_book(conn, 9100908, _LIKED)
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, tag_weights, cold_start, profile_version)"
+            " VALUES ($1, $2::jsonb, true, 1)",
+            _USER,
+            json.dumps({_LIKED: 4}, ensure_ascii=False),
+        )
+        candidates = _candidates(9100908)
+        await chat._attach_match_scores(conn, candidates, _USER, _spec())
+        return candidates
+
+    candidates = _run(check)
+    # semantic이 없으니 옛 식(취향+카테고리+인기) 그대로 — CATEGORY_WEIGHT(25)만 붙는다.
+    assert candidates[0]["match_score"] == 25
+
+
+def test_semantic이_있으면_질의_유사도가_점수에_반영된다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#222 — 이번 요청 조건(spec.semantic)과 후보 책의 유사도를 메인으로 채점한다.
+
+    취향 프로필이 없는(cold_start) 사용자라 취향 항은 0이고, 카테고리·인기
+    재료도 없앤 채 질의 유사도만으로 점수가 갈리는지 본다.
+    """
+
+    async def _fake_embed(texts, purpose):
+        assert texts == ["비 오는 날 읽을 잔잔한 책"]
+        assert purpose == "query"
+        return [_vector(1.0)], DIM, "test"
+
+    async def check(conn):
+        monkeypatch.setattr(chat.embedding, "embed", _fake_embed)
+        await _insert_book(conn, 9100909, None)
+        await _insert_book(conn, 9100910, None)
+        await _insert_embedding(conn, 9100909, 0.95)  # 질의 벡터와 거의 같음 → 만점
+        await _insert_embedding(conn, 9100910, 0.5)  # SIMILARITY_FLOOR 미만 → 0점
+        candidates = _candidates(9100909, 9100910)
+        await chat._attach_match_scores(
+            conn, candidates, _USER, _spec(semantic="비 오는 날 읽을 잔잔한 책")
+        )
+        return candidates
+
+    candidates = _run(check)
+    # QUERY_SIMILARITY_WEIGHT(0.5)만큼만 붙는다 — 취향(프로필 없음)·카테고리·
+    # 인기 항은 모두 0.
+    assert candidates[0]["match_score"] == 50
+    assert candidates[1]["match_score"] == 0
+
+
+def test_질의_임베딩이_실패하면_옛_식으로_폴백한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#222 — 임베딩 장애로 ③ 전체가 500이 되면 안 된다. 취향 기반 옛 식으로 계속 응답한다."""
+
+    async def _boom(texts, purpose):
+        raise RuntimeError("모델 장애")
+
+    async def check(conn):
+        monkeypatch.setattr(chat.embedding, "embed", _boom)
+        await _insert_book(conn, 9100911, _LIKED)
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, tag_weights, cold_start, profile_version)"
+            " VALUES ($1, $2::jsonb, true, 1)",
+            _USER,
+            json.dumps({_LIKED: 4}, ensure_ascii=False),
+        )
+        candidates = _candidates(9100911)
+        await chat._attach_match_scores(
+            conn, candidates, _USER, _spec(semantic="아무 조건")
+        )
+        return candidates
+
+    candidates = _run(check)
+    assert candidates[0]["match_score"] == 25
+
+
+def test_질의_유사도와_취향_유사도가_함께_있으면_둘_다_반영한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#222 — 취향 프로필이 있는 사용자면 질의 유사도(메인)에 취향 유사도(보정)를 더한다."""
+
+    async def _fake_embed(texts, purpose):
+        return [_vector(1.0)], DIM, "test"
+
+    async def check(conn):
+        monkeypatch.setattr(chat.embedding, "embed", _fake_embed)
+        await _insert_book(conn, 9100912, None)  # 카테고리 없음 → 카테고리 항 0
+        await _insert_embedding(conn, 9100912, 1.0)  # 질의·취향 둘 다와 완전히 같음
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, centroid, tag_weights, cold_start,"
+            " profile_version) VALUES ($1, $2::vector, '{}'::jsonb, false, 1)",
+            _USER,
+            to_vector_literal(_vector(1.0)),
+        )
+        candidates = _candidates(9100912)
+        await chat._attach_match_scores(
+            conn, candidates, _USER, _spec(semantic="아무 조건")
+        )
+        return candidates
+
+    candidates = _run(check)
+    # QUERY_SIMILARITY_WEIGHT(0.5) + TASTE_SIMILARITY_WEIGHT(0.2) = 0.7. 카테고리·
+    # 인기 재료는 없어 0.
+    assert candidates[0]["match_score"] == 70
