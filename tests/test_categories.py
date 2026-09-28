@@ -61,3 +61,9 @@ def test_어린이는_온보딩_값이지만_거르지_않는다() -> None:
     # 어린이책은 여러 분류에 흩어져 있어 분류로 가를 수 없다(#110, #228).
     assert categories.is_onboarding("어린이")
     assert categories.filter_categories("어린이") == ()
+
+
+def test_세부_태그는_BE_보기_49개에서_겹친_하나를_뺀_48개다() -> None:
+    # 여행 에세이가 에세이와 여행 밑에 둘 다 있다. 개수가 바뀌면 BE 보기가 바뀐 것이다(#165).
+    assert len(categories.ONBOARDING_TAGS) == 48
+    assert len(set(categories.ONBOARDING_TAGS)) == 48
