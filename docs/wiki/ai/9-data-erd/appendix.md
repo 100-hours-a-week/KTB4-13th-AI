@@ -50,7 +50,7 @@ erDiagram
 
     BOOK_EMBEDDINGS {
         int book_id PK "AI 소유. v_books FK"
-        vector embedding "차원 N은 5절에서 확정"
+        vector embedding "vector(384)"
         int dim "벡터 길이"
         string model "생성 모델"
     }

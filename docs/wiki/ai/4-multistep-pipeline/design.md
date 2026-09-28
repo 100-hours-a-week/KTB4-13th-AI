@@ -62,21 +62,24 @@ flowchart TB
 | ⑤ /preferences/extractions (V2) | 야간배치: 대화→취향사실 LLM추출→임베딩 |
 | ⑥ /preferences/profile (V1) | 온보딩·기억변경 트리거 · 벡터 가중평균 집계 (LLM·임베딩 재호출 없음) |
 | taste_profile | centroid + tag_weights + computed_at · 개인화 단일 소스 |
-| ① /search (V1) | BM25/pg_trgm + 벡터 + RRF + 규칙 · 0건 → fallback 배너 |
+| ① /search (V1) | 키워드(pg_trgm) + 벡터 + 제목 완전 일치 우선 + RRF · 0건 → fallback 배너 |
 | ④ /recommendations/feed (V1) | 규칙신호 + centroid 유사도 가중합 · 목록 비저장, 커서만 |
 | ③ /recommendations/chat | V1 텍스트 / V2 이미지 · LLM = spec 델타 + 10 후보 중 3권 선택 + 이유 2종(short+long) · 후보 풀·점수는 결정론 / 최종 3권·순위는 LLM |
 | ⑦ /agent/act (V2) | 지시어해소 → 의도분류 → tool루프(≤3) → grounding |
 | 도서 상세 페이지 | BE가 보관한 긴 이유 그대로 표시 · (AI 재호출 없음) |
 | BE 커머스 | (V1엔 없는 유일한 역방향 호출. · DB 복제는 BE→AI 단방향뿐) |
 
+
+> **키워드 검색은 `pg_trgm`(글자 조각)으로 한다.** 형태소 분석(Kiwi·Mecab-ko) + BM25와 261만 권에서 비교해 속도·품질 모두 나아, V1은 형태소 분석을 쓰지 않는다(AI 100-hours-a-week/KTB4-13th-AI#120). 쓰지 않던 `tsvector` 색인은 지웠다(100-hours-a-week/KTB4-13th-AI#169).
+
 ## 파이프라인 A — 검색 (`POST /search`, V1, LLM 없음)
 
 ```mermaid
 flowchart LR
-    A[질의 + 화면 필터·정렬] --> B[BM25/pg_trgm 키워드 검색]
+    A[질의 + 화면 필터·정렬] --> B[키워드 검색 · pg_trgm]
     A --> C["② /embeddings 호출"]
     C --> D[pgvector ANN 검색]
-    B --> E[RRF 결합]
+    B --> E[제목 일치 우선 + RRF 결합]
     D --> E
     E --> F["규칙 스코어링"]
     F --> G{0건?}
@@ -86,7 +89,9 @@ flowchart LR
 
 | 노드 | 설명 |
 |---|---|
+| 키워드 검색 · pg_trgm | 제목·저자에서 모든 낱말이 든 책을 먼저 찾고, 10권이 안 되면 낱말마다 넓히며(합계 1,000권을 낱말 수로 나눔), 제목이 검색어와 같은 책은 늘 넣는다(소개글은 점수에만 씀, AI #120·#199) |
 | ② /embeddings 호출 | multilingual-e5-small, purpose:query |
+| 제목 일치 우선 + RRF 결합 | 제목이 검색어와 공백 빼고 같은 책을 맨 앞에 두고, 나머지는 키워드 3 : 벡터 1 가중 RRF로 합친다(AI #119) |
 | 규칙 스코어링 | sort=popular면 v_book_popularity 반영 |
 | results: [], fallback 배너 신호 | 'AI 추천에게 물어볼까요?' |
 
@@ -94,8 +99,8 @@ flowchart LR
 - **개인화하지 않는다.**
 - **0건은 에러가 아니라 200 + 배너 신호**다.
 - **강등**
-    - 벡터 검색 불가(임베딩 업스트림 장애·벡터 인덱스 이상·초기 적재 중) 시 `X-Degraded: keyword-only`로 키워드 결과만 200.
-    - 키워드·벡터가 둘 다 안 되면(AI Postgres 장애 등) 500. **BE MySQL 장애는 500이 아니다** — 낡은 복제본으로 계속 응답.
+    - 검색어 임베딩이나 벡터 조회가 실패하거나 책 벡터가 한 권도 없으면 `X-Degraded: keyword-only`로 키워드 결과만 200.
+    - 키워드 검색이 실패하면(AI Postgres 장애 등) 500. **BE MySQL 장애는 500이 아니다** — 낡은 복제본으로 계속 응답.
 - **`v_book_popularity`에 행이 없으면** 인기 항을 0으로 두고 200.
     - 복제 지연·행 부재는 `X-Degraded`를 붙이지 않는다.
     - AI Postgres 자체가 응답 불능이면 전면 500.
@@ -121,7 +126,7 @@ flowchart TD
 |---|---|
 | 요청 spec 6키 스키마 검증 (LLM 호출 전) | 위반 시 422 spec_schema_violation · → 호출자가 초기 spec으로 1회 재시도 |
 | LLM 호출 1: spec 델타 추출 | 6키 고정 스키마 |
-| 하이브리드 후보 10권 | (①과 같은 BM25+벡터+RRF 재사용, · spec.semantic/filters 적용) |
+| 하이브리드 후보 10권 | (①과 같은 키워드+벡터+RRF 재사용, · spec.semantic/filters 적용) |
 | 결합 스코어링 | 질의 유사도 + 취향 유사도 · (centroid + computed_at 이후 이력 가산) |
 | 고른 순서 = rank · match_score는 후보 점수 그대로(rank 순 ≠ 내림차순) | reason_short 못 만든 카드는 뺌 (3장 미만 가능) · reason_long만 비면 카드 남기고 reason_long:null |
 
@@ -394,7 +399,7 @@ v3.1까지 독립 파이프라인이던 **'추천 이유 상세'(`/books/{bookId
 |---|---|---|---|
 | 텍스트 임베딩 | `multilingual-e5-small`(dim 384) | API 계약으로 고정. | 인덱스·프로필·기억 벡터가 전부 호환 |
 | (별도 트랙) e5-small | 벤치 결과 기준 후보 | 추론 최적화 실험에서 하이브리드 recall·지연·비용 우위 확인 | 계약과 분리된 트랙. |
-| 검색 결합 | RRF | 스케일 다른 두 랭킹(BM25·벡터)을 정규화 없이 합치는 표준 기법 | ① 검색과 ③ 후보검색이 같은 로직 재사용 |
+| 검색 결합 | RRF | 스케일 다른 두 랭킹(키워드·벡터)을 정규화 없이 합치는 표준 기법. 제목이 검색어와 완전히 같은 책은 합치기 전에 맨 앞으로 뺀다(AI 저장소 #119) | ① 검색과 ③ 후보검색이 같은 로직 재사용 |
 | 벡터 저장소 | AI 전용 PostgreSQL + pgvector (HNSW) | BE가 MySQL이라 DB 공유 불가(구 "Postgres 공유" 안 무효). 도서 임베딩·취향 프로필·멱등 기록을 한 Postgres에 둠 → 전용 벡터DB 불필요 | AI 쪽 데이터스토어 1개. 대신 BE→AI 단방향 복제 파이프라인이 필요 |
 | 커머스 데이터 접근 | BE MySQL → AI Postgres **단방향 복제된 실제 테이블** AI엔 BE MySQL 연결 없음 | 요청 본문으로 실어 나르기엔 크고, 원본은 어차피 BE가 소유. 컬럼 집합·허용 지연·스키마 변경 통보를 계약면으로 두면 BE 내부 스키마 변경과 무관 | 이력·인기 값의 단일 출처 → 검색 인기순 = 추천 인기 항 ¹ |
 | 대화·이유 생성 LLM | 소형 텍스트 LLM, 상용 API 우선 | 스트리밍 필요(③), 초기 구축비용 낮음. 호출 지점이 코드에 2곳(③ 델타·③ 이유)뿐이라 교체 용이 | 빠른 출시. 트래픽 증가 시 자체 서빙 손익분기 재평가 (단계 6) |
@@ -435,10 +440,10 @@ v3.1까지 독립 파이프라인이던 **'추천 이유 상세'(`/books/{bookId
 
 ```python
 def hybrid_candidates(text_query: str, filters: dict, size: int) -> list[Book]:
-    kw_hits = bm25_search(text_query, filters)
+    kw_hits = keyword_search(text_query, filters)  # pg_trgm. 모든 낱말이 든 책 먼저, 제목이 같은 책은 늘 넣음
     query_vec = call_embeddings_api([text_query], purpose="query")[0]  # multilingual-e5-small
     vec_hits = pgvector_search(query_vec, filters)
-    return reciprocal_rank_fusion(kw_hits, vec_hits, k=60)[:size]
+    return title_first(text_query, reciprocal_rank_fusion(kw_hits, vec_hits, k=60, weights=(3, 1)))[:size]
 
 def search(query: str, filters: dict, cursor: str | None, size: int = 15) -> SearchResponse:
     fused = hybrid_candidates(query, filters, size)
@@ -543,7 +548,7 @@ def rebuild_profile(user_id: int, idempotency_key: str, onboarding: dict, memori
 
 - **검색·홈 피드**
     - **(①④)**: LLM 없이 설계된 것 자체가 "장애 격리"라는 명확한 서비스 요구를 충족한다 — LLM이 죽어도 책을 찾고 살 수 있어야 한다는 원칙이 명세에 그대로 적혀 있다.
-    - 멀티스텝(BM25+벡터+RRF, 규칙+centroid 가중합)은 필수이되,
+    - 멀티스텝(키워드+벡터+RRF, 규칙+centroid 가중합)은 필수이되,
     - **LLM 단계는 의도적으로 배제**한 것이 이 파이프라인의 핵심 설계 결정.
 - **대화 추천**
     - **(③)**: 멀티스텝 필수 — "LLM이 검색하고 순위를 매긴다"가 아니라 "결정론적 검색·스코어링이 후보 10권과 점수를 만들고, LLM은 그중 3권과 순서만 고른 뒤 이유를 붙인다"는 역할 분리가 실제 이점.

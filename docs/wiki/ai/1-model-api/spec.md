@@ -73,7 +73,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 - **tool**: AI가 백엔드에 요청하는 기능 단위(장바구니 담기 등). V2 쇼핑 에이전트 전용
 - **복제 테이블**: BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본. 도서 카탈로그, 구매, 나의 도서관, 리뷰, 인기 집계. 원본의 주인은 BE이고 AI는 자기 사본을 읽기만 한다. 이름의 `v_` 접두사는 표기일 뿐 view가 아니다
 - **복제 지연(lag)**: BE 원본의 변경이 AI 복제본에 도착하기까지의 시간. 지연 중에는 아직 도착하지 않은 행이 있을 수 있다. 오류가 아니고 축소 응답도 아니다
-- **신선도 예산**: 복제본이 원본보다 얼마나 늦어도 되는지 테이블마다 정한 값. ERD §3에 전체 목록이 있다
+- **신선도 예산**: 복제본이 원본보다 얼마나 늦어도 되는지 테이블마다 정한 값. ERD §2에 전체 목록이 있다
 - **이력**: 한 사용자의 구매, 나의 도서관 담기, 리뷰를 묶어 부르는 말. 피드 규칙 점수의 항 이름이기도 하다
 - **인기**: 도서 단위 집계값. MVP는 최근 판매 수 단일 기준이다(BE #68 합의). 리뷰 반영 공식은 BE가 복제 칼럼으로 주면 그때 반영한다. v_book_popularity 하나에서만 읽는다
 
@@ -106,7 +106,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 |---|---|---|---|
 | query | string | Y | 검색어. 1–200자 |
 | filters | object | N | 조회 조건. 이 값만 적용하고 검색어에서 조건을 추출하지 않는다 |
-| filters.category | string | N | 카테고리명 |
+| filters.category | string | N | 온보딩 관심 분류(소설, 에세이 등 13개). 대응표의 핵심 카탈로그 분류들로 거른다. 그 밖의 값은 400 |
 | filters.price_min, .price_max | int | N | 판매가 구간(원) |
 | filters.pub_year_from, .pub_year_to | int | N | 출간연도 구간 |
 | filters.in_stock_only | bool | N | 품절 도서 제외 |
@@ -158,8 +158,8 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 | results[].book_id | int | 도서 ID |
 | results[].title | string | 제목 |
 | results[].author, .publisher | string? | 저자, 출판사. 카탈로그에 값이 없는 도서는 null |
-| results[].price | int | 판매가(원). 할인 적용 후 |
-| results[].in_stock | bool | 재고 여부 |
+| results[].price | int? | 판매가(원). 할인 적용 후. 상품이 없는 도서는 null |
+| results[].in_stock | bool | 재고 여부. 상품이 없는 도서는 false |
 | results[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | next_cursor | string? | 다음 페이지 커서. 마지막이면 null. 다음 요청의 cursor에 그대로 싣는다 |
 | fallback | object? | 결과가 0건일 때만 값이 있고 그 외 null |
@@ -169,14 +169,15 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | 형식, 길이, 범위 위반(query 1–200자, size 최대 50 등) |
+| 400 | invalid_request | 형식, 길이, 범위 위반(query 1–200자, size 최대 50, category가 온보딩 값이 아님 등) |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 410 | cursor_expired | 커서가 만료됐거나, 검색어, 필터, 정렬, 축소 모드가 커서 발급 시점과 다름. 첫 페이지부터 다시 요청 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
+| 413 | payload_too_large | 요청 본문이 64KB 초과 |
+| 429 | rate_limited | V1은 내지 않는다(호출 한도를 두지 않음) |
 | 500 | internal_server_error | 서버 내부 오류 ¹ |
 | 200 | search_success, X-Degraded: keyword-only | 벡터 검색 불가 ² |
 
-¹ 키워드, 벡터 검색이 둘 다 안 될 때(AI Postgres 장애 등)도 500. BE MySQL 장애는 해당하지 않는다
+¹ 키워드 검색이 실패하면(AI Postgres 장애 등) 벡터 결과와 상관없이 500. BE MySQL 장애는 해당하지 않는다
 
 ² 키워드 검색 결과만 반환한다. 임베딩 업스트림 장애, 벡터 인덱스 이상, 초기 적재 중일 때 나온다. 복제 지연·행 부재는 해당하지 않는다
 
@@ -191,7 +192,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 벡터 길이는 응답의 `dim`으로 알려준다. 호출자는 이 값이 자신이 쓰는 벡터 인덱스의 차원과 같은지 확인한 뒤 저장해야 한다.
 
-예시의 `dim`과 `model`은 자리표시자다. 확정 차원은 ERD §7을 따른다.
+벡터는 `multilingual-e5-small` 384차원이다(ERD §5).
 
 **초기 적재**
 
@@ -245,7 +246,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 | 400 | invalid_request | texts 개수 위반 등 형식 오류 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 413 | payload_too_large | 요청 본문이 약 4MB 초과 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
+| 429 | rate_limited | V1은 내지 않는다(호출 한도를 두지 않음) |
 | 500 | internal_server_error | 서버 내부 오류 |
 | 503 | upstream_unavailable | 외부 임베딩 업스트림 장애, 한도. Retry-After 뒤 재시도 |
 
@@ -456,7 +457,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | cards[].match_score | int | 매칭 점수 0–100 ² |
 | cards[].title | string | 제목 |
 | cards[].author | string? | 저자. 카탈로그에 값이 없는 도서는 null |
-| cards[].price | int | 판매가(원) |
+| cards[].price | int? | 판매가(원). 상품이 없는 도서는 null |
 | cards[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | cards[].reason_short | string | 한 줄 추천 이유(카드용). 최대 80자. 근거 없는 내용은 넣지 않음 |
 | cards[].reason_long | string? | 긴 추천 이유(도서 상세 페이지용) 2–4문장, 최대 300자 ³ |
@@ -525,7 +526,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | user_id | int | Y | 사용자 ID. 비로그인은 호출 안 함 |
 | surface | enum | Y | 요청 맥락. home은 정렬, 필터를 받지 않고 recommend_more는 받는다 |
 | sort | enum | N | 정렬 기준 ¹ |
-| category | string | N | **필터.** 카테고리명 |
+| category | string | N | **필터.** 온보딩 관심 분류(13개). 대응표의 핵심 카탈로그 분류들로 거른다. 그 밖의 값은 400 |
 | pub_year_from, pub_year_to | int | N | **필터.** 출간연도 구간 |
 | match_score_min | int | N | **필터.** 매칭 점수 하한 0–100. 이 값 미만은 목록에서 제외한다 |
 | size | int | N | 한 페이지 개수. 기본 15, 최대 50 |
@@ -565,7 +566,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | items[].book_id | int | 도서 ID |
 | items[].title | string | 제목 |
 | items[].author | string? | 저자. 카탈로그에 값이 없는 도서는 null |
-| items[].price, .in_stock | int, bool | 판매가(원), 재고 여부 |
+| items[].price, .in_stock | int?, bool | 판매가(원), 재고 여부. 상품이 없는 도서는 null, false |
 | items[].cover_url | string? | 표지 이미지 URL. 없는 도서는 null |
 | items[].match_score | int | 규칙 점수와 취향 유사도의 가중합, 0–100. 정렬과 필터에 쓴다. cold_start가 true면 0 |
 | next_cursor | string? | 다음 페이지 커서. 마지막이면 null |
@@ -581,10 +582,10 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, home에 정렬·필터, size 50 초과 |
+| 400 | invalid_request | 형식 오류, 허용 목록에 없는 쿼리 파라미터, home에 정렬·필터, size 50 초과, category가 온보딩 값이 아님 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 410 | cursor_expired | 커서가 만료됐거나 필터, 정렬, surface, 응답 모드(personalized/cold_start/rule-only)가 발급 때와 다름. 첫 페이지부터 다시 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
+| 429 | rate_limited | V1은 내지 않는다(호출 한도를 두지 않음) |
 | 500 | internal_server_error | 서버 내부 오류. 프로필이 없는 건 오류가 아니라 200 + cold_start: true |
 | 200 | feed_success, X-Degraded: rule-only | 벡터 조회 불가 ¹ |
 
@@ -719,7 +720,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | onboarding | object | Y | 온보딩 응답 전체 ² |
 | onboarding.reading_times | string[] | N | 읽는 시간대. 최대 5개 |
 | onboarding.criteria | string[] | N | 책 고르는 기준. 최대 3개(보기: 좋아하는 출판사 / 베스트셀러 / 리뷰, 별점) |
-| onboarding.categories | string[] | N | 관심 대분류(앱 화면 값). 최대 3개. 검색·피드 필터의 카탈로그 분류(도서관 분류)와는 글자 체계가 달라 대응표로 잇는다 — 대응표에 없는 값은 건너뛴다 |
+| onboarding.categories | string[] | N | 관심 대분류(앱 화면 값). 최대 3개. ①④ 필터의 category와 같은 값이다. 카탈로그 분류와는 대응표로 잇고, 대응표에 없는 값은 건너뛴다 |
 | onboarding.tags | string[] | N | 세부 태그. 최대 9개 |
 | onboarding.liked_book_ids | int[] | N | 마음에 드는 책 ID. 0권 가능, 상한 없음. 서버는 앞 50권만 씀 |
 | memories | object[] | N | 저장된 취향 기억 전체 {type, value, vector, dim} ³ |
@@ -782,7 +783,7 @@ centroid = 가중평균( liked 책 문서벡터
 | 리뷰 1–2점 | v_user_reviews | −2 | 싫다는 신호 ¹ |
 | 리뷰 3점 | v_user_reviews | 0 | 중립. 쓰지 않는다 |
 
-¹ centroid 재료에서는 빼고(가중평균에 넣지 않는다) 카테고리 점수만 깎는다. 그 책 자체는 추천에서 제외한다
+¹ 2.0점 이하. centroid 재료에서는 빼고(가중평균에 넣지 않는다) 그 책 자체는 추천에서 제외한다. 카테고리 점수는 책마다 큰 값 하나라, 산 책이면 구매 점수가 남는다(AI #103)
 
 - 같은 책이 여러 테이블에 있으면(구매한 책에 리뷰까지 쓴 경우) **가장 큰 가중치 하나만** 쓴다. 더하지 않는다.
 - 이력이 하나도 없고 온보딩도 건너뛰었으면 `cold_start: true`다. 구매나 리뷰가 하나라도 있으면 개인화를 켠다.
@@ -796,8 +797,8 @@ centroid = 가중평균( liked 책 문서벡터
 | 400 | invalid_request | 형식 오류, onboarding 누락, 배열 상한 초과(reading_times 5, criteria 3, categories 3, tags 9), memories[].dim 불일치 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 409 | idempotency_conflict | 같은 idempotency_key에 다른 본문. 재시도 중단 |
-| 413 | payload_too_large | 요청 본문이 상한 초과 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
+| 413 | payload_too_large | 요청 본문이 8MB 초과 |
+| 429 | rate_limited | V1은 내지 않는다(호출 한도를 두지 않음) |
 | 500 | internal_server_error | 서버 내부 오류 |
 
 </details>
@@ -1209,7 +1210,7 @@ flowchart TB
 - **캐시**: 목록 응답은 Cache-Control: private, no-store. 개인화 결과이고 서버가 목록을 보관하지 않아 같은 URL이라도 호출마다 본문이 달라진다
 - **인증, V2 역방향**: AI→BE tool 호출도 같은 내부망 안이며 방향 전용 서비스 토큰(BE가 AI에 발급)으로 인증. 사용자 위임 토큰은 따로 쓰지 않음. 누구 장바구니인지는 BE가 tool 인자의 user_id로 다시 확인. 영향 범위가 장바구니 담기, 수정, 조회 수준이고 주문, 결제는 이 시스템 밖이라 이 정도로 둠
 - **상관관계 ID**: 모든 요청에 X-Request-Id 헤더 권장. 없으면 서버가 만들어 응답 헤더로 돌려줌. 로그를 이어 붙이는 키
-- **상한 초과 처리**: 개수 상한 초과는 최근 N개만 쓰고 200(recent_turns 20, conversation 40, liked_book_ids 50, memories 500). 항목 길이, 형식, 값 범위 위반과 size 50 초과는 400. 예외. context_cards(최대 10)는 초과 시 400(앞을 자르면 “N번” 해석이 어긋남)
+- **상한 초과 처리**: 개수 상한 초과는 N개만 쓰고 200(recent_turns 20, conversation 40, memories 500은 최근 것, liked_book_ids 50은 앞의 것). 항목 길이, 형식, 값 범위 위반과 size 50 초과는 400. 예외. context_cards(최대 10)는 초과 시 400(앞을 자르면 “N번” 해석이 어긋남)
 - **점수 필드**: 사용자에게 보이는 점수는 match_score(0–100)뿐. 인기 집계(판매, 평점, 리뷰 수)는 순위 계산 입력이며 그대로 노출하지 않는다
 - **점수 필드 예외**: 응답에 싣되 사용자에게 노출하지 않는 0–1 값: 취향 추출 confidence, 지시 표현 해석 confidence, 표지 후보 confidence
 - **축소 알림 헤더**: X-Degraded. 축소 응답일 때만 붙는다. keyword-only(검색), rule-only(피드). BE가 FE로 전달. **값은 이 둘뿐이며 복제 지연·행 부재에는 붙이지 않는다**
@@ -1220,10 +1221,10 @@ flowchart TB
 - **추천 이유의 보관**: 한 줄 이유와 긴 이유는 ③ 응답에서 한 번에 나오고 AI 서버는 저장하지 않는다. 상세 페이지에 쓸 긴 이유는 BE가 카드와 함께 보관한다. 이유 재생성 엔드포인트는 없다
 - **복제 방향**: DB 복제는 BE MySQL → AI PostgreSQL 한 방향이며 역방향 복제는 없다. AI가 만든 값이 BE에 저장되는 경로는 응답 본문과 tool 호출 둘뿐이고, 어느 쪽도 복제가 아니라 BE가 검증한 뒤 자기 테이블에 쓰는 것이다
 - **커머스 데이터의 주인**: 도서 카탈로그, 구매, 나의 도서관, 리뷰, 인기 집계의 원본 주인은 BE다. AI는 복제받은 사본을 조회만 하고 원본에는 쓰지 않으며, AI 서버에는 BE MySQL로 가는 연결이 없다. 요청 본문으로도 받지 않는다
-- **복제 계약면**: 복제 대상 다섯 테이블과 그 컬럼 집합. 컬럼명·타입·의미 변경과 삭제는 복제를 끊으므로 BE가 사전에 알린다. 대상 목록과 테이블별 허용 지연은 ERD §3에 있다
+- **복제 계약면**: 복제 대상 여섯 테이블과 그 컬럼 집합. 컬럼명·타입·의미 변경과 삭제는 복제를 끊으므로 BE가 사전에 알린다. 대상 목록과 테이블별 허용 지연은 ERD §2에 있다
 - **복제 지연·행 부재·장애**: 지연과 행 부재는 오류가 아니다. 지연이면 낡은 값 그대로 200, 행이 없으면 그 항을 0점으로 두고 200이며 X-Degraded는 붙지 않는다. AI Postgres 장애는 전면 500이고, BE MySQL 장애는 500이 아니라 복제만 멈춘다
 - **카탈로그 조인**: 목록 응답의 book_id는 모두 도서 카탈로그에 있는 것이다. 카탈로그에서 사라진 도서는 조인에서 빠지므로 한 페이지가 size보다 짧을 수 있다. **짧은 페이지는 목록의 끝이 아니며** 끝은 next_cursor: null로만 판정한다
-- **탈퇴 사용자의 취향 프로필**: AI가 소유하는 사용자 데이터는 취향 프로필 하나다. 회원 탈퇴 시 이 행도 지워야 하며, AI는 탈퇴 사실을 스스로 알 수 없어 BE가 알려 줘야 한다. 방법은 미정(ERD §7)
+- **탈퇴 사용자의 취향 프로필**: AI가 소유하는 사용자 데이터는 취향 프로필 하나다. 회원 탈퇴 시 이 행도 지워야 하며, AI는 탈퇴 사실을 스스로 알 수 없어 BE가 알려 줘야 한다. 방법은 미정(ERD §5)
 - **이력 이중 반영 방지**: 프로필 행의 computed_at(내부 값)은 그 프로필이 **반영한 이력 행들의 최대 시각**이다. ③·④는 그보다 나중의 이력만 채점 때 더한다. 계산 시각이 아니라 반영 시각이라 복제가 늦게 도착한 이력도 빠지지 않는다. 반영한 이력이 없으면 이력 전부를 더한다
 - **이미지 입력**: BE가 올리고 Pre-signed URL을 image_ref로 넘김. AI 서버는 이미지를 저장하지 않음
 - **멱등 키(idempotency key)**: /preferences/profile, /agent/act의 idempotency_key는 같은 규약. 같은 키, 같은 본문 = 저장 결과 200, 같은 키, 다른 본문 = 409. 키, 결과 매핑은 최소 24시간 보관
@@ -1255,10 +1256,10 @@ flowchart TB
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | 입력 형식, 길이, 범위 위반 |
+| 400 | invalid_request | 입력 형식, 길이, 범위 위반(정수는 int32 범위, 문자열에 NUL·깨진 문자 불가) |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치(/health 제외) |
 | 413 | payload_too_large | 요청 본문이 엔드포인트별 상한을 초과 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
+| 429 | rate_limited | V1은 내지 않는다(호출 한도를 두지 않음) |
 | 500 | internal_server_error | 서버 내부 오류 |
 
 ### 스트리밍 전송 (SSE)

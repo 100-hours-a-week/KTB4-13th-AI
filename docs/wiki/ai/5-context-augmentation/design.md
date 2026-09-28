@@ -60,7 +60,7 @@ flowchart TB
 | 노드 | 설명 |
 |---|---|
 | ② POST /embeddings | multilingual-e5-small · dim 384 · 모든 축의 공통 좌표계 (도서·passage·centroid·preset) |
-| ① POST /search | BM25(pg_trgm/tsvector) + pgvector + RRF · 결과 0건 → ③ 전환 신호 |
+| ① POST /search | 키워드(V1은 pg_trgm) + pgvector + RRF · 결과 0건 → ③ 전환 신호 |
 | ④ GET /recommendations/feed | 취향 centroid 유사도 + 규칙 점수 · ※ passage 증강 없음 · 이유 문구 없음 (즉시성) |
 | ③ spec 델타 추출 | preset_vectors 얕은 RAG · 자유어 → 표준 태그 (422 감소) |
 | ③ 근거 생성 (카드 3장 확정 후에만) | book_passage top-k 증강 · → reason_short·reason_long·match_basis 한 호출 · → 문장별 인용 검증 (grounding) |
@@ -119,7 +119,7 @@ flowchart TD
 | BE MySQL | 커머스 원본 |
 | AI Postgres 안 복제본 | v_books · v_user_* · v_book_popularity |
 | 서버 병합 spec (6키) | 위반 시 422 |
-| 하이브리드 후보 검색 | BM25(pg_trgm/tsvector) + pgvector + RRF  (①과 동일 로직, 전부 같은 Postgres) |
+| 하이브리드 후보 검색 | 키워드(V1은 pg_trgm) + pgvector + RRF  (①과 동일 로직, 전부 같은 Postgres) |
 | 결합 스코어링 | 질의 유사도 + 취향 centroid 유사도(⑥) + 인기(v_book_popularity) |
 | 증강 검색 | 각 book_id + spec.semantic · → book_passage top-k (소개·목차, +리뷰뷰 있으면) |
 | LLM (같은 한 호출): reason_short + reason_long + match_basis | 문장별 cited_passage_ids 출력 |
@@ -197,7 +197,7 @@ flowchart TD
 
 | 재료 | 선택 이유 | 위험 / 처리 |
 |---|---|---|
-| **기존 도서 DB의 제목·저자 텍스트 인덱스** (`v_books`, BM25/pg_trgm) | "사진으로 책 찾기"의 대부분은 제목이 읽히는 사진 텍스트 검색으로 해결된다. 이미 있는 인덱스를 그대로 검색 대상으로 씀 | 동명이서 저자·출판사로 좁힘, 그래도 애매하면 candidates 3개 |
+| **기존 도서 DB의 제목·저자 텍스트 인덱스** (`v_books`, pg_trgm) | "사진으로 책 찾기"의 대부분은 제목이 읽히는 사진 텍스트 검색으로 해결된다. 이미 있는 인덱스를 그대로 검색 대상으로 씀 | 동명이서 저자·출판사로 좁힘, 그래도 애매하면 candidates 3개 |
 | OCR (표지 텍스트) | 1차 신호. 가볍고 대부분 케이스를 커버 | 스타일 글꼴·각도·부분 가림 시 실패 → VLM 폴백 |
 | VLM (표지 판독 폴백) | OCR 실패분만. 제목/저자/시리즈 단서를 **구조화 텍스트로 추출**하는 용도 (책 이름을 "답"하게 하지 않음) | 자유 응답 시 카탈로그 밖 환각 → 최종 매칭은 DB 검색이 결정, VLM은 검색어만 생성 |
 | (향후) 국중도 표지 이미지 URL | 이미지 임베딩 인덱스 확장 시 색인 소스. **국중도 서지에 URL 존재 확인됨** | V2+ 옵션. |
@@ -245,7 +245,7 @@ def index_passages(book_id: int, seoji: dict, reviews: list[Review] | None):
     `purpose` 는 명세 enum(`query`/`document`)만 있으므로 passage도 `document` 로 색인.
 
 - **저장소**: `book_passage` 는 **AI PostgreSQL**에 `book_embeddings` 와 나란히.
-    `vector(384)` 컬럼 + HNSW 인덱스. BM25용 `tsvector`/`pg_trgm` 도 같은 테이블/DB.
+    `vector(384)` 컬럼 + HNSW 인덱스. 키워드 검색용 `pg_trgm` 도 같은 테이블/DB(V1 기준).
 
 - **규모**: passage 수 ≈ 도서 수 × 8~15 → 5만 종이면 40~75만 행.
     E2 실측(전수 스캔 N=20만 p95 7.5ms) 근거로 ANN이면 여유.
@@ -361,7 +361,7 @@ LLM 프롬프트에 `"후보 표준 태그: [에세이, 위로]"` 를 힌트로 
 
 ### 4-B. Visual RAG — 표지 인식 (V2)
 
-**새 인덱스 없음.** 검색 대상은 이미 있는 `v_books` 의 제목·저자 텍스트 인덱스(BM25 + pg_trgm).
+**새 인덱스 없음.** 검색 대상은 이미 있는 `v_books` 의 제목·저자 텍스트 인덱스(pg_trgm).
 
 명세상 표지 인식 결과는 `recognition{recognized, book_id, candidates[]}` 이고 `candidates[]` 는 `confidence` 내림차순 최대 3개
 
@@ -434,13 +434,13 @@ VLM 폴백 프롬프트 (입력 포맷) — **"무슨 책인지" 를 묻지 않�
 | 대상 | 트리거 | 방식 |
 |---|---|---|
 | passage 재색인 | 국중도 소개문 개정 (`source_updated_at` 변화) · (리뷰 뷰(데이터) 확보 시) 리뷰 CRUD | 해당 book_id만 재청크·재임베딩 |
-| 임베딩 전량 재계산 | 임베딩 모델 교체 (e5-small 트랙 채택 시) | `model`+`dim` 동시 변경 → **shadow 인덱스** 빌드 후 원자 스위치(무중단). AI PostgreSQL의 `book_embeddings`·`book_passage`·`taste_profile`(centroid) 전부 대상 |
+| 임베딩 전량 재계산 | 임베딩 모델 교체 (e5-small 트랙 채택 시) | `model`+`dim` 동시 변경 → **shadow 인덱스** 빌드 후 원자 스위치(무중단, V1 미구현). AI PostgreSQL의 `book_embeddings`·`book_passage`·`taste_profile`(centroid) 전부 대상 |
 | `preset_vectors` | 태그·카테고리 택소노미 개정 | 재생성 → ⑥ 프로필 다음 트리거 때 반영 |
 | 캐시 무효화 | — | **해당 없음** 명세에서 `reason_cache`/`reason_ref` 삭제됨. 긴 이유는 BE가 카드와 함께 보관, 재생성은 다음 추천 턴에서 자연히 새로 만들어짐 |
 | 임베딩 도메인 파인튜닝 | 분기별 | 질의–클릭 도서 쌍으로 한국어 도서 도메인 적응 ¹ |
 | reason few-shot 풀 | 주간 | 체류·클릭률 높은 `reason_long` 축적 → **retrieval-augmented few-shot**: 유사 도서의 우수 근거문을 스타일 예시로 검색해 프롬프트에 첨부 (Re-Imagen이 이미지–텍스트 쌍을 검색하는 것의 텍스트판) |
 
-¹ bench recall 게이트 통과가 배포 조건. **전제**: 차원이 같아 `dim` 검사로는 옛 벡터를 거르지 못하므로, 기억 벡터·취향 프로필에 model 식별자가 생기기 전(ERD §7)에는 하지 않는다. 할 때는 전량 재적재 + BE의 ⑥ 재호출 절차를 따른다
+¹ bench recall 게이트 통과가 배포 조건. **전제**: 차원이 같아 `dim` 검사로는 옛 벡터를 거르지 못하므로, 기억 벡터·취향 프로필에 model 식별자가 생기기 전(ERD §5)에는 하지 않는다. 할 때는 전량 재적재 + BE의 ⑥ 재호출 절차를 따른다
 
 ## 4. 도입 전후 효과 · 검증 계획 / 불필요 판단
 
@@ -485,6 +485,6 @@ VLM 폴백 프롬프트 (입력 포맷) — **"무슨 책인지" 를 묻지 않�
 ### 5-D. 재학습 주기 — 요약
 
 - ~~passage 재색인~~: 이벤트 기반(소개문·리뷰 변경 시 해당 책만). **2026-09-15 book_passage 폐기로 더 이상 해당 없음.**
-- **임베딩 파인튜닝 / 전량 재적재**: 분기 단위, shadow 인덱스로 무중단, bench recall 게이트가 배포 조건. 파인튜닝은 model 식별자 도입(ERD §7) 뒤에만 한다.
+- **임베딩 파인튜닝 / 전량 재적재**: 분기 단위, shadow 인덱스로 무중단(V1 미구현), bench recall 게이트가 배포 조건. 파인튜닝은 model 식별자 도입(ERD §5) 뒤에만 한다.
 - **택소노미 벡터(계층구조)**: 온디맨드(값 개정 시).
 - **reason few-shot 풀**: 주간.

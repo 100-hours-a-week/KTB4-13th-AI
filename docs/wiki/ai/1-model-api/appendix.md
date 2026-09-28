@@ -16,8 +16,8 @@ limit_exempt: 원본 4장의 호출 예시 9개 전체를 보존 (변환 문서)
 ### 예시 1: AI 검색 `POST /search`
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/search> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/search \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -H "X-Request-Id: req_20260907_0001" \
   -d '{"query":"쓸쓸하고 담담한 위로","filters":{"category":"에세이"},"sort":"relevance","size":15}'
 ```
@@ -46,8 +46,8 @@ curl -X POST <https://ai.internal.bookjeok.com/search> \
 ### 예시 2: 텍스트 임베딩 `POST /embeddings`
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/embeddings> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/embeddings \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"texts":["쓸쓸하고 담담한 위로"],"purpose":"query"}'
 ```
 
@@ -65,8 +65,8 @@ curl -X POST <https://ai.internal.bookjeok.com/embeddings> \
 ### 예시 3: 챗봇 도서 추천 `POST /recommendations/chat`
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":"퇴근길에 읽을 짧은 소설","anchor_book":null,"exclude":[]},"message":"유머 있으면 좋겠어","recent_turns":[],"exclude_book_ids":[],"image_ref":null}'
 ```
 
@@ -111,8 +111,8 @@ curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
 ### 예시 4: 표지 사진 인식 (V2). `POST /recommendations/chat` 이미지 턴
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":null,"anchor_book":null,"exclude":[]},"recent_turns":[],"exclude_book_ids":[],"image_ref":"<https://s3>.…/up_20260903_abc?X-Amz-Signature=…"}'
 ```
 
@@ -209,8 +209,8 @@ curl -X POST <https://ai.internal.bookjeok.com/recommendations/chat> \
 ### 예시 5: 개인화 추천 피드 `GET /recommendations/feed`
 
 ```bash
-curl -G <https://ai.internal.bookjeok.com/recommendations/feed> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" \
+curl -G https://ai.internal.bookjeok.com/recommendations/feed \
+  -H "Authorization: Bearer $SERVICE_TOKEN" \
   --data-urlencode "user_id=123" --data-urlencode "surface=home" \
   --data-urlencode "size=15"
 # home은 정렬·필터 파라미터를 받지 않는다(#105) — 보내면 무시가 아니라 400이다.
@@ -241,8 +241,8 @@ curl -G <https://ai.internal.bookjeok.com/recommendations/feed> \
 ### 예시 6: 취향 기억 추출 (V2) `POST /preferences/extractions`
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/preferences/extractions> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/preferences/extractions \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"consented":true,"conversation":[{"role":"user","text":"비 오는 날 읽을 책 추천해줘"},{"role":"assistant","text":"잔잔한 소설 위주로 골라봤어요."},{"role":"user","text":"이별 후에 위로가 될 만한 걸로"}],"conversation_id":"cv_20260903_a1","existing_preferences":[{"type":"mood","value":"잔잔한 에세이를 선호함"}]}'
 ```
 
@@ -270,8 +270,8 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/extractions> \
 온보딩 완료. 응답만으로 프로필을 만들고 200 동기로 즉시 끝난다. 작가 취향은 `memories`(`type: author`)로만 들어온다. **구매, 도서관, 리뷰는 본문에 없다** — 서버가 `user_id`로 복제 테이블에서 읽는다. 가입 직후라 읽어도 비어 있다.
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"idempotency_key":"prof_20260904_a1b2","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384}]}'
 ```
 
@@ -285,8 +285,8 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
 한 달 뒤. 취향 기억이 늘어 다시 부른다. 본문은 여전히 온보딩과 기억뿐이고, 그 사이의 구매·리뷰는 서버가 복제 테이블에서 읽어 centroid에 넣는다.
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"idempotency_key":"prof_20261004_c3d4","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384},{"type":"mood","value":"이별 후 위로되는 잔잔한 소설을 찾음","vector":[0.01,-0.04,"…"],"dim":384}]}'
 ```
 
@@ -302,8 +302,8 @@ curl -X POST <https://ai.internal.bookjeok.com/preferences/profile> \
 ### 예시 8: 쇼핑 에이전트 턴 (V2) `POST /agent/act`
 
 ```bash
-curl -X POST <https://ai.internal.bookjeok.com/agent/act> \
-  -H "Authorization: Bearer$SERVICE_TOKEN" -H "Content-Type: application/json" \
+curl -X POST https://ai.internal.bookjeok.com/agent/act \
+  -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
   -d '{"user_id":123,"conversation_id":"cv_20260904_x1","message":"이거 장바구니에 담아줘","context_cards":[{"book_id":1088,"rank":1,"price":13500,"match_score":92,"in_stock":true},{"book_id":4021,"rank":2,"price":14000,"match_score":87,"in_stock":true}],"focused_book_id":1088,"user_context":{"logged_in":true,"has_default_address":true},"allow_tools":null,"idempotency_key":"idem_a1b2c3"}'
 ```
 
@@ -336,7 +336,7 @@ curl -X POST <https://ai.internal.bookjeok.com/agent/act> \
 ### 예시 9: 서버 상태 점검 `GET /health`
 
 ```bash
-curl <https://ai.internal.bookjeok.com/health>
+curl https://ai.internal.bookjeok.com/health
 ```
 
 ```json
