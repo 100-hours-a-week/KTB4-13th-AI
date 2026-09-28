@@ -33,6 +33,11 @@ def test_라벨마다_query_용도로_벡터를_만들어_둔다(
 
     assert calls == [(list(labels.LABELS), "query")]
     assert labels.vector("소설") == [float(labels.LABELS.index("소설")), 1.0]
+    # 세부 태그도 라벨이다(#165).
+    assert labels.vector("추리/스릴러") == [
+        float(labels.LABELS.index("추리/스릴러")),
+        1.0,
+    ]
 
 
 def test_목록에_없는_라벨은_None이다(monkeypatch: pytest.MonkeyPatch) -> None:
