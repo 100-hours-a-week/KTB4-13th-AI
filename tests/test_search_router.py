@@ -213,6 +213,20 @@ def test_온전한_응답에는_헤더가_없다(monkeypatch: pytest.MonkeyPatch
     assert "X-Degraded" not in res.headers
 
 
+@pytest.mark.parametrize("degraded", [None, "keyword-only"])
+def test_목록이라_캐시하지_않게_한다(
+    monkeypatch: pytest.MonkeyPatch, degraded: str | None
+) -> None:
+    # 명세 공통 규약: 목록 응답은 private, no-store(#234). 축소 응답이어도 같다.
+    monkeypatch.setattr(
+        search_router.service, "search", _fake_search([_BOOK], degraded)
+    )
+
+    res = client.post("/search", json={"query": "김영하"})
+
+    assert res.headers["cache-control"] == "private, no-store"
+
+
 def test_검색이_실패하면_500_internal_server_error다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
