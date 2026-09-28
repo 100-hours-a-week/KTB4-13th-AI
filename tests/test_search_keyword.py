@@ -50,6 +50,23 @@ def test_문장부호는_낱말_수_한도를_먹지_않는다() -> None:
     assert keyword.tokenize("- " + " ".join(words)) == words
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # 기호 숫자는 pg_trgm 이 글자 조각을 만들지 않아 보통 글자로 바꾼다(#200).
+        ("해리포터 ②", ["해리포터", "2"]),
+        ("삼국지 Ⅱ", ["삼국지", "ii"]),
+        ("수학 x²", ["수학", "x2"]),
+        # 전각 영숫자도 보통 글자가 된다.
+        ("ＡＢＣ 영어", ["abc", "영어"]),
+    ],
+)
+def test_기호_숫자와_전각_글자는_보통_글자로_바꾼다(
+    query: str, expected: list[str]
+) -> None:
+    assert keyword.tokenize(query) == expected
+
+
 def test_낱말_속_와일드카드_글자를_막는다() -> None:
     assert keyword.like_pattern("100%_") == "%100\\%\\_%"
 
