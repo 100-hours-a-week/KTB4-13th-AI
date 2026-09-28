@@ -42,7 +42,7 @@ def no_match_scores(monkeypatch: pytest.MonkeyPatch) -> None:
         def acquire(self):
             return contextlib.nullcontext()
 
-    async def _noop(conn, candidates: list[dict], user_id: int) -> None:
+    async def _noop(conn, candidates: list[dict], user_id: int, spec: Spec) -> None:
         pass
 
     monkeypatch.setattr(chat.db, "get_pool", lambda: _NoPool())

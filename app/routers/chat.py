@@ -24,6 +24,7 @@ from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
 from app.core import body, categories, db, history, popularity, responses
 from app.core.pgvector import to_vector_literal
 from app.feed import personalized, scoring
+from app.gateway import embedding
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -57,6 +58,18 @@ _PUBLISHER_NOISE = re.compile(r"\(주\)|주식회사|\s+")
 
 def _normalize_publisher(name: str) -> str:
     return _PUBLISHER_NOISE.sub("", name)
+
+
+# ③ 전용 채점 비중(#222) — ④(app/feed/scoring.py)와 다른 식을 쓴다. 명세 각주: "이번
+# 요청 조건(spec.semantic) 유사도와 취향 유사도를 함께 쓴다. ④의 계산식과 다르다."
+# 지금까지는 ④와 똑같은 식(취향 0.6·카테고리 0.25·인기 0.15)을 그대로 갖다 썼는데,
+# 그러면 사용자가 지금 딱 찾는 조건에 맞는 책이 나와도 "평소 취향과 다르다"는
+# 이유로 점수가 낮게 뜬다. 질의 유사도를 메인으로 두고 취향은 동점 보정 정도로
+# 낮춘다. 숫자는 ④의 기존 비중처럼 임시값이다 — 시드 사용자로 보고 조정한다.
+QUERY_SIMILARITY_WEIGHT = 0.5
+TASTE_SIMILARITY_WEIGHT = 0.2
+CHAT_CATEGORY_WEIGHT = 0.2
+CHAT_POPULARITY_WEIGHT = 0.1
 
 
 CARD_LIMIT = 3
@@ -401,8 +414,54 @@ async def _fetch_similarities(
     return {r["book_id"]: r["similarity"] for r in rows}
 
 
+async def _embed_query_semantic(text: str) -> list[float] | None:
+    """spec.semantic을 벡터로 바꾼다. 실패하면 None — match_score는 취향 기반 옛 식으로 폴백한다(#222).
+
+    ①(app.search.service._embed_query)과 같은 방어 패턴이다 — 임베딩 장애로
+    ③ 전체가 500이 되면 안 된다. ①이 이미 검색어(_query_text(spec))를
+    임베딩하지만, exact와 semantic이 함께 오면 그 검색어가 spec.semantic과
+    달라질 수 있어(예: 제목은 지정하고 분위기도 말한 경우) 여기서 따로 부른다.
+
+    intent가 semantic이면(제일 흔한 경우) ①과 같은 문장을 중복으로 임베딩하는
+    셈이지만, 실측(로컬 CPU, 모델 로딩 후) p95 11ms로 턴 목표(6~8초)에 비해
+    미미해 지금은 그대로 둔다. ①이 벡터를 밖으로 안 돌려줘 재사용하려면 그
+    파일(팀원 소유)을 고쳐야 한다.
+    """
+    try:
+        vectors, _, _ = await embedding.embed([text], "query")
+    except Exception:
+        logger.exception("질의 임베딩 실패. 취향 기반 점수로 대신한다")
+        return None
+    return vectors[0]
+
+
+def _chat_match_score(
+    query_similarity: float | None,
+    taste_similarity: float | None,
+    category_raw: float | None,
+    popularity_value: float | None,
+    catalog_max: float | None,
+    *,
+    has_taste: bool,
+) -> int:
+    """③ 전용 매칭 점수(#222) — 이번 요청 조건과의 유사도를 메인으로 쓴다.
+
+    ④(app.feed.scoring.match_score)와 계산식이 다르다(명세 ③ 각주). 취향
+    유사도는 ④와 같은 원칙으로 없으면 0으로 두고 남은 비중을 재분배하지
+    않는다 — 축소 응답도 같은 잣대를 쓰기 위해서다.
+    """
+    total = QUERY_SIMILARITY_WEIGHT * scoring.similarity_part(query_similarity)
+    total += CHAT_CATEGORY_WEIGHT * scoring.category_part(category_raw)
+    total += CHAT_POPULARITY_WEIGHT * scoring.popularity_part(
+        popularity_value, catalog_max
+    )
+    if has_taste:
+        total += TASTE_SIMILARITY_WEIGHT * scoring.similarity_part(taste_similarity)
+    return round(total * 100)
+
+
 async def _attach_match_scores(
-    conn: asyncpg.Connection, candidates: list[dict], user_id: int
+    conn: asyncpg.Connection, candidates: list[dict], user_id: int, spec: Spec
 ) -> None:
     """후보마다 match_score를 채운다(명세 2단계 축소판, #129).
 
@@ -411,8 +470,13 @@ async def _attach_match_scores(
     엔드포인트 소유권 교차 금지). 취향 벡터 유사도(책 임베딩 대 취향
     centroid)는 프로필이 있는 사용자만 붙는다(#180) — cold_start(프로필이
     없거나 아직 벡터를 못 만든 사용자)는 ④의 cold_start 목록과 같은 이유로
-    유사도가 없어 카테고리·인기만으로 계산한다(app.feed.scoring.match_score,
-    with_similarity=False).
+    유사도가 없다.
+
+    spec.semantic이 있으면(#222) 이번 요청 조건과 후보 책의 유사도를 메인으로
+    쓰는 ③ 전용 식(_chat_match_score)으로 계산한다. semantic이 없거나(exact
+    의도라 비교할 조건이 없음) 그 임베딩이 실패하면, ④와 같은 식
+    (app.feed.scoring.match_score, with_similarity=has_centroid)으로 그대로
+    폴백한다 — 지금까지의 동작을 그대로 유지한다.
 
     candidates를 그 자리에서 고친다(각 항목에 match_score·popularity 칸을
     더한다) — _fetch_descriptions가 description을 더하는 것과 같은 방식이다.
@@ -449,19 +513,40 @@ async def _attach_match_scores(
         centroid = json.loads(profile_row["centroid"])
         similarities = await _fetch_similarities(conn, book_ids, centroid)
 
+    # #222 — semantic이 있으면(이번 요청의 조건) 그 임베딩과 후보 책들의 유사도를
+    # 구해 ③ 전용 식으로 점수를 낸다. 없거나 임베딩이 실패하면 has_query가 False로
+    # 남아 아래에서 옛 식(④와 동일)으로 그대로 폴백한다.
+    has_query = False
+    query_similarities: dict[int, float] = {}
+    if spec.semantic:
+        query_vector = await _embed_query_semantic(spec.semantic)
+        if query_vector is not None:
+            has_query = True
+            query_similarities = await _fetch_similarities(conn, book_ids, query_vector)
+
     fields = {r["book_id"]: r for r in rows}
     tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
     for c in candidates:
         f = fields.get(c["book_id"])
         category = f["category"] if f else None
         c["popularity"] = f["popularity"] if f else 0
-        c["match_score"] = scoring.match_score(
-            similarities.get(c["book_id"]),
-            tag_weights.get(category),
-            c["popularity"],
-            catalog_max,
-            with_similarity=has_centroid,
-        )
+        if has_query:
+            c["match_score"] = _chat_match_score(
+                query_similarities.get(c["book_id"]),
+                similarities.get(c["book_id"]),
+                tag_weights.get(category),
+                c["popularity"],
+                catalog_max,
+                has_taste=has_centroid,
+            )
+        else:
+            c["match_score"] = scoring.match_score(
+                similarities.get(c["book_id"]),
+                tag_weights.get(category),
+                c["popularity"],
+                catalog_max,
+                with_similarity=has_centroid,
+            )
 
 
 def _rule_based_cards(candidates: list[dict]) -> list[dict]:
@@ -562,7 +647,7 @@ async def get_candidates(
         pool = [c for c in pool if c["description"]]
     pool = pool[:CANDIDATE_LIMIT]
     async with db.get_pool().acquire() as conn:
-        await _attach_match_scores(conn, pool, user_id)
+        await _attach_match_scores(conn, pool, user_id, spec)
     return pool
 
 
