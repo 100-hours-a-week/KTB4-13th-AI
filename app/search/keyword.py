@@ -253,7 +253,7 @@ async def exact_title_ids(
     """
     if not book_ids:
         return set()
-    rows = await conn.fetch(_EXACT_TITLE_SQL, book_ids, query)
+    rows = await conn.fetch(_EXACT_TITLE_SQL, book_ids, normalize_query(query))
     return {r["book_id"] for r in rows}
 
 
@@ -264,6 +264,8 @@ async def search_ids(
     limit: int = CANDIDATE_LIMIT,
 ) -> list[int]:
     """잘 맞는 순서대로 book_id 를 돌려준다."""
+    # 낱말뿐 아니라 제목 전체와 견주는 값($3)도 같은 모양이어야 한다(#200).
+    query = normalize_query(query)
     tokens = tokenize(query)
     if not tokens:
         return []
