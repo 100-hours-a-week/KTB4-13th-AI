@@ -335,17 +335,20 @@ def test_책_벡터가_한_권도_없으면_규칙_점수만으로_답하고_알
     async def _no_book_vectors(conn):
         return False
 
+    async def _rule_only(conn, req, page, tag_weights):
+        return [{"book_id": 3, "match_score": 25}], False
+
     outcome = _run(
         _req(),
         _PROFILE_ROW,
         monkeypatch,
         personalized__fetch=_no_match,
         vector__has_any=_no_book_vectors,
-        rule_only__fetch=_rule_only_page,
+        rule_only__fetch=_rule_only,
     )
 
     assert outcome.degraded == service.RULE_ONLY
-    assert [item["book_id"] for item in outcome.items] == [1]
+    assert [item["book_id"] for item in outcome.items] == [3]
 
 
 def test_책_벡터가_있는데_0건이면_빈_목록_그대로다(
