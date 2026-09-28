@@ -4,12 +4,14 @@ type: decision-log
 group: dec-000
 owner: 김세훈
 status: 작성중
-updated: 2026-09-26
+updated: 2026-09-28
 ---
 **요약** 프로젝트의 모든 기술 결정을 한 줄씩 모은 입구. 상세는 링크를 따라간다.
 
 | 날짜 | 파트 | 결정 | 영향 파트 | 상세 |
 |---|---|---|---|---|
+| 09-28 | AI | 취향 벡터가 없어도 구매·리뷰가 있으면 ③④가 이력으로 개인화(AI #246) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
+| 09-28 | AI | ⑥ 읽는 시간대·고르는 기준·기억 type 집계는 V1 미구현(받기만 함, AI #237) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 09-26 | AI | ①②④⑥은 V1에서 429를 내지 않는다(호출 한도 없음) | AI, BE | [모델 API 명세](../ai/1-model-api/spec.md) |
 | 09-26 | AI | LLM 폴백·서킷·지표 전송·예산 전환과 임베딩 무중단 교체는 V1 미구현으로 둔다 | AI, CLD | [인프라 모니터링 설계](../ai/7-infra-monitoring/design.md) |
 | 09-25 | AI | ①④ category는 온보딩 값을 받아 대응표의 핵심 분류로 거른다. 그 밖의 값은 400 (AI #219) | AI, BE | [모델 API 명세 ①④](../ai/1-model-api/spec.md) |
