@@ -27,6 +27,10 @@ FALLBACK_MESSAGE = "원하는 책을 못 찾았어요. AI 추천에게 물어볼
 # 있어(#99), 정상 요청이면 절대 안 닿을 만큼 넉넉하게 잡는다.
 MAX_BODY_BYTES = 64 * 1024
 
+# 목록 응답은 중간 캐시가 저장하지 않게 한다(명세 공통 규약). 서버가 결과를 보관하지 않고 요청마다
+# 다시 찾아서, 복제로 가격·재고가 바뀌면 같은 요청이라도 본문이 달라진다(#234). ④와 같은 값이다.
+_NO_STORE = {"Cache-Control": "private, no-store"}
+
 
 def parse_request(payload: Any) -> SearchRequest | None:
     """계약에 맞으면 요청 객체, 아니면 None 을 돌려준다."""
@@ -78,7 +82,9 @@ async def search(request: Request) -> JSONResponse:
     # 둘째 페이지 이후가 빈 것은 "끝"이지 "못 찾음"이 아니라서 안내를 붙이지 않는다.
     no_match = outcome.first_page and not outcome.results
     fallback = {"message": FALLBACK_MESSAGE} if no_match else None
-    headers = {"X-Degraded": outcome.degraded} if outcome.degraded else None
+    headers = dict(_NO_STORE)
+    if outcome.degraded:
+        headers["X-Degraded"] = outcome.degraded
     return responses.success(
         "search_success",
         {
