@@ -9,11 +9,14 @@ BE 만 부를 수 있어, V1 에서 토큰을 켤지는 설정 값으로 정한�
 """
 
 import hmac
+import logging
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -33,3 +36,12 @@ def verify_service_token(
     # 길이·내용에 따라 걸리는 시간이 달라지지 않게 비교한다(타이밍 공격).
     if not hmac.compare_digest(provided.encode(), expected.encode()):
         raise Unauthorized()
+
+
+def warn_if_disabled() -> None:
+    """토큰을 비워 검사가 꺼져 있으면 서버가 뜰 때 경고를 남긴다.
+
+    비워 두는 것만으로 조용히 꺼지므로, 운영에서 값이 빠진 것인지 일부러 끈 것인지 로그로 알 수 있게 한다.
+    """
+    if not get_settings().ai_service_token:
+        logger.warning("AI_SERVICE_TOKEN 이 비어 있어 서비스 토큰 검사를 하지 않습니다")
