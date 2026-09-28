@@ -109,9 +109,14 @@ async def _rows(
     return [dict(r) for r in await conn.fetch(_SQL, user_id, until)]
 
 
-async def read(conn: asyncpg.Connection, user_id: int) -> History:
-    """user_id 의 복제된 이력 3종을 읽어 모은다."""
-    return summarize(await _rows(conn, user_id, None))
+async def read(
+    conn: asyncpg.Connection, user_id: int, until: datetime | None = None
+) -> History:
+    """user_id 의 복제된 이력 3종을 읽어 모은다. until 을 주면 그 시각까지의 이력만 본다.
+
+    ④ 는 커서를 받은 시각까지만 봐야 스크롤 중에 새 구매로 목록이 밀리지 않는다(#246).
+    """
+    return summarize(await _rows(conn, user_id, until))
 
 
 async def category_scores_since(
