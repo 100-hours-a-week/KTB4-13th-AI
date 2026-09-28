@@ -346,3 +346,49 @@ def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점�
     ((user_id, after, until),) = calls
     assert (user_id, after) == (1, reflected)
     assert until is not None
+
+
+def _second_page_cursor(issued_at: datetime, version: int) -> str:
+    """issued_at 에 첫 페이지를 받은 개인화 목록의 다음 커서."""
+    page = service.cursor.Page(issued_at=issued_at)
+    return service.cursor.issue(page, _req(), service.PERSONALIZED, version)
+
+
+def test_둘째_페이지도_첫_페이지를_받은_시각까지의_이력만_더한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 지금 시각까지 더하면 스크롤하는 사이에 산 책으로 점수가 바뀌어 목록이 밀린다(#176, #210).
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    first_page_at = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    untils: list[datetime | None] = []
+
+    async def _recent(conn, user_id, reflected_at, until=None):
+        untils.append(until)
+        return {}
+
+    _run(
+        _req(cursor=_second_page_cursor(first_page_at, 1)),
+        _PROFILE_ROW,
+        monkeypatch,
+        history__category_scores_since=_recent,
+        personalized__fetch=_vector_up,
+    )
+
+    assert untils == [first_page_at]
+
+
+def test_페이지_사이에_프로필_판_번호가_바뀌어도_이어서_준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 명세 ④: 프로필이 바뀌면 끊지 않고 갱신된 값으로 이어 붙인다. 판 번호는 커서에 기록만 한다.
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    token = _second_page_cursor(datetime.now(UTC), 1)
+
+    outcome = _run(
+        _req(cursor=token),
+        {**_PROFILE_ROW, "profile_version": 2},
+        monkeypatch,
+        personalized__fetch=_vector_up,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [9]
