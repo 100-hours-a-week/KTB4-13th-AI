@@ -81,7 +81,7 @@ flowchart TB
 | 검색 라우터 | ① /search · ② /embeddings |
 | 추천 라우터 | ③ /chat(V1 텍스트·V2 이미지) · ④ /feed · ⑤ /extractions(V2) · ⑥ /profile |
 | 쇼핑 에이전트 · V2 | ⑦ /agent/act (추천 라우터의 서브그래프) |
-| 모델 게이트웨이 | complete() · embed() · 어댑터·폴백·서킷·비용관측 |
+| 모델 게이트웨이 | complete() · embed() · 어댑터·폴백·서킷·비용관측(폴백·서킷·비용관측은 V1 미구현) |
 | 도구 게이트웨이 · V2 | MCP 호환 디스크립터 · 멱등 · grounding 검증 |
 | AI 전용 PostgreSQL + pgvector | ─ 복제 사본: v_books·v_user_purchases·v_user_library·v_user_reviews·v_book_popularity · ─ AI 소유: book_embeddings·taste_profile·멱등 기록 |
 | 자체 서빙 | 임베딩(CPU, e5-small) |
@@ -187,7 +187,7 @@ V2에서는 `postgres`·`replicator`를 EC2에서 떼어내고 내부 ALB + Aut
 |---|---|
 | 임베딩 비용 | 자체 서빙 전환으로 **호출량 비례 종량 → 고정비(CPU 상주, 추가 비용 0)** |
 | LLM 예산 | 3개월 36만 원, 턴당 약 $0.003 → 예산 안에서 **약 9만 턴** 처리 가능(단계 7) |
-| 예산 방어선 | 80% 소진 시 알림, 100%에서 저가 모델 자동 전환, 그마저 불가하면 규칙 기반 축소 응답(`degraded: true`) |
+| 예산 방어선 | 80% 소진 시 알림, 100%에서 저가 모델 자동 전환(V1 미구현), 그마저 불가하면 규칙 기반 축소 응답(`degraded: true`) |
 
 ### 3-4. 3년 차 목표 용량 (시뮬레이션)
 
