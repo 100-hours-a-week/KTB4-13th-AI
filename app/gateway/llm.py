@@ -42,6 +42,17 @@ def get_chat_model() -> BaseChatModel:
     if settings.llm_mock:
         return FakeListChatModel(responses=['{"mock": true}'])  # 개발 중 가짜 응답
 
+    # OpenRouter 전용: 이 요청을 ZDR(Zero Data Retention) 정책을 가진 엔드포인트로만
+    # 라우팅한다(개인정보 국외이전 동의서에 "미저장"이라고 쓰려면 실제로 켜져 있어야
+    # 함). OpenRouter가 읽는 자리는 요청 바디 최상위의 "provider" 키라서 model_kwargs가
+    # 아니라 extra_body로 보내야 한다 — model_kwargs는 OpenAI 표준 파라미터 전용이고,
+    # 여기에 비표준 파라미터를 넣으면 API 에러가 난다(langchain_openai 자체 경고).
+    # 게이트웨이가 provider를 안 가리는 원칙(위 주석 참고)과 어긋나 보이지만, ZDR은
+    # OpenRouter에만 있는 개념이라 provider 분기가 불가피하다.
+    extra_body = (
+        {"provider": {"zdr": True}} if settings.llm_provider == "openrouter" else None
+    )
+
     return ChatOpenAI(
         model=settings.llm_model_id,
         base_url=settings.llm_base_url,
@@ -58,6 +69,7 @@ def get_chat_model() -> BaseChatModel:
         # 상한을 정확히 맞춘다.
         max_retries=0,
         model_kwargs={"response_format": {"type": "json_object"}},
+        extra_body=extra_body,
     )
 
 
