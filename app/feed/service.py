@@ -1,7 +1,7 @@
 """④ 목록을 고르는 흐름 — 프로필이 있으면 채점한 목록, 없으면 개인화를 끈 목록.
 
-취향 벡터를 만들지 못한 사용자(cold_start)와 프로필이 아직 없는 사용자는 같은 길로 간다. 다만 구매·리뷰
-이력이 있으면 그것으로 임시 취향을 만들어 채점한 목록으로 간다(#246).
+취향 벡터를 만들지 못한 사용자(cold_start)와 프로필이 없는 사용자(개인화 추천에 동의하지 않은 사용자)는
+같은 길로 간다. 구매·리뷰 이력이 있어도 저장된 취향 벡터가 없으면 개인화하지 않는다(#266).
 벡터 조회가 안 될 때는 취향 유사도를 빼고 규칙 점수만으로 답한다(명세 ④: 축소 응답).
 """
 
@@ -16,7 +16,6 @@ import asyncpg
 from app.core import db, history
 from app.feed import cold_start, cursor, personalized, rule_only
 from app.feed.schemas import FeedRequest
-from app.profile import history_taste
 from app.search import vector
 
 logger = logging.getLogger(__name__)
@@ -54,32 +53,21 @@ class _Profile:
     computed_at: datetime | None
 
 
-async def _profile(
-    conn: asyncpg.Connection, user_id: int, until: datetime
-) -> _Profile | None:
-    """취향 벡터와 태그 가중치. 저장된 벡터가 없으면 이력으로 만든 임시 취향, 그것도 없으면 None.
+async def _profile(conn: asyncpg.Connection, user_id: int) -> _Profile | None:
+    """저장된 취향 벡터와 태그 가중치. 저장된 벡터가 없으면 None 이다.
 
-    명세 ⑥은 "구매나 리뷰가 하나라도 있으면 개인화를 켠다"인데, ⑥은 온보딩·기억 변경 때만 불려 그 뒤에
-    이력이 생긴 사용자는 벡터가 없는 채로 남는다(#246). 그때만 until(커서를 받은 시각)까지의 이력으로
-    벡터를 만든다. 태그 가중치는 비워 두고 반영 시각도 비워서, 아래 _tag_weights 가 until 까지의 이력을
-    전부 더하게 한다(명세 ⑥: 반영한 이력이 없으면 전부 가산). ⑥ 이 이력만으로 만드는 값과 같아진다.
+    구매·리뷰 이력만으로 임시 취향을 만들던 경로(#246)는 뺐다(#266). BE 는 개인화 추천에 동의한
+    사용자만 ⑥ 을 부르므로, 프로필이 없는 사용자는 동의하지 않은 사용자다. 이력이 있다고 개인화하면
+    동의를 거스른다.
     """
     row = await conn.fetchrow(_PROFILE_SQL, user_id)
-    if row is not None and not row["cold_start"] and row["centroid"]:
-        return _Profile(
-            centroid=json.loads(row["centroid"]),
-            tag_weights=json.loads(row["tag_weights"]),
-            version=row["profile_version"],
-            computed_at=row["computed_at"],
-        )
-    taste = await history_taste.from_history(conn, user_id, until)
-    if taste.centroid is None:
+    if row is None or row["cold_start"] or not row["centroid"]:
         return None
     return _Profile(
-        centroid=taste.centroid,
-        tag_weights={},
-        version=row["profile_version"] if row is not None else 0,
-        computed_at=None,
+        centroid=json.loads(row["centroid"]),
+        tag_weights=json.loads(row["tag_weights"]),
+        version=row["profile_version"],
+        computed_at=row["computed_at"],
     )
 
 
@@ -106,7 +94,7 @@ async def feed(req: FeedRequest) -> FeedOutcome:
     page = cursor.read(req)
 
     async with db.get_pool().acquire() as conn:
-        profile = await _profile(conn, req.user_id, page.issued_at)
+        profile = await _profile(conn, req.user_id)
         if profile is None:
             cursor.check_mode(page, COLD_START)
             # 개인화를 끈 목록은 모두 0점이다. 하한이 1 이상이면 DB 를 더 볼 것 없이 0건이다

@@ -8,7 +8,6 @@ import pytest
 
 from app.feed import service
 from app.feed.schemas import parse_query
-from app.profile.history_taste import HistoryTaste
 
 
 class _FakePool:
@@ -32,10 +31,6 @@ async def _no_recent_history(conn, user_id, reflected_at, until=None):
     return {}
 
 
-async def _no_history_taste(conn, user_id, until=None):
-    return HistoryTaste(centroid=None, tag_weights={})
-
-
 async def _has_book_vectors(conn):
     return True
 
@@ -44,8 +39,6 @@ def _run(req, profile_row, monkeypatch, **fakes):
     monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool(profile_row))
     # 프로필 뒤에 생긴 이력(#175)은 따로 보는 테스트가 아니면 없다고 둔다.
     fakes.setdefault("history__category_scores_since", _no_recent_history)
-    # 저장된 벡터가 없을 때 이력으로 만드는 임시 취향(#246)도 따로 보는 테스트가 아니면 없다고 둔다.
-    fakes.setdefault("history_taste__from_history", _no_history_taste)
     # 책 벡터는 따로 보는 테스트가 아니면 있다고 둔다.
     fakes.setdefault("vector__has_any", _has_book_vectors)
     for name, fn in fakes.items():
@@ -63,6 +56,7 @@ def _req(**params):
 def test_프로필이_없으면_개인화를_끈_목록으로_간다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # BE 는 개인화 추천에 동의한 사용자만 ⑥ 을 부른다. 프로필이 없으면 이력이 있어도 개인화하지 않는다(#266).
     async def _cold(conn, req, page):
         return [{"book_id": 7, "match_score": 0}], False
 
@@ -103,77 +97,6 @@ def test_개인화를_끈_목록은_모두_0점이라_점수_하한이_있으면
     )
 
     assert outcome.items == []
-
-
-@pytest.mark.parametrize(
-    "row",
-    [
-        None,
-        # ⑥ 이 재료 없이 cold_start 로 저장한 뒤 이력이 생긴 경우다.
-        {
-            "centroid": None,
-            "tag_weights": "{}",
-            "cold_start": True,
-            "profile_version": 3,
-            "computed_at": None,
-        },
-    ],
-)
-def test_저장된_벡터가_없어도_이력이_있으면_이력으로_채점한다(
-    monkeypatch: pytest.MonkeyPatch, row: dict | None
-) -> None:
-    # 명세 ⑥: 구매나 리뷰가 하나라도 있으면 개인화를 켠다(#246).
-    seen: dict = {}
-
-    async def _taste(conn, user_id, until=None):
-        seen["taste_until"] = until
-        return HistoryTaste(centroid=[0.3, 0.4], tag_weights={"경제학": 3})
-
-    async def _recent(conn, user_id, reflected_at, until=None):
-        # 반영한 이력이 없다고 보고 커서를 받은 시각까지 전부 더한다.
-        seen["reflected_at"], seen["recent_until"] = reflected_at, until
-        return {"경제학": 3}
-
-    async def _personalized(conn, req, page, centroid, tag_weights):
-        seen["centroid"], seen["tag_weights"] = centroid, tag_weights
-        return [{"book_id": 9, "match_score": 70}], False
-
-    outcome = _run(
-        _req(),
-        row,
-        monkeypatch,
-        history_taste__from_history=_taste,
-        history__category_scores_since=_recent,
-        personalized__fetch=_personalized,
-    )
-
-    assert (outcome.cold_start, outcome.degraded) == (False, None)
-    assert seen["centroid"] == [0.3, 0.4]
-    assert seen["tag_weights"] == {"경제학": 3}
-    assert seen["reflected_at"] is None
-    # 임시 취향도 가산도 같은 시각까지만 본다. 스크롤 중에 산 책으로 목록이 밀리지 않는다.
-    assert seen["taste_until"] == seen["recent_until"]
-
-
-def test_이력으로도_벡터를_못_만들면_개인화를_끈_목록으로_간다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # 이력 책이 전부 소개글이 없어 벡터가 없는 경우다.
-    async def _taste(conn, user_id, until=None):
-        return HistoryTaste(centroid=None, tag_weights={"경제학": 3})
-
-    async def _cold(conn, req, page):
-        return [], False
-
-    outcome = _run(
-        _req(),
-        None,
-        monkeypatch,
-        history_taste__from_history=_taste,
-        cold_start__fetch=_cold,
-    )
-
-    assert outcome.cold_start is True
 
 
 def test_프로필이_있으면_채점한_목록을_준다(monkeypatch: pytest.MonkeyPatch) -> None:
