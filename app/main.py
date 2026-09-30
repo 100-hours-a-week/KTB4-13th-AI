@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core import cursor, db, request_log, responses
-from app.core.auth import Unauthorized, verify_service_token
+from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
 from app.gateway import embedding, llm
 from app.profile import labels
@@ -26,6 +26,7 @@ request_log.configure(get_settings().log_level)
 async def lifespan(app: FastAPI):
     # 앱이 뜰 때
     cursor.check_key()
+    warn_if_disabled()
     await db.connect()
     # 색인이 빠지면 에러 없이 검색·피드만 느려진다. 배포 로그에서 바로 보이게 한다.
     async with db.get_pool().acquire() as conn:
