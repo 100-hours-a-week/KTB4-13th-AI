@@ -32,7 +32,6 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
 )
-from app.profile import history_taste
 from app.search import service
 from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
 
@@ -521,23 +520,14 @@ async def _attach_match_scores(
     catalog_max = await personalized.catalog_max_popularity(conn)
 
     # ④의 _profile()과 같은 조건(app/feed/service.py) — cold_start거나 centroid가
-    # 없으면 벡터를 못 쓰는 사용자다.
+    # 없으면 벡터를 못 쓰는 사용자다. 저장된 벡터가 없으면 구매·리뷰 이력이 있어도 취향을
+    # 만들지 않는다(#266) — BE는 개인화 추천에 동의한 사용자만 ⑥을 부르므로, 프로필이 없는
+    # 사용자는 동의하지 않은 사용자다.
     has_centroid = bool(
         profile_row and not profile_row["cold_start"] and profile_row["centroid"]
     )
     tag_weights = json.loads(profile_row["tag_weights"]) if profile_row else {}
     centroid = json.loads(profile_row["centroid"]) if has_centroid else None
-    if centroid is None:
-        # #246 — 저장된 벡터가 없으면 구매·리뷰 이력으로 임시 취향을 만든다. 명세 ⑥ "구매나
-        # 리뷰가 하나라도 있으면 개인화"를 지키려는 것으로 ④와 같은 규칙이다(app/feed/service.py).
-        # 이력으로도 벡터를 못 만들면 지금처럼 취향 없이 채점한다.
-        taste = await history_taste.from_history(conn, user_id)
-        if taste.centroid is not None:
-            centroid, tag_weights, has_centroid = (
-                taste.centroid,
-                taste.tag_weights,
-                True,
-            )
     similarities: dict[int, float] = {}
     if has_centroid:
         similarities = await _fetch_similarities(conn, book_ids, centroid)
