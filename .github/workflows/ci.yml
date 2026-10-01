@@ -121,6 +121,30 @@ jobs:
           cache-from: type=gha,scope=${{ vars.ECR_REPOSITORY }}
           cache-to: type=gha,mode=max,scope=${{ vars.ECR_REPOSITORY }},ignore-error=true
 
+  notify-dev-deployment:
+    name: Notify Cloud repository for Dev deployment
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish-image.result == 'success'
+    needs: publish-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Dispatch Dev deployment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CLOUD_REPO_DISPATCH_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: '100-hours-a-week',
+              repo: 'KTB4-13th-Cloud',
+              event_type: 'dev-deploy',
+              client_payload: {
+                service: 'ai',
+                sha: context.sha,
+                repository: context.repo.repo,
+              },
+            });
+
   notify-failure:
     name: Notify CI failure
     if: ${{ always() && (needs.quality.result == 'failure' || needs.docker-build.result == 'failure' || needs.publish-image.result == 'failure') }}
