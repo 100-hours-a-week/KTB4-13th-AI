@@ -50,7 +50,7 @@ def _request(**overrides) -> ProfileRequest:
     body = {
         "user_id": _USER,
         "idempotency_key": "prof_test",
-        "onboarding": {"tags": ["힐링"], "liked_book_ids": [9100201]},
+        "onboarding": {"tags": ["재테크"], "liked_book_ids": [9100201]},
     }
     body.update(overrides)
     return ProfileRequest.model_validate(body)
@@ -106,7 +106,7 @@ def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다()
     centroid = json.loads(row["centroid"])
     # 좋아한 책(2) : 구매한 책(3)
     assert centroid[1] / centroid[0] == pytest.approx(1.5, rel=1e-5)
-    assert json.loads(row["tag_weights"]) == {"힐링": 1, "한국소설": 3}
+    assert json.loads(row["tag_weights"]) == {"경제학": 1, "한국소설": 3}
     assert row["cold_start"] is False
     assert row["computed_at"] == _T0
 
@@ -153,10 +153,10 @@ def test_라벨은_모두_합쳐_기억_한_문장만큼_끌어당긴다(
     monkeypatch.setattr(labels, "_vectors", {"소설": _unit(5), "에세이": _unit(6)})
 
     async def check(conn):
-        # 힐링은 라벨 목록에 없는 태그다. 벡터 재료에서만 빠지고 태그 가중치에는 남는다.
+        # 재테크는 이 테스트에서 라벨 벡터를 만들지 않았다. 벡터 재료에서만 빠지고 태그 가중치에는 남는다.
         onboarding = {
             "categories": ["소설", "에세이"],
-            "tags": ["힐링"],
+            "tags": ["재테크"],
             "liked_book_ids": [9100201],
         }
         await service.rebuild_on(conn, _request(onboarding=onboarding))
@@ -168,7 +168,7 @@ def test_라벨은_모두_합쳐_기억_한_문장만큼_끌어당긴다(
     # 좋아한 책(2) : 소설(1/2) : 에세이(1/2)
     assert centroid[5] / centroid[0] == pytest.approx(0.25, rel=1e-5)
     assert centroid[6] / centroid[0] == pytest.approx(0.25, rel=1e-5)
-    assert json.loads(row["tag_weights"])["힐링"] == 1
+    assert json.loads(row["tag_weights"])["경제학"] == 1
 
 
 def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_오른다() -> None:
@@ -176,7 +176,7 @@ def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_
         first = await service.rebuild_on(conn, _request())
         again = await service.rebuild_on(conn, _request())
         changed = await service.rebuild_on(
-            conn, _request(onboarding={"tags": ["성장"], "liked_book_ids": [9100201]})
+            conn, _request(onboarding={"tags": ["습관"], "liked_book_ids": [9100201]})
         )
         return first, again, changed
 
@@ -221,7 +221,7 @@ def test_같은_키와_본문이면_다시_계산하지_않고_저장한_응답�
 
     assert again == first
     assert first["data"] == {"cold_start": False, "profile_version": 1}
-    assert json.loads(row["tag_weights"]) == {"힐링": 1}
+    assert json.loads(row["tag_weights"]) == {"경제학": 1}
 
 
 def test_같은_키에_다른_본문이면_409이고_프로필을_바꾸지_않는다() -> None:
@@ -229,13 +229,13 @@ def test_같은_키에_다른_본문이면_409이고_프로필을_바꾸지_않�
         await service.rebuild_once_on(conn, _request(), "hash-a")
         with pytest.raises(idempotency.IdempotencyConflict):
             await service.rebuild_once_on(
-                conn, _request(onboarding={"tags": ["성장"]}), "hash-b"
+                conn, _request(onboarding={"tags": ["습관"]}), "hash-b"
             )
         return await _row(conn)
 
     row = _run(check)
 
-    assert json.loads(row["tag_weights"]) == {"힐링": 1}
+    assert json.loads(row["tag_weights"]) == {"경제학": 1}
     assert row["profile_version"] == 1
 
 
@@ -265,7 +265,7 @@ def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_
                         "onboarding": {"tags": [tag]},
                     }
                 )
-                for key, tag in (("k1", "힐링"), ("k2", "성장"))
+                for key, tag in (("k1", "재테크"), ("k2", "습관"))
             ]
             results = await asyncio.gather(
                 *(
