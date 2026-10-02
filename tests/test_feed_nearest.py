@@ -20,6 +20,7 @@ class _FakeConn:
         self.counted = False
         self.ran: list[str] = []
         self.settings: list[str] = []
+        self.timeouts: list[float] = []
 
     @asynccontextmanager
     async def transaction(self):
@@ -28,11 +29,13 @@ class _FakeConn:
     async def execute(self, sql: str) -> None:
         self.settings.append(sql)
 
-    async def fetchval(self, sql: str, *args):
+    async def fetchval(self, sql: str, *args, timeout: float):
+        self.timeouts.append(timeout)
         self.counted = True
         return self.count
 
-    async def fetch(self, sql: str, *args):
+    async def fetch(self, sql: str, *args, timeout: float):
+        self.timeouts.append(timeout)
         if "+ 0" in sql:
             self.ran.append("exact")
             return [{"book_id": i} for i in range(personalized.CANDIDATE_LIMIT)]
@@ -106,3 +109,25 @@ def test_필터가_있으면_벡터_색인이_더_멀리_훑는다() -> None:
 
     assert any("scan_mem_multiplier" in s for s in conn.settings)
     assert any("max_scan_tuples" in s for s in conn.settings)
+
+
+def test_질의마다_남은_시간만큼만_기다린다() -> None:
+    # 세기 → 벡터 색인 → 정확 계산, 세 번 모두 한 예산에서 남은 시간을 받는다.
+    conn = _FakeConn(count=personalized.FALLBACK_LIMIT, index_rows=10)
+    _nearest(conn, category="법학")
+
+    assert len(conn.timeouts) == 3
+    assert all(0 < t <= personalized.NEAREST_BUDGET_SECONDS for t in conn.timeouts)
+    assert conn.timeouts == sorted(conn.timeouts, reverse=True)
+
+
+def test_시간을_다_쓰면_다음_질의를_보내지_않고_실패한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(personalized, "NEAREST_BUDGET_SECONDS", 0.0)
+    conn = _FakeConn()
+
+    with pytest.raises(TimeoutError):
+        _nearest(conn)
+
+    assert conn.ran == []

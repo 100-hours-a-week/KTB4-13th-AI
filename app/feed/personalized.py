@@ -4,6 +4,7 @@
 뽑아 그 안에서 점수를 매긴다. 탐색 폭과 필터는 ① 벡터 검색과 같게 둔다.
 """
 
+import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
@@ -84,6 +85,12 @@ FALLBACK_LIMIT = 200_000
 FILTERED_SCAN_MEM_MULTIPLIER = 4
 FILTERED_MAX_SCAN_TUPLES = 100_000
 
+# 가까운 책을 뽑는 데 쓸 수 있는 시간(초). 세기 → 뽑기 → 모자라면 다시 뽑기까지 질의가 최대 세 번
+# 나가는데, 셋을 합쳐 이 시간 안에 끝나야 한다. BE 는 응답을 5초까지만 기다린다. 연결 기본 제한
+# (db.py 의 command_timeout 5초)에 맡기면 질의 하나가 5초를 다 쓰고 실패해, 규칙 점수로 줄여
+# 응답할 때는 BE 가 이미 504 를 낸 뒤다(책 벡터를 채우는 동안 운영에서 필터를 건 목록이 그랬다).
+NEAREST_BUDGET_SECONDS = 2.0
+
 _INDEX_DISTANCE = "e.embedding <=> $1::vector"
 # 식을 바꿔 벡터 색인을 못 쓰게 한다. 필터 조건의 색인으로 책을 고른 뒤 거리를 전부 계산한다.
 _EXACT_DISTANCE = "(e.embedding <=> $1::vector) + 0"
@@ -91,6 +98,19 @@ _EXACT_DISTANCE = "(e.embedding <=> $1::vector) + 0"
 _COUNT_SQL = """
 SELECT count(*) FROM (SELECT 1 FROM v_books b WHERE true {where} LIMIT $1) s
 """
+
+
+def _budget(seconds: float) -> Callable[[], float]:
+    """남은 시간을 돌려주는 함수. 다 썼으면 TimeoutError 로, 질의가 시간을 넘긴 것과 같게 끝낸다."""
+    deadline = time.monotonic() + seconds
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("가까운 책을 뽑는 시간이 다 됐다")
+        return remaining
+
+    return left
 
 
 async def _nearest(
@@ -107,11 +127,15 @@ async def _nearest(
     """
     where, filter_params = build_where(filters, first_param=6)
     filtered = bool(where)
+    left = _budget(NEAREST_BUDGET_SECONDS)
     count = 0
     if filtered:
         count_where, count_params = build_where(filters, first_param=2)
         count = await conn.fetchval(
-            _COUNT_SQL.format(where=count_where), FALLBACK_LIMIT + 1, *count_params
+            _COUNT_SQL.format(where=count_where),
+            FALLBACK_LIMIT + 1,
+            *count_params,
+            timeout=left(),
         )
 
     async def _run(distance: str) -> list[asyncpg.Record]:
@@ -138,6 +162,7 @@ async def _nearest(
                 CANDIDATE_LIMIT,
                 page.issued_at,
                 *filter_params,
+                timeout=left(),
             )
 
     if filtered and count <= EXACT_LIMIT:
