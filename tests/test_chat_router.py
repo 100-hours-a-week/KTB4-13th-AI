@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
+from app.chat.schemas import Spec
 from app.main import app
 from app.routers import chat
 
@@ -508,10 +509,9 @@ def test_후보가_없으면_규칙_기반_못_찾음_안내로_reply를_채운�
     data = res.json()["data"]
     assert data["cards"] == []
     assert data["degraded"] is False
-    assert (
-        data["reply"]
-        == "조건에 맞는 책을 아직 못 찾았어요. 다른 조건으로 다시 찾아볼까요?"
-    )
+    # 조건도 검색어도 없는 요청이라, 못 찾았다는 안내 대신 무엇을 알려 달라는 안내가 나간다(#283).
+    assert data["reply"] == "추천해 드리려면 조금 더 알아야 해요."
+    assert data["followup"].startswith("어떤 분야가 좋으세요?")
 
 
 def _capture_spec_prompt(sent: list[str]) -> RunnableLambda:
@@ -997,3 +997,169 @@ def test_exact_의도로_제목만_있어도_카드_프롬프트에_None이_안_
     prompt = sent[0]
     assert "None" not in prompt
     assert "달러구트 꿈 백화점" in prompt
+
+
+def test_카드가_있으면_followup은_null이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    card_reply = (
+        '{"reply": "골라봤어요.", "cards": [{"book_id": 1088,'
+        ' "reason_short": "잔잔한 판타지예요.", "reason_long": "따뜻한 이야기입니다."}]}'
+    )
+    model = _sequenced_model(_spec_reply(semantic="판타지"), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.json()["data"]["followup"] is None
+
+
+def test_후보가_없고_걸린_조건이_있으면_그_조건을_짚어_되묻는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(chat, "get_candidates", _empty)
+    patch = {"semantic": "경제 입문서", "filters": {"price_max": 1000}}
+    monkeypatch.setattr(
+        chat, "get_chat_model", lambda: _fake_model(_spec_reply(**patch))
+    )
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    data = res.json()["data"]
+    assert data["cards"] == []
+    assert data["reply"] == "조건에 맞는 책을 아직 못 찾았어요."
+    assert "1,000원 이하" in data["followup"]
+    assert '"가격은 상관없어요"' in data["followup"]
+
+
+def test_후보는_있었는데_카드가_비면_조건_탓으로_되묻지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 후보는 한 권 있는데 카드 생성이 빈 카드로 돌아온 경우(fake_candidates 기본값).
+    model = _sequenced_model(_spec_reply(semantic="판타지"), '{"cards": []}')
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    data = res.json()["data"]
+    assert data["cards"] == []
+    assert data["followup"] == "같은 요청을 한 번만 다시 말씀해 주시겠어요?"
+
+
+def test_가리킬_책이_없는_지시어는_LLM_없이_책_제목을_되묻는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _must_not_call() -> RunnableLambda:
+        raise AssertionError("지시어만 있는 첫 턴은 LLM을 부르면 안 된다")
+
+    monkeypatch.setattr(chat, "get_chat_model", _must_not_call)
+
+    res = client.post(
+        "/recommendations/chat", json=_request(message="이거랑 비슷한 책 추천해줘")
+    )
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["cards"] == []
+    assert data["reply"] == "어떤 책을 말씀하시는 건가요?"
+    assert "책 제목" in data["followup"]
+    # 일반 경로와 같이 filters가 6키로 펼쳐진 spec을 요청에 실린 그대로 돌려준다.
+    assert data["spec"] == Spec.model_validate(INITIAL_SPEC).model_dump()
+    assert data["degraded"] is False
+    assert data.keys() >= {
+        "reply",
+        "spec",
+        "recognition",
+        "cards",
+        "followup",
+        "buttons",
+    }
+
+
+def test_이어지는_턴의_지시어는_되묻지_않고_추천한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"reply": "비슷한 책이에요.", "cards": [{"book_id": 1088,'
+        ' "reason_short": "잔잔해요.", "reason_long": "따뜻한 이야기입니다."}]}'
+    )
+    model = _sequenced_model(_spec_reply(semantic="잔잔한 소설"), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+    turns = [
+        {"role": "user", "text": "잔잔한 소설 추천해줘"},
+        {"role": "assistant", "text": "골라봤어요."},
+    ]
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(message="이거랑 비슷한 걸로", recent_turns=turns),
+    )
+
+    data = res.json()["data"]
+    assert len(data["cards"]) == 1
+    assert data["followup"] is None
+
+
+def test_카드가_있어도_빠진_정보가_있으면_첫_턴에_reply_끝에_질문을_붙인다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card_reply = (
+        '{"reply": "선물하기 좋은 책을 골라봤어요.", "cards": [{"book_id": 1088,'
+        ' "reason_short": "따뜻해요.", "reason_long": "따뜻한 이야기입니다."}]}'
+    )
+    model = _sequenced_model(_spec_reply(semantic="선물하기 좋은 책"), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post(
+        "/recommendations/chat", json=_request(message="선물할 책 추천해줘")
+    )
+
+    data = res.json()["data"]
+    assert len(data["cards"]) == 1
+    assert data["followup"] is None  # 명세: 카드가 있으면 followup은 null
+    assert data["reply"].startswith("선물하기 좋은 책을 골라봤어요.\n\n받는 분이")
+    assert len(data["reply"]) <= 200
+
+
+def test_빠진_정보_질문은_첫_턴에만_붙인다(monkeypatch: pytest.MonkeyPatch) -> None:
+    card_reply = (
+        '{"reply": "골라봤어요.", "cards": [{"book_id": 1088,'
+        ' "reason_short": "따뜻해요.", "reason_long": "따뜻한 이야기입니다."}]}'
+    )
+    model = _sequenced_model(_spec_reply(semantic="선물하기 좋은 책"), card_reply)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+    turns = [
+        {"role": "user", "text": "책 추천해줘"},
+        {"role": "assistant", "text": "어떤 분야가 좋으세요?"},
+    ]
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(message="선물할 책으로 부탁해", recent_turns=turns),
+    )
+
+    assert res.json()["data"]["reply"] == "골라봤어요."
+
+
+def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그_정보를_묻는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(chat, "get_candidates", _empty)
+    # LLM이 말하지 않은 재고 조건을 지어낸 경우
+    patch = {"semantic": "아이가 읽을 책", "filters": {"in_stock_only": True}}
+    monkeypatch.setattr(
+        chat, "get_chat_model", lambda: _fake_model(_spec_reply(**patch))
+    )
+
+    res = client.post(
+        "/recommendations/chat", json=_request(message="아이한테 읽어줄 책 추천해줘")
+    )
+
+    data = res.json()["data"]
+    assert data["cards"] == []
+    assert data["followup"].startswith("아이가 몇 살쯤인가요?")
+    assert "재고" not in data["followup"]
