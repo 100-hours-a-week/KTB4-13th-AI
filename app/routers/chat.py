@@ -167,7 +167,21 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "조건 제거 예시(형식일 뿐 실제 값 아님) — 지금 filters.price_max가 "
     '20000이고 메시지가 "2만원 이하 아니어도돼"면, 키를 빼지 말고 null로 '
     "명시해라:\n"
-    '{{"filters": {{"price_max": null}}}}'
+    '{{"filters": {{"price_max": null}}}}\n\n'
+    "제목 지정 예시(형식일 뿐 실제 값 아님) — 메시지가 "
+    '"토지 찾아줘"면:\n'
+    '{{"intent": "exact", "exact": {{"title": "토지"}}}}\n'
+    "저자 지정 예시(형식일 뿐 실제 값 아님) — 메시지가 "
+    '"박경리 책 보여줘"면:\n'
+    '{{"intent": "exact", "exact": {{"author": "박경리"}}}}\n\n'
+    "중요: 메시지가 책 제목·작품명·저자 이름뿐이거나 "
+    '"~ 찾아줘/보여줘"처럼 특정 책이나 저자를 가리키면 분위기를 지어내지 '
+    "말고 intent를 exact로 해라. 제목이면 exact.title에, 저자면 exact.author에 "
+    "그 이름을 그대로 넣어라. 메시지에 없는 분위기·톤(가벼운, 잔잔한 등)을 "
+    "semantic에 절대 덧붙이지 마라.\n"
+    "제목만 말한 예시(형식일 뿐 실제 값 아님) — 메시지가 "
+    '"데미안"이면:\n'
+    '{{"intent": "exact", "exact": {{"title": "데미안"}}}}'
 )
 
 
@@ -257,6 +271,15 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
         if key in patch:
             merged[key] = patch[key]
 
+    # LLM이 제목·저자만 채우고 intent를 빠뜨리면 semantic으로 남아 소개글 없는 책이 버려진다(#281).
+    # intent를 직접 준 경우는 LLM 판단을 따른다.
+    if (
+        "intent" not in patch
+        and isinstance(exact_patch, dict)
+        and (exact_patch.get("title") or exact_patch.get("author"))
+    ):
+        merged["intent"] = "exact"
+
     return merged
 
 
@@ -344,6 +367,60 @@ async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
             book_ids,
         )
     return {r["book_id"]: r["description"] for r in rows}
+
+
+# 카탈로그는 판본·권마다 book_id가 달라 같은 책이 후보와 카드에 여러 번 나온다(#281).
+# 저자 표기도 "지은이: 한강", "J.K. 롤링 지음 ;강동혁 옮김"처럼 들쭉날쭉해서, 역할 말을 빼고
+# 첫 저자만 본다. 역할 접두어는 콜론이 있을 때만, 접미어는 앞에 공백이 있을 때만 뗀다 —
+# 안 그러면 이름 속 글자("글", "저")가 같이 잘린다.
+_AUTHOR_ROLE_PREFIX = re.compile(
+    r"^(지은이|저자|글쓴이|글|그림|그린이|원작|옮긴이|역자|엮은이|편저)\s*[:：]\s*"
+)
+_AUTHOR_ROLE_SUFFIX = re.compile(r"\s+(지음|옮김|엮음|그림|글|저|역|편)\s*$")
+_NON_WORD = re.compile(r"[\W_]+")
+
+
+def _edition_key(title: str | None, author: str | None) -> tuple[str, str] | None:
+    """같은 책의 다른 판본을 한 키로 묶는다. 제목이나 저자가 비면 None — 다른 책일 수 있어 안 묶는다."""
+    first_author = re.split(r"[;,]", author or "")[0].strip()
+    first_author = _AUTHOR_ROLE_PREFIX.sub("", first_author)
+    first_author = _AUTHOR_ROLE_SUFFIX.sub("", first_author)
+    title_key = _NON_WORD.sub("", (title or "").casefold())
+    author_key = _NON_WORD.sub("", first_author.casefold())
+    if not title_key or not author_key:
+        return None
+    return title_key, author_key
+
+
+def _dedupe_editions(pool: list[dict]) -> list[dict]:
+    """같은 책의 판본은 앞에 나온 하나만 남긴다. 앞 판본에 소개글이 없고 뒤에 있으면 뒤 것으로 바꾼다."""
+    kept: list[dict] = []
+    position: dict[tuple[str, str], int] = {}
+    for candidate in pool:
+        key = _edition_key(candidate.get("title"), candidate.get("author"))
+        if key is None:
+            kept.append(candidate)
+        elif key not in position:
+            position[key] = len(kept)
+            kept.append(candidate)
+        elif not kept[position[key]]["description"] and candidate["description"]:
+            kept[position[key]] = candidate
+    return kept
+
+
+async def _fetch_edition_keys(book_ids: list[int]) -> set[tuple[str, str]]:
+    """이미 보여 준(제외한) 책들의 판본 키. 그 책의 다른 판본이 다시 추천되지 않게 한다."""
+    if not book_ids:
+        return set()
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT title, author FROM v_books WHERE book_id = ANY($1::int[])",
+            book_ids,
+        )
+    keys = {_edition_key(r["title"], r["author"]) for r in rows}
+    keys.discard(None)
+    return keys
 
 
 async def _fetch_categories(book_ids: list[int]) -> dict[int, str | None]:
@@ -663,6 +740,16 @@ async def get_candidates(
 
     if spec.intent == "semantic":
         pool = [c for c in pool if c["description"]]
+
+    # 이미 보여 준 책의 다른 판본, 그리고 후보끼리 겹치는 판본을 CANDIDATE_LIMIT 전에 걷어 낸다(#281).
+    shown_keys = await _fetch_edition_keys(list(exclude))
+    if shown_keys:
+        pool = [
+            c
+            for c in pool
+            if _edition_key(c.get("title"), c.get("author")) not in shown_keys
+        ]
+    pool = _dedupe_editions(pool)
     pool = pool[:CANDIDATE_LIMIT]
     async with db.get_pool().acquire() as conn:
         await _attach_match_scores(conn, pool, user_id, spec)

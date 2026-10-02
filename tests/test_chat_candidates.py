@@ -49,6 +49,16 @@ def no_match_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chat, "_attach_match_scores", _noop)
 
 
+@pytest.fixture(autouse=True)
+def no_shown_editions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기본값: 이미 보여 준 책의 판본 키 없음(DB 조회 안 함). 보는 테스트는 개별적으로 override한다."""
+
+    async def _fake(book_ids: list[int]) -> set[tuple[str, str]]:
+        return set()
+
+    monkeypatch.setattr(chat, "_fetch_edition_keys", _fake)
+
+
 def _spec(**overrides) -> Spec:
     base = {
         "intent": "semantic",
@@ -516,3 +526,164 @@ def test_후보가_CANDIDATE_LIMIT보다_많으면_앞에서부터_자른다(
 
     assert len(result) == chat.CANDIDATE_LIMIT
     assert [c["book_id"] for c in result] == list(range(1, chat.CANDIDATE_LIMIT + 1))
+
+
+def _fake_descriptions(
+    monkeypatch: pytest.MonkeyPatch, missing: set[int] = frozenset()
+):
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {book_id: "설명" for book_id in book_ids if book_id not in missing}
+
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+
+def _fake_search(monkeypatch: pytest.MonkeyPatch, books: list[dict]) -> None:
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=books, degraded=None)
+
+    monkeypatch.setattr(chat.service, "search", _search)
+
+
+def test_같은_제목_저자의_다른_판본은_앞의_하나만_후보에_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(
+        monkeypatch,
+        [
+            _book(1, title="인류최강 남사친", author="지은이: 건드리고고"),
+            _book(2, title="인류최강 남사친", author="지은이: 건드리고고"),
+            _book(3, title="다른 책", author="지은이: 건드리고고"),
+        ],
+    )
+    _fake_descriptions(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="판타지")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1, 3]
+
+
+def test_저자_표기가_달라도_같은_저자의_같은_제목이면_하나로_본다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(
+        monkeypatch,
+        [
+            _book(1, title="해리포터", author="J.K. 롤링 지음 ;강동혁 옮김"),
+            _book(
+                2,
+                title="해리 포터",
+                author="지은이: J.K. 롤링,존 티퍼니 ;옮긴이: 박아람",
+            ),
+        ],
+    )
+    _fake_descriptions(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="마법")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1]
+
+
+def test_제목이_같아도_저자가_다르면_다른_책이라_둘_다_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(
+        monkeypatch,
+        [_book(1, title="나비", author="김가"), _book(2, title="나비", author="이나")],
+    )
+    _fake_descriptions(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="나비")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1, 2]
+
+
+def test_저자가_비어_있으면_같은_제목이어도_묶지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(
+        monkeypatch,
+        [_book(1, title="나비", author=None), _book(2, title="나비", author="")],
+    )
+    _fake_descriptions(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="나비")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [1, 2]
+
+
+def test_앞_판본에_소개글이_없으면_소개글_있는_판본으로_바꿔_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # exact는 소개글 없는 책도 남기는데, 같은 책이면 소개글이 있는 판본이 카드 이유를 쓰기 낫다.
+    _fake_search(
+        monkeypatch,
+        [
+            _book(1, title="채식주의자", author="한강"),
+            _book(2, title="채식주의자", author="지은이: 한강"),
+            _book(3, title="다른 책", author="작가"),
+        ],
+    )
+    _fake_descriptions(monkeypatch, missing={1})
+
+    spec = _spec(
+        intent="exact", exact=SpecExact(title="채식주의자", author=None, publisher=None)
+    )
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == [2, 3]
+    assert result[0]["description"] == "설명"
+
+
+def test_이미_보여_준_책의_다른_판본은_후보에서_뺀다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(
+        monkeypatch,
+        [
+            _book(10, title="전자레인지 레시피", author="김수림"),
+            _book(11, title="다른 요리책", author="박셰프"),
+        ],
+    )
+    _fake_descriptions(monkeypatch)
+
+    async def _shown(book_ids: list[int]) -> set[tuple[str, str]]:
+        assert book_ids == [9]
+        return {chat._edition_key("전자레인지 레시피", "김수림")}
+
+    monkeypatch.setattr(chat, "_fetch_edition_keys", _shown)
+
+    spec = _spec(intent="semantic", semantic="요리")
+    result = asyncio.run(chat.get_candidates(spec, [9], 1))
+
+    assert [c["book_id"] for c in result] == [11]
+
+
+def test_중복_판본은_CANDIDATE_LIMIT_자리를_안_먹는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 같은 책 두 판본씩 CANDIDATE_LIMIT * 2권이 오면 중복을 걷은 뒤 CANDIDATE_LIMIT권이 남아야 한다.
+    books = []
+    for i in range(chat.CANDIDATE_LIMIT):
+        books.append(_book(i * 2 + 1, title=f"제목{i}", author="작가"))
+        books.append(_book(i * 2 + 2, title=f"제목{i}", author="작가"))
+    _fake_search(monkeypatch, books)
+    _fake_descriptions(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="아무거나")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert len(result) == chat.CANDIDATE_LIMIT
+    assert len({c["title"] for c in result}) == chat.CANDIDATE_LIMIT
+
+
+def test_판본_키는_역할_말을_이름_속_글자와_헷갈리지_않는다() -> None:
+    # "한글"의 "글", "홍길동저"처럼 붙어 있는 접미 글자는 이름의 일부라 잘라내면 안 된다.
+    assert chat._edition_key("책", "한글") == ("책", "한글")
+    assert chat._edition_key("책", "홍 길동 지음") == ("책", "홍길동")
+    assert chat._edition_key("책", "글쓴이: 최작가") == ("책", "최작가")
+    assert chat._edition_key("책", "") is None
+    assert chat._edition_key("", "작가") is None
