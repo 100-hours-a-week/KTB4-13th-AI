@@ -352,11 +352,15 @@ def test_질의_유사도와_취향_유사도가_함께_있으면_둘_다_반영
     assert candidates[0]["match_score"] == 70
 
 
-def test_저장된_취향_벡터가_없어도_이력이_있으면_이력으로_채점한다() -> None:
-    """#246 — 명세 ⑥ "구매나 리뷰가 하나라도 있으면 개인화". ④와 같은 규칙이다.
+@pytest.mark.parametrize("cold_start_row", [False, True])
+def test_저장된_취향_벡터가_없으면_구매_이력이_있어도_취향을_반영하지_않는다(
+    cold_start_row: bool,
+) -> None:
+    """#266 — BE는 개인화 추천에 동의한 사용자만 ⑥을 부른다. 프로필이 없으면 동의하지 않은 사용자다.
 
-    프로필이 없는 사용자가 _LIKED 분류의 책(9100920)을 샀다. 후보(9100921)는 같은 분류이고
-    산 책과 벡터가 같아, 취향 유사도 항과 카테고리 항(구매 3)이 모두 붙어야 한다.
+    이력으로 임시 취향을 만들던 경로(#246)를 뺐다. 프로필이 없는 사용자와 재료 없이 cold_start로
+    저장된 사용자 모두, _LIKED 분류의 책(9100920)을 샀어도 같은 분류·같은 벡터의 후보(9100921)에
+    취향 유사도 항도 카테고리 항도 붙지 않는다.
     """
 
     async def check(conn):
@@ -364,6 +368,12 @@ def test_저장된_취향_벡터가_없어도_이력이_있으면_이력으로_�
         await _insert_book(conn, 9100921, _LIKED)
         await _insert_embedding(conn, 9100920, 1.0)
         await _insert_embedding(conn, 9100921, 1.0)
+        if cold_start_row:
+            await conn.execute(
+                "INSERT INTO taste_profile (user_id, tag_weights, cold_start, profile_version)"
+                " VALUES ($1, '{}'::jsonb, true, 1)",
+                _USER,
+            )
         await conn.execute(
             "INSERT INTO v_user_purchases VALUES ($1, 9100920, now())", _USER
         )
@@ -373,5 +383,5 @@ def test_저장된_취향_벡터가_없어도_이력이_있으면_이력으로_�
 
     candidates = _run(check)
 
-    # 유사도 1.0 → 유사도 항(0.6) 전부, 원점수 3 ÷ 4 → 카테고리 항 0.25 × 0.75. 인기 행은 없다.
-    assert candidates[0]["match_score"] == round((0.6 + 0.25 * 0.75) * 100)
+    # 취향도 카테고리 점수도 인기 행도 없다.
+    assert candidates[0]["match_score"] == 0
