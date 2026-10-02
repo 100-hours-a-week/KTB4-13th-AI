@@ -907,6 +907,178 @@ async def generate_cards(
     return cards, reply, False
 
 
+# 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
+_CLARIFY_CATEGORIES = "소설, 에세이, 인문, 경제경영, 자기계발, 과학"
+_CLARIFY_EXAMPLE = '"경제경영 책 추천해줘"'
+_CLARIFY_ECHO_MAX_CHARS = 20
+
+
+def _won(amount: int) -> str:
+    return f"{amount // 10000}만원" if amount % 10000 == 0 else f"{amount:,}원"
+
+
+def _active_conditions(spec: Spec) -> list[tuple[str, str]]:
+    """걸려 있는 조건을 (사용자에게 보일 말, 풀어 달라고 할 때 따라 말할 예시)로 돌려준다."""
+    f = spec.filters
+    found: list[tuple[str, str]] = []
+    if f.price_max is not None:
+        found.append((f"{_won(f.price_max)} 이하", "가격은 상관없어요"))
+    if f.price_min:  # 0은 조건이 아니다. LLM이 "저렴한"에 0을 넣는 경우가 있다.
+        found.append((f"{_won(f.price_min)} 이상", "가격은 상관없어요"))
+    if f.pub_year_from is not None:
+        found.append((f"{f.pub_year_from}년 이후", "출간연도는 상관없어요"))
+    if f.pub_year_to is not None:
+        found.append((f"{f.pub_year_to}년 이전", "출간연도는 상관없어요"))
+    if f.category:
+        found.append((f.category, "분야는 상관없어요"))
+    if f.in_stock_only:
+        found.append(("재고 있는 책", "재고는 상관없어요"))
+    if spec.exact.publisher:
+        found.append((f"{spec.exact.publisher} 책", "출판사는 상관없어요"))
+    return found
+
+
+def _no_card_response(
+    spec: Spec,
+    message: str,
+    *,
+    had_candidates: bool,
+    slot_question: str | None = None,
+) -> tuple[str, str]:
+    """카드가 없을 때의 (reply, followup). reply는 짧은 안내, followup은 사용자가 답할 질문이다.
+
+    검색어가 비었으면(조건이 걸려 있어도) 주제부터 묻는다 — 조건을 풀어도 찾을 게 없다.
+    검색어가 있고 걸린 조건이 있으면 그 조건을 풀지 묻고(따라 말할 예시를 준다), 검색어는
+    있는데 못 찾았으면 제목·저자나 분야를 묻는다. 다음 턴의 답은 1단계(spec 갱신)가 그대로
+    받는다. 답 예시는 한 단어가 아니라 문장으로 줘서 사용자가 문장으로 답하게 한다.
+    """
+    if had_candidates:
+        # 후보는 있었는데 카드를 못 만들었다(카드 생성이 비어 돌아옴). 조건 탓이 아니다.
+        return (
+            "추천을 만들지 못했어요.",
+            "같은 요청을 한 번만 다시 말씀해 주시겠어요?",
+        )
+    if slot_question:
+        # "아이한테 읽어줄 책"에서 LLM이 지어낸 재고 조건 대신, 정말 빠진 정보(나이)를 묻는다.
+        return "조건에 맞는 책을 아직 못 찾았어요.", slot_question
+    conditions = _active_conditions(spec)
+    names = ", ".join(name for name, _ in conditions)
+    if not _query_text(spec):
+        held = f" (지금 걸린 조건: {names})" if conditions else ""
+        return (
+            "추천해 드리려면 조금 더 알아야 해요.",
+            (
+                f"어떤 분야가 좋으세요? {_CLARIFY_CATEGORIES} 중에서 골라 "
+                f"{_CLARIFY_EXAMPLE}처럼 말씀해 주시거나, 알고 있는 제목·저자를 알려 주세요.{held}"
+            ),
+        )
+    if conditions:
+        examples = " / ".join(
+            f'"{example}"' for example in dict.fromkeys(e for _, e in conditions)
+        )
+        return (
+            "조건에 맞는 책을 아직 못 찾았어요.",
+            f"{names} 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요? 예) {examples}",
+        )
+    said = message.strip()
+    head = (
+        f'"{said}"만으로는 찾기 어려워요.'
+        if said and len(said) <= _CLARIFY_ECHO_MAX_CHARS
+        else "말씀하신 내용만으로는 찾기 어려워요."
+    )
+    return (
+        "조건에 맞는 책을 아직 못 찾았어요.",
+        f"{head} 제목이나 저자를 알려 주시거나, 분야({_CLARIFY_CATEGORIES}) 중 하나를 골라 주세요.",
+    )
+
+
+# 되묻기 2단계(#283) — 모호한 요청은 규칙으로 가려 낸다. LLM은 더 안 부른다.
+# 1) 답할 수 없는 요청(가리킬 책이 없는 지시어, 알아들을 수 없는 입력)은 검색·추천을 건너뛰고
+#    cards: [] + followup으로 되묻는다(명세: 카드가 없을 때 followup).
+# 2) 답은 할 수 있지만 정보가 빠진 요청(선물, 아이, 저렴한, 최근)은 첫 턴에만 추천을 주고
+#    reply 끝에 질문 한 줄을 붙인다. 명세의 reply 최대 200자는 지킨다.
+_REPLY_MAX_CHARS = 200
+_REFERENCE = re.compile(
+    r"(이거|그거|저거|이것(?!저것)|그것|(?<!이것)저것|[이그저] 책|아까|방금|조금 전|위에서|앞에서"
+    r"|[첫두세네]\s?번째|\d+번째|\d+번 책)"
+)
+_ONLY_JAMO = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ!?.~,;]+$")
+_DIGIT = re.compile(r"\d")
+_YEAR_WORD = re.compile(r"(\d{4}\s*년|올해|작년|재작년|금년)")
+_RECIPIENT = re.compile(
+    r"(엄마|아빠|어머니|아버지|부모|친구|연인|남자친구|여자친구|남편|아내|동료|상사"
+    r"|선생|할머니|할아버지|형|누나|동생|언니|오빠|딸|아들)"
+)
+_AGE_GIVEN = re.compile(r"(\d+\s*(세|살|학년)|유치원|초등|중학|고등)")
+# (이름, 모호하다고 보는 말, 이미 구체적이라 묻지 않는 말, 질문)
+_SLOT_RULES = (
+    (
+        "age",
+        re.compile(
+            r"(?<![가-힣])(아이|아기|애기|어린이|유아|꼬마)(?!돌|패드|폰|큐|디어|템|콘)"
+        ),
+        _AGE_GIVEN,
+        '아이가 몇 살쯤인가요? 나이를 알려 주시면 더 맞게 골라 드려요. 예) "5세", "초등 저학년"',
+    ),
+    (
+        "gift",
+        re.compile(r"선물"),
+        _RECIPIENT,
+        "받는 분이 어떤 분인가요? 나이, 취향, 예산을 알려 주시면 더 맞게 골라 드려요.",
+    ),
+    (
+        "budget",
+        re.compile(r"(저렴|싼|싸게|가성비|값싼)"),
+        _DIGIT,
+        '예산은 어느 정도로 생각하세요? 예) "1만원 이하"',
+    ),
+    (
+        "recent",
+        re.compile(r"(최근|요즘|신간|새로\s?나온)"),
+        _YEAR_WORD,
+        '"최근"은 어느 정도까지 보시나요? 예) "작년 이후", "2024년 이후"',
+    ),
+)
+
+
+def _unanswerable_request(
+    message: str, spec: Spec, recent_turns: list[Turn]
+) -> tuple[str, str] | None:
+    """검색·추천을 해 봐야 소용없는 요청의 (reply, followup). 해당 없으면 None."""
+    text = message.strip()
+    if _ONLY_JAMO.match(text):
+        return (
+            "무슨 말씀인지 잘 모르겠어요.",
+            '찾고 싶은 책이나 읽고 싶은 분위기를 다시 말씀해 주시겠어요? 예) "잔잔한 소설 추천해줘"',
+        )
+    if not recent_turns and spec.anchor_book is None and _REFERENCE.search(text):
+        # 첫 턴이라 "이거", "그 책"이 가리킬 책이 없다. 서버는 대화를 저장하지 않아 요청에 실린 것만 안다.
+        return (
+            "어떤 책을 말씀하시는 건가요?",
+            "책 제목을 알려 주시면 그 책을 기준으로 찾아 드릴게요.",
+        )
+    return None
+
+
+def _slot_question(message: str) -> str | None:
+    """추천은 할 수 있지만 빠진 정보가 있는 요청이면 물을 질문 한 줄. 여럿이어도 하나만 묻는다."""
+    for _, trigger, specific, question in _SLOT_RULES:
+        if trigger.search(message) and not specific.search(message):
+            return question
+    return None
+
+
+def _append_question(reply: str, question: str) -> str:
+    """reply 끝에 질문을 붙인다. 200자를 넘으면 reply의 뒷 문장부터 덜어 내고, 그래도 안 되면 안 붙인다."""
+    sentences = re.split(r"(?<=[.!?])\s+", reply.strip())
+    while sentences:
+        combined = " ".join(sentences) + "\n\n" + question
+        if len(combined) <= _REPLY_MAX_CHARS:
+            return combined
+        sentences = sentences[:-1]
+    return reply
+
+
 @router.post("/chat")
 async def chat(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
@@ -922,6 +1094,23 @@ async def chat(request: Request) -> JSONResponse:
     if isinstance(req, tuple):
         status, message = req
         return responses.error(status, message)
+
+    unanswerable = _unanswerable_request(req.message, req.spec, req.recent_turns)
+    if unanswerable:
+        # LLM도 검색도 부르지 않는다. spec은 요청에 실린 그대로 돌려준다(6키 계약 유지).
+        reply, followup = unanswerable
+        return responses.success(
+            "recommend_success",
+            {
+                "reply": reply,
+                "spec": req.spec.model_dump(),
+                "recognition": None,
+                "cards": [],
+                "followup": followup,
+                "buttons": [],
+                "degraded": False,
+            },
+        )
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
@@ -942,6 +1131,17 @@ async def chat(request: Request) -> JSONResponse:
     # 추천을 반영한 LLM reply, 카드가 있는데 reply만 비면 최후 폴백, 카드
     # 자체가 없으면(검색 결과 없음 등 — 이때는 generate_cards가 LLM을 아예
     # 안 부르므로 llm_reply도 없다) "골라봤어요"가 어색해 못 찾음 안내로 바꾼다.
+    # 첫 턴에만 묻는다. 이어지는 턴은 사용자가 이미 답하는 중이라 같은 걸 또 묻지 않는다.
+    slot_question = None if req.recent_turns else _slot_question(req.message)
+    no_card_reply, followup = None, None
+    if not cards:
+        no_card_reply, followup = _no_card_response(
+            spec,
+            req.message,
+            had_candidates=bool(candidates),
+            slot_question=slot_question,
+        )
+
     if degraded:
         reply = "지금은 추천이 어려워요. 조건에 맞는 책을 찾아볼게요."
     elif llm_reply:
@@ -949,7 +1149,10 @@ async def chat(request: Request) -> JSONResponse:
     elif cards:
         reply = "골라봤어요."
     else:
-        reply = "조건에 맞는 책을 아직 못 찾았어요. 다른 조건으로 다시 찾아볼까요?"
+        reply = no_card_reply
+
+    if cards and slot_question and not degraded:
+        reply = _append_question(reply, slot_question)
 
     return responses.success(
         "recommend_success",
@@ -958,9 +1161,7 @@ async def chat(request: Request) -> JSONResponse:
             "spec": spec.model_dump(),
             "recognition": None,
             "cards": cards,
-            "followup": "어떤 책을 찾고 있는지 조금 더 말씀해 주시겠어요?"
-            if not cards
-            else None,
+            "followup": followup,
             "buttons": [],
             "degraded": degraded,
         },
