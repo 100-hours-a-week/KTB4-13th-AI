@@ -11,6 +11,7 @@ BE 는 가격·재고를 책이 아니라 상품에 둔다. 책 하나에 상품
 # 책마다 상품 하나를 고르는 하위 쿼리. 가격과 재고가 같은 상품에서 나오도록 순서를 같게 둔다.
 _PICK = (
     "(SELECT {expr} FROM v_products pr WHERE pr.book_id = {alias}.book_id"
+    " AND pr.deleted_at IS NULL"
     " ORDER BY pr.stock_quantity > 0 DESC, pr.discounted_price LIMIT 1)"
 )
 

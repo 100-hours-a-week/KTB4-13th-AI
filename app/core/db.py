@@ -27,6 +27,11 @@ REQUIRED_INDEXES = (
     # 가격·재고를 읽는 상품 표(#205)
     "v_products_book_id_idx",
     "v_products_price_order_idx",
+    # 소프트 삭제를 제외한 검색·이력 조회
+    "v_books_active_newest_idx",
+    "v_products_active_book_price_idx",
+    "v_user_purchases_active_user_idx",
+    "v_user_reviews_active_user_idx",
 )
 
 
@@ -116,3 +121,18 @@ async def check_vector_index() -> bool:
     except Exception:  # noqa: BLE001 — /health는 어떤 실패든 unavailable로 보고한다
         return False
     return bool(valid)
+
+
+async def replication_lag_seconds() -> int | None:
+    """마지막 성공한 증분 복제 이후 경과 초. 아직 성공 기록이 없으면 None."""
+    if _pool is None:
+        return None
+    try:
+        async with _pool.acquire() as conn:
+            lag = await conn.fetchval(
+                "SELECT greatest(0, extract(epoch FROM now() - last_succeeded_at))::int "
+                "FROM replication_status WHERE singleton"
+            )
+    except Exception:  # noqa: BLE001 — 마이그레이션 전에도 health 응답은 유지한다
+        return None
+    return lag

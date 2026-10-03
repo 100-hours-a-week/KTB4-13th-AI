@@ -152,8 +152,8 @@ async def health():
     body = {
         "status": status,
         "version": settings.release_sha,
-        # 복제기가 아직 없어 측정 불가. status 를 바꾸지 않는다
-        "replication_lag_seconds": None,
+        # 복제 지연은 관찰값이다. 밀렸다고 정상 인스턴스를 트래픽에서 빼지는 않는다.
+        "replication_lag_seconds": await db.replication_lag_seconds(),
         "components": components,
     }
 

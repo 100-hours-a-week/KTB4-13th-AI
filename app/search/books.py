@@ -13,6 +13,7 @@ SELECT b.book_id, b.title, b.author, b.publisher,
        b.cover_url
 FROM unnest($1::int[]) WITH ORDINALITY AS ids(book_id, pos)
 JOIN v_books b USING (book_id)
+WHERE b.deleted_at IS NULL
 ORDER BY ids.pos
 """
 

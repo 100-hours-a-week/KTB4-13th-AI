@@ -71,8 +71,11 @@ def test_낱말_속_와일드카드_글자를_막는다() -> None:
     assert keyword.like_pattern("100%_") == "%100\\%\\_%"
 
 
-def test_필터가_없으면_조건도_없다() -> None:
-    assert build_where(SearchFilters(), first_param=5) == ("", [])
+def test_필터가_없어도_소프트_삭제_도서는_제외한다() -> None:
+    assert build_where(SearchFilters(), first_param=5) == (
+        " AND b.deleted_at IS NULL",
+        [],
+    )
 
 
 def test_필터는_값을_자리표시자로_넘긴다() -> None:
@@ -82,7 +85,8 @@ def test_필터는_값을_자리표시자로_넘긴다() -> None:
 
     # 가격·재고는 상품 표에서 읽는다(#206)
     assert sql == (
-        f" AND b.category = $5 AND {products.price_sql('b')} <= $6"
+        f" AND b.deleted_at IS NULL AND b.category = $5"
+        f" AND {products.price_sql('b')} <= $6"
         f" AND {products.in_stock_sql('b')}"
     )
     assert params == ["한국문학", 20000]
@@ -92,7 +96,7 @@ def test_온보딩_값은_대응표의_핵심_분류들로_푼다() -> None:
     # 앱은 온보딩과 같은 값("에세이")으로 거른다. 카탈로그 분류명과 글자가 달라 그대로는 0건이다(#219).
     sql, params = build_where(SearchFilters(category="에세이"), first_param=5)
 
-    assert sql == " AND b.category = ANY($5::text[])"
+    assert sql == " AND b.deleted_at IS NULL AND b.category = ANY($5::text[])"
     # 일부 분류(한국문학·문학)는 넣지 않는다. 에세이로 걸렀는데 소설이 섞이면 안 된다(#110).
     assert params == [["강연집·수필집·연설문집", "에세이"]]
 
@@ -100,20 +104,23 @@ def test_온보딩_값은_대응표의_핵심_분류들로_푼다() -> None:
 def test_분류_하나로_풀리면_같다로_건다() -> None:
     # ANY 로 걸면 분류 + 신간순 색인을 못 골라 느려진다(#219). 여행 → 지리 하나.
     assert build_where(SearchFilters(category="여행"), first_param=5) == (
-        " AND b.category = $5",
+        " AND b.deleted_at IS NULL AND b.category = $5",
         ["지리"],
     )
 
 
 def test_어린이는_분류_조건을_걸지_않는다() -> None:
     # 분류로 가를 수 없어 거르지 않은 목록을 준다(#228).
-    assert build_where(SearchFilters(category="어린이"), first_param=5) == ("", [])
+    assert build_where(SearchFilters(category="어린이"), first_param=5) == (
+        " AND b.deleted_at IS NULL",
+        [],
+    )
 
 
 def test_대응표에_없는_값은_지금처럼_정확히_일치하는_것만_거른다() -> None:
     # ③ 챗봇은 LLM 이 준 카탈로그 분류명을 그대로 넘길 수 있다.
     assert build_where(SearchFilters(category="법학"), first_param=5) == (
-        " AND b.category = $5",
+        " AND b.deleted_at IS NULL AND b.category = $5",
         ["법학"],
     )
 

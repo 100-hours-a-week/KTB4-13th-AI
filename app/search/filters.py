@@ -9,9 +9,10 @@ from app.search.schemas import SearchFilters
 def build_where(
     filters: SearchFilters, first_param: int, alias: str = "b"
 ) -> tuple[str, list[Any]]:
-    """(" AND ..." 조각, 값 목록) 을 돌려준다. 조건이 없으면 ("", []).
+    """(" AND ..." 조각, 값 목록) 을 돌려준다.
 
     값은 전부 $n 자리로 넘긴다. 글자를 SQL 에 직접 이어 붙이지 않는다. 조건 식의 {} 자리에 $n 이 들어간다.
+    복제본에는 소프트 삭제 행도 보존하므로 활성 도서 조건을 항상 포함한다.
     """
     conditions: list[tuple[str, Any]] = []
     if filters.category is not None:
@@ -38,7 +39,7 @@ def build_where(
     if filters.pub_year_to is not None:
         conditions.append((f"{alias}.pub_year <= {{}}", filters.pub_year_to))
 
-    sql = ""
+    sql = f" AND {alias}.deleted_at IS NULL"
     params: list[Any] = []
     for i, (condition, value) in enumerate(conditions):
         sql += " AND " + condition.format(f"${first_param + i}")

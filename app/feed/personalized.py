@@ -33,14 +33,17 @@ WITH nearest AS (
     JOIN v_books b USING (book_id)
     WHERE NOT EXISTS (
             SELECT 1 FROM v_user_purchases x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.purchased_at <= $5)
+            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.purchased_at <= $5
+              AND x.deleted_at IS NULL
+              AND x.order_status IN ('PAID', 'PARTIAL_CANCELED')
+              AND x.quantity > x.canceled_quantity)
       AND NOT EXISTS (
             SELECT 1 FROM v_user_library x
             WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.added_at <= $5)
       AND NOT EXISTS (
             SELECT 1 FROM v_user_reviews x
             WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.rating <= $3
-              AND x.created_at <= $5)
+              AND x.created_at <= $5 AND x.active_flag AND x.deleted_at IS NULL)
       {{where}}
     ORDER BY distance
     LIMIT $4
@@ -106,7 +109,18 @@ async def _nearest(
     때문에, 쪽마다 방법이 달라지면 가까운 500권이 달라져 책이 중복되거나 빠진다(#196).
     """
     where, filter_params = build_where(filters, first_param=6)
-    filtered = bool(where)
+    # build_where에는 소프트 삭제 제외 조건이 항상 있다. HNSW 탐색 방식을 바꾸는
+    # "필터 있음"은 사용자가 실제로 건 검색 조건만 뜻한다.
+    filtered = any(
+        value is not None
+        for value in (
+            filters.category,
+            filters.price_min,
+            filters.price_max,
+            filters.pub_year_from,
+            filters.pub_year_to,
+        )
+    ) or filters.in_stock_only
     count = 0
     if filtered:
         count_where, count_params = build_where(filters, first_param=2)

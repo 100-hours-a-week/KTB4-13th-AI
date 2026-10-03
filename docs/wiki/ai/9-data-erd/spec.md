@@ -51,6 +51,7 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 
 1. AI 소유 `book_embeddings`가 `v_books`를 FK로 참조하므로 **복제는 행 단위 upsert·delete여야 하며, `v_books`를 TRUNCATE 후 재적재하는 방식은 쓸 수 없다.** 재적재 순간 임베딩이 cascade로 전량 지워지거나 삭제가 거절된다. 신간의 임베딩은 `v_books` 행이 도착한 뒤에만 만든다(초기 적재 절차가 이미 복제 완료 후로 되어 있어 새 제약은 아니다).
 2. AI가 `v_books`·`v_products`에 얹은 보조 인덱스(3.4, 3.11)를 복제가 보존해야 한다. 테이블을 DROP 후 다시 만드는 방식이면 인덱스가 사라진다.
+3. 소프트 삭제·주문 취소 행은 버리지 않고 상태 컬럼까지 복제하는 **B안**을 사용한다. AI 조회는 활성 상태만 필터링한다. 이력을 보존해야 재처리와 장애 분석이 가능하다.
 
 실패는 셋으로 갈린다.
 
@@ -64,11 +65,11 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 
 | 복제 테이블 | 담긴 것 | 쓰는 곳 |
 | --- | --- | --- |
-| v_books | book_id, title, author, publisher, price, in_stock, cover_url, category, pub_year, description | ①③④의 응답 항목, 벡터 적재, 키워드 검색 인덱스, ⑥ 이력 책의 카테고리 점수, ③ 이미지 턴(V2)의 제목·저자 텍스트 검색 |
-| v_products | book_id, discounted_price, stock_quantity | ①③④의 가격·재고 |
-| v_user_purchases | user_id, book_id, purchased_at | ⑥ 취향 벡터, ③④ 채점과 중복 제외 |
+| v_books | book_id, isbn, title, author, publisher, published_at, cover_url, category, pub_year, description, updated_at, deleted_at | ①③④의 응답 항목, 벡터 적재, 키워드 검색 인덱스, ⑥ 이력 책의 카테고리 점수, ③ 이미지 턴(V2)의 제목·저자 텍스트 검색 |
+| v_products | id, book_id, sale_price, discounted_price, stock_quantity, status, updated_at, deleted_at | ①③④의 가격·재고 |
+| v_user_purchases | user_id, book_id, purchased_at, order_item_id, quantity, canceled_quantity, order_status, canceled_at, deleted_at | ⑥ 취향 벡터, ③④ 채점과 중복 제외. 취소·삭제 행은 조회에서 제외 |
 | v_user_library | user_id, book_id, added_at | 같음 |
-| v_user_reviews | user_id, book_id, rating(0.5–5.0), created_at | 같음 |
+| v_user_reviews | user_id, book_id, rating(0.5–5.0), created_at, review_id, active_flag, deleted_at, updated_at | 같음. 삭제 리뷰는 조회에서 제외 |
 | v_book_popularity | book_id, sales, rating_avg, rating_count, as_of | ① 인기순, ③ 후보 채점, ④ 인기 항과 cold_start 목록 |
 
 **허용 지연(신선도 예산).** 사본이라 실시간이 아니다. 이 값을 넘기면 복제 문제로 보고 조치한다. **복제 수단과 주기 자체는 계약이 아니며** BE·AI·클라우드가 함께 정한다(5절). 계약이 되는 것은 위 컬럼 집합·아래 허용 지연·스키마 변경 통보 의무·위 두 전제다.
@@ -148,6 +149,7 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
 | --- | --- | --- | --- | --- | --- |
 | book_id | int PK | N | 도서 ID | 응답의 도서 식별자이자 임베딩·인기·이력 테이블의 조인 축. `book_embeddings`가 FK로 참조 | 커머스 정수 ID |
+| isbn | string | Y | ISBN13 | 원본 도서와 복제본의 대조 키 | 원본에 없는 값이 있어 Null 허용 |
 | title | string | N | 제목 | 검색 결과와 카드 응답 필드. 키워드 인덱스 대상 | 응답 스키마가 string |
 | author | string | **Y** | 저자 | 같음. 키워드 인덱스 대상 | 응답 스키마가 string. 원천(국중·정보나루)이 저자를 주지 않는 책이 카탈로그 실측 4.0만 건(1.7%) 있어 2026-09-18에 Null 허용으로 바꿨다(AI AI #8) |
 | publisher | string | **Y** | 출판사 | 검색 결과 응답 필드 | 응답 스키마가 string. 빈 값 실측 4건이라 같은 결정으로 Null 허용(AI AI #8) |
@@ -156,7 +158,10 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | cover_url | string | **Y** | 표지 이미지 URL | 응답 필드 | URL 문자열. 국중 표지가 없는 책이 카탈로그 실측 85.8%라 NOT NULL이면 대부분 적재할 수 없다. 플레이스홀더로 채우면 깨진 이미지를 그리게 되므로 Null 허용으로 바꿨다(2026-09-18, AI #8). 표시는 프런트가 대체 이미지로 처리 |
 | category | string | Y | 카테고리명 | 검색·피드의 카테고리 필터 조건, ⑥의 이력 책 카테고리 점수. 온보딩 관심 대분류와는 글자가 달라 AI의 대응표(`app/core/categories.py`, AI #110)로 잇는다 | 문자열 정확 일치로 동작하므로 복제 시 NFC 정규화하고 후행 공백을 다듬는다(5절). 미분류 도서는 필터에서 제외되므로 Null 허용 |
 | pub_year | int | Y | 출간연도 | 검색·피드의 출간연도 구간 필터, newest 정렬 기준 | 연 단위 비교라 정수. 미상 도서는 필터·정렬에서 제외되므로 Null 허용 |
+| published_at | date | Y | 출간일 | 원본 검증과 이후 일 단위 필터 확장 | 시간대 없는 날짜 |
 | description | text | Y | 도서 소개 | 문서 임베딩(purpose: document)의 입력 텍스트. 키워드 인덱스 대상. ③이 이유 문장을 쓸 때 LLM에 주는 도서 소개 | 길이 제한이 큰 본문이라 text. 없으면 임베딩을 생성하지 않아 벡터 검색 대상에서 빠짐 |
+| updated_at | timestamptz | N | 원본 최종 변경 시각 | 증분 복제 검증과 지연 관찰 | KST DATETIME을 UTC로 변환 |
+| deleted_at | timestamptz | Y | 소프트 삭제 시각 | 행은 보존하되 검색·추천·임베딩에서 제외 | 삭제 전에는 Null |
 
 ### 3.5 v_book_popularity
 
@@ -182,6 +187,9 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | added_at | timestamptz | N | 도서관 담기 시각. v_user_library | 같음(커서 발급 시각 비교 포함) | 같음 |
 | created_at | timestamptz | N | 리뷰 작성 시각. v_user_reviews | computed_at 이후 발생분만 채점에 가산하기 위한 비교 축 | 같음 |
 | rating | numeric(2,1) | N | 별점. v_user_reviews | 4.0점 이상은 선호로 가산하고, 2.0점 이하는 비선호로 그 도서를 취향 벡터와 추천에서 뺀다. 카테고리 점수는 책마다 큰 값 하나라, 산 책이면 구매 점수가 남는다(AI #103). 2.5점부터 3.5점은 중립 | 0.5점 단위의 0.5–5.0. CHECK는 범위만 걸고 0.5 단위는 강제하지 않는다(원본 예외값 하나에 복제가 거부되지 않게) |
+| quantity / canceled_quantity | int | N | 구매 수량과 취소 누계. v_user_purchases | `quantity > canceled_quantity`인 구매만 취향과 제외 이력에 사용 | 부분 취소를 보존하기 위한 수량 |
+| order_status / canceled_at / deleted_at | string / timestamptz / timestamptz | Y | 주문 상품 상태와 취소·삭제 시각 | 취소·삭제된 구매를 이력에서 제외 | 원본 상태를 그대로 보존 |
+| active_flag / deleted_at / updated_at | bool / timestamptz / timestamptz | N/Y/N | 리뷰 활성 여부와 삭제·변경 시각 | 활성이고 삭제되지 않은 리뷰만 취향 계산에 사용 | 원본 상태를 그대로 보존 |
 
 ### 3.7 users
 
@@ -307,9 +315,9 @@ AI는 위 세 칸만 읽는다. 서버 표에는 상품명·원가 등 칸이 �
 | 벡터 차원 N | **확정: `multilingual-e5-small`(384차원)**(2026-09-16). 속도는 `bge-m3`(1024차원) 대비 처리량 8배이고, 품질은 벡터 단독 recall@10 0.85지만 실제 `/search`가 키워드+벡터 하이브리드라 0.90으로 기준선과 동급이다(2단계). `001_init.sql`이 `vector(384)`로 생성되고 명세 예시의 `dim`도 384다. 실제 카탈로그 recall@10 재측정은 적재 후 검증 항목으로 남는다 | 결정 완료. pgvector `vector(N)`은 DDL에 박히므로, 이후 차원을 바꾸려면 **두 테이블 전량 재생성**이 필요하다(메모리 사전 벡터는 재기동으로 갱신). 이 중 `taste_profile`은 AI 혼자 재생성할 수 없다 — 온보딩 원본과 기억을 AI가 저장하지 않으므로 **BE가 전 사용자에 대해 ⑥을 다시 호출**해야 하고, 그 본문의 `memories[].vector`는 BE가 옛 모델로 보관한 값이라 `dim` 불일치로 400이 난다. 차원이 같은 교체(파인튜닝 등)는 400도 나지 않고 옛 기억 벡터·centroid가 새 도서 벡터와 조용히 섞인다 — `dim` 검사만으로는 막을 수 없다. ②는 내부 전용이라 BE가 재임베딩할 수도 없다. 모델 교체 시 기억 벡터를 다시 만드는 경로가 필요하다(아래 user_memories 왕복 행과 함께 결정) | **필요.** 전 사용자 ⑥ 재호출 절차와 기억 벡터 재임베딩 경로 |
 | 멱등 키 키 공간 | 프로필 생성과 쇼핑 에이전트가 같은 규약 사용 | 두 API의 키 충돌 가능 여부. 충돌 시 잘못된 저장 응답 반환 또는 정상 요청 409 발생 | **필요.** 키 생성 규칙(prefix 등) 합의 |
 | liked_book_ids 절단 기준 | 앞 50개로 정함(공통 규약도 맞춤) | 결정 완료 | 불필요 |
-| 증분 복제 가능 조건 | 복제 수단이 미정. 2절의 두 전제(행 단위 upsert·delete, 인덱스 보존) 안에서 정해야 한다 | BE 원본에 행 변경 시각과 삭제 표현이 노출되는지. FK cascade가 동작하려면 **하드 삭제가 사본에 delete로 전달**돼야 한다. 소프트 삭제(비공개 플래그)면 `v_books`에 행이 남아 cascade가 걸리지 않고 비공개 도서가 검색·추천에 계속 노출되므로, 상태 컬럼을 복제해 AI가 거를지 결정 | **필요.** 원본 스키마 확인 |
-| 복제 수단·주기 | 미정. 수단은 계약이 아니지만 위 전제 안에서 골라야 한다 | CDC / 변경 시각 기반 upsert·delete 중 택일, 주기 | **필요.** BE·AI·클라우드 3자 |
-| 복제 범위 | 도서 외에 이력 3종·인기 집계까지 복제해 달라고 회신했고 클라우드 답변을 기다린다(7단계) | 다섯 테이블 전부 복제되는지 확정 | **필요.** 클라우드 회신 |
+| 증분 복제 가능 조건 | **확정.** `(updated_at, id)` 복합 커서로 행 단위 upsert하고 소프트 삭제 상태를 보존한다 | 완료. `v_books` TRUNCATE/DROP 금지 | 불필요 |
+| 복제 수단·주기 | **확정.** AI 서버 systemd timer가 5분마다 변경 시각 기반 복제기를 실행한다 | `/health.replication_lag_seconds`로 300초 예산 관찰 | 불필요 |
+| 복제 범위 | **확정.** books, products, 주문·주문상품, cancel(존재 시), reviews, 인기 스냅샷 | `cancel`이 없는 현재 스키마는 CANCELED 상태를 전량 취소로 해석 | 스키마 추가 시 컬럼 계약 통보 |
 | 시각 컬럼의 시간대 | BE 원본은 `DATETIME(6)`이고 한국 시간으로 저장된다(배포 설정 `TZ: Asia/Seoul`, 클라우드 compose 문서) | 결정 완료: 복제는 Asia/Seoul로 해석해 적재한다 | 불필요. 실제 복제 설정 확인만 남음(AI #235) |
 | 복제 시 값 변환 규칙 | `price`, `category`의 원본 타입·표현이 미확인 | `price`가 `DECIMAL`일 때의 정수 변환 기준, `category`의 NFC 정규화와 공백 처리 책임 | **필요.** 원본 타입과 정규화 책임 |
 | 복제 대상 컬럼 변경 통보 | 규정 없음 | 컬럼명·타입·의미 변경과 삭제 시 사전 통보 절차. 통보 없이 바뀌면 복제가 끊기는데 AI는 오류를 내지 않아 발견이 늦다 | **필요.** 통보 창구 |

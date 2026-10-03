@@ -24,14 +24,17 @@ MAX_BOOKS = 500
 EXCLUDED_SQL = """
 NOT EXISTS (
         SELECT 1 FROM v_user_purchases x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.purchased_at <= $3)
+        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.purchased_at <= $3
+          AND x.deleted_at IS NULL
+          AND x.order_status IN ('PAID', 'PARTIAL_CANCELED')
+          AND x.quantity > x.canceled_quantity)
   AND NOT EXISTS (
         SELECT 1 FROM v_user_library x
         WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.added_at <= $3)
   AND NOT EXISTS (
         SELECT 1 FROM v_user_reviews x
         WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.rating <= $2
-          AND x.created_at <= $3)
+          AND x.created_at <= $3 AND x.active_flag AND x.deleted_at IS NULL)
 """
 
 # 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#207).
@@ -91,7 +94,7 @@ SELECT b.book_id, b.title, b.author, pr.discounted_price::int AS price, b.cover_
        pr.stock_quantity > 0 AS in_stock
 FROM v_products pr
 JOIN v_books b ON b.book_id = pr.book_id
-WHERE {EXCLUDED_SQL} {{where}}
+WHERE pr.deleted_at IS NULL AND {EXCLUDED_SQL} {{where}}
 ORDER BY pr.discounted_price, pr.book_id
 """,
 }

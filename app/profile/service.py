@@ -26,8 +26,9 @@ _LOCK_SPACE = 6
 
 _EMBEDDINGS_SQL = """
 SELECT book_id, embedding::text AS embedding
-FROM book_embeddings
-WHERE book_id = ANY($1::int[])
+FROM book_embeddings e
+JOIN v_books b USING (book_id)
+WHERE book_id = ANY($1::int[]) AND b.deleted_at IS NULL
 """
 
 _READ_SQL = """

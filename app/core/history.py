@@ -92,13 +92,19 @@ _SQL = """
 SELECT h.book_id, h.kind, h.rating, h.at, b.category
 FROM (
     SELECT book_id, 'purchase' AS kind, NULL::numeric AS rating, purchased_at AS at
-    FROM v_user_purchases WHERE user_id = $1
+    FROM v_user_purchases
+    WHERE user_id = $1
+      AND deleted_at IS NULL
+      AND order_status IN ('PAID', 'PARTIAL_CANCELED')
+      AND quantity > canceled_quantity
     UNION ALL
     SELECT book_id, 'library', NULL, added_at FROM v_user_library WHERE user_id = $1
     UNION ALL
-    SELECT book_id, 'review', rating, created_at FROM v_user_reviews WHERE user_id = $1
+    SELECT book_id, 'review', rating, created_at
+    FROM v_user_reviews
+    WHERE user_id = $1 AND active_flag AND deleted_at IS NULL
 ) h
-LEFT JOIN v_books b USING (book_id)
+LEFT JOIN v_books b ON b.book_id = h.book_id AND b.deleted_at IS NULL
 WHERE $2::timestamptz IS NULL OR h.at <= $2
 """
 

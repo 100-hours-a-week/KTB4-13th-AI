@@ -33,7 +33,7 @@ SCAN_SIZE = 2000
 _SCAN = """
 SELECT book_id, title, author, description
 FROM v_books
-WHERE book_id > $1 AND description IS NOT NULL
+WHERE book_id > $1 AND deleted_at IS NULL AND description IS NOT NULL
 ORDER BY book_id
 LIMIT $2
 """

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Bookjeok replication every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=bookjeok-replica.service
+
+[Install]
+WantedBy=timers.target

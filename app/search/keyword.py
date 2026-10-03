@@ -248,6 +248,7 @@ _EXACT_TITLE_SQL = f"""
 SELECT book_id
 FROM v_books
 WHERE book_id = ANY($1::int[])
+  AND deleted_at IS NULL
   AND {_same_title_as("title", "$2")}
 """
 

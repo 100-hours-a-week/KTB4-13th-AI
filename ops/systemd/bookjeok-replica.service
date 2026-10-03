@@ -1,0 +1,13 @@
+[Unit]
+Description=Bookjeok BE MySQL to AI PostgreSQL replication
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ssm-user
+EnvironmentFile=/opt/bookjeok-ai-dev/replica.env
+ExecStart=/usr/bin/docker exec \
+    -e MYSQL_HOST -e MYSQL_PORT -e MYSQL_USER -e MYSQL_PASSWORD -e MYSQL_DB \
+    -e REPLICATION_SOURCE_TIMEZONE \
+    bookjeok-ai-dev python -m app.jobs.replicate_be

@@ -363,7 +363,8 @@ async def _fetch_descriptions(book_ids: list[int]) -> dict[int, str]:
     pool = db.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT book_id, description FROM v_books WHERE book_id = ANY($1::int[])",
+            "SELECT book_id, description FROM v_books "
+            "WHERE book_id = ANY($1::int[]) AND deleted_at IS NULL",
             book_ids,
         )
     return {r["book_id"]: r["description"] for r in rows}
@@ -415,7 +416,8 @@ async def _fetch_edition_keys(book_ids: list[int]) -> set[tuple[str, str]]:
     pool = db.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT title, author FROM v_books WHERE book_id = ANY($1::int[])",
+            "SELECT title, author FROM v_books "
+            "WHERE book_id = ANY($1::int[]) AND deleted_at IS NULL",
             book_ids,
         )
     keys = {_edition_key(r["title"], r["author"]) for r in rows}
@@ -434,7 +436,8 @@ async def _fetch_categories(book_ids: list[int]) -> dict[int, str | None]:
     pool = db.get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT book_id, category FROM v_books WHERE book_id = ANY($1::int[])",
+            "SELECT book_id, category FROM v_books "
+            "WHERE book_id = ANY($1::int[]) AND deleted_at IS NULL",
             book_ids,
         )
     return {r["book_id"]: r["category"] for r in rows}
@@ -585,7 +588,7 @@ async def _attach_match_scores(
                coalesce({popularity.score_sql("p")}, 0) AS popularity
         FROM v_books b
         LEFT JOIN v_book_popularity p USING (book_id)
-        WHERE b.book_id = ANY($1::int[])
+        WHERE b.book_id = ANY($1::int[]) AND b.deleted_at IS NULL
         """,
         book_ids,
     )
