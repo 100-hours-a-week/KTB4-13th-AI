@@ -4,6 +4,7 @@
 뽑아 그 안에서 점수를 매긴다. 탐색 폭과 필터는 ① 벡터 검색과 같게 둔다.
 """
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
@@ -88,9 +89,20 @@ _INDEX_DISTANCE = "e.embedding <=> $1::vector"
 # 식을 바꿔 벡터 색인을 못 쓰게 한다. 필터 조건의 색인으로 책을 고른 뒤 거리를 전부 계산한다.
 _EXACT_DISTANCE = "(e.embedding <=> $1::vector) + 0"
 
-_COUNT_SQL = """
-SELECT count(*) FROM (SELECT 1 FROM v_books b WHERE true {where} LIMIT $1) s
-"""
+# 필터에 걸리는 책 수는 세지 않고 PostgreSQL 이 실행 계획을 세울 때 쓰는 어림값을 받는다(#289).
+# 이 수는 뽑는 방법을 고르는 데만 쓰여서 5만·20만 경계의 어느 쪽인지만 알면 된다. 직접 세면 분류가
+# 여럿인 필터(소설 = 분류 10개)에서 책 표를 통째로 읽는다. 운영 210만 권에서 세기만 5~10초였고
+# 어림값은 0.04초 이하, 실제와 4~8% 차이였다(소설+2020~2024: 어림 124,015 / 실제 135,478).
+# 어림값은 통계가 갱신될 때만 바뀌므로 같은 요청은 어느 DB 연결에서 돌아도 같은 방법을 고른다.
+_ESTIMATE_SQL = "EXPLAIN (FORMAT JSON) SELECT 1 FROM v_books b WHERE true {where}"
+
+
+async def _estimated_count(
+    conn: asyncpg.Connection, where: str, params: list[Any]
+) -> int:
+    """필터에 걸리는 책 수의 어림값. 조회를 실행하지 않고 실행 계획만 받는다."""
+    plan = await conn.fetchval(_ESTIMATE_SQL.format(where=where), *params)
+    return int(json.loads(plan)[0]["Plan"]["Plan Rows"])
 
 
 async def _nearest(
@@ -109,10 +121,8 @@ async def _nearest(
     filtered = bool(where)
     count = 0
     if filtered:
-        count_where, count_params = build_where(filters, first_param=2)
-        count = await conn.fetchval(
-            _COUNT_SQL.format(where=count_where), FALLBACK_LIMIT + 1, *count_params
-        )
+        count_where, count_params = build_where(filters, first_param=1)
+        count = await _estimated_count(conn, count_where, count_params)
 
     async def _run(distance: str) -> list[asyncpg.Record]:
         # SET LOCAL 은 트랜잭션 안에서만 먹는다(① 벡터 검색과 같은 방식).

@@ -1,6 +1,7 @@
 """④ 가까운 책을 어떻게 뽑는지(#196) — 필터에 걸리는 책 수로 방법을 고르는가. DB 없이 돈다."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -29,8 +30,10 @@ class _FakeConn:
         self.settings.append(sql)
 
     async def fetchval(self, sql: str, *args):
+        # 세지 않고 실행 계획의 어림값을 받는다(#289). 조회를 실행하는 SELECT count 가 오면 안 된다.
+        assert sql.startswith("EXPLAIN (FORMAT JSON)")
         self.counted = True
-        return self.count
+        return json.dumps([{"Plan": {"Plan Rows": self.count}}])
 
     async def fetch(self, sql: str, *args):
         if "+ 0" in sql:
