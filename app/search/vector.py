@@ -21,6 +21,12 @@ CANDIDATE_LIMIT = 50
 # 1000 이어도 10ms 였다. 그래서 pgvector 가 허용하는 최댓값을 쓴다.
 EF_SEARCH = 1000
 
+# 벡터 질의를 기다리는 최대 시간(초). BE 는 /search 응답을 5초까지만 기다린다. 연결 기본
+# 제한(db.py 의 command_timeout 5초)에 맡기면 질의가 느릴 때 5초를 다 쓰고 실패해, 키워드
+# 결과로 줄여 응답할 때는 BE 가 이미 504 를 낸 뒤다(책 벡터를 채우는 동안 운영에서 실제로
+# 그랬다). 평소 질의는 수십 ms 라 2초를 넘으면 기다려도 소용없는 상태로 본다.
+QUERY_TIMEOUT_SECONDS = 2.0
+
 # iterative_scan 은 필터에 걸러져 후보가 모자라면 더 살펴보게 하는 pgvector 0.8 기능이다.
 # relaxed_order 는 빠른 대신 순서가 살짝 어긋날 수 있어, 바깥에서 거리로 다시 줄 세운다.
 _SQL = """
@@ -53,6 +59,7 @@ async def search_ids(
             to_vector_literal(query_vector),
             limit,
             *filter_params,
+            timeout=QUERY_TIMEOUT_SECONDS,
         )
     return [r["book_id"] for r in rows]
 
