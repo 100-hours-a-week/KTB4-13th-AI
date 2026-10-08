@@ -179,6 +179,11 @@ _BOOKS = [
 ]
 
 
+def _isbn(book_id: int) -> str:
+    """테스트 책의 ISBN. book_id 마다 다른 13자리 숫자다."""
+    return str(9780000000000 + book_id)
+
+
 def _run_in_rollback(check):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -188,9 +193,9 @@ def _run_in_rollback(check):
             # 책 표의 가격·재고는 읽지 않는다(#206). 일부러 0원·품절을 넣고 상품 표에 진짜 값을 둔다.
             await conn.executemany(
                 "INSERT INTO v_books (book_id, title, author, publisher, price, in_stock,"
-                " cover_url, category, pub_year, description)"
-                " VALUES ($1, $2, $3, '테스트출판사', 0, false, NULL, $4, $5, $6)",
-                [(b[0], b[1], b[2], b[5], b[6], b[7]) for b in _BOOKS],
+                " cover_url, category, pub_year, description, isbn13)"
+                " VALUES ($1, $2, $3, '테스트출판사', 0, false, NULL, $4, $5, $6, $7)",
+                [(b[0], b[1], b[2], b[5], b[6], b[7], _isbn(b[0])) for b in _BOOKS],
             )
             await conn.executemany(
                 "INSERT INTO v_products (id, book_id, discounted_price, stock_quantity)"
@@ -465,6 +470,7 @@ def test_책_정보는_받은_순서대로_돌려주고_없는_책은_빠진다(
     assert [r["book_id"] for r in rows] == [9100003, 9100001]
     assert rows[0] == {
         "book_id": 9100003,
+        "isbn": "9780009100003",
         "title": "딴 제목",
         "author": "즈믄가람",
         "publisher": "테스트출판사",
@@ -472,6 +478,15 @@ def test_책_정보는_받은_순서대로_돌려주고_없는_책은_빠진다(
         "in_stock": False,
         "cover_url": None,
     }
+
+
+@needs_db
+def test_ISBN을_아직_채우지_않은_책은_null로_나간다() -> None:
+    async def check(conn: asyncpg.Connection):
+        await conn.execute("UPDATE v_books SET isbn13 = NULL WHERE book_id = 9100003")
+        return await books.fetch(conn, [9100003])
+
+    assert _run_in_rollback(check)[0]["isbn"] is None
 
 
 @pytest.mark.parametrize(
