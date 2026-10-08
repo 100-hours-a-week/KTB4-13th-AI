@@ -42,6 +42,11 @@ _BOOKS = [
 _SALES = [(9100601, 10), (9100604, 5000)]
 
 
+def _isbn(book_id: int) -> str:
+    """테스트 책의 ISBN. book_id 마다 다른 13자리 숫자다."""
+    return str(9780000000000 + book_id)
+
+
 def _fetch(params, user_id: int = _USER, page=None, without_product=(), full=False):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -51,11 +56,13 @@ def _fetch(params, user_id: int = _USER, page=None, without_product=(), full=Fal
             for book_id, price, year in _BOOKS:
                 # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣는다.
                 await conn.execute(
-                    "INSERT INTO v_books (book_id, title, price, in_stock, category, pub_year)"
-                    " VALUES ($1, '책', 0, false, $2, $3)",
+                    "INSERT INTO v_books"
+                    " (book_id, title, price, in_stock, category, pub_year, isbn13)"
+                    " VALUES ($1, '책', 0, false, $2, $3, $4)",
                     book_id,
                     _CATEGORY,
                     year,
+                    _isbn(book_id),
                 )
                 if book_id not in without_product:
                     await conn.execute(
@@ -140,6 +147,14 @@ def test_가격과_재고는_상품_표에서_읽는다(sort: str) -> None:
     by_id = {item["book_id"]: item for item in items}
 
     assert (by_id[9100602]["price"], by_id[9100602]["in_stock"]) == (9000, True)
+
+
+@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
+def test_책마다_ISBN을_싣는다(sort: str) -> None:
+    items, _ = _fetch([("sort", sort)], full=True)
+
+    assert items
+    assert all(item["isbn"] == _isbn(item["book_id"]) for item in items)
 
 
 def test_상품이_없는_책은_가격순에는_빠지고_다른_목록에는_가격_없이_나온다() -> None:
