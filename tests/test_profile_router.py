@@ -161,6 +161,16 @@ def test_좋아한_책과_기억은_상한을_넘어도_400이_아니라_잘라_
     assert used[-1].value == "기억599"
 
 
+def test_ISBN으로_보낸_좋아한_책도_상한을_넘으면_앞에서부터_잘라_쓴다() -> None:
+    isbns = [str(9780000000000 + i) for i in range(80)]
+    body = _request(onboarding={"liked_isbns": isbns})
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+
+    req = parse_request(body)
+    assert req.used_liked_isbns() == isbns[:USED_LIKED_BOOKS]
+
+
 @pytest.mark.parametrize(
     "memory",
     [
@@ -198,6 +208,10 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
         {"user_id": "123"},  # 문자열을 숫자로 바꿔 받지 않는다
         {"idempotency_key": ""},  # 빈 키끼리는 멱등 처리에서 서로 부딪친다
         {"onboarding": {"liked_book_ids": ["1088"]}},
+        # ISBN 은 13자리 숫자로 된 문자열이다(#315).
+        {"onboarding": {"liked_isbns": ["978-89-364-3412-0"]}},
+        {"onboarding": {"liked_isbns": ["897364341X"]}},
+        {"onboarding": {"liked_isbns": [9788936434120]}},
         {"memories": [_memory(vector=["0.1"] * DIM)]},
         {"memories": {"type": "mood"}},
         # #201 — int32 범위·NUL·짝 없는 서로게이트.
