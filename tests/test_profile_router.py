@@ -9,7 +9,6 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import idempotency
 from app.main import app
 from app.profile.schemas import USED_LIKED_BOOKS, USED_MEMORIES
 from app.routers import profile
@@ -20,11 +19,11 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def fake_rebuild(monkeypatch: pytest.MonkeyPatch) -> list:
-    """받은 (요청, 본문 해시) 를 모아 두고 cold_start=False, profile_version=3 을 돌려준다."""
+    """받은 요청을 모아 두고 cold_start=False, profile_version=3 을 돌려준다."""
     calls: list = []
 
-    async def _fake(req, body_hash):
-        calls.append((req, body_hash))
+    async def _fake(req):
+        calls.append(req)
         return {
             "message": "profile_success",
             "data": {"cold_start": False, "profile_version": 3},
@@ -73,7 +72,7 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() ->
 def test_계산이나_저장이_실패하면_공통_형식의_500이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(req, body_hash):
+    async def _boom(req):
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(profile.service, "rebuild", _boom)
@@ -84,30 +83,14 @@ def test_계산이나_저장이_실패하면_공통_형식의_500이다(
     assert res.json() == {"message": "internal_server_error", "data": None}
 
 
-def test_같은_키에_다른_본문이면_409다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _conflict(req, body_hash):
-        raise idempotency.IdempotencyConflict
+def test_같은_키로_본문이_다른_요청이_와도_매번_계산한다(fake_rebuild: list) -> None:
+    # 키는 받기만 하고 확인하지 않는다(#303). BE 는 키를 온보딩 답으로 만들어서, 기억이나 이력만
+    # 바뀐 요청은 키가 같고 본문이 다르다. 예전에는 이 요청이 409 로 막혔다.
+    first = client.post("/preferences/profile", json=_request())
+    second = client.post("/preferences/profile", json=_request(memories=[]))
 
-    monkeypatch.setattr(profile.service, "rebuild", _conflict)
-
-    res = client.post("/preferences/profile", json=_request())
-
-    assert res.status_code == 409
-    assert res.json() == {"message": "idempotency_conflict", "data": None}
-
-
-def test_본문_해시는_키_순서와_공백이_달라도_같다(fake_rebuild: list) -> None:
-    body = _request()
-    client.post("/preferences/profile", json=body)
-    reordered = json.dumps(dict(reversed(list(body.items()))), indent=2)
-    client.post(
-        "/preferences/profile",
-        content=reordered.encode(),
-        headers={"Content-Type": "application/json"},
-    )
-
-    first, second = (body_hash for _, body_hash in fake_rebuild)
-    assert first == second
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert [len(req.memories) for req in fake_rebuild] == [1, 0]
 
 
 def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() -> None:
@@ -206,7 +189,7 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
     "overrides",
     [
         {"user_id": "123"},  # 문자열을 숫자로 바꿔 받지 않는다
-        {"idempotency_key": ""},  # 빈 키끼리는 멱등 처리에서 서로 부딪친다
+        {"idempotency_key": ""},  # 키를 확인하지는 않지만 칸의 계약은 그대로다(#303)
         {"onboarding": {"liked_book_ids": ["1088"]}},
         # ISBN 은 13자리 숫자로 된 문자열이다(#315).
         {"onboarding": {"liked_isbns": ["978-89-364-3412-0"]}},

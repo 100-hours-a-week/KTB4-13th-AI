@@ -1,7 +1,7 @@
 """⑥ 취향 프로필을 다시 만들어 taste_profile 에 저장한다.
 
-부를 때마다 전부 다시 계산한다(명세 ⑥). 같은 멱등 키로 다시 오면 계산하지 않고 저장한 응답을
-돌려주고, 같은 사용자의 요청은 하나씩 차례로 처리한다(명세 ⑥, #93).
+부를 때마다 전부 다시 계산한다(명세 ⑥). 멱등 키는 확인하지 않는다(#303). 같은 사용자의 요청은
+하나씩 차례로 처리한다(명세 ⑥, #93).
 """
 
 import json
@@ -10,14 +10,11 @@ from typing import Any
 
 import asyncpg
 
-from app.core import db, history, idempotency, isbn
+from app.core import db, history, isbn
 from app.core.pgvector import to_vector_literal
 from app.profile import compute, labels
 from app.profile.compute import Profile
 from app.profile.schemas import USED_LIKED_BOOKS, Onboarding, ProfileRequest
-
-# ⑦도 같은 멱등 테이블을 쓰므로 키 앞에 붙여 나눈다.
-IDEMPOTENCY_SCOPE = "profile"
 
 # 사용자별 잠금. pg_advisory_xact_lock(앞, 뒤) 두 숫자 형태의 앞 숫자로, 다른 곳의 잠금과
 # 번호가 겹치지 않게 API 번호(⑥)를 쓴다. 행 잠금이 아니라 숫자에 거는 잠금이라 첫 호출(프로필 행이
@@ -124,32 +121,29 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     return profile.cold_start, version
 
 
-async def rebuild_once_on(
-    conn: asyncpg.Connection, req: ProfileRequest, body_hash: str
+async def rebuild_locked_on(
+    conn: asyncpg.Connection, req: ProfileRequest
 ) -> dict[str, Any]:
-    """멱등 키와 사용자별 잠금을 걸고 처리한 뒤 응답 본문을 돌려준다.
+    """사용자별 잠금을 걸고 처리한 뒤 응답 본문을 돌려준다.
 
-    같은 키·다른 본문이면 idempotency.IdempotencyConflict(409).
     잠금 없이 두 요청이 동시에 돌면 둘 다 같은 profile_version 을 읽고 +1 을 써서, 프로필이 두 번
-    바뀌었는데 판 번호는 한 번만 오른다. 프로필 저장과 멱등 기록은 한 트랜잭션이라 함께 남거나 함께 빠진다.
+    바뀌었는데 판 번호는 한 번만 오른다.
+
+    멱등 키는 확인하지 않고 올 때마다 계산한다(#303). BE 는 키를 온보딩 답으로 만들어서, 기억이나
+    이력만 바뀐 요청이 "같은 키·다른 본문"이 되어 409 로 막혔다. 재시도는 다시 계산해도 같은 답을
+    받는다. 입력이 같으면 결과가 같고, 판 번호는 결과가 달라질 때만 오른다(compute.next_version).
     """
-    key = idempotency.scoped_key(IDEMPOTENCY_SCOPE, req.idempotency_key)
     async with conn.transaction():
         await conn.execute(
             "SELECT pg_advisory_xact_lock($1, $2)", _LOCK_SPACE, req.user_id
         )
-        stored = await idempotency.lookup(conn, key, body_hash)
-        if stored is not None:
-            return stored
         cold_start, version = await rebuild_on(conn, req)
-        response = {
-            "message": "profile_success",
-            "data": {"cold_start": cold_start, "profile_version": version},
-        }
-        await idempotency.remember(conn, key, body_hash, response)
-    return response
+    return {
+        "message": "profile_success",
+        "data": {"cold_start": cold_start, "profile_version": version},
+    }
 
 
-async def rebuild(req: ProfileRequest, body_hash: str) -> dict[str, Any]:
+async def rebuild(req: ProfileRequest) -> dict[str, Any]:
     async with db.get_pool().acquire() as conn:
-        return await rebuild_once_on(conn, req, body_hash)
+        return await rebuild_locked_on(conn, req)

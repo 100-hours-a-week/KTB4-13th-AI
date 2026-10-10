@@ -68,7 +68,7 @@ class Memory(_Strict):
 
 class ProfileRequest(_Strict):
     user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
-    # 빈 키끼리는 모두 같은 키가 되어 멱등 처리에서 서로 부딪친다.
+    # 받기만 하고 확인하지 않는다(#303). BE 가 고칠 것이 없게 칸의 계약(필수, 빈 값은 400)은 그대로 둔다.
     idempotency_key: str = Field(min_length=1)
     # 온보딩을 건너뛴 사용자는 {} 를 보낸다. 칸 자체가 없으면 400 이다(명세).
     onboarding: Onboarding
