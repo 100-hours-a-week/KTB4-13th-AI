@@ -46,6 +46,11 @@ def _unit(i: int) -> list[float]:
 _BOOKS = {9100201: ("에세이", _unit(0)), 9100202: ("한국소설", _unit(1))}
 
 
+def _isbn(book_id: int) -> str:
+    """테스트 책의 ISBN. book_id 마다 다른 13자리 숫자다."""
+    return str(9780000000000 + book_id)
+
+
 def _request(**overrides) -> ProfileRequest:
     body = {
         "user_id": _USER,
@@ -65,10 +70,11 @@ def _run(check):
             for book_id, (category, vector) in _BOOKS.items():
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, author, publisher, price,"
-                    " in_stock, cover_url, category, pub_year, description)"
-                    " VALUES ($1, '책', '저자', '출판사', 10000, true, NULL, $2, 2024, '소개')",
+                    " in_stock, cover_url, category, pub_year, description, isbn13)"
+                    " VALUES ($1, '책', '저자', '출판사', 10000, true, NULL, $2, 2024, '소개', $3)",
                     book_id,
                     category,
+                    _isbn(book_id),
                 )
                 await conn.execute(
                     "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
@@ -109,6 +115,53 @@ def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다()
     assert json.loads(row["tag_weights"]) == {"경제학": 1, "한국소설": 3}
     assert row["cold_start"] is False
     assert row["computed_at"] == _T0
+
+
+def _centroid_of(onboarding: dict) -> list[float]:
+    async def check(conn):
+        await service.rebuild_on(conn, _request(onboarding=onboarding))
+        return json.loads((await _row(conn))["centroid"])
+
+    return _run(check)
+
+
+def test_좋아한_책을_ISBN으로_보내도_book_id로_보낸_것과_같은_취향_벡터가_된다() -> (
+    None
+):
+    by_id = _centroid_of({"liked_book_ids": [9100201, 9100202]})
+    by_isbn = _centroid_of({"liked_isbns": [_isbn(9100201), _isbn(9100202)]})
+
+    assert by_isbn == pytest.approx(by_id)
+
+
+def test_같은_책을_ISBN과_book_id로_함께_보내도_한_번만_친다() -> None:
+    # BE 가 ISBN 으로 옮기는 동안 둘 다 실어 보낼 수 있다(#315).
+    once = _centroid_of({"liked_book_ids": [9100201, 9100202]})
+    both = _centroid_of(
+        {"liked_book_ids": [9100201, 9100202], "liked_isbns": [_isbn(9100201)]}
+    )
+
+    assert both == pytest.approx(once)
+
+
+def test_두_칸을_합쳐_상한만큼만_쓰고_ISBN으로_온_책이_앞이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "USED_LIKED_BOOKS", 1)
+
+    centroid = _centroid_of(
+        {"liked_book_ids": [9100202], "liked_isbns": [_isbn(9100201)]}
+    )
+
+    # 한 권만 쓰면 ISBN 으로 온 9100201 이다. 그 책의 벡터는 0번 축이다.
+    assert centroid == pytest.approx(_unit(0))
+
+
+def test_책_표에_없는_ISBN은_건너뛰고_나머지로_만든다() -> None:
+    known = _centroid_of({"liked_isbns": [_isbn(9100201)]})
+    with_unknown = _centroid_of({"liked_isbns": ["9789999999999", _isbn(9100201)]})
+
+    assert with_unknown == pytest.approx(known)
 
 
 def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
