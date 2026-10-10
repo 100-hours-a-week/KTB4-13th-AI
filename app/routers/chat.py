@@ -108,7 +108,7 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 모델이 옛 항목을 빠뜨렸을 때 이미 제외했던 책이 되살아난다 — 새로 빼고 싶은
 # 것만 받아 서버가 기존 목록에 더한다.
 #
-# "너무 무겁지 않은 걸로" 같은 분위기·톤 조정 표현은 제목·저자·가격·장르·재고·
+# "너무 무겁지 않은 걸로" 같은 분위기·톤 조정 표현은 제목·저자·가격·장르·
 # 제외 어디에도 안 맞아 지시문이 없으면 그냥 버려진다(실제 Ollama/qwen2.5:7b로
 # 재현, 이슈 #132). exact·filters와 달리 semantic은 문장 하나짜리라 하위 키
 # patch가 안 되고, 반영하려면 지금 문장을 바탕으로 전체를 다시 써야 한다 —
@@ -120,6 +120,10 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 이전 조건이 안 풀리고 눌러앉는다. 그래서 없애는 의도는 그 키를 JSON null로
 # 명시하라고 따로 가르친다 — null이 명시되면 _merge_spec_patch가 정상적으로
 # 지운다.
+#
+# 재고 조건(in_stock_only)은 지시문과 예시에 넣지 않는다(#319). AI가 재고를 받지
+# 않게 되어(#307) 챗봇은 이 조건을 쓰지 않는다. 예시에 있으면 모델이 사용자가
+# 말하지 않은 재고 조건을 지어낸다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -143,7 +147,7 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "안 넣으면 이전 값이 그대로 남으니, 없애려면 반드시 null을 명시해야 한다.\n"
     "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
     "그대로 유지하니 다시 적을 필요 없다.\n\n"
-    "이번 메시지가 제목·저자·가격·장르·재고·제외처럼 구체적인 조건이 아니라 "
+    "이번 메시지가 제목·저자·가격·장르·제외처럼 구체적인 조건이 아니라 "
     '"너무 무겁지 않게", "더 재밌는 걸로", "덜 슬프게"처럼 분위기나 톤을 '
     "조정하는 말이면, 지금 semantic 문장을 바탕으로 그 톤을 반영한 "
     "완전한 새 문장을 semantic에 통째로 다시 써라 — 다른 필드처럼 바뀐 "
@@ -154,8 +158,7 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "이번 메시지로 바뀌는 게 없으면 빈 객체 {{}}로 답하라. 숫자는 따옴표 "
     "없이 써라. 아래는 형식 예시일 뿐 실제 값이 아니다 — 그대로 베끼지 "
     "말고 실제로 바뀌는 값만 채워라:\n"
-    '{{"semantic": "비 오는 날 읽을 잔잔한 책", '
-    '"filters": {{"in_stock_only": true}}}}\n\n'
+    '{{"semantic": "비 오는 날 읽을 잔잔한 책"}}\n\n'
     "톤 조정 예시(형식일 뿐 실제 값 아님) — 지금 semantic이 "
     '"비 오는 날 읽을 책"이고 메시지가 "너무 무겁지 않은 걸로"면:\n'
     '{{"semantic": "비 오는 날 읽을 무겁지 않은 책"}}\n\n'
@@ -931,8 +934,7 @@ def _active_conditions(spec: Spec) -> list[tuple[str, str]]:
         found.append((f"{f.pub_year_to}년 이전", "출간연도는 상관없어요"))
     if f.category:
         found.append((f.category, "분야는 상관없어요"))
-    if f.in_stock_only:
-        found.append(("재고 있는 책", "재고는 상관없어요"))
+    # 재고 조건은 짚지 않는다. 챗봇은 이 조건을 쓰지 않는다(#319).
     if spec.exact.publisher:
         found.append((f"{spec.exact.publisher} 책", "출판사는 상관없어요"))
     return found
@@ -959,7 +961,7 @@ def _no_card_response(
             "같은 요청을 한 번만 다시 말씀해 주시겠어요?",
         )
     if slot_question:
-        # "아이한테 읽어줄 책"에서 LLM이 지어낸 재고 조건 대신, 정말 빠진 정보(나이)를 묻는다.
+        # "아이한테 읽어줄 책"에서 LLM이 지어낸 조건 대신, 정말 빠진 정보(나이)를 묻는다.
         return "조건에 맞는 책을 아직 못 찾았어요.", slot_question
     conditions = _active_conditions(spec)
     names = ", ".join(name for name, _ in conditions)
