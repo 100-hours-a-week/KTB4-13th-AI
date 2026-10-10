@@ -10,11 +10,11 @@ from typing import Any
 
 import asyncpg
 
-from app.core import db, history, idempotency
+from app.core import db, history, idempotency, isbn
 from app.core.pgvector import to_vector_literal
 from app.profile import compute, labels
 from app.profile.compute import Profile
-from app.profile.schemas import Onboarding, ProfileRequest
+from app.profile.schemas import USED_LIKED_BOOKS, Onboarding, ProfileRequest
 
 # ⑦도 같은 멱등 테이블을 쓰므로 키 앞에 붙여 나눈다.
 IDEMPOTENCY_SCOPE = "profile"
@@ -97,8 +97,11 @@ async def _save(
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
     """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다."""
     hist = await history.read(conn, req.user_id)
-    # 같은 책을 두 번 적어 보내도 한 번만 친다.
-    liked = list(dict.fromkeys(req.used_liked_book_ids()))
+    # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
+    # 같은 책을 두 번 적어 보내도(두 칸에 나눠 보내도) 한 번만 치고, 합쳐서 앞에서부터 상한만큼 쓴다.
+    liked_by_isbn = await isbn.to_book_ids(conn, req.used_liked_isbns())
+    liked = list(dict.fromkeys([*liked_by_isbn, *req.used_liked_book_ids()]))
+    liked = liked[:USED_LIKED_BOOKS]
     weights = compute.book_weights(liked, hist.weights, hist.disliked_book_ids)
     vectors = await book_vectors(conn, list(weights))
 

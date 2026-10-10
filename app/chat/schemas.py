@@ -66,6 +66,9 @@ class ChatRequest(_Strict):
     exclude_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
         default_factory=list
     )
+    # 같은 것을 ISBN 으로 받는 칸(#308). BE 가 ISBN 으로 옮기는 동안은 둘 다 받고, 다 옮기면
+    # exclude_book_ids 를 뺀다.
+    exclude_isbns: list[Isbn13] = Field(default_factory=list)
     image_ref: str | None = None
     # 추천에서 뺄 책(#319): 산 책(결제 완료)과 나의 도서관에 담은 책. BE가 요청마다 실어 보낸다.
     # 빈 목록은 "가진 책이 없다"는 뜻이다. 칸이 없거나 null이면 BE가 아직 보내지 않는 것으로

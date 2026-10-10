@@ -171,6 +171,25 @@ def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
     assert result[0]["cover_url"] == "https://example.com/1088.jpg"
 
 
+def test_검색_결과의_ISBN이_후보에_그대로_남는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 카드의 isbn 은 후보가 들고 온 값을 싣는다(#317). 후보를 다듬다가 칸을 떨어뜨리면 카드가 null 로 나간다.
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=[_book(1088, isbn="9788936434120")], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {1088: "잠든 사이 꿈을 사고파는 상점 이야기."}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(intent="semantic", semantic="비 오는 날 읽을 책")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert result[0]["isbn"] == "9788936434120"
+
+
 def test_온보딩_장르는_카탈로그_분류로_바꿔_거른다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
