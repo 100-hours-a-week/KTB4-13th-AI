@@ -30,6 +30,14 @@ def test_헤더가_없으면_401이다() -> None:
     assert res.json() == {"message": "unauthorized", "data": None}
 
 
+def test_새로_연_PUT도_헤더가_없으면_401이다() -> None:
+    # 프로필 고치기(#303). 메서드를 새로 열면서 인증이 빠지지 않았는지 본다.
+    res = client.put("/preferences/profile", json={})
+
+    assert res.status_code == 401
+    assert res.json() == {"message": "unauthorized", "data": None}
+
+
 def test_토큰이_틀리면_401이다() -> None:
     res = client.post(
         "/search",
