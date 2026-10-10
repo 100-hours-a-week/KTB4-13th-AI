@@ -1163,3 +1163,126 @@ def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그
     assert data["cards"] == []
     assert data["followup"].startswith("아이가 몇 살쯤인가요?")
     assert "재고" not in data["followup"]
+
+
+# ---------------------------------------------------------------------------
+# BE 와 책을 ISBN 으로 주고받기(#317)
+# ---------------------------------------------------------------------------
+
+_ISBN = "9788936434120"
+_CARD_REPLY = '{"reply": "골라봤어요.", "cards": [{"book_id": 1088, "reason_short": "잔잔해요."}]}'
+
+
+def _one_candidate(**extra) -> list[dict]:
+    return [
+        {
+            "book_id": 1088,
+            "title": "달러구트 꿈 백화점",
+            "author": "이미예",
+            "description": "잠든 사이 꿈을 사고파는 상점 이야기.",
+            "match_score": 25,
+            "popularity": 3.0,
+            **extra,
+        }
+    ]
+
+
+def test_카드에_후보의_ISBN을_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
+        return _one_candidate(isbn=_ISBN)
+
+    monkeypatch.setattr(chat, "get_candidates", _fake)
+    model = _sequenced_model(_spec_reply(), _CARD_REPLY)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    card = client.post("/recommendations/chat", json=_request()).json()["data"][
+        "cards"
+    ][0]
+
+    # book_id 는 BE 가 ISBN 으로 옮길 때까지 같이 싣는다.
+    assert (card["book_id"], card["isbn"]) == (1088, _ISBN)
+
+
+def test_ISBN을_아직_채우지_않은_책의_카드는_isbn이_null이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _sequenced_model(_spec_reply(), _CARD_REPLY)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    card = client.post("/recommendations/chat", json=_request()).json()["data"][
+        "cards"
+    ][0]
+
+    assert card["isbn"] is None
+
+
+def test_규칙_기반_카드에도_ISBN을_싣는다() -> None:
+    cards = chat._rule_based_cards(_one_candidate(isbn=_ISBN))
+
+    assert cards[0]["isbn"] == _ISBN
+
+
+def test_exclude_isbns는_book_id로_바꿔_exclude_book_ids와_합친다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    async def _lookup(isbns: list[str]) -> list[int]:
+        seen["isbns"] = isbns
+        return [777]
+
+    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
+        seen["exclude"] = exclude_book_ids
+        return []
+
+    monkeypatch.setattr(chat, "_book_ids_for_isbns", _lookup)
+    monkeypatch.setattr(chat, "get_candidates", _fake)
+    model = _sequenced_model(_spec_reply())
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(exclude_book_ids=[1], exclude_isbns=[_ISBN]),
+    )
+
+    assert res.status_code == 200
+    assert seen == {"isbns": [_ISBN], "exclude": [1, 777]}
+
+
+def test_exclude_isbns가_없으면_책_표를_조회하지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(isbns: list[str]) -> list[int]:
+        raise AssertionError("조회하면 안 된다")
+
+    monkeypatch.setattr(chat, "_book_ids_for_isbns", _boom)
+    model = _sequenced_model(_spec_reply(), _CARD_REPLY)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    assert client.post("/recommendations/chat", json=_request()).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "bad", [["978-89-364-3412-0"], ["897364341X"], [9788936434120], "9788936434120"]
+)
+def test_exclude_isbns의_형식이_틀리면_400이다(bad: object) -> None:
+    res = client.post("/recommendations/chat", json=_request(exclude_isbns=bad))
+
+    assert res.status_code == 400
+    assert res.json()["message"] == "invalid_request"
+
+
+def test_ISBN을_book_id로_바꾸다_실패하면_공통_형식의_500이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(isbns: list[str]) -> list[int]:
+        raise RuntimeError("DB 끊김")
+
+    monkeypatch.setattr(chat, "_book_ids_for_isbns", _boom)
+    model = _sequenced_model(_spec_reply())
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request(exclude_isbns=[_ISBN]))
+
+    assert res.status_code == 500
+    assert res.json()["message"] == "internal_server_error"

@@ -21,7 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
-from app.core import body, categories, db, history, popularity, responses
+from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
 from app.feed import personalized, scoring
 from app.gateway import embedding
@@ -657,6 +657,7 @@ def _rule_based_cards(candidates: list[dict]) -> list[dict]:
     return [
         {
             "book_id": c["book_id"],
+            "isbn": c.get("isbn"),
             "rank": rank,
             "match_score": c["match_score"],
             "title": c["title"],
@@ -669,6 +670,22 @@ def _rule_based_cards(candidates: list[dict]) -> list[dict]:
         }
         for rank, c in enumerate(ranked[:CARD_LIMIT], start=1)
     ]
+
+
+async def _book_ids_for_isbns(isbns: list[str]) -> list[int]:
+    """ISBN 으로 온 책을 book_id 로 바꾼다(#308). 책 표에 없는 ISBN 은 빠진다."""
+    async with db.get_pool().acquire() as conn:
+        return await isbn.to_book_ids(conn, isbns)
+
+
+async def _shown_book_ids(req: ChatRequest) -> list[int]:
+    """이 대화에서 이미 보여 준 책. ISBN 으로 온 것을 book_id 로 바꿔 book_id 로 온 것 뒤에 붙인다.
+
+    BE 가 ISBN 으로 옮기는 동안은 두 칸을 다 받는다(#317). ISBN 이 안 왔으면 책 표를 조회하지 않는다.
+    """
+    if not req.exclude_isbns:
+        return req.exclude_book_ids
+    return [*req.exclude_book_ids, *await _book_ids_for_isbns(req.exclude_isbns)]
 
 
 async def get_candidates(
@@ -893,6 +910,7 @@ async def generate_cards(
         cards.append(
             {
                 "book_id": book_id,
+                "isbn": book.get("isbn"),
                 "rank": rank,
                 "match_score": book["match_score"],
                 "title": book["title"],
@@ -1118,7 +1136,8 @@ async def chat(request: Request) -> JSONResponse:
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
-        candidates = await get_candidates(spec, req.exclude_book_ids, req.user_id)
+        shown = await _shown_book_ids(req)
+        candidates = await get_candidates(spec, shown, req.user_id)
     except Exception:
         # 그대로 두면 FastAPI 기본 500(text/plain)이 나가 공통 응답 형식이 깨진다.
         logger.exception("후보 검색 실패")
