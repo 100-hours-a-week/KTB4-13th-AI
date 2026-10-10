@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.core import idempotency
 from app.core.pgvector import to_vector_literal
 from app.profile import labels, service
 from app.profile.schemas import ProfileRequest
@@ -256,40 +255,46 @@ def test_재료가_없으면_cold_start로_저장한다() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 멱등 처리와 사용자별 차례 처리 (#93)
+# 멱등 키를 확인하지 않는다(#303). 사용자별 차례 처리는 그대로다(#93)
 # ---------------------------------------------------------------------------
 
 
-def test_같은_키와_본문이면_다시_계산하지_않고_저장한_응답을_준다() -> None:
+def test_같은_요청을_다시_보내면_다시_계산해도_같은_응답이다() -> None:
+    # 키로 저장한 응답을 돌려주지 않아도 재시도는 같은 답을 받는다. 판 번호는 결과가 달라질 때만 오른다.
     async def check(conn):
-        first = await service.rebuild_once_on(conn, _request(), "hash-a")
-        # 그사이 구매가 생겨도, 재시도는 처음 응답을 그대로 받고 프로필도 다시 쓰지 않는다.
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
-        )
-        again = await service.rebuild_once_on(conn, _request(), "hash-a")
-        return first, again, await _row(conn)
+        first = await service.rebuild_locked_on(conn, _request())
+        again = await service.rebuild_locked_on(conn, _request())
+        return first, again
 
-    first, again, row = _run(check)
+    first, again = _run(check)
 
     assert again == first
     assert first["data"] == {"cold_start": False, "profile_version": 1}
-    assert json.loads(row["tag_weights"]) == {"경제학": 1}
 
 
-def test_같은_키에_다른_본문이면_409이고_프로필을_바꾸지_않는다() -> None:
+def test_같은_키에_다른_본문이어도_계산해서_프로필을_바꾼다() -> None:
     async def check(conn):
-        await service.rebuild_once_on(conn, _request(), "hash-a")
-        with pytest.raises(idempotency.IdempotencyConflict):
-            await service.rebuild_once_on(
-                conn, _request(onboarding={"tags": ["습관"]}), "hash-b"
-            )
-        return await _row(conn)
+        await service.rebuild_locked_on(conn, _request())
+        second = await service.rebuild_locked_on(
+            conn, _request(onboarding={"tags": ["습관"]})
+        )
+        return second, await _row(conn)
 
-    row = _run(check)
+    second, row = _run(check)
 
-    assert json.loads(row["tag_weights"]) == {"경제학": 1}
-    assert row["profile_version"] == 1
+    assert second["data"] == {"cold_start": True, "profile_version": 2}
+    assert "경제학" not in json.loads(row["tag_weights"])
+
+
+def test_멱등_기록을_남기지_않는다() -> None:
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _request())
+        return await conn.fetchval(
+            "SELECT count(*) FROM idempotency_records"
+            " WHERE idempotency_key = 'profile:prof_test'"
+        )
+
+    assert _run(check) == 0
 
 
 def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_번호가_두_번_오른다(
@@ -322,16 +327,13 @@ def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_
             ]
             results = await asyncio.gather(
                 *(
-                    service.rebuild_once_on(conn, req, req.idempotency_key)
+                    service.rebuild_locked_on(conn, req)
                     for conn, req in zip(conns, requests, strict=True)
                 )
             )
             return sorted(r["data"]["profile_version"] for r in results)
         finally:
             await conns[0].execute("DELETE FROM taste_profile WHERE user_id = $1", user)
-            await conns[0].execute(
-                "DELETE FROM idempotency_records WHERE idempotency_key LIKE 'profile:k_'"
-            )
             for conn in conns:
                 await conn.close()
 
