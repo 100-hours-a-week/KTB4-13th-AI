@@ -27,6 +27,8 @@ REQUIRED_INDEXES = (
     # 가격·재고를 읽는 상품 표(#205)
     "v_products_book_id_idx",
     "v_products_price_order_idx",
+    # 요청으로 받은 ISBN 으로 책을 찾는 색인(#311)
+    "v_books_isbn13_key",
 )
 
 
