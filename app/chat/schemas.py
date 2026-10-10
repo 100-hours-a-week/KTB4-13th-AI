@@ -4,6 +4,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.isbn import Isbn13
 from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 from app.search.schemas import SearchFilters
 
@@ -66,6 +67,11 @@ class ChatRequest(_Strict):
         default_factory=list
     )
     image_ref: str | None = None
+    # 추천에서 뺄 책(#319): 산 책(결제 완료)과 나의 도서관에 담은 책. BE가 요청마다 실어 보낸다.
+    # 빈 목록은 "가진 책이 없다"는 뜻이다. 칸이 없거나 null이면 BE가 아직 보내지 않는 것으로
+    # 보고 지금처럼 복제 표의 이력을 읽는다.
+    purchased_isbns: list[Isbn13] | None = None
+    library_isbns: list[Isbn13] | None = None
 
     @model_validator(mode="after")
     def _message_xor_image(self) -> Self:
