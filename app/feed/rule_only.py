@@ -39,7 +39,8 @@ WITH liked AS (
     {cold_start.popular_first_sql("{where}", columns="u.book_id")}
     LIMIT $4
 )
-SELECT b.book_id, b.title, b.author, {products.price_sql("b")} AS price, b.cover_url,
+SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
+       {products.price_sql("b")} AS price, b.cover_url,
        {products.in_stock_sql("b")} AS in_stock, b.category, b.pub_year,
        {_POPULARITY} AS popularity
 FROM v_books b

@@ -10,6 +10,7 @@ from app.feed.schemas import parse_query
 def _row(book_id: int, score: int) -> dict:
     return {
         "book_id": book_id,
+        "isbn": str(9780000000000 + book_id),
         "title": "책",
         "author": "저자",
         "price": 10000,

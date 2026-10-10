@@ -8,7 +8,7 @@ from app.core import products
 
 # 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#206).
 _SQL = f"""
-SELECT b.book_id, b.title, b.author, b.publisher,
+SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author, b.publisher,
        {products.price_sql("b")} AS price, {products.in_stock_sql("b")} AS in_stock,
        b.cover_url
 FROM unnest($1::int[]) WITH ORDINALITY AS ids(book_id, pos)
@@ -22,6 +22,7 @@ async def fetch(conn: asyncpg.Connection, book_ids: list[int]) -> list[dict[str,
 
     author·publisher·cover_url 은 값이 없는 책이 있어 null 로 나갈 수 있다(002 마이그레이션).
     상품이 없는 책은 price 가 null, in_stock 이 false 다.
+    isbn 은 BE 와 책을 주고받는 키다(#308). 책 표에 값을 채우기 전인 책은 null 로 나간다.
     """
     if not book_ids:
         return []

@@ -47,7 +47,8 @@ WITH nearest AS (
     ORDER BY distance
     LIMIT $4
 )
-SELECT b.book_id, b.title, b.author, {products.price_sql("b")} AS price, b.cover_url,
+SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
+       {products.price_sql("b")} AS price, b.cover_url,
        {products.in_stock_sql("b")} AS in_stock, b.category, b.pub_year,
        1 - n.distance AS similarity,
        coalesce({popularity.score_sql("p")}, 0) AS popularity
@@ -242,6 +243,7 @@ def _response_item(row: dict[str, Any]) -> dict[str, Any]:
     """응답에 나가는 칸만 남긴다(명세 ④). 채점에 쓴 유사도·분류는 내보내지 않는다."""
     return {
         "book_id": row["book_id"],
+        "isbn": row["isbn"],
         "title": row["title"],
         "author": row["author"],
         "price": row["price"],
