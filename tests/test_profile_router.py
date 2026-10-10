@@ -69,6 +69,56 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() ->
     }
 
 
+# ---------------------------------------------------------------------------
+# 고칠 때는 PUT 이다(#303). 메서드만 다르고 받는 본문과 하는 계산은 POST 와 같다.
+# ---------------------------------------------------------------------------
+
+
+def test_PUT도_같은_요청을_받아_같은_응답을_돌려준다(fake_rebuild: list) -> None:
+    posted = client.post("/preferences/profile", json=_request())
+    put = client.put("/preferences/profile", json=_request())
+
+    assert put.status_code == 200
+    assert put.json() == posted.json()
+    # 같은 본문이면 계산에 넘어가는 요청도 같다.
+    assert fake_rebuild[0] == fake_rebuild[1]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"user_id": "123"},
+        {"onboarding": None},
+        {"onboarding": {"liked_isbns": ["978-89-364-3412-0"]}},
+        {"memories": [_memory(vector=[0.0] * (DIM - 1))]},
+    ],
+)
+def test_PUT도_계약을_어기면_400이다(overrides: dict) -> None:
+    res = client.put("/preferences/profile", json=_request(**overrides))
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
+
+
+def test_PUT도_계산이나_저장이_실패하면_공통_형식의_500이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(req):
+        raise RuntimeError("DB 장애")
+
+    monkeypatch.setattr(profile.service, "rebuild", _boom)
+
+    res = client.put("/preferences/profile", json=_request())
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
+
+
+@pytest.mark.parametrize("method", ["get", "patch", "delete"])
+def test_POST와_PUT_말고는_받지_않는다(method: str) -> None:
+    assert client.request(method, "/preferences/profile").status_code == 405
+
+
 def test_계산이나_저장이_실패하면_공통_형식의_500이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
