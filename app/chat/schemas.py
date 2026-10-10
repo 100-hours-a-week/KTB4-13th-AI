@@ -4,6 +4,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.isbn import Isbn13
 from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 from app.search.schemas import SearchFilters
 
@@ -65,6 +66,9 @@ class ChatRequest(_Strict):
     exclude_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
         default_factory=list
     )
+    # 같은 것을 ISBN 으로 받는 칸(#308). BE 가 ISBN 으로 옮기는 동안은 둘 다 받고, 다 옮기면
+    # exclude_book_ids 를 뺀다.
+    exclude_isbns: list[Isbn13] = Field(default_factory=list)
     image_ref: str | None = None
 
     @model_validator(mode="after")

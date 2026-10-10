@@ -5,6 +5,7 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import get_settings
+from app.core.isbn import Isbn13
 from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 
 # 명세 ⑥: 넘으면 400 인 개수 상한
@@ -43,6 +44,9 @@ class Onboarding(_Strict):
     liked_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
         default_factory=list
     )
+    # 같은 것을 ISBN 으로 받는 칸(#308). BE 가 ISBN 으로 옮기는 동안은 둘 다 받고, 다 옮기면
+    # liked_book_ids 를 뺀다.
+    liked_isbns: list[Isbn13] = Field(default_factory=list)
 
 
 class Memory(_Strict):
@@ -72,6 +76,9 @@ class ProfileRequest(_Strict):
 
     def used_liked_book_ids(self) -> list[int]:
         return self.onboarding.liked_book_ids[:USED_LIKED_BOOKS]
+
+    def used_liked_isbns(self) -> list[str]:
+        return self.onboarding.liked_isbns[:USED_LIKED_BOOKS]
 
     def used_memories(self) -> list[Memory]:
         return self.memories[-USED_MEMORIES:]
