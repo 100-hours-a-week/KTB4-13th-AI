@@ -161,6 +161,111 @@ def test_목록_칸이_아닌_null은_400이다(overrides: dict) -> None:
     assert res.status_code == 400
 
 
+# ---------------------------------------------------------------------------
+# 요청의 history(#327). 산 책·나의 도서관 책·리뷰를 BE 가 실어 보낸다.
+# ---------------------------------------------------------------------------
+
+_A, _B, _C = "9788936434120", "9788954651135", "9788937460449"
+
+
+def _history(**overrides) -> dict:
+    history = {
+        "purchased_isbns": [_A, _B],
+        "library_isbns": [_C],
+        "reviews": [{"isbn": _A, "rating": 4.5, "content": "잔잔한데 울컥했어요"}],
+    }
+    history.update(overrides)
+    return history
+
+
+def test_history를_받는다() -> None:
+    body = _request(history=_history())
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+
+    history = parse_request(body).history
+    assert history.purchased_isbns == [_A, _B]
+    assert history.library_isbns == [_C]
+    assert [(r.isbn, r.rating) for r in history.reviews] == [(_A, 4.5)]
+
+
+@pytest.mark.parametrize("body", [_request(), _request(history=None)])
+def test_history가_없거나_null이면_안_온_것으로_본다(body: dict) -> None:
+    # BE 가 아직 보내지 않는다는 뜻이다. 이때는 지금처럼 복제 표의 이력으로 계산한다.
+    assert client.post("/preferences/profile", json=body).status_code == 200
+    assert parse_request(body).history is None
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        {},
+        {"purchased_isbns": [], "library_isbns": [], "reviews": []},
+        {"purchased_isbns": None, "library_isbns": None, "reviews": None},
+    ],
+)
+def test_빈_history는_이력이_없다는_뜻이라_안_온_것과_다르다(history: dict) -> None:
+    body = _request(history=history)
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+
+    parsed = parse_request(body).history
+    assert parsed is not None
+    assert (parsed.purchased_isbns, parsed.library_isbns, parsed.reviews) == (
+        [],
+        [],
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        {"isbn": _A, "rating": 4.5},  # 본문이 없는 리뷰
+        {"isbn": _A, "rating": 4.5, "content": None},
+        {"isbn": _A, "rating": 4},  # 별점을 정수로 보냄
+        {"isbn": _A, "rating": 5.0},
+        {"isbn": _A, "rating": 0.5},
+    ],
+)
+def test_리뷰는_본문이_없어도_별점이_정수여도_받는다(review: dict) -> None:
+    body = _request(history=_history(reviews=[review]))
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [],  # 객체가 아니다
+        _history(purchased_isbns=["978-89-364-3412-0"]),
+        _history(library_isbns=[9788936434120]),
+        _history(purchased_isbns=[None]),
+        _history(reviews=[None]),
+        _history(reviews=[{"rating": 4.5, "content": "책이 없는 리뷰"}]),
+        _history(reviews=[{"isbn": _A, "content": "별점이 없는 리뷰"}]),
+        _history(reviews=[{"isbn": "897364341X", "rating": 4.5}]),
+        _history(reviews=[{"isbn": _A, "rating": "4.5"}]),
+        _history(reviews=[{"isbn": _A, "rating": None}]),
+        _history(reviews=[{"isbn": _A, "rating": -1}]),
+        _history(reviews=[{"isbn": _A, "rating": 4.5, "content": "끝\x00"}]),
+    ],
+)
+def test_history가_계약과_다르면_400이다(history: object) -> None:
+    res = client.post("/preferences/profile", json=_request(history=history))
+
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize("rating", [5.5, 8, 10])
+def test_별점이_5점을_넘으면_400이다(rating: float) -> None:
+    # BE 코드는 10.0 까지 받는다(#307 남은 결정). 10점 만점으로 오면 거의 모든 리뷰가 "좋음"으로
+    # 계산되고 에러가 나지 않으므로, 범위가 정해질 때까지 막아 둔다.
+    body = _request(history=_history(reviews=[{"isbn": _A, "rating": rating}]))
+
+    assert client.post("/preferences/profile", json=body).status_code == 400
+
+
 @pytest.mark.parametrize("field", ["user_id", "idempotency_key", "onboarding"])
 def test_필수_칸이_없으면_400이다(field: str) -> None:
     body = _request()
