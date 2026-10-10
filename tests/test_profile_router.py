@@ -116,6 +116,51 @@ def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() ->
     assert res.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "reading_times",
+        "criteria",
+        "categories",
+        "tags",
+        "liked_book_ids",
+        "liked_isbns",
+    ],
+)
+def test_온보딩_목록_칸의_null은_빈_목록으로_본다(field: str) -> None:
+    # 취향 카드를 지우면 BE 가 그 칸을 null 로 보낸다(#301).
+    body = _request(onboarding={field: None})
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+    assert getattr(parse_request(body).onboarding, field) == []
+
+
+def test_기억의_null은_빈_목록으로_본다() -> None:
+    body = _request(memories=None)
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+    assert parse_request(body).memories == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # 온보딩 칸 자체는 필수다. 건너뛴 사용자는 {} 를 보낸다.
+        {"onboarding": None},
+        # 목록이 비었다는 뜻만 받는다. 목록 안의 null 은 받지 않는다.
+        {"onboarding": {"tags": [None]}},
+        {"onboarding": {"liked_isbns": [None]}},
+        {"memories": [None]},
+        # 기억 안의 벡터는 목록 칸이지만 비어 있을 수 없다.
+        {"memories": [_memory(vector=None)]},
+    ],
+)
+def test_목록_칸이_아닌_null은_400이다(overrides: dict) -> None:
+    res = client.post("/preferences/profile", json=_request(**overrides))
+
+    assert res.status_code == 400
+
+
 @pytest.mark.parametrize("field", ["user_id", "idempotency_key", "onboarding"])
 def test_필수_칸이_없으면_400이다(field: str) -> None:
     body = _request()
