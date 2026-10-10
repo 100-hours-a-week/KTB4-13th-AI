@@ -118,6 +118,33 @@ def test_빈_목록이면_DB에_묻지_않는다() -> None:
     assert conn.queries == 0
 
 
+def test_ISBN마다_book_id를_짝지어_돌려준다() -> None:
+    # 리뷰처럼 ISBN 에 값(별점)이 딸려 오면 순서만으로는 짝을 못 맞춘다. 모르는 ISBN 이 빠지면 밀린다.
+    conn = _FakeConn({_A: 1, _C: 3})
+
+    assert asyncio.run(isbn.book_id_map(conn, [_C, _B, _A, _C])) == {_C: 3, _A: 1}
+    assert conn.queries == 1
+
+
+def test_짝지어_돌려줄_때도_모르는_ISBN의_개수만_남긴다(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    conn = _FakeConn({_A: 1})
+
+    with caplog.at_level(logging.WARNING, logger="app.core.isbn"):
+        asyncio.run(isbn.book_id_map(conn, [_A, _B]))
+
+    assert "1개" in caplog.text
+    assert _B not in caplog.text
+
+
+def test_짝지을_ISBN이_없으면_DB에_묻지_않는다() -> None:
+    conn = _FakeConn({_A: 1})
+
+    assert asyncio.run(isbn.book_id_map(conn, [])) == {}
+    assert conn.queries == 0
+
+
 # ---------------------------------------------------------------------------
 # 실제 DB 가 필요한 테스트
 # ---------------------------------------------------------------------------
