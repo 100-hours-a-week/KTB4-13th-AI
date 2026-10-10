@@ -9,6 +9,7 @@ DB(후보검색)와 LLM(spec 갱신·카드생성)은 가짜로 바꿔 끼운다
 두 답을 순서대로 돌려주는 `_sequenced_model`을 쓴다.
 """
 
+import contextlib
 import json
 
 import httpx
@@ -86,7 +87,7 @@ def _request(**overrides) -> dict:
 def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     """DB를 안 타고 책 한 권짜리 후보를 돌려준다."""
 
-    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
         return [
             {
                 "book_id": 1088,
@@ -199,7 +200,7 @@ def test_카드_생성_LLM_실패가_로그에_남는다(
 def test_후보검색이_예외를_던지면_공통_형식의_500을_돌려준다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _boom(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
         raise RuntimeError("DB 장애")
 
     monkeypatch.setattr(chat, "get_candidates", _boom)
@@ -494,7 +495,9 @@ def test_후보가_없으면_규칙_기반_못_찾음_안내로_reply를_채운�
     나가 어색하다(#158). 규칙 기반 못 찾음 안내로 바뀌어야 한다.
     """
 
-    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _empty(
+        spec, exclude_book_ids, user_id, owned_book_ids=None
+    ) -> list[dict]:
         return []
 
     monkeypatch.setattr(chat, "get_candidates", _empty)
@@ -1015,7 +1018,9 @@ def test_카드가_있으면_followup은_null이다(monkeypatch: pytest.MonkeyPa
 def test_후보가_없고_걸린_조건이_있으면_그_조건을_짚어_되묻는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _empty(
+        spec, exclude_book_ids, user_id, owned_book_ids=None
+    ) -> list[dict]:
         return []
 
     monkeypatch.setattr(chat, "get_candidates", _empty)
@@ -1145,7 +1150,9 @@ def test_빠진_정보_질문은_첫_턴에만_붙인다(monkeypatch: pytest.Mon
 def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그_정보를_묻는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _empty(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _empty(
+        spec, exclude_book_ids, user_id, owned_book_ids=None
+    ) -> list[dict]:
         return []
 
     monkeypatch.setattr(chat, "get_candidates", _empty)
@@ -1188,7 +1195,7 @@ def _one_candidate(**extra) -> list[dict]:
 
 
 def test_카드에_후보의_ISBN을_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
         return _one_candidate(isbn=_ISBN)
 
     monkeypatch.setattr(chat, "get_candidates", _fake)
@@ -1231,7 +1238,7 @@ def test_exclude_isbns는_book_id로_바꿔_exclude_book_ids와_합친다(
         seen["isbns"] = isbns
         return [777]
 
-    async def _fake(spec, exclude_book_ids, user_id) -> list[dict]:
+    async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
         seen["exclude"] = exclude_book_ids
         return []
 
@@ -1286,3 +1293,158 @@ def test_ISBN을_book_id로_바꾸다_실패하면_공통_형식의_500이다(
 
     assert res.status_code == 500
     assert res.json()["message"] == "internal_server_error"
+
+
+# ---------------------------------------------------------------------------
+# 산 책·나의 도서관 책을 요청으로 받기(#319)
+# ---------------------------------------------------------------------------
+
+_ISBN_A, _ISBN_B, _ISBN_C = "9788936434120", "9788954651135", "9788937460449"
+
+
+def _capture_owned(monkeypatch: pytest.MonkeyPatch) -> list:
+    """get_candidates가 받은 owned_book_ids를 모은다."""
+    seen: list = []
+
+    async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
+        seen.append(owned_book_ids)
+        return []
+
+    monkeypatch.setattr(chat, "get_candidates", _fake)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _fake_model(_spec_reply()))
+    return seen
+
+
+def _fake_isbn_lookup(
+    monkeypatch: pytest.MonkeyPatch, books: dict[str, int]
+) -> list[list[str]]:
+    """책 표 대신 (ISBN → book_id)를 정해 둔다. 조회한 ISBN 목록을 모아 돌려준다."""
+    asked: list[list[str]] = []
+
+    class _NoPool:
+        def acquire(self):
+            return contextlib.nullcontext()
+
+    async def _to_book_ids(conn, isbns) -> list[int]:
+        asked.append(list(isbns))
+        return [books[i] for i in isbns if i in books]
+
+    monkeypatch.setattr(chat.db, "get_pool", lambda: _NoPool())
+    monkeypatch.setattr(chat.isbn, "to_book_ids", _to_book_ids)
+    return asked
+
+
+def test_산_책과_나의_도서관_책을_ISBN으로_받아_후보_검색에_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_owned(monkeypatch)
+    asked = _fake_isbn_lookup(monkeypatch, {_ISBN_A: 1, _ISBN_B: 2, _ISBN_C: 3})
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(purchased_isbns=[_ISBN_A, _ISBN_B], library_isbns=[_ISBN_C]),
+    )
+
+    assert res.status_code == 200
+    assert seen == [[1, 2, 3]]
+    # 두 칸을 한 번에 조회한다.
+    assert asked == [[_ISBN_A, _ISBN_B, _ISBN_C]]
+
+
+def test_두_칸이_없으면_가진_책을_None으로_넘겨_복제_표를_읽게_한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_owned(monkeypatch)
+    asked = _fake_isbn_lookup(monkeypatch, {})
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert seen == [None]
+    assert asked == []
+
+
+def test_두_칸이_null이어도_안_온_것으로_본다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_owned(monkeypatch)
+    _fake_isbn_lookup(monkeypatch, {})
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(purchased_isbns=None, library_isbns=None),
+    )
+
+    assert res.status_code == 200
+    assert seen == [None]
+
+
+def test_빈_목록이면_책_표를_조회하지_않고_빈_목록을_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 빈 목록은 "가진 책이 없다"는 뜻이다. None과 달라서 복제 표로 돌아가지 않는다.
+    seen = _capture_owned(monkeypatch)
+    asked = _fake_isbn_lookup(monkeypatch, {})
+
+    res = client.post(
+        "/recommendations/chat", json=_request(purchased_isbns=[], library_isbns=[])
+    )
+
+    assert res.status_code == 200
+    assert seen == [[]]
+    assert asked == []
+
+
+def test_한_칸만_와도_그_목록으로_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_owned(monkeypatch)
+    _fake_isbn_lookup(monkeypatch, {_ISBN_C: 3})
+
+    res = client.post("/recommendations/chat", json=_request(library_isbns=[_ISBN_C]))
+
+    assert res.status_code == 200
+    assert seen == [[3]]
+
+
+def test_책_표에_없는_ISBN은_빠진다(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_owned(monkeypatch)
+    _fake_isbn_lookup(monkeypatch, {_ISBN_A: 1})
+
+    res = client.post(
+        "/recommendations/chat", json=_request(purchased_isbns=[_ISBN_A, _ISBN_B])
+    )
+
+    assert res.status_code == 200
+    assert seen == [[1]]
+
+
+@pytest.mark.parametrize("field", ["purchased_isbns", "library_isbns"])
+def test_가진_책_ISBN의_형식이_틀리면_400(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    seen = _capture_owned(monkeypatch)
+
+    res = client.post(
+        "/recommendations/chat", json=_request(**{field: ["978-89-364-3412-0"]})
+    )
+
+    assert res.status_code == 400
+    assert res.json()["message"] == "invalid_request"
+    assert seen == []
+
+
+def test_가진_책을_book_id로_바꾸다_실패하면_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_owned(monkeypatch)
+    _fake_isbn_lookup(monkeypatch, {})
+
+    async def _boom(conn, isbns) -> list[int]:
+        raise RuntimeError("DB 연결 끊김")
+
+    monkeypatch.setattr(chat.isbn, "to_book_ids", _boom)
+
+    res = client.post("/recommendations/chat", json=_request(purchased_isbns=[_ISBN_A]))
+
+    assert res.status_code == 500
+    assert res.json()["message"] == "internal_server_error"
+    assert seen == []

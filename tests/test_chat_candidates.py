@@ -706,3 +706,59 @@ def test_판본_키는_역할_말을_이름_속_글자와_헷갈리지_않는다
     assert chat._edition_key("책", "글쓴이: 최작가") == ("책", "최작가")
     assert chat._edition_key("책", "") is None
     assert chat._edition_key("", "작가") is None
+
+
+# ---------------------------------------------------------------------------
+# 요청으로 온 가진 책(산 책·나의 도서관 책)으로 빼기(#319)
+# ---------------------------------------------------------------------------
+
+
+def _history_must_not_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _boom(user_id: int) -> history.History:
+        raise AssertionError("가진 책이 요청으로 왔으면 복제 표의 이력을 읽으면 안 됨")
+
+    monkeypatch.setattr(chat, "_fetch_history", _boom)
+
+
+def test_요청으로_온_가진_책은_후보에서_빠지고_복제_표는_읽지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(monkeypatch, [_book(1), _book(2), _book(3)])
+    _fake_descriptions(monkeypatch)
+    _history_must_not_be_read(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="아무거나")
+    result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[1, 3]))
+
+    assert [c["book_id"] for c in result] == [2]
+
+
+def test_가진_책이_빈_목록이면_아무것도_빼지_않고_복제_표도_읽지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 빈 목록은 "가진 책이 없다"는 뜻이다. 안 온 것(None)과 달라서 복제 표로 돌아가지 않는다.
+    _fake_search(monkeypatch, [_book(1), _book(2)])
+    _fake_descriptions(monkeypatch)
+    _history_must_not_be_read(monkeypatch)
+
+    spec = _spec(intent="semantic", semantic="아무거나")
+    result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[]))
+
+    assert [c["book_id"] for c in result] == [1, 2]
+
+
+def test_가진_책이_안_왔으면_지금처럼_복제_표의_이력으로_뺀다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_search(monkeypatch, [_book(1), _book(2)])
+    _fake_descriptions(monkeypatch)
+
+    async def _fetch_history(user_id: int) -> history.History:
+        return history.History(weights={1: history.PURCHASE})
+
+    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
+
+    spec = _spec(intent="semantic", semantic="아무거나")
+    result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=None))
+
+    assert [c["book_id"] for c in result] == [2]
