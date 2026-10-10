@@ -17,6 +17,9 @@ MAX_TAGS = 9
 # 요청에 항목별 시각이 없어 배열 순서로 가린다. 기억은 배열 뒤쪽을 최근으로 본다(이슈 #90).
 USED_LIKED_BOOKS = 50
 USED_MEMORIES = 500
+# 별점의 위쪽 끝. 가중치는 4.0 이상을 "좋음"으로 친다(app/core/history.py). BE 코드는 10.0 까지
+# 받아서(#307 남은 결정), 10점 만점으로 오면 거의 모든 리뷰가 좋음이 되고 에러가 나지 않는다.
+MAX_RATING = 5.0
 
 
 class _Strict(BaseModel):
@@ -77,6 +80,28 @@ class Memory(_Strict):
         return self
 
 
+class Review(_Strict):
+    isbn: Isbn13
+    rating: float = Field(ge=0, le=MAX_RATING)
+    # 프로필 계산은 별점만 쓴다. 본문 없는 리뷰 하나 때문에 요청 전체를 400 으로 돌려보내지 않는다.
+    content: str | None = None
+
+
+class History(_Strict):
+    """산 책·나의 도서관 책·리뷰(#327). BE 가 부를 때마다 전체를 실어 보낸다."""
+
+    # 결제가 끝났고 취소되지 않은 것만 온다.
+    purchased_isbns: list[Isbn13] = Field(default_factory=list)
+    library_isbns: list[Isbn13] = Field(default_factory=list)
+    # 지워지지 않은 것만 온다.
+    reviews: list[Review] = Field(default_factory=list)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _null_is_empty(cls, value: object) -> object:
+        return _null_as_empty(value)
+
+
 class ProfileRequest(_Strict):
     user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
     # 빈 키끼리는 모두 같은 키가 되어 멱등 처리에서 서로 부딪친다.
@@ -84,6 +109,9 @@ class ProfileRequest(_Strict):
     # 온보딩을 건너뛴 사용자는 {} 를 보낸다. 칸 자체가 없으면 400 이다(명세).
     onboarding: Onboarding
     memories: list[Memory] = Field(default_factory=list)
+    # 칸이 없거나 null 이면 BE 가 아직 보내지 않는 것이다. 이때는 복제 표의 이력으로 계산한다.
+    # 빈 객체나 빈 목록은 "이력이 없다"는 뜻이라 None 과 다르다.
+    history: History | None = None
 
     @field_validator("memories", mode="before")
     @classmethod
