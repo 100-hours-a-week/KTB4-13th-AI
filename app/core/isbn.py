@@ -26,15 +26,15 @@ Isbn13 = Annotated[str, Field(pattern=ISBN13_PATTERN)]
 _SQL = "SELECT isbn13, book_id FROM v_books WHERE isbn13 = ANY($1::text[])"
 
 
-async def to_book_ids(conn: asyncpg.Connection, isbns: Sequence[str]) -> list[int]:
-    """ISBN 들을 book_id 로 바꾼다. 받은 순서를 지키고, 책 표에 없는 ISBN 은 건너뛴다.
+async def book_id_map(conn: asyncpg.Connection, isbns: Sequence[str]) -> dict[str, int]:
+    """ISBN 마다 book_id 를 짝지어 돌려준다. 책 표에 없는 ISBN 은 빠진다.
 
     없는 ISBN 을 에러로 막지 않는다. BE 에는 있는데 AI 에 아직 안 들어온 책일 수 있고, 한 권
     때문에 요청 전체를 거절하면 프로필이나 추천이 통째로 실패한다. 대신 몇 권인지 남긴다.
     어느 책인지는 남기지 않는다. 산 책·담은 책 목록이 요청 번호와 함께 로그에 쌓인다.
     """
     if not isbns:
-        return []
+        return {}
     rows = await conn.fetch(_SQL, list(isbns))
     found = {row["isbn13"]: row["book_id"] for row in rows}
     unknown = {isbn for isbn in isbns if isbn not in found}
@@ -44,4 +44,10 @@ async def to_book_ids(conn: asyncpg.Connection, isbns: Sequence[str]) -> list[in
             len(unknown),
             len(set(isbns)),
         )
+    return found
+
+
+async def to_book_ids(conn: asyncpg.Connection, isbns: Sequence[str]) -> list[int]:
+    """ISBN 들을 book_id 로 바꾼다. 받은 순서를 지키고, 책 표에 없는 ISBN 은 건너뛴다."""
+    found = await book_id_map(conn, isbns)
     return [found[isbn] for isbn in isbns if isbn in found]
