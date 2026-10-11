@@ -6,6 +6,9 @@
 
 대화 원문·검색어·이미지를 로그 메시지에 안 담는 건 각 호출부(app/gateway/llm.py 등)의
 책임이다 — 이 파일은 형식(JSON, request_id)만 맞춘다.
+
+예외가 하나 있다. 접속 로그는 서버(uvicorn)가 직접 남겨서 호출부가 막을 수 없다. 주소의 ? 뒤를
+여기서 지운다(#333).
 """
 
 import contextvars
@@ -67,6 +70,26 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+# uvicorn 이 요청마다 접속 로그를 남기는 로거.
+_ACCESS_LOGGER = "uvicorn.access"
+
+
+def drop_query_string(record: logging.LogRecord) -> bool:
+    """접속 로그에서 주소의 ? 뒤를 지운다(#333). 로그 필터로 건다.
+
+    uvicorn 은 주소 전체를 적는다. ④ 홈 추천은 GET 이라 사용자 번호와 그 사용자가 산 책의 ISBN 이
+    주소에 실려서, 그대로 두면 누가 무엇을 샀는지가 요청마다 로그에 쌓인다. 로그는 탈퇴하거나
+    동의를 철회해도 지워지지 않는다.
+
+    항상 True 를 돌려준다(기록은 남긴다). uvicorn 이 남기는 모양(주소가 셋째 값인 다섯 값)이
+    아니면 건드리지 않는다. 형식이 바뀌어도 로그를 남기다 요청이 죽지 않게 한다.
+    """
+    args = record.args
+    if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+        record.args = (*args[:2], args[2].split("?", 1)[0], *args[3:])
+    return True
+
+
 def configure(level: str) -> None:
     """서버가 뜰 때 한 번 부른다.
 
@@ -78,3 +101,5 @@ def configure(level: str) -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
+    # 같은 필터를 두 번 걸어도 한 번만 걸린다(logging.Logger.addFilter).
+    logging.getLogger(_ACCESS_LOGGER).addFilter(drop_query_string)
