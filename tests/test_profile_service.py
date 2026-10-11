@@ -255,6 +255,142 @@ def test_재료가_없으면_cold_start로_저장한다() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 요청의 history 로 계산한다(#327). 칸이 없으면 지금처럼 복제 표에서 읽는다.
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def at_now(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """요청을 받은 시각을 정해 둔다."""
+    monkeypatch.setattr(service, "_now", lambda: _NOW)
+    return _NOW
+
+
+async def _rebuilt(conn, **overrides) -> asyncpg.Record:
+    await service.rebuild_on(conn, _request(**overrides))
+    return await _row(conn)
+
+
+def test_history가_오면_복제_표가_아니라_요청의_이력으로_계산한다(
+    at_now: datetime,
+) -> None:
+    async def check(conn):
+        # 복제 표에는 한국소설(9100202)을 산 것으로 남아 있지만, 요청은 에세이(9100201)를 샀다고 한다.
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        return await _rebuilt(
+            conn,
+            onboarding={},
+            history={"purchased_isbns": [_isbn(9100201)]},
+        )
+
+    row = _run(check)
+
+    assert json.loads(row["tag_weights"]) == {"에세이": 3}
+    centroid = json.loads(row["centroid"])
+    assert (centroid[0], centroid[1]) == (pytest.approx(1.0), pytest.approx(0.0))
+
+
+def test_history가_없으면_지금처럼_복제_표의_이력으로_계산한다() -> None:
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        return await _rebuilt(conn, onboarding={})
+
+    row = _run(check)
+
+    assert json.loads(row["tag_weights"]) == {"한국소설": 3}
+    assert row["computed_at"] == _T0
+
+
+def test_빈_history는_이력이_없다는_뜻이라_복제_표를_읽지_않는다(
+    at_now: datetime,
+) -> None:
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        return await _rebuilt(conn, history={})
+
+    row = _run(check)
+
+    # 온보딩 답(좋아한 책 9100201, 태그 재테크)만 남는다.
+    assert json.loads(row["tag_weights"]) == {"경제학": 1}
+    centroid = json.loads(row["centroid"])
+    assert (centroid[0], centroid[1]) == (pytest.approx(1.0), pytest.approx(0.0))
+
+
+def test_요청으로_받은_이력은_받은_시각까지_반영한_것으로_저장한다(
+    at_now: datetime,
+) -> None:
+    # 이력이 비어 있어도 받은 시각을 적는다. 비워 두면 ③④ 가 복제 표에 남은 이력을 전부
+    # "프로필 이후 이력"으로 보고 한 번 더 더한다.
+    async def check(conn):
+        filled = await _rebuilt(conn, history={"library_isbns": [_isbn(9100202)]})
+        empty = await _rebuilt(conn, history={})
+        return filled["computed_at"], empty["computed_at"]
+
+    assert _run(check) == (at_now, at_now)
+
+
+def test_같은_이력이면_요청으로_받아도_복제_표에서_읽어도_같은_프로필이다(
+    at_now: datetime,
+) -> None:
+    # 9100201 은 사고 1점을 줬고, 9100202 는 담고 4.5점을 줬다.
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO v_user_purchases VALUES ($1, 9100201, $2)", _USER, _T0
+        )
+        await conn.execute(
+            "INSERT INTO v_user_library VALUES ($1, 9100202, $2)", _USER, _T0
+        )
+        await conn.executemany(
+            "INSERT INTO v_user_reviews VALUES ($1, $2, $3, $4)",
+            [(_USER, 9100201, 1.0, _T0), (_USER, 9100202, 4.5, _T0)],
+        )
+        replicated = await _rebuilt(conn, onboarding={"tags": ["재테크"]})
+        reported = await _rebuilt(
+            conn,
+            onboarding={"tags": ["재테크"]},
+            history={
+                "purchased_isbns": [_isbn(9100201)],
+                "library_isbns": [_isbn(9100202)],
+                "reviews": [
+                    {"isbn": _isbn(9100201), "rating": 1.0},
+                    {"isbn": _isbn(9100202), "rating": 4.5, "content": "좋았어요"},
+                ],
+            },
+        )
+        return replicated, reported
+
+    replicated, reported = _run(check)
+
+    assert json.loads(reported["centroid"]) == pytest.approx(
+        json.loads(replicated["centroid"])
+    )
+    assert json.loads(reported["tag_weights"]) == json.loads(replicated["tag_weights"])
+    # 결과가 같아서 판 번호도 오르지 않는다.
+    assert reported["profile_version"] == replicated["profile_version"] == 1
+
+
+def test_요청의_이력에_책_표에_없는_ISBN이_있어도_나머지로_계산한다(
+    at_now: datetime,
+) -> None:
+    async def check(conn):
+        return await _rebuilt(
+            conn,
+            onboarding={},
+            history={"purchased_isbns": ["9780000000001", _isbn(9100202)]},
+        )
+
+    assert json.loads(_run(check)["tag_weights"]) == {"한국소설": 3}
+
+
+# ---------------------------------------------------------------------------
 # 멱등 키를 확인하지 않는다(#303). 사용자별 차례 처리는 그대로다(#93)
 # ---------------------------------------------------------------------------
 
