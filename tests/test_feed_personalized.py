@@ -12,7 +12,7 @@ import asyncpg
 import pytest
 
 from app.core.pgvector import to_vector_literal
-from app.feed import personalized
+from app.feed import exclusion, personalized
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -189,9 +189,12 @@ def test_정확_계산은_벡터_색인을_쓰지_않는다(distance: str, uses_
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         try:
-            sql = "EXPLAIN " + personalized._SQL.format(distance=distance, where="")
+            excluded = exclusion.replicated(_USER, _NOW)
+            sql = "EXPLAIN " + personalized._SQL.format(
+                distance=distance, where="", excluded=excluded.sql(2), limit="$5"
+            )
             rows = await conn.fetch(
-                sql, to_vector_literal(_CENTROID), _USER, 2.0, 500, _NOW
+                sql, to_vector_literal(_CENTROID), *excluded.params, 500
             )
             return "\n".join(r[0] for r in rows)
         finally:

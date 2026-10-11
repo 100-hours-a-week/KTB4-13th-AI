@@ -11,9 +11,9 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history, popularity, products
+from app.core import popularity, products
 from app.core.pgvector import to_vector_literal
-from app.feed import scoring
+from app.feed import exclusion, scoring
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
@@ -27,25 +27,17 @@ CANDIDATE_LIMIT = 500
 # 식(coalesce)으로 감싸면 색인을 못 타 인기 표 전체를 훑는다.
 _MAX_POPULARITY_SQL = "SELECT max(sales) FROM v_book_popularity"
 
-# 제외 규칙은 cold_start 목록(#106)과 같다. 산 책·담은 책·2.0점 이하 리뷰를 단 책.
+# 제외 규칙은 cold_start 목록(#106)과 같다(app/feed/exclusion.py).
+# 자리 번호: 취향 벡터($1) → 뺄 책의 값들 → 후보 수 → 필터. `{{excluded}}` 와 `{{limit}}` 는 조회할 때 채운다.
 _SQL = f"""
 WITH nearest AS (
     SELECT e.book_id, {{distance}} AS distance
     FROM book_embeddings e
     JOIN v_books b USING (book_id)
-    WHERE NOT EXISTS (
-            SELECT 1 FROM v_user_purchases x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.purchased_at <= $5)
-      AND NOT EXISTS (
-            SELECT 1 FROM v_user_library x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.added_at <= $5)
-      AND NOT EXISTS (
-            SELECT 1 FROM v_user_reviews x
-            WHERE x.user_id = $2 AND x.book_id = b.book_id AND x.rating <= $3
-              AND x.created_at <= $5)
+    WHERE {{excluded}}
       {{where}}
     ORDER BY distance
-    LIMIT $4
+    LIMIT {{limit}}
 )
 SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
        {products.price_sql("b")} AS price, b.cover_url,
@@ -134,13 +126,17 @@ async def _nearest(
     page: Page,
     centroid: list[float],
     filters: SearchFilters,
+    excluded: exclusion.Exclusion | None = None,
 ) -> list[asyncpg.Record]:
     """취향 벡터와 가까운 책 CANDIDATE_LIMIT 권. 필터가 있으면 걸리는 책 수로 뽑는 방법을 정한다.
 
     같은 요청(같은 필터)이면 어느 DB 연결에서 돌아도 같은 방법·같은 계획으로 뽑는다. 쪽마다 다시 뽑기
     때문에, 쪽마다 방법이 달라지면 가까운 500권이 달라져 책이 중복되거나 빠진다(#196).
     """
-    where, filter_params = build_where(filters, first_param=6)
+    if excluded is None:
+        excluded = exclusion.replicated(req.user_id, page.issued_at)
+    limit_param = 2 + len(excluded.params)
+    where, filter_params = build_where(filters, first_param=limit_param + 1)
     filtered = bool(where)
     left = _budget(NEAREST_BUDGET_SECONDS)
     count = 0
@@ -165,12 +161,15 @@ async def _nearest(
                     f"SET LOCAL hnsw.max_scan_tuples = {FILTERED_MAX_SCAN_TUPLES}"
                 )
             return await conn.fetch(
-                _SQL.format(distance=distance, where=where),
+                _SQL.format(
+                    distance=distance,
+                    where=where,
+                    excluded=excluded.sql(2),
+                    limit=f"${limit_param}",
+                ),
                 to_vector_literal(centroid),
-                req.user_id,
-                history.DISLIKED_MAX_RATING,
+                *excluded.params,
                 CANDIDATE_LIMIT,
-                page.issued_at,
                 *filter_params,
                 timeout=left(),
             )
@@ -190,17 +189,18 @@ async def fetch(
     page: Page,
     centroid: list[float],
     tag_weights: dict[str, float],
+    excluded: exclusion.Exclusion | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다.
 
-    커서를 받은 시각 뒤에 생긴 이력은 제외 대상에서 빼고 본다(명세 ④).
+    `excluded` 를 주지 않으면 복제한 사용자 표의 이력으로 뺀다.
     """
     filters = SearchFilters(
         category=req.category,
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    rows = await _nearest(conn, req, page, centroid, filters)
+    rows = await _nearest(conn, req, page, centroid, filters, excluded)
     catalog_max = await catalog_max_popularity(conn)
 
     return rank(
