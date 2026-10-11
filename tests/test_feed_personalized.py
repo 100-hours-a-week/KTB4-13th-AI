@@ -49,6 +49,11 @@ _BOOKS = [
 _CENTROID = _vector(1.0)
 
 
+def _isbn(book_id: int) -> str:
+    """테스트 책의 ISBN. book_id 마다 다른 13자리 숫자다."""
+    return str(9780000000000 + book_id)
+
+
 def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = None):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -58,11 +63,12 @@ def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = No
             for book_id, similarity, price, year in _BOOKS:
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, author, publisher, price,"
-                    " in_stock, cover_url, category, pub_year, description)"
-                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개')",
+                    " in_stock, cover_url, category, pub_year, description, isbn13)"
+                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개', $4)",
                     book_id,
                     _CATEGORY,
                     year,
+                    _isbn(book_id),
                 )
                 # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣었다.
                 await conn.execute(
@@ -152,11 +158,19 @@ def test_size_만큼만_준다() -> None:
     assert len(_fetch(_request(size="2"))) == 2
 
 
+def test_책마다_ISBN을_싣는다() -> None:
+    items = _fetch(_request())
+
+    assert items
+    assert all(item["isbn"] == _isbn(item["book_id"]) for item in items)
+
+
 def test_응답에는_명세의_칸만_나간다() -> None:
     item = _fetch(_request())[0]
 
     assert set(item) == {
         "book_id",
+        "isbn",
         "title",
         "author",
         "price",
