@@ -5,7 +5,7 @@
 """
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -91,9 +91,30 @@ async def _save(
     )
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.History:
+    """산 책·나의 도서관 책·리뷰. 요청에 실려 왔으면 그것을, 아니면 복제 표를 읽는다(#327).
+
+    칸이 없으면 BE 가 아직 보내지 않는 것이라 지금처럼 복제 표에서 읽는다. 복제를 멈출 때 이 길을
+    빼고, 그때부터 칸이 없으면 이력이 없는 것이 된다(#307). 빈 이력이 오면 복제 표를 읽지 않는다.
+    """
+    if req.history is None:
+        return await history.read(conn, req.user_id)
+    return await history.from_request(
+        conn,
+        purchased_isbns=req.history.purchased_isbns,
+        library_isbns=req.history.library_isbns,
+        reviews=[(r.isbn, r.rating) for r in req.history.reviews],
+        at=_now(),
+    )
+
+
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
     """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다."""
-    hist = await history.read(conn, req.user_id)
+    hist = await _history(conn, req)
     # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
     # 같은 책을 두 번 적어 보내도(두 칸에 나눠 보내도) 한 번만 치고, 합쳐서 앞에서부터 상한만큼 쓴다.
     liked_by_isbn = await isbn.to_book_ids(conn, req.used_liked_isbns())
