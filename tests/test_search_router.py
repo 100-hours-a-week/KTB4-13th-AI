@@ -63,7 +63,6 @@ def test_생략한_값은_명세_기본값으로_채운다() -> None:
 
     assert req is not None
     assert (req.sort, req.size, req.cursor) == ("relevance", 15, None)
-    assert req.filters.in_stock_only is False
 
 
 def test_명세의_입력_예시가_그대로_통과한다() -> None:
@@ -88,6 +87,16 @@ def test_명세의_입력_예시가_그대로_통과한다() -> None:
     assert req.filters.price_max == 20000
 
 
+@pytest.mark.parametrize("value", [True, False, "yes", None])
+def test_없어진_재고_조건을_보내도_거절하지_않고_무시한다(value: object) -> None:
+    # 챗봇의 추천 조건(spec)은 화면을 거쳐 되돌아온다. 예전에 만들어진 조건에 이 칸이 남아 있을 수
+    # 있어서 400 으로 막으면 그 대화가 끊긴다(#335).
+    req = parse_request({"query": "책", "filters": {"in_stock_only": value}})
+
+    assert req is not None
+    assert "in_stock_only" not in req.filters.model_dump()
+
+
 def test_어린이는_거르지_않지만_400도_아니다() -> None:
     # 온보딩 보기에 있는 값이라 받는다. 분류로 가를 수 없어 거르지는 않는다(#228).
     assert parse_request({"query": "책", "filters": {"category": "어린이"}}) is not None
@@ -108,7 +117,6 @@ def test_어린이는_거르지_않지만_400도_아니다() -> None:
         {"query": "책", "filters": {"price_min": -1}},
         {"query": "책", "filters": {"price_min": 20000, "price_max": 10000}},
         {"query": "책", "filters": {"pub_year_from": 2026, "pub_year_to": 2020}},
-        {"query": "책", "filters": {"in_stock_only": "yes"}},
         {"query": "책", "filters": "에세이"},
         ["책"],
         # #201 — int32 범위·NUL.

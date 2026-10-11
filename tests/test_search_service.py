@@ -205,7 +205,14 @@ def test_필터나_정렬이_달라지면_커서를_못_쓴다(fakes: dict) -> N
     with pytest.raises(service.CursorExpired):
         _search(size=2, cursor=token, sort="newest")
     with pytest.raises(service.CursorExpired):
-        _search(size=2, cursor=token, filters={"in_stock_only": True})
+        _search(size=2, cursor=token, filters={"price_max": 10000})
+
+
+def test_없어진_재고_조건이_실려_와도_커서는_이어진다(fakes: dict) -> None:
+    # 조건이 달라진 것이 아니다. 무시하는 칸이라 같은 목록의 다음 쪽이다(#335).
+    token = _search(size=2).next_cursor
+
+    assert _search(size=2, cursor=token, filters={"in_stock_only": True}) is not None
 
 
 def test_응답_모드가_달라지면_커서를_못_쓴다(fakes: dict) -> None:
