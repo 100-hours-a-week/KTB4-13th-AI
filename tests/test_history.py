@@ -123,6 +123,58 @@ def test_이력이_없으면_computed_at은_None이다() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 요청으로 받은 이력(#327). 복제 표에서 읽은 행과 같은 모양으로 만들어 같은 계산에 넣는다.
+# ---------------------------------------------------------------------------
+
+_A, _B, _C = "9788936434120", "9788954651135", "9788937460449"
+_IDS = {_A: 1, _B: 2}
+_CATEGORIES = {1: "에세이", 2: "한국소설"}
+
+
+def _reported(purchased=(), library=(), reviews=()) -> history.History:
+    rows = history.reported_rows(
+        _IDS, _CATEGORIES, list(purchased), list(library), list(reviews), _T0
+    )
+    return history.summarize(rows)
+
+
+def test_요청으로_받은_이력에도_같은_가중치를_매긴다() -> None:
+    h = _reported(purchased=[_A], library=[_B])
+
+    assert h.weights == {1: 3, 2: 1}
+    assert h.category_scores == {"에세이": 3, "한국소설": 1}
+
+
+@pytest.mark.parametrize(
+    ("rating", "weight"),
+    [(5.0, 2), (4.0, 2), (4, 2), (3.5, 0), (2.5, 0), (2.0, -2), (0.5, -2), (0, -2)],
+)
+def test_요청의_별점은_숫자로_와도_같은_경계로_가른다(
+    rating: float, weight: int
+) -> None:
+    assert _reported(reviews=[(_A, rating)]).weights == {1: weight}
+
+
+def test_요청으로_받아도_같은_책은_가장_큰_가중치_하나만_쓴다() -> None:
+    h = _reported(purchased=[_A], library=[_A], reviews=[(_A, 4.5)])
+
+    assert h.weights == {1: 3}
+
+
+def test_요청으로_받아도_2점_이하_리뷰를_단_책은_싫어한_책으로_남긴다() -> None:
+    h = _reported(purchased=[_A], reviews=[(_A, 1.0)])
+
+    assert h.weights == {1: 3}
+    assert h.disliked_book_ids == {1}
+
+
+def test_책_표에_없는_ISBN의_이력은_빠진다() -> None:
+    h = _reported(purchased=[_A, _C], library=[_C], reviews=[(_C, 5.0)])
+
+    assert h.weights == {1: 3}
+
+
+# ---------------------------------------------------------------------------
 # 실제 DB 가 필요한 테스트
 # ---------------------------------------------------------------------------
 
@@ -263,3 +315,79 @@ def test_프로필_이후_이력이_바꾼_카테고리_점수만_낸다() -> No
     assert until_before_new == {}
     # 반영한 이력이 없으면(computed_at 이 비면) 전부 더한다.
     assert everything == {"에세이": 3, "한국소설": 1}
+
+
+def _isbn13(book_id: int) -> str:
+    return str(9780000000000 + book_id)
+
+
+@needs_db
+def test_요청으로_받은_이력은_복제_표에서_읽은_것과_같은_결과를_낸다() -> None:
+    books = [(9100101, "에세이"), (9100102, "한국소설"), (9100103, "에세이")]
+
+    async def _go() -> tuple[history.History, history.History]:
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.executemany(
+                "INSERT INTO v_books (book_id, title, price, in_stock, category, isbn13)"
+                " VALUES ($1, '책', 10000, true, $2, $3)",
+                [(b, category, _isbn13(b)) for b, category in books],
+            )
+            # 같은 이력을 복제 표에도 넣는다: 1번은 사고 1점, 2번은 담고 4.5점, 3번은 담기만.
+            await conn.execute(
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)", _USER, _T0
+            )
+            await conn.executemany(
+                "INSERT INTO v_user_library VALUES ($1, $2, $3)",
+                [(_USER, 9100102, _T0), (_USER, 9100103, _T0)],
+            )
+            await conn.executemany(
+                "INSERT INTO v_user_reviews VALUES ($1, $2, $3, $4)",
+                [
+                    (_USER, 9100101, Decimal("1.0"), _T0),
+                    (_USER, 9100102, Decimal("4.5"), _T0),
+                ],
+            )
+            replicated = await history.read(conn, _USER)
+            reported = await history.from_request(
+                conn,
+                purchased_isbns=[_isbn13(9100101)],
+                library_isbns=[_isbn13(9100102), _isbn13(9100103)],
+                reviews=[(_isbn13(9100101), 1.0), (_isbn13(9100102), 4.5)],
+                at=_T0 + timedelta(days=7),
+            )
+            return replicated, reported
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    replicated, reported = asyncio.run(_go())
+
+    assert (
+        reported.weights == replicated.weights == {9100101: 3, 9100102: 2, 9100103: 1}
+    )
+    assert reported.category_scores == replicated.category_scores
+    assert reported.disliked_book_ids == replicated.disliked_book_ids == {9100101}
+
+
+@needs_db
+def test_요청으로_받은_이력은_받은_시각까지_반영한_것으로_적는다() -> None:
+    # 요청에는 이력마다의 시각이 없다. BE 가 그때까지의 전체를 보낸 것이라, 이력이 비어 있어도
+    # 받은 시각을 적는다. 비워 두면 ③④ 가 복제 표에 남은 옛 이력을 전부 "나중 이력"으로 더한다.
+    at = _T0 + timedelta(days=7)
+
+    async def _go() -> history.History:
+        conn = await asyncpg.connect(_DB_URL)
+        try:
+            return await history.from_request(
+                conn, purchased_isbns=[], library_isbns=[], reviews=[], at=at
+            )
+        finally:
+            await conn.close()
+
+    h = asyncio.run(_go())
+
+    assert h.weights == {}
+    assert h.computed_at == at
