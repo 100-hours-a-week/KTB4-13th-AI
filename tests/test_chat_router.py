@@ -21,6 +21,7 @@ from langchain_core.runnables import RunnableLambda
 from app.chat.schemas import Spec
 from app.main import app
 from app.routers import chat
+from app.search.schemas import SearchFilters
 
 client = TestClient(app)
 
@@ -629,23 +630,23 @@ def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
 def test_patch가_안_건드린_필터는_요청_spec_값이_유지된다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """언급 안 된 값을 옮겨 적게 하다 예시값(false)을 베껴버리던 회귀 재현.
+    """언급 안 된 값을 옮겨 적게 하다 예시값을 베껴버리던 회귀 재현.
 
-    in_stock_only=true로 온 요청에서, 1단계 patch가 semantic만 건드리면
-    in_stock_only는 patch에 안 실려도 true로 남아야 한다.
+    price_max=20000으로 온 요청에서, 1단계 patch가 semantic만 건드리면
+    price_max는 patch에 안 실려도 20000으로 남아야 한다.
     """
 
-    spec_reply = _spec_reply(semantic="품절 아닌 책")
+    spec_reply = _spec_reply(semantic="잔잔한 책")
     model = _sequenced_model(spec_reply, '{"cards": []}')
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
-    request_spec = {**INITIAL_SPEC, "filters": {"in_stock_only": True}}
+    request_spec = {**INITIAL_SPEC, "filters": {"price_max": 20000}}
     res = client.post("/recommendations/chat", json=_request(spec=request_spec))
 
     assert res.status_code == 200
     data = res.json()["data"]
-    assert data["spec"]["filters"]["in_stock_only"] is True
-    assert data["spec"]["semantic"] == "품절 아닌 책"
+    assert data["spec"]["filters"]["price_max"] == 20000
+    assert data["spec"]["semantic"] == "잔잔한 책"
 
 
 def test_새_제목이_오면_이전_턴_저자_출판사를_지운다(
@@ -802,14 +803,8 @@ def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_�
     assert data["cards"][0]["reason_long"] is None
     # 갱신 안 되고 요청에 보낸 spec 그대로. model_dump()는 filters의 생략된
     # 키도 채워 돌려주므로 요청 그대로의 {} 와는 모양이 다르다 — 파싱해서 비교.
-    assert data["spec"]["filters"] == {
-        "category": None,
-        "price_min": None,
-        "price_max": None,
-        "pub_year_from": None,
-        "pub_year_to": None,
-        "in_stock_only": False,
-    }
+    # 키 목록을 여기 적어 두지 않는다. 검색 필터의 칸이 바뀌어도 이 테스트는 그대로다(#319).
+    assert data["spec"]["filters"] == SearchFilters().model_dump()
     assert {**data["spec"], "filters": {}} == INITIAL_SPEC
 
 
@@ -1149,8 +1144,8 @@ def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그
         return []
 
     monkeypatch.setattr(chat, "get_candidates", _empty)
-    # LLM이 말하지 않은 재고 조건을 지어낸 경우
-    patch = {"semantic": "아이가 읽을 책", "filters": {"in_stock_only": True}}
+    # LLM이 말하지 않은 출간연도 조건을 지어낸 경우
+    patch = {"semantic": "아이가 읽을 책", "filters": {"pub_year_from": 2020}}
     monkeypatch.setattr(
         chat, "get_chat_model", lambda: _fake_model(_spec_reply(**patch))
     )
@@ -1162,7 +1157,7 @@ def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그
     data = res.json()["data"]
     assert data["cards"] == []
     assert data["followup"].startswith("아이가 몇 살쯤인가요?")
-    assert "재고" not in data["followup"]
+    assert "2020년" not in data["followup"]
 
 
 # ---------------------------------------------------------------------------

@@ -45,16 +45,29 @@ def test_같은_종류의_조건_예시는_한_번만_준다() -> None:
     assert followup.count("가격은 상관없어요") == 1
 
 
-def test_분야_재고_출판사_조건도_짚는다() -> None:
+def test_분야_출판사_조건도_짚는다() -> None:
     spec = _spec(
         semantic="책",
-        filters=SearchFilters(category="소설", in_stock_only=True),
+        filters=SearchFilters(category="소설"),
         exact=SpecExact(title=None, author=None, publisher="민음사"),
     )
 
     _, followup = chat._no_card_response(spec, "책", had_candidates=False)
 
-    assert "소설, 재고 있는 책, 민음사 책" in followup
+    assert "소설, 민음사 책" in followup
+
+
+def test_재고_조건은_짚지_않는다() -> None:
+    # 챗봇은 재고 조건을 쓰지 않는다(#319). 옛 대화에서 넘어온 spec에 남아 있어도 묻지 않는다.
+    spec = _spec(
+        semantic="책",
+        filters=SearchFilters(category="소설", in_stock_only=True),
+    )
+
+    _, followup = chat._no_card_response(spec, "책", had_candidates=False)
+
+    assert "소설 조건이 걸려 있어요." in followup
+    assert "재고" not in followup
 
 
 def test_금액은_만원_단위로_떨어지면_만원으로_쓴다() -> None:

@@ -86,3 +86,14 @@ def test_SPEC_PROMPT는_중괄호가_깨지지_않고_채워지며_exact_규칙�
     assert "exact.title" in text
     assert "exact.author" in text
     assert "절대 덧붙이지 마라" in text
+
+
+def test_SPEC_PROMPT에_재고_조건이_실리지_않는다() -> None:
+    # 챗봇은 재고 조건을 쓰지 않는다(#319). 예시에 있으면 모델이 말하지 않은 재고 조건을 지어낸다.
+    messages = chat.SPEC_PROMPT.format_messages(
+        recent_turns="(없음)", spec_json="{}", message="어린왕자"
+    )
+    text = messages[0].content
+
+    assert "in_stock_only" not in text
+    assert "재고" not in text
