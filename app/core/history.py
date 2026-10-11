@@ -10,16 +10,22 @@
 | 리뷰 2.5점 이상 3.5점 이하 | 0 (쓰지 않음) |
 | 리뷰 2.0점 이하 | −2 (취향 벡터에는 넣지 않고 카테고리 점수만 깎음) |
 
+이력은 두 곳에서 온다. 복제한 사용자 표(read)와, BE 가 요청에 실어 보낸 목록(from_request, #327)이다.
+어디서 오든 같은 행 모양으로 만들어 summarize 하나에 넣는다.
+
 별점 경계는 우리 해석이다. 명세는 "4–5점 / 3점 / 1–2점" 으로 정수만 적었지만 실제 별점은 0.5 단위라
 3.5점·2.5점이 비어 있어, 001 마이그레이션 v_user_reviews 주석대로 둘 다 중립으로 본다(이슈 #91).
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 import asyncpg
+
+from app.core import isbn
 
 PURCHASE = 3
 LIKED_REVIEW = 2
@@ -144,3 +150,64 @@ async def category_scores_since(
         if diff:
             changed[category] = diff
     return changed
+
+
+def reported_rows(
+    book_ids: Mapping[str, int],
+    categories: Mapping[int, str | None],
+    purchased_isbns: Sequence[str],
+    library_isbns: Sequence[str],
+    reviews: Sequence[tuple[str, float]],
+    at: datetime,
+) -> list[dict[str, Any]]:
+    """요청으로 받은 이력을 복제 표에서 읽은 행과 같은 모양으로 만든다. DB 없이 돈다.
+
+    reviews 는 (ISBN, 별점) 이다. book_ids 에 없는 ISBN(책 표에 없는 책)의 이력은 빠진다.
+    """
+    reported = [
+        *((i, "purchase", None) for i in purchased_isbns),
+        *((i, "library", None) for i in library_isbns),
+        # 별점 경계(4.0, 2.0)를 복제 표의 numeric 과 같은 타입으로 견준다.
+        *((i, "review", Decimal(str(rating))) for i, rating in reviews),
+    ]
+    return [
+        {
+            "book_id": book_ids[i],
+            "kind": kind,
+            "rating": rating,
+            "at": at,
+            "category": categories.get(book_ids[i]),
+        }
+        for i, kind, rating in reported
+        if i in book_ids
+    ]
+
+
+_CATEGORY_SQL = "SELECT book_id, category FROM v_books WHERE book_id = ANY($1::int[])"
+
+
+async def from_request(
+    conn: asyncpg.Connection,
+    *,
+    purchased_isbns: Sequence[str],
+    library_isbns: Sequence[str],
+    reviews: Sequence[tuple[str, float]],
+    at: datetime,
+) -> History:
+    """BE 가 요청에 실어 보낸 이력을 모은다(#327). read 와 같은 가중치 표를 쓴다.
+
+    at 은 요청을 받은 시각이다. 요청에는 이력마다의 시각이 없고 BE 가 그때까지의 전체를 보내므로,
+    이력이 비어 있어도 computed_at 을 at 으로 둔다. 비워 두면 ③④ 가 복제 표에 남아 있는 이력을
+    전부 "프로필 이후 이력"으로 보고 한 번 더 더한다.
+    """
+    isbns = [*purchased_isbns, *library_isbns, *(i for i, _ in reviews)]
+    book_ids = await isbn.book_id_map(conn, isbns)
+    categories: dict[int, str | None] = {}
+    if book_ids:
+        rows = await conn.fetch(_CATEGORY_SQL, list(book_ids.values()))
+        categories = {r["book_id"]: r["category"] for r in rows}
+    history = summarize(
+        reported_rows(book_ids, categories, purchased_isbns, library_isbns, reviews, at)
+    )
+    history.computed_at = at
+    return history

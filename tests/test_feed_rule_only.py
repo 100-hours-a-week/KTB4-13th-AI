@@ -37,6 +37,11 @@ _BOOKS = [
 ]
 
 
+def _isbn(book_id: int) -> str:
+    """테스트 책의 ISBN. book_id 마다 다른 13자리 숫자다."""
+    return str(9780000000000 + book_id)
+
+
 def _run(check):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -46,11 +51,12 @@ def _run(check):
             for book_id, category, year in _BOOKS:
                 await conn.execute(
                     "INSERT INTO v_books (book_id, title, author, publisher, price,"
-                    " in_stock, cover_url, category, pub_year, description)"
-                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개')",
+                    " in_stock, cover_url, category, pub_year, description, isbn13)"
+                    " VALUES ($1, '책', '저자', '출판사', 0, false, NULL, $2, $3, '소개', $4)",
                     book_id,
                     category,
                     year,
+                    _isbn(book_id),
                 )
                 # 가격·재고는 상품 표에서 읽는다(#207). 책 표에는 일부러 0원·품절을 넣었다.
                 await conn.execute(
@@ -106,6 +112,21 @@ def test_산_책은_빠진다() -> None:
     got = _fetch(_request(), {_LIKED: 4})
 
     assert 9100804 not in [book_id for book_id, _ in got]
+
+
+def test_책마다_ISBN을_싣는다() -> None:
+    async def check(conn):
+        items, _ = await rule_only.fetch(
+            conn, _request(), Page(issued_at=_NOW), {_LIKED: 4}
+        )
+        return [(item["book_id"], item["isbn"]) for item in items]
+
+    # 로컬 DB 의 다른 책도 인기순 후보로 섞여 나온다. 여기서 넣은 책만 본다.
+    ours = {book_id for book_id, _, _ in _BOOKS}
+    got = [(book_id, isbn) for book_id, isbn in _run(check) if book_id in ours]
+
+    assert got
+    assert all(isbn == _isbn(book_id) for book_id, isbn in got)
 
 
 def test_가격과_재고는_상품_표에서_읽는다() -> None:

@@ -35,13 +35,14 @@ NOT EXISTS (
 """
 
 # 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#207).
+# isbn 은 BE 와 책을 주고받는 키다(#308). 책 표에 값을 채우기 전인 책은 null 로 나간다.
 _COLUMNS = (
-    "b.book_id, b.title, b.author,"
+    "b.book_id, b.isbn13 AS isbn, b.title, b.author,"
     f" {products.price_sql('b')} AS price, b.cover_url, {products.in_stock_sql('b')} AS in_stock"
 )
 
 
-_OUTPUT = "u.book_id, u.title, u.author, u.price, u.cover_url, u.in_stock"
+_OUTPUT = "u.book_id, u.isbn, u.title, u.author, u.price, u.cover_url, u.in_stock"
 
 
 def popular_first_sql(
@@ -87,7 +88,8 @@ WHERE {EXCLUDED_SQL} {{where}}
 ORDER BY b.pub_year DESC NULLS LAST, b.book_id
 """,
     "price_asc": f"""
-SELECT b.book_id, b.title, b.author, pr.discounted_price::int AS price, b.cover_url,
+SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
+       pr.discounted_price::int AS price, b.cover_url,
        pr.stock_quantity > 0 AS in_stock
 FROM v_products pr
 JOIN v_books b ON b.book_id = pr.book_id

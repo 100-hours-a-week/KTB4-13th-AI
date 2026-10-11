@@ -228,3 +228,87 @@ def test_size_상한_정확히는_통과한다() -> None:
     res = _get({"user_id": 123, "surface": "home", "size": MAX_SIZE})
 
     assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 뺄 책을 요청으로 받는다(#330). 산 책과 나의 도서관 책의 ISBN 을 쉼표로 이어 보낸다.
+# ---------------------------------------------------------------------------
+
+_A, _B, _C = "9788936434120", "9788954651135", "9788937460449"
+_HOME = {"user_id": "123", "surface": "home"}
+
+
+def _parse(**params) -> FeedRequest | None:
+    return parse_query(list({**_HOME, **params}.items()))
+
+
+def test_산_책과_나의_도서관_책을_쉼표로_이어_받는다() -> None:
+    params = {**_HOME, "purchased_isbns": f"{_A},{_B}", "library_isbns": _C}
+
+    assert _get(params).status_code == 200
+
+    req = _parse(purchased_isbns=f"{_A},{_B}", library_isbns=_C)
+    assert req.purchased_isbns == [_A, _B]
+    assert req.library_isbns == [_C]
+    assert req.owned_isbns() == [_A, _B, _C]
+
+
+def test_두_칸이_없으면_가진_책을_안_보낸_것으로_본다() -> None:
+    # BE 가 아직 보내지 않는다는 뜻이다. 이때는 지금처럼 복제 표로 뺀다.
+    assert _parse().owned_isbns() is None
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"purchased_isbns": "", "library_isbns": ""},
+        {"purchased_isbns": ""},
+        {"library_isbns": ""},
+    ],
+)
+def test_값이_빈_칸은_가진_책이_없다는_뜻이라_안_보낸_것과_다르다(
+    params: dict,
+) -> None:
+    assert _get({**_HOME, **params}).status_code == 200
+    assert _parse(**params).owned_isbns() == []
+
+
+def test_한_칸만_보내도_그_목록을_가진_책으로_본다() -> None:
+    assert _parse(library_isbns=_C).owned_isbns() == [_C]
+
+
+def test_recommend_more도_가진_책을_받는다() -> None:
+    params = {
+        "user_id": "123",
+        "surface": "recommend_more",
+        "sort": "newest",
+        "purchased_isbns": _A,
+    }
+
+    assert _get(params).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "978-89-364-3412-0",  # 하이픈
+        "897364341X",  # 10자리
+        f"{_A},",  # 끝에 쉼표
+        f",{_A}",
+        f"{_A},,{_B}",
+        f"{_A}, {_B}",  # 쉼표 뒤 공백
+        f"{_A};{_B}",
+        f"[{_A}]",
+    ],
+)
+@pytest.mark.parametrize("name", ["purchased_isbns", "library_isbns"])
+def test_ISBN_목록의_형식이_틀리면_400이다(name: str, value: str) -> None:
+    assert _get({**_HOME, name: value}).status_code == 400
+
+
+@pytest.mark.parametrize("name", ["purchased_isbns", "library_isbns"])
+def test_ISBN_목록도_같은_이름을_두_번_보내면_400이다(name: str) -> None:
+    # 쉼표로 이어서 한 번만 보낸다(#307). 반복해서 보내면 어느 쪽을 쓸지 모호하다.
+    res = _get([*_HOME.items(), (name, _A), (name, _B)])
+
+    assert res.status_code == 400
