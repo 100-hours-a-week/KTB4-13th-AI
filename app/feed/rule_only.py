@@ -11,8 +11,8 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history, popularity, products
-from app.feed import cold_start, personalized, scoring
+from app.core import popularity, products
+from app.feed import cold_start, exclusion, personalized, scoring
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
@@ -23,21 +23,37 @@ _POPULARITY = popularity.score_sql("p")
 # 순서를 정하는 칸까지 내보낸다. 좋아하는 분류가 여럿이면 분류 점수 → 인기 → 신간 → 번호로 모은다.
 _ORDER_COLUMNS = "u.book_id, u.seg, u.sales, u.pub_year"
 
+
 # 후보는 개인화를 끈 목록과 같은 순서(판매 수 → 신간 → 번호)로 색인에서 앞부분만 읽는다(#189).
 # 좋아하는 분류마다 그 분류 안에서 같은 순서로 CANDIDATE_LIMIT 권씩 읽고, 분류 점수가 높은 것부터 모은다.
-_SQL = f"""
+#
+# 자리 번호: 뺄 책의 값들(n 개) → 후보 수 → 좋아하는 분류 → 그 점수 → 필터.
+def candidates_sql(where: str, excluded: exclusion.Exclusion) -> str:
+    n = len(excluded.params)
+    limit = f"${n + 1}"
+    liked = cold_start.popular_first_sql(
+        where,
+        excluded.sql(1),
+        extra="AND b.category = w.category",
+        limit=limit,
+        columns=_ORDER_COLUMNS,
+    )
+    popular = cold_start.popular_first_sql(
+        where, excluded.sql(1), limit=limit, columns="u.book_id"
+    )
+    return f"""
 WITH liked AS (
     SELECT c.book_id
-    FROM unnest($5::text[], $6::float8[]) AS w(category, points)
+    FROM unnest(${n + 2}::text[], ${n + 3}::float8[]) AS w(category, points)
     CROSS JOIN LATERAL (
-        {cold_start.popular_first_sql("{where}", extra="AND b.category = w.category", columns=_ORDER_COLUMNS)}
-        LIMIT $4
+        {liked}
+        LIMIT {limit}
     ) c
     ORDER BY w.points DESC, c.seg, c.sales DESC, c.pub_year DESC NULLS LAST, c.book_id
-    LIMIT $4
+    LIMIT {limit}
 ), popular AS (
-    {cold_start.popular_first_sql("{where}", columns="u.book_id")}
-    LIMIT $4
+    {popular}
+    LIMIT {limit}
 )
 SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
        {products.price_sql("b")} AS price, b.cover_url,
@@ -54,21 +70,25 @@ async def fetch(
     req: FeedRequest,
     page: Page,
     tag_weights: dict[str, float],
+    excluded: exclusion.Exclusion | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다."""
+    """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다.
+
+    `excluded` 를 주지 않으면 복제한 사용자 표의 이력으로 뺀다.
+    """
+    if excluded is None:
+        excluded = exclusion.replicated(req.user_id, page.issued_at)
     filters = SearchFilters(
         category=req.category,
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    where, filter_params = build_where(filters, first_param=7)
+    where, filter_params = build_where(filters, first_param=len(excluded.params) + 4)
     liked = {category: points for category, points in tag_weights.items() if points > 0}
     rows = await cold_start.run_ordered(
         conn,
-        _SQL.format(where=where),
-        req.user_id,
-        history.DISLIKED_MAX_RATING,
-        page.issued_at,
+        candidates_sql(where, excluded),
+        *excluded.params,
         personalized.CANDIDATE_LIMIT,
         list(liked),
         [float(points) for points in liked.values()],

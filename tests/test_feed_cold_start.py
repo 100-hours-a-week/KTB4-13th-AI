@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.feed import cold_start
+from app.feed import cold_start, exclusion
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -262,10 +262,15 @@ def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
                 [("user_id", str(_USER)), ("surface", "recommend_more"), ("sort", sort)]
             )
             where = ""
+            excluded = exclusion.replicated(req.user_id, _NOW).sql(1)
             if sort == "match":
-                sql = cold_start.popular_first_sql(where, limit="$4::int + $5::int")
+                sql = cold_start.popular_first_sql(
+                    where, excluded, limit="$4::int + $5::int"
+                )
             else:
-                sql = cold_start.ORDERED_SQL[req.sort].format(where=where)
+                sql = cold_start.ORDERED_SQL[req.sort].format(
+                    where=where, excluded=excluded
+                )
             rows = await cold_start.run_ordered(
                 conn,
                 "EXPLAIN " + sql + "LIMIT $4 OFFSET $5",
