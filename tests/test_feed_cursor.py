@@ -74,6 +74,15 @@ def test_개수만_바꾸는_것은_끊지_않는다() -> None:
     assert cursor.read(_req(token, size="30")).offset == 15
 
 
+def test_가진_책_목록이_쪽마다_달라져도_끊지_않는다() -> None:
+    # 스크롤 중에 책을 사면 다음 쪽 요청의 목록이 달라진다(#330). 그때마다 끊으면 책을 살 때마다
+    # 첫 쪽부터 다시 받아야 한다.
+    token = _next_cursor(_req(purchased_isbns="9788936434120"))
+
+    later = _req(token, purchased_isbns="9788936434120,9788954651135")
+    assert cursor.read(later).offset == 15
+
+
 def test_위조하거나_모양이_깨진_커서는_끊는다() -> None:
     with pytest.raises(cursor.CursorExpired):
         cursor.read(_req("아무개"))
