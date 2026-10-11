@@ -77,3 +77,73 @@ def test_configure는_루트_로거_레벨을_LOG_LEVEL로_맞춘다() -> None:
     finally:
         root.setLevel(original_level)
         root.handlers = original_handlers
+
+
+# ---------------------------------------------------------------------------
+# 접속 로그에서 주소의 ? 뒤를 지운다(#333)
+# ---------------------------------------------------------------------------
+
+
+def _access_record(path: str) -> logging.LogRecord:
+    """uvicorn 이 접속 로그를 남길 때 만드는 기록과 같은 모양."""
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("10.0.0.1:51234", "GET", path, "1.1", 200),
+        exc_info=None,
+    )
+
+
+def _logged(path: str) -> str:
+    record = _access_record(path)
+    assert request_log.drop_query_string(record) is True  # 기록 자체는 남긴다
+    return record.getMessage()
+
+
+def test_접속_로그에_주소의_물음표_뒤를_남기지_않는다() -> None:
+    # 홈 추천은 GET 이라 사용자 번호와 산 책의 ISBN 이 주소에 실린다.
+    line = _logged(
+        "/recommendations/feed?user_id=123&surface=home"
+        "&purchased_isbns=9788936434120,9788954651135"
+    )
+
+    assert line == '10.0.0.1:51234 - "GET /recommendations/feed HTTP/1.1" 200'
+    assert "123" not in line.split('"')[1]
+    assert "9788936434120" not in line
+
+
+def test_물음표가_없는_주소는_그대로_남긴다() -> None:
+    assert _logged("/health") == '10.0.0.1:51234 - "GET /health HTTP/1.1" 200'
+
+
+def test_모양이_다른_기록은_건드리지_않는다() -> None:
+    # uvicorn 이 형식을 바꿔도 로그를 남기다 죽으면 안 된다. 모르는 모양이면 그대로 둔다.
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="다른 형식 %s",
+        args=("값?뒤",),
+        exc_info=None,
+    )
+
+    assert request_log.drop_query_string(record) is True
+    assert record.getMessage() == "다른 형식 값?뒤"
+
+
+def test_configure가_접속_로그에_이_처리를_건다() -> None:
+    access = logging.getLogger("uvicorn.access")
+    root = logging.getLogger()
+    before = (list(access.filters), list(root.handlers), root.level)
+    try:
+        request_log.configure("INFO")
+        request_log.configure("INFO")  # 두 번 불러도 한 번만 걸린다
+
+        assert access.filters.count(request_log.drop_query_string) == 1
+    finally:
+        access.filters, root.handlers = before[0], before[1]
+        root.setLevel(before[2])
