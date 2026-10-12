@@ -13,8 +13,8 @@ from typing import Any
 
 import asyncpg
 
-from app.core import db, history
-from app.feed import cold_start, cursor, personalized, rule_only
+from app.core import db, history, isbn
+from app.feed import cold_start, cursor, exclusion, personalized, rule_only
 from app.feed.schemas import FeedRequest
 from app.search import vector
 
@@ -89,11 +89,27 @@ async def _tag_weights(
     return weights
 
 
+async def _excluded(
+    conn: asyncpg.Connection, req: FeedRequest
+) -> exclusion.Exclusion | None:
+    """목록에서 뺄 책의 조건. 요청에 가진 책이 실려 왔으면 그것으로 뺀다(#330).
+
+    안 실려 왔으면 None 이다. BE 가 아직 보내지 않는 것이라, 각 목록이 지금처럼 복제 표로 뺀다.
+    복제를 멈출 때 그 길을 빼고, 그때부터 안 실려 오면 빼는 책이 없는 것이 된다(#307).
+    책 표에 없는 ISBN 은 건너뛴다(app.core.isbn).
+    """
+    owned = req.owned_isbns()
+    if owned is None:
+        return None
+    return exclusion.owned(await isbn.to_book_ids(conn, owned))
+
+
 async def feed(req: FeedRequest) -> FeedOutcome:
     """커서를 읽고 목록을 만든 뒤, 더 볼 것이 있으면 다음 커서를 붙인다."""
     page = cursor.read(req)
 
     async with db.get_pool().acquire() as conn:
+        excluded = await _excluded(conn, req)
         profile = await _profile(conn, req.user_id)
         if profile is None:
             cursor.check_mode(page, COLD_START)
@@ -101,7 +117,7 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             # (명세: 필터로 0건이면 빈 목록으로 200, 필터를 임의로 풀지 않는다).
             if req.match_score_min:
                 return FeedOutcome(items=[])
-            items, has_more = await cold_start.fetch(conn, req, page)
+            items, has_more = await cold_start.fetch(conn, req, page, excluded)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
         tag_weights = await _tag_weights(conn, req, page, profile)
@@ -111,7 +127,7 @@ async def feed(req: FeedRequest) -> FeedOutcome:
         # 동안 첫 페이지만 되풀이하게 된다.
         try:
             items, has_more = await personalized.fetch(
-                conn, req, page, profile.centroid, tag_weights
+                conn, req, page, profile.centroid, tag_weights, excluded
             )
             # 모델을 바꾸며 책 벡터를 다시 채우는 동안에는 에러 없이 0건이 온다. 필터로 0건인
             # 것과 가르려고, 0건일 때만 책 벡터가 있는지 본다(① 검색의 초기 적재와 같은 판단).
@@ -125,7 +141,9 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             vectors_ok = False
         if not vectors_ok:
             cursor.check_mode(page, RULE_ONLY)
-            items, has_more = await rule_only.fetch(conn, req, page, tag_weights)
+            items, has_more = await rule_only.fetch(
+                conn, req, page, tag_weights, excluded
+            )
             return _outcome(
                 page, req, items, has_more, RULE_ONLY, profile.version, RULE_ONLY
             )
