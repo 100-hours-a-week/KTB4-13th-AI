@@ -76,16 +76,20 @@ def test_필터가_없으면_조건도_없다() -> None:
 
 
 def test_필터는_값을_자리표시자로_넘긴다() -> None:
-    filters = SearchFilters(category="한국문학", price_max=20000, in_stock_only=True)
+    filters = SearchFilters(category="한국문학", price_max=20000)
 
     sql, params = build_where(filters, first_param=5)
 
-    # 가격·재고는 상품 표에서 읽는다(#206)
-    assert sql == (
-        f" AND b.category = $5 AND {products.price_sql('b')} <= $6"
-        f" AND {products.in_stock_sql('b')}"
-    )
+    # 가격은 상품 표에서 읽는다(#206)
+    assert sql == f" AND b.category = $5 AND {products.price_sql('b')} <= $6"
     assert params == ["한국문학", 20000]
+
+
+def test_재고_조건은_없어져서_보내도_조건이_붙지_않는다() -> None:
+    # AI 는 재고를 받지 않는다(#335). 옛 요청에 in_stock_only 가 남아 있어도 거르지 않는다.
+    filters = SearchFilters.model_validate({"in_stock_only": True})
+
+    assert build_where(filters, first_param=5) == ("", [])
 
 
 def test_온보딩_값은_대응표의_핵심_분류들로_푼다() -> None:
@@ -356,7 +360,11 @@ def test_제목과_저자를_섞어_쳐도_둘_다_맞는_책이_위다() -> Non
         (SearchFilters(category="소설"), [9100002]),
         (SearchFilters(price_min=10000, price_max=20000), [9100001, 9100003]),
         (SearchFilters(pub_year_from=2020), [9100001, 9100003]),
-        (SearchFilters(in_stock_only=True), [9100001, 9100002]),
+        # 재고 조건은 없어졌다(#335). 보내도 품절인 책(9100003)이 빠지지 않는다.
+        (
+            SearchFilters.model_validate({"in_stock_only": True}),
+            [9100001, 9100002, 9100003],
+        ),
     ],
 )
 def test_필터를_적용한다(filters: SearchFilters, expected: list[int]) -> None:

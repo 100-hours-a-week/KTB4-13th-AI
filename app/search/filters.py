@@ -27,7 +27,7 @@ def build_where(
             conditions.append((f"{alias}.category = {{}}", catalog[0]))
         elif catalog:
             conditions.append((f"{alias}.category = ANY({{}}::text[])", list(catalog)))
-    # 가격·재고는 상품 표에서 읽는다(#206). 상품이 없는 책은 가격 조건을 걸면 빠지고 품절로 친다.
+    # 가격은 상품 표에서 읽는다(#206). 상품이 없는 책은 가격 조건을 걸면 빠진다.
     if filters.price_min is not None:
         conditions.append((f"{products.price_sql(alias)} >= {{}}", filters.price_min))
     if filters.price_max is not None:
@@ -43,6 +43,4 @@ def build_where(
     for i, (condition, value) in enumerate(conditions):
         sql += " AND " + condition.format(f"${first_param + i}")
         params.append(value)
-    if filters.in_stock_only:
-        sql += f" AND {products.in_stock_sql(alias)}"
     return sql, params

@@ -84,11 +84,12 @@ def test_가까운_순서로_돌려준다() -> None:
 
 
 def test_필터를_적용한다() -> None:
-    filters = SearchFilters(category=_CATEGORY, in_stock_only=True, price_max=20000)
+    filters = SearchFilters(category=_CATEGORY, price_max=20000)
 
     ids = _run_in_rollback(lambda c: vector.search_ids(c, _unit(0), filters))
 
-    assert ids == [9100001]
+    # 3만 원인 9100002 만 빠진다. 품절인 9100003 은 남는다. 재고로는 거르지 않는다(#335).
+    assert ids == [9100001, 9100003]
 
 
 def test_책_벡터가_있는지_알려준다() -> None:

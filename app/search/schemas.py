@@ -36,7 +36,8 @@ class SearchFilters(_Strict):
     price_max: int | None = Field(default=None, ge=0, le=INT32_MAX)
     pub_year_from: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
     pub_year_to: int | None = Field(default=None, ge=INT32_MIN, le=INT32_MAX)
-    in_stock_only: bool = False
+    # 재고 조건(in_stock_only)은 없앴다(#335). AI 는 재고를 받지 않는다. 이 칸이 실려 와도 400 이
+    # 아니라 무시한다. 챗봇의 추천 조건(spec)이 화면을 거쳐 되돌아오는데 옛 조건에 남아 있을 수 있다.
 
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> Self:
