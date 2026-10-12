@@ -91,6 +91,10 @@ class FakeCommerce:
 
     # --- 평가·테스트용. CommerceGateway에는 없다 ---
 
+    def register_user(self, user_id: int) -> None:
+        """장바구니가 없던 사용자에게 빈 장바구니를 만든다. 이미 있으면 그대로 둔다."""
+        self._carts.setdefault(user_id, {})
+
     def cart_state(self, user_id: int) -> dict[str, int]:
         """마지막 장바구니 상태 {isbn: 수량}. 평가가 기대 상태와 비교한다."""
         rows = self._carts.get(user_id, {})
