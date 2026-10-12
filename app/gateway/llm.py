@@ -31,11 +31,20 @@ def last_known_status() -> Literal["ok", "unavailable"]:
     return "ok" if _llm_ok else "unavailable"
 
 
-def get_chat_model() -> BaseChatModel:
+def get_chat_model(
+    *, json_mode: bool = True, model_id: str | None = None
+) -> BaseChatModel:
     """체인(`프롬프트 | 모델 | 파서`)에 끼울 채팅 모델을 만든다.
 
     타임아웃·재시도·JSON 모드 같은 설정을 이 함수 한 곳에만 둬서, 체인을 쓰는
     호출부(③⑤⑦)가 몇 개가 되든 이 설정이 갈라지지 않게 한다.
+
+    json_mode: 답을 JSON 객체로 고정한다(기본). 도구 호출(bind_tools)을 쓰는
+        호출부는 False로 끈다 — response_format이 실리면 langchain-openai가
+        chat.completions.parse 경로로 보내는데, 이 경로는 strict가 아닌 도구를
+        네트워크 호출 전에 ValueError로 거부한다(#345, langchain-openai 1.6.2).
+    model_id: 이 호출부만 다른 모델을 쓴다. 없으면 LLM_MODEL_ID. 환경변수를 바꾸면
+        ③ 평가의 기준 모델까지 같이 움직이므로 호출부 단위로 고르게 한다.
     """
     settings = get_settings()
 
@@ -49,12 +58,15 @@ def get_chat_model() -> BaseChatModel:
     # 여기에 비표준 파라미터를 넣으면 API 에러가 난다(langchain_openai 자체 경고).
     # 게이트웨이가 provider를 안 가리는 원칙(위 주석 참고)과 어긋나 보이지만, ZDR은
     # OpenRouter에만 있는 개념이라 provider 분기가 불가피하다.
+    # 주의: ZDR과 도구 호출을 같이 지원하는 엔드포인트는 모델마다 다르다. 2026-10-12
+    # 실측으로 openai/gpt-4o-mini는 ZDR+도구가 404(데이터 정책 단계에서 0개), gpt-4o·
+    # gpt-5.4-mini·gpt-5.4-nano는 됐다(#345). 도구를 쓰는 호출부는 model_id로 고른다.
     extra_body = (
         {"provider": {"zdr": True}} if settings.llm_provider == "openrouter" else None
     )
 
     return ChatOpenAI(
-        model=settings.llm_model_id,
+        model=model_id or settings.llm_model_id,
         base_url=settings.llm_base_url,
         # EXTERNAL_AI_API_KEY가 비어 있으면(Ollama처럼 검사 안 하는 provider)
         # SDK가 그래도 값을 요구하므로 "ollama"로 채운다. Gemini 등 실제로
@@ -68,7 +80,7 @@ def get_chat_model() -> BaseChatModel:
         # timeout 값만으로는 상한을 보장 못 한다. 재시도는 끄고 timeout 하나로
         # 상한을 정확히 맞춘다.
         max_retries=0,
-        model_kwargs={"response_format": {"type": "json_object"}},
+        model_kwargs={"response_format": {"type": "json_object"}} if json_mode else {},
         extra_body=extra_body,
     )
 
