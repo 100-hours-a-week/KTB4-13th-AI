@@ -126,8 +126,32 @@ def test_빈_장바구니도_목록으로_기억한다() -> None:
 
     call = _run(ctx, spy, ToolName.CART_VIEW, {})
 
-    assert call.result == {"items": []}
+    assert call.result == {"items": [], "total": 0}
     assert ctx.cart_snapshot == []
+
+
+def test_조회_결과의_합계는_구매할_수_있는_책만_더한_값이다() -> None:
+    spy, _fake, ctx = _setup(seed=[(A, 2), (B, 1)])
+
+    call = _run(ctx, spy, ToolName.CART_VIEW, {})
+
+    assert call.result["total"] == 10001 * 2 + 10002
+
+
+def test_재고가_모자라거나_판매가_중지된_책은_합계에서_뺀다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 2), (B, 1), (C, 1)])
+    fake.set_stock(B, 0)  # 담은 수량보다 재고가 적다
+    fake.discontinue(C)  # 판매 중지라 가격이 없다
+
+    call = _run(ctx, spy, ToolName.CART_VIEW, {})
+
+    assert [(i["isbn"], i["available"]) for i in call.result["items"]] == [
+        (C, False),
+        (B, False),
+        (A, True),
+    ]
+    assert call.result["items"][0]["price"] is None
+    assert call.result["total"] == 10001 * 2  # 판매 중지 책이 들어간 합계가 아니다
 
 
 def test_조회는_인자를_받지_않는다() -> None:

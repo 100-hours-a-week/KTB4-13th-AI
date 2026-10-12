@@ -21,8 +21,17 @@ class BookRef(BaseModel):
     # 모르는 칸을 막아서 LLM 이 isbn 을 끼워 넣어도 받지 않는다. "1" 같은 문자열 번호도 받지 않는다.
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    source: Literal["card", "cart", "focused"]
-    n: int | None = Field(default=None, ge=1)
+    source: Literal["card", "cart", "focused"] = Field(
+        description=(
+            "어느 목록의 책인가. card=직전에 보여 준 추천 카드, cart=마지막으로 조회한 장바구니, "
+            "focused=사용자가 지금 보고 있는 책"
+        )
+    )
+    n: int | None = Field(
+        default=None,
+        ge=1,
+        description="그 목록의 몇 번째인지(1부터). focused 에는 쓰지 않는다",
+    )
 
     @model_validator(mode="after")
     def _n_matches_source(self) -> Self:
