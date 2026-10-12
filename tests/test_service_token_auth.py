@@ -112,3 +112,11 @@ def test_토큰이_있으면_경고하지_않는다(caplog: pytest.LogCaptureFix
         warn_if_disabled()
 
     assert caplog.text == ""
+
+
+def test_쇼핑_에이전트도_헤더가_없으면_401이다() -> None:
+    # ⑦(#350). 뼈대에서 요청 검사를 붙이면서 인증이 빠지지 않았는지 본다.
+    res = client.post("/agent/act", json={})
+
+    assert res.status_code == 401
+    assert res.json() == {"message": "unauthorized", "data": None}
