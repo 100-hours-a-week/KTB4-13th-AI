@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from app.extraction.rules import MAX_EXTRACTIONS, MAX_VALUE_CHARS
+from app.extraction.rules import PREFERENCE_TYPES as TYPES
 from app.extraction.schemas import parse_request
 
 _PATH = Path(__file__).resolve().parents[1] / "evals" / "extraction" / "cases.json"
 
-# 명세 ⑤ extractions[].type
-TYPES = {"mood", "topic", "author", "condition"}
-# 명세 ⑤에 맞춰 정한 문장 최대 길이(#299)
-MAX_VALUE_CHARS = 200
+# 종류와 문장 최대 길이는 서버가 거르는 규칙(app/extraction/rules.py)과 같은 값을 쓴다. 따로 적어 두면
+# 묶음의 기대값과 서버의 규칙이 어긋나도 모른다.
 # typical 은 흔한 대화, guard 는 드물지만 틀리면 안 되는 대화다. 채점 결과를 따로 낸다.
 GROUPS = {"typical", "guard"}
 
@@ -94,6 +94,8 @@ def test_대화_하나의_형식(case: dict) -> None:
     assert isinstance(expect["nothing_found"], bool)
     # 뽑을 것이 없다는 대화에는 기대 문장이 없고, 있다는 대화에는 하나 이상 있다.
     assert expect["nothing_found"] == (not expect["extractions"])
+    # 서버는 대화 하나에서 이 개수까지만 남긴다. 그보다 많이 기대하면 통과할 수 없는 대화가 된다.
+    assert len(expect["extractions"]) <= MAX_EXTRACTIONS
 
     for item in expect["extractions"]:
         assert set(item) == {"type", "value", "keywords", "stated"}
