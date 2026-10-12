@@ -36,6 +36,7 @@ def test_구현한_도구만_설명을_준다() -> None:
         "cart_update",
         "cart_remove",
         "book_offer",
+        "ui_guide",
     ]
     assert set(FROM_LLM_NAME.values()) == set(ARG_MODELS)
 
@@ -85,11 +86,20 @@ def test_책을_가리키는_인자에_쓰는_법이_설명되어_있다() -> No
 
 
 def test_책_목록_인자는_개수_제한이_스키마에_있다() -> None:
-    books = tool_definitions()[-1]["function"]["parameters"]["properties"]["books"]
+    definitions = {d["function"]["name"]: d for d in tool_definitions()}
+    books = definitions["book_offer"]["function"]["parameters"]["properties"]["books"]
 
     assert books["minItems"] == 1
     assert books["maxItems"] == 10
     assert books["items"]["properties"]["source"]["enum"] == ["card", "cart", "focused"]
+
+
+def test_화면_안내는_고를_수_있는_화면이_정해져_있다() -> None:
+    definitions = {d["function"]["name"]: d for d in tool_definitions()}
+    target = definitions["ui_guide"]["function"]["parameters"]["properties"]["target"]
+
+    assert target["enum"] == ["CART-001", "ORDER-LIST-001"]
+    assert "주문내역" in target["description"]
 
 
 def test_도구_설명에_ISBN과_사용자_번호_칸이_없다() -> None:

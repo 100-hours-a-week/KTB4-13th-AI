@@ -10,7 +10,7 @@ from app.agent.reference import TurnContext
 from app.agent.schemas import ToolCall, ToolName
 
 
-def _label(ctx: TurnContext, isbn: str) -> str:
+def label(ctx: TurnContext, isbn: str) -> str:
     """책을 LLM 이 다시 가리킬 수 있는 말로. ISBN 을 말하지 않는다."""
     for card in ctx.cards:
         if card.isbn == isbn:
@@ -45,7 +45,7 @@ def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
         return {
             "offers": [
                 {
-                    "book": _label(ctx, offer["isbn"]),
+                    "book": label(ctx, offer["isbn"]),
                     "title": offer["title"],
                     "price": offer["price"],
                     "in_stock": offer["in_stock"],
