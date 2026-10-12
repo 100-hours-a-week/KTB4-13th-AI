@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.feed import cold_start, personalized, rule_only
+from app.feed import cold_start, exclusion, personalized, rule_only
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -177,7 +177,8 @@ def test_책_표를_통째로_훑지_않는다() -> None:
         try:
             rows = await cold_start.run_ordered(
                 conn,
-                "EXPLAIN " + rule_only._SQL.format(where=""),
+                "EXPLAIN "
+                + rule_only.candidates_sql("", exclusion.replicated(_USER, _NOW)),
                 _USER,
                 2.0,
                 _NOW,

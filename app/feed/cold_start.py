@@ -9,7 +9,8 @@ from typing import Any
 
 import asyncpg
 
-from app.core import history, products
+from app.core import products
+from app.feed import exclusion
 from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 from app.search.filters import build_where
@@ -18,21 +19,6 @@ from app.search.schemas import SearchFilters
 # 목록 길이 상한. 개인화 목록(가까운 500권)과 같게 둔다. 쪽을 OFFSET 으로 넘겨서, 상한이 없으면
 # 깊은 쪽일수록 앞의 책을 모두 다시 읽는다(261만 권에서 30만 번째 쪽 7초).
 MAX_BOOKS = 500
-
-# 이미 산 책, 나의 도서관에 담은 책, 2.0점 이하 리뷰를 단 책은 뺀다(명세 ④).
-# 좋은 리뷰만 단 책(사지도 담지도 않음)은 명세의 제외 대상이 아니라 남긴다.
-EXCLUDED_SQL = """
-NOT EXISTS (
-        SELECT 1 FROM v_user_purchases x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.purchased_at <= $3)
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_library x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.added_at <= $3)
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_reviews x
-        WHERE x.user_id = $1 AND x.book_id = b.book_id AND x.rating <= $2
-          AND x.created_at <= $3)
-"""
 
 # 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#207).
 # isbn 은 BE 와 책을 주고받는 키다(#308). 책 표에 값을 채우기 전인 책은 null 로 나간다.
@@ -46,9 +32,15 @@ _OUTPUT = "u.book_id, u.isbn, u.title, u.author, u.price, u.cover_url, u.in_stoc
 
 
 def popular_first_sql(
-    where: str, extra: str = "", limit: str = "$4", columns: str = _OUTPUT
+    where: str,
+    excluded: str,
+    extra: str = "",
+    limit: str = "$4",
+    columns: str = _OUTPUT,
 ) -> str:
     """인기순(판매 수 → 신간 → 번호)으로 앞에서부터 읽는 쿼리. rule-only 후보도 같은 것을 쓴다.
+
+    `excluded` 는 목록에서 뺄 책의 조건식이다(app/feed/exclusion.py). 두 구간에 함께 붙는다.
 
     두 구간을 각각 색인 순서로 `limit` 권까지만 읽고, 그 결과만 바깥에서 한 번 더 정렬한다.
     바깥 정렬 없이 UNION ALL 순서에 기대면 PostgreSQL 이 병렬로 섞을 때 순서가 틀어지고, 두 구간
@@ -59,14 +51,14 @@ def popular_first_sql(
 SELECT {columns} FROM (
   (SELECT 0 AS seg, p.sales, b.pub_year, {_COLUMNS}
    FROM v_book_popularity p JOIN v_books b USING (book_id)
-   WHERE p.sales > 0 AND {EXCLUDED_SQL} {where} {extra}
+   WHERE p.sales > 0 AND {excluded} {where} {extra}
    ORDER BY p.sales DESC, b.pub_year DESC NULLS LAST, b.book_id
    LIMIT {limit})
   UNION ALL
   (SELECT 1, 0, b.pub_year, {_COLUMNS}
    FROM v_books b
    WHERE NOT EXISTS (SELECT 1 FROM v_book_popularity p WHERE p.book_id = b.book_id AND p.sales > 0)
-     AND {EXCLUDED_SQL} {where} {extra}
+     AND {excluded} {where} {extra}
    ORDER BY b.pub_year DESC NULLS LAST, b.book_id
    LIMIT {limit})
 ) u
@@ -84,16 +76,16 @@ ORDERED_SQL = {
     "newest": f"""
 SELECT {_COLUMNS}
 FROM v_books b
-WHERE {EXCLUDED_SQL} {{where}}
+WHERE {{excluded}} {{where}}
 ORDER BY b.pub_year DESC NULLS LAST, b.book_id
 """,
-    "price_asc": f"""
+    "price_asc": """
 SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
        pr.discounted_price::int AS price, b.cover_url,
        pr.stock_quantity > 0 AS in_stock
 FROM v_products pr
 JOIN v_books b ON b.book_id = pr.book_id
-WHERE {EXCLUDED_SQL} {{where}}
+WHERE {excluded} {where}
 ORDER BY pr.discounted_price, pr.book_id
 """,
 }
@@ -114,13 +106,20 @@ async def run_ordered(conn: asyncpg.Connection, sql: str, *args: Any) -> list:
 
 
 async def fetch(
-    conn: asyncpg.Connection, req: FeedRequest, page: Page
+    conn: asyncpg.Connection,
+    req: FeedRequest,
+    page: Page,
+    excluded: exclusion.Exclusion | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """(이번 페이지 목록, 다음 페이지가 있는지). 모두 cold_start 라 match_score 는 0 이다.
 
-    커서를 받은 시각 뒤에 생긴 이력은 제외 대상에서 빼고 본다. 카드를 보고 돌아와 산 책이
-    다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
+    `excluded` 를 주지 않으면 복제한 사용자 표의 이력으로 뺀다.
     """
+    if excluded is None:
+        excluded = exclusion.replicated(req.user_id, page.issued_at)
+    # 자리 번호: 뺄 책의 값들 → 개수 → 건너뛸 수 → 필터. 뺄 책의 값이 몇 개든 뒤가 이어지게 매긴다.
+    n = len(excluded.params)
+    limit, offset = f"${n + 1}", f"${n + 2}"
     size = min(req.size, MAX_BOOKS - page.offset)
     if size <= 0:
         return [], False
@@ -130,18 +129,19 @@ async def fetch(
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    where, params = build_where(filters, first_param=6)
+    where, params = build_where(filters, first_param=n + 3)
+    paging = f"LIMIT {limit} OFFSET {offset}"
     if req.sort == "match":
-        sql = popular_first_sql(where, limit="$4::int + $5::int") + "LIMIT $4 OFFSET $5"
+        sql = popular_first_sql(
+            where, excluded.sql(1), limit=f"{limit}::int + {offset}::int"
+        )
     else:
-        sql = ORDERED_SQL[req.sort].format(where=where) + "LIMIT $4 OFFSET $5"
+        sql = ORDERED_SQL[req.sort].format(where=where, excluded=excluded.sql(1))
     # 한 권 더 받아 본다. 더 있으면 다음 페이지 커서를 준다.
     rows = await run_ordered(
         conn,
-        sql,
-        req.user_id,
-        history.DISLIKED_MAX_RATING,
-        page.issued_at,
+        sql + paging,
+        *excluded.params,
         size + 1,
         page.offset,
         *params,
