@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 
+from app.gateway.catalog import CatalogGateway
 from app.gateway.commerce import (
     MAX_CART_ITEMS,
     BookOffer,
@@ -364,3 +365,44 @@ def test_오류_메시지는_코드_이름뿐이다() -> None:
         _run(fake.add_item(1, A, 1))
 
     assert str(exc_info.value) == "INSUFFICIENT_PRODUCT_STOCK"
+
+
+# --- 카탈로그(소개글, #363) ---
+
+
+def _described() -> FakeCommerce:
+    return FakeCommerce(
+        [
+            FakeBook(A, "책1", 10000, 5, description="입문자를 위한 책."),
+            FakeBook(B, "책2", 12000, 5),
+            FakeBook(C, "책3", 9000, 5, description="판매를 멈춘 책."),
+        ]
+    )
+
+
+def test_카탈로그는_제목과_소개글을_받은_순서대로_돌려준다() -> None:
+    texts = _run(_described().get_texts([B, A]))
+
+    assert [(t.isbn, t.title, t.description) for t in texts] == [
+        (B, "책2", None),  # 소개글이 없는 책은 None 이다
+        (A, "책1", "입문자를 위한 책."),
+    ]
+
+
+def test_카탈로그는_모르는_책을_빼고_같은_책을_한_번만_돌려준다() -> None:
+    texts = _run(_described().get_texts([A, D, A]))
+
+    assert [t.isbn for t in texts] == [A]
+
+
+def test_판매를_멈춘_책도_글은_남아_있다() -> None:
+    fake = _described()
+    fake.discontinue(C)
+
+    texts = _run(fake.get_texts([C]))
+
+    assert texts[0].description == "판매를 멈춘 책."
+
+
+def test_가짜는_카탈로그_경계도_따른다() -> None:
+    assert isinstance(_described(), CatalogGateway)

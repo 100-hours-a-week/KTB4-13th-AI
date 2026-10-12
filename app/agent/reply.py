@@ -1,12 +1,13 @@
-"""⑦ 마무리: LLM 의 답을 이번 턴의 도구 기록과 대조해 검사하고 /agent/act 응답으로 만든다(#358).
+"""⑦ 마무리: LLM 의 답을 이번 턴의 도구 기록과 대조해 검사하고 /agent/act 응답으로 만든다(#358, #363).
 
 6단계에서 실제 모델로 재 봤더니 LLM 이 (1) 도구를 한 번도 안 부르고 "담았어요"라고 답했고 (2) 합계를 지어냈다
 (15,000원은 가격 조회 결과에 있어서 "도구 결과에 있는 숫자인가" 검사로는 못 잡는다). 프롬프트에 "ok 일 때만
 말하라"고 써 뒀는데도 일어났으므로, LLM 이 한 말을 코드가 기록과 대조한다(명세 ⑦ grounding 규칙).
 
 - 행동 검사: "담았어요"류 완료 표현은 같은 종류의 쓰기 도구가 이번 턴에 성공했을 때만 남긴다
-- 숫자 검사: "합계" 뒤의 금액은 마지막 cart.view 의 total 과 같아야 하고, 그 뒤에 쓰기가 성공했으면 인정하지
-  않는다. 그 밖의 금액은 도구 결과에 있는 값(가격, 가격×수량, 합계)이어야 한다
+- 숫자 검사: "합계" 뒤의 금액은 마지막 cart.view 의 total 이나 고른 조합의 total_price 와 같아야 하고, 그
+  조회 뒤에 쓰기가 성공했으면 장바구니 합계는 인정하지 않는다. 그 밖의 금액은 도구 결과에 있는 값(가격,
+  가격×수량, 합계)이어야 한다
 - 위반한 문장만 지운다. 지운 뒤 남는 답이 없으면 GroundingFailed(422)다. 한 문장 안에 맞는 말과 틀린 말이
   섞여 있으면 문장 전체를 지운다(어디가 틀렸는지 문장을 쪼개 판단하지 않는다)
 """
@@ -22,6 +23,9 @@ from app.agent.schemas import (
     AgentActData,
     Button,
     ResolvedReference,
+    Selection,
+    SelectionConstraints,
+    SelectionItem,
     ToolCall,
     ToolName,
 )
@@ -79,8 +83,11 @@ class _Facts:
     succeeded: set[ToolName]  # 이번 턴에 성공한 쓰기 도구
     allowed_money: set[int]
     prices: list[int]
-    total: int | None  # 인정하는 합계. 마지막 조회 뒤에 쓰기가 성공했으면 None
-    view_index: int | None  # 마지막 cart.view 기록의 위치
+    # 합계로 인정하는 금액. 장바구니 합계(마지막 조회 뒤에 쓰기가 성공했으면 빠진다)와 고른 조합의 합계
+    totals: set[int]
+    total_index: (
+        int | None
+    )  # 합계가 들어 있는 마지막 기록(cart.view, selection.pick)의 위치
 
 
 def _money(text: str) -> int:
@@ -91,12 +98,14 @@ def _facts(calls: list[ToolCall]) -> _Facts:
     succeeded: set[ToolName] = set()
     allowed: set[int] = set()
     prices: list[int] = []
+    totals: set[int] = set()
     view_index: int | None = None
+    total_index: int | None = None
     for index, call in enumerate(calls):
         if call.name in guard.WRITE_TOOLS and call.result.get("ok") is True:
             succeeded.add(call.name)
         if call.name == ToolName.CART_VIEW and "items" in call.result:
-            view_index = index
+            view_index = total_index = index
             allowed.add(call.result["total"])
             for item in call.result["items"]:
                 if item["price"] is not None:
@@ -106,16 +115,24 @@ def _facts(calls: list[ToolCall]) -> _Facts:
             for offer in call.result["offers"]:
                 allowed.add(offer["price"])
                 prices.append(offer["price"])
+        if call.name == ToolName.SELECTION_PICK and call.result.get("ok") is True:
+            total_index = index
+            # 조합은 아직 담기 전이라 쓰기가 있어도 낡은 값이 되지 않는다
+            totals.add(call.result["total_price"])
+            allowed.add(call.result["total_price"])
+            for book in call.result["chosen"]:
+                allowed.add(book["price"])
+                prices.append(book["price"])
 
-    total: int | None = None
     if view_index is not None:
         wrote_after = any(
             c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
             for c in calls[view_index + 1 :]
         )
         # 조회한 뒤에 장바구니가 바뀌었다면 그 합계는 이미 낡았다. 다시 조회해야 한다
-        total = None if wrote_after else calls[view_index].result["total"]
-    return _Facts(succeeded, allowed, prices, total, view_index)
+        if not wrote_after:
+            totals.add(calls[view_index].result["total"])
+    return _Facts(succeeded, allowed, prices, totals, total_index)
 
 
 def _check(sentence: str, facts: _Facts) -> tuple[str, int | None] | None:
@@ -130,8 +147,8 @@ def _check(sentence: str, facts: _Facts) -> tuple[str, int | None] | None:
 
     claimed_totals = list(_TOTAL_CLAIM.finditer(sentence))
     for match in claimed_totals:
-        if facts.total is None or _money(match.group(2)) != facts.total:
-            return "TOTAL_MISMATCH", facts.view_index
+        if _money(match.group(2)) not in facts.totals:
+            return "TOTAL_MISMATCH", facts.total_index
 
     rest = sentence
     for match in reversed(claimed_totals):
@@ -162,6 +179,14 @@ def _plain(text: str) -> str:
     return text.replace("**", "").replace("__", "").replace("`", "")
 
 
+def _picked(calls: list[ToolCall]) -> ToolCall | None:
+    """마지막으로 성공한 selection.pick 기록."""
+    for call in reversed(calls):
+        if call.name == ToolName.SELECTION_PICK and call.result.get("ok") is True:
+            return call
+    return None
+
+
 def _resolved(run: AgentRun) -> ResolvedReference | None:
     """실행한 도구가 풀어 낸 책. 코드가 채운 ISBN 만 쓴다."""
     isbns: list[str] = []
@@ -180,10 +205,41 @@ def _resolved(run: AgentRun) -> ResolvedReference | None:
                 and isbn not in isbns
             ):
                 isbns.append(isbn)
+    parts = [label(run.ctx, i) for i in isbns]
+
+    # 고른 조합. 사용자가 가리킨 책은 아니지만 "3만원 2권"이 가리키는 책이다. 코드가 고른 ISBN 이다
+    picked = _picked(run.tool_calls)
+    if picked is not None:
+        parts.append(
+            f"{picked.arguments['budget_total']:,}원 {picked.arguments['count']}권"
+        )
+        isbns.extend(
+            book["isbn"]
+            for book in picked.result["chosen"]
+            if book["isbn"] not in isbns
+        )
+
     if not isbns:
         return None
-    return ResolvedReference(
-        ref=", ".join(label(run.ctx, i) for i in isbns), isbns=isbns
+    return ResolvedReference(ref=", ".join(parts), isbns=isbns)
+
+
+def _selection(calls: list[ToolCall]) -> Selection | None:
+    """코드가 고른 조합. 골라 담기를 하지 않았거나 고르지 못했으면 None."""
+    picked = _picked(calls)
+    if picked is None:
+        return None
+    return Selection(
+        goal="budget_pick",
+        constraints=SelectionConstraints(**picked.arguments),
+        chosen=[
+            SelectionItem(
+                isbn=book["isbn"], price=book["price"], match_score=book["match_score"]
+            )
+            for book in picked.result["chosen"]
+        ],
+        total_price=picked.result["total_price"],
+        alternatives_considered=picked.result["alternatives_considered"],
     )
 
 
@@ -205,9 +261,15 @@ def _touched_cart(call: ToolCall) -> bool:
     )
 
 
-def _buttons(calls: list[ToolCall]) -> list[Button]:
+def _buttons(calls: list[ToolCall], logged_in: bool) -> list[Button]:
     buttons: list[Button] = []
     seen: set[str] = set()
+
+    # AI 가 고른 조합은 담지 않고 이 버튼으로 확인받는다. 로그인하지 않았으면 담을 수 없으니 만들지 않는다
+    picked = _picked(calls)
+    if picked is not None and logged_in:
+        isbns = [book["isbn"] for book in picked.result["chosen"]]
+        buttons.append(Button(label="담기", action="confirm_selection", isbns=isbns))
 
     def navigate(text: str, target: str) -> None:
         if target not in seen:
@@ -272,7 +334,7 @@ def finish(run: AgentRun) -> Finished:
         not_shopping=False,
         tool_calls=calls,
         resolved_reference=_resolved(run),
-        selection=None,
-        buttons=_buttons(calls),
+        selection=_selection(calls),
+        buttons=_buttons(calls, run.ctx.logged_in),
     )
     return Finished(data, removed)

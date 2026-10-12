@@ -12,7 +12,7 @@ class ToolErrorCode(StrEnum):
     # 도구 자체를 못 쓴다
     TOOL_NOT_ALLOWED = "TOOL_NOT_ALLOWED"  # 이번 요청의 allow_tools 에 없다
     TOOL_NOT_IMPLEMENTED = (
-        "TOOL_NOT_IMPLEMENTED"  # 아직 만들지 않았다(selection.pick 등)
+        "TOOL_NOT_IMPLEMENTED"  # 이 도구를 실행할 부품이 연결되지 않았다
     )
     LOGIN_REQUIRED = "LOGIN_REQUIRED"  # 로그인하지 않았는데 쓰기 도구다
     INVALID_ARGUMENTS = "INVALID_ARGUMENTS"  # 모르는 칸, 자료형, 빈 목록
@@ -32,6 +32,14 @@ class ToolErrorCode(StrEnum):
     ALREADY_IN_CART = (
         "ALREADY_IN_CART"  # 이미 담긴 책이라 담지 않았다(담으면 수량이 줄 수 있다)
     )
+    # AI 가 이번 턴에 고른 책이라 사용자 확인 없이 담지 않았다(확인 버튼으로 담는다)
+    CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
+    # 예산 안에서 그 권수를 채울 조합이 없다(재고 있는 직전 카드 안에서만 고른다)
+    NO_COMBINATION = "NO_COMBINATION"
+    # 비교하려는 책에 소개글이 없다
+    NO_DESCRIPTION = "NO_DESCRIPTION"
+    # 소개글을 읽어 차이를 요약하는 호출이 실패했다
+    COMPARE_FAILED = "COMPARE_FAILED"
 
 
 class RefError(Exception):

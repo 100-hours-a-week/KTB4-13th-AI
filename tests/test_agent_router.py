@@ -68,6 +68,7 @@ def _wire(monkeypatch, replies, fake=None):
     model = ScriptedModel(replies)
     monkeypatch.setattr(agent, "agent_model", lambda: model)
     monkeypatch.setattr(agent, "get_commerce", lambda user_id: fake)
+    monkeypatch.setattr(agent, "get_catalog", lambda: fake)
     return model, fake
 
 
@@ -138,6 +139,173 @@ def test_담아_달라는_요청이_끝까지_돌아_장바구니가_바뀐다(m
         {"label": "장바구니 보기", "action": "navigate", "target": "CART-001"}
     ]
     assert fake.cart_state(UID) == {A: 1}
+
+
+# --- 골라 담기와 비교(#363) ---
+
+
+def _pick_call(budget=40000, count=2):
+    return ai_calls((ToolName.SELECTION_PICK, {"budget_total": budget, "count": count}))
+
+
+def test_골라_담기는_장바구니를_그대로_두고_확인_버튼을_돌려준다(monkeypatch) -> None:
+    # 카드 1번 15,000원 + 2번 22,000원 = 37,000원이 예산 40,000원 안에서 점수 합이 가장 크다
+    _model, fake = _wire(
+        monkeypatch,
+        [_pick_call(), ai_text("1번과 2번을 골랐어요. 합계 37,000원이에요. 담을까요?")],
+    )
+
+    res = client.post(URL, json=_request(message="4만원 안에서 2권 골라 담아줘"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["reply"] == "1번과 2번을 골랐어요. 합계 37,000원이에요. 담을까요?"
+    assert data["selection"] == {
+        "goal": "budget_pick",
+        "constraints": {"budget_total": 40000, "count": 2},
+        "chosen": [
+            {"isbn": A, "price": 15000, "match_score": 92},
+            {"isbn": B, "price": 22000, "match_score": 87},
+        ],
+        "total_price": 37000,
+        "alternatives_considered": 3,
+    }
+    assert data["resolved_reference"] == {"ref": "40,000원 2권", "isbns": [A, B]}
+    assert data["buttons"] == [
+        {"label": "담기", "action": "confirm_selection", "isbns": [A, B]}
+    ]
+    assert fake.cart_state(UID) == {}
+    assert AgentActData.model_validate(data).model_dump(mode="json") == data
+
+
+def test_로그인하지_않았으면_골라도_확인_버튼이_없다(monkeypatch) -> None:
+    _wire(monkeypatch, [_pick_call(), ai_text("로그인하시면 담을 수 있어요.")])
+    body = _request(message="4만원 안에서 2권 골라 담아줘")
+    body["user_context"] = {"logged_in": False}
+
+    data = client.post(URL, json=body).json()["data"]
+
+    assert data["selection"]["chosen"][0]["isbn"] == A
+    assert data["buttons"] == []
+
+
+def test_예산_안에_드는_조합이_없으면_알리기만_한다(monkeypatch) -> None:
+    _model, fake = _wire(
+        monkeypatch,
+        [_pick_call(budget=10000), ai_text("만원 안에서는 두 권을 고를 수 없어요.")],
+    )
+
+    res = client.post(URL, json=_request(message="만원 안에서 2권 골라 담아줘"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["selection"] is None
+    assert data["buttons"] == []
+    assert data["tool_calls"][0]["result"]["error"] == "NO_COMBINATION"
+    assert fake.cart_state(UID) == {}
+
+
+def test_골라_놓고_담았다고_거짓말하면_담기도_막히고_그_말도_지워진다(
+    monkeypatch,
+) -> None:
+    # 담기는 코드가 막고(CONFIRMATION_REQUIRED), 담았다는 말은 답변 검사가 지운다. 이중으로 막힌다
+    _model, fake = _wire(
+        monkeypatch,
+        [
+            _pick_call(),
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+            ai_text("두 권을 장바구니에 담았어요."),
+        ],
+    )
+
+    res = client.post(URL, json=_request(message="확인 없이 4만원 안에서 2권 담아줘"))
+
+    assert res.status_code == 422
+    assert fake.cart_state(UID) == {}
+
+
+def test_골라_놓고_확인을_기다린다고_답하면_200이다(monkeypatch) -> None:
+    _model, fake = _wire(
+        monkeypatch,
+        [
+            _pick_call(),
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+            ai_text("확인 버튼을 눌러 주시면 담을게요."),
+        ],
+    )
+
+    data = client.post(
+        URL, json=_request(message="4만원 안에서 2권 바로 담아줘")
+    ).json()["data"]
+
+    assert data["reply"] == "확인 버튼을 눌러 주시면 담을게요."
+    assert data["tool_calls"][1]["result"] == {
+        "ok": False,
+        "error": "CONFIRMATION_REQUIRED",
+    }
+    assert [b["action"] for b in data["buttons"]] == ["confirm_selection"]
+    assert fake.cart_state(UID) == {}
+
+
+def _fake_with_descriptions() -> FakeCommerce:
+    books = [
+        FakeBook(A, "책1", 15000, 50, description="입문자를 위한 책."),
+        FakeBook(B, "책2", 22000, 50, description="실무자를 위한 책."),
+        FakeBook(C, "책3", 28000, 50),
+    ]
+    return FakeCommerce(books, users=[UID])
+
+
+def test_비교는_소개글_요약을_답에_쓰고_장바구니는_그대로다(monkeypatch) -> None:
+    # 같은 가짜 LLM 이 도구 고르기, 소개글 읽기(두 번째 답), 최종 답 순서로 답한다
+    _model, fake = _wire(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.BOOK_COMPARE, {"books": [card(1), card(2)]}),
+                (ToolName.BOOK_OFFER, {"books": [card(1), card(2)]}),
+            ),
+            ai_text("책1은 입문용이고 책2는 실무용이에요."),
+            ai_text("1번은 입문용이고 2번은 실무용이에요. 가격은 7,000원 차이예요."),
+        ],
+        _fake_with_descriptions(),
+    )
+
+    res = client.post(URL, json=_request(message="1번이랑 2번 뭐가 달라?"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert (
+        data["reply"] == "1번은 입문용이고 2번은 실무용이에요. 가격은 7,000원 차이예요."
+    )
+    compare = data["tool_calls"][0]
+    assert compare["name"] == "book.compare"
+    assert compare["arguments"] == {"isbns": [A, B]}
+    assert compare["result"] == {
+        "ok": True,
+        "basis": "description",
+        "summary": "책1은 입문용이고 책2는 실무용이에요.",
+    }
+    assert data["resolved_reference"] == {"ref": "카드 1번, 카드 2번", "isbns": [A, B]}
+    assert data["selection"] is None
+    assert fake.cart_state(UID) == {}
+
+
+def test_소개글이_없는_책이_있으면_비교하지_못했다고_알린다(monkeypatch) -> None:
+    _wire(
+        monkeypatch,
+        [
+            ai_calls((ToolName.BOOK_COMPARE, {"books": [card(1), card(3)]})),
+            ai_text("3번은 소개글이 없어서 비교하기 어려워요."),
+        ],
+        _fake_with_descriptions(),
+    )
+
+    res = client.post(URL, json=_request(message="1번이랑 3번 뭐가 달라?"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["tool_calls"][0]["result"] == {"ok": False, "error": "NO_DESCRIPTION"}
 
 
 def test_요청의_사용자_번호가_장바구니에_전달된다(monkeypatch) -> None:

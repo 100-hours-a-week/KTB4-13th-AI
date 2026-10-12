@@ -54,5 +54,20 @@ def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
             ]
         }
 
-    # 쓰기 결과와 거절(ok, error, 이미 담긴 책의 title·quantity)에는 ISBN 이 없다
+    if call.name == ToolName.SELECTION_PICK and result.get("ok") is True:
+        return {
+            "ok": True,
+            "chosen": [
+                {
+                    "book": label(ctx, book["isbn"]),
+                    "title": book["title"],
+                    "price": book["price"],
+                }
+                for book in result["chosen"]
+            ],
+            "total_price": result["total_price"],
+            "alternatives_considered": result["alternatives_considered"],
+        }
+
+    # 쓰기 결과와 거절(ok, error, 이미 담긴 책의 title·quantity), 비교 요약에는 ISBN 이 없다
     return result

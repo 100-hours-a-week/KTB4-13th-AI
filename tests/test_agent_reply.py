@@ -559,3 +559,162 @@ def test_화면_안내와_장바구니_버튼이_겹치면_한_번만이다() ->
     finished = finish(_run("담았어요.", [_add(), guide]))
 
     assert _targets(finished) == [("장바구니 보기", "CART-001")]
+
+
+# --- 골라 담기(selection.pick): 응답 조립과 확인 버튼(#363) ---
+
+
+def _pick(
+    chosen: list[tuple[str, int, int]] | None = None,
+    budget: int = 30000,
+    count: int = 2,
+) -> ToolCall:
+    """chosen 은 (isbn, 가격, 점수). 기본은 카드 1번과 2번을 고른 결과다."""
+    picked = chosen or [(A, 20000, 90), (B, 10000, 80)]
+    return _call(
+        ToolName.SELECTION_PICK,
+        {
+            "ok": True,
+            "chosen": [
+                {"isbn": i, "title": "책", "price": p, "match_score": s}
+                for i, p, s in picked
+            ],
+            "total_price": sum(p for _i, p, _s in picked),
+            "alternatives_considered": 3,
+        },
+        {"budget_total": budget, "count": count},
+    )
+
+
+def _no_combination() -> ToolCall:
+    return _call(
+        ToolName.SELECTION_PICK,
+        {"ok": False, "error": "NO_COMBINATION", "alternatives_considered": 3},
+        {"budget_total": 10000, "count": 2},
+    )
+
+
+def test_고른_조합은_selection_칸에_명세의_모양으로_담긴다() -> None:
+    data = finish(_run("두 권을 골랐어요. 담을까요?", [_pick()])).data
+
+    assert data.selection is not None
+    assert data.selection.model_dump(mode="json") == {
+        "goal": "budget_pick",
+        "constraints": {"budget_total": 30000, "count": 2},
+        "chosen": [
+            {"isbn": A, "price": 20000, "match_score": 90},
+            {"isbn": B, "price": 10000, "match_score": 80},
+        ],
+        "total_price": 30000,
+        "alternatives_considered": 3,
+    }
+
+
+def test_고른_조합에는_담기_버튼이_붙고_장바구니는_안_담았다() -> None:
+    data = finish(_run("두 권을 골랐어요. 담을까요?", [_pick()])).data
+
+    assert [b.model_dump(mode="json") for b in data.buttons] == [
+        {"label": "담기", "action": "confirm_selection", "isbns": [A, B]}
+    ]
+
+
+def test_로그인하지_않았으면_담기_버튼을_만들지_않는다() -> None:
+    run = _run("두 권을 골랐어요. 로그인하시면 담을 수 있어요.", [_pick()])
+    run.ctx.logged_in = False
+
+    data = finish(run).data
+
+    assert data.buttons == []
+    assert data.selection is not None  # 고른 결과는 알려 준다
+
+
+def test_조합을_못_골랐으면_selection도_버튼도_없다() -> None:
+    data = finish(_run("예산 안에서 고를 조합이 없어요.", [_no_combination()])).data
+
+    assert data.selection is None
+    assert data.buttons == []
+    assert data.resolved_reference is None
+
+
+def test_골라_담기를_안_했으면_selection이_null이다() -> None:
+    assert finish(_run("네.", [_offer(15000)])).data.selection is None
+
+
+def test_고른_책은_resolved_reference에_예산과_권수로_적는다() -> None:
+    data = finish(_run("두 권을 골랐어요.", [_pick()])).data
+
+    assert data.resolved_reference is not None
+    assert data.resolved_reference.ref == "30,000원 2권"
+    assert data.resolved_reference.isbns == [A, B]
+
+
+def test_사용자가_가리킨_책과_고른_책이_함께_있으면_둘_다_적는다() -> None:
+    # 카드 1번을 담고(사용자가 말함), 3만원 안에서 고르게 한 경우. 중복은 한 번만이다
+    calls = [_add(isbn=A), _pick([(B, 10000, 80), (A, 20000, 90)])]
+
+    data = finish(_run("1번을 담았고 두 권을 골랐어요.", calls)).data
+
+    assert data.resolved_reference is not None
+    assert data.resolved_reference.ref == "카드 1번, 30,000원 2권"
+    assert data.resolved_reference.isbns == [A, B]
+
+
+def test_조합의_합계를_말해도_지우지_않는다() -> None:
+    # 장바구니를 조회한 적이 없어도 고른 조합의 합계(total_price)는 도구 결과다
+    reply = finish(_run("합계 30,000원이에요. 담을까요?", [_pick()])).data.reply
+
+    assert reply == "합계 30,000원이에요. 담을까요?"
+
+
+def test_조합의_합계를_지어내면_지운다() -> None:
+    with pytest.raises(GroundingFailed) as exc_info:
+        finish(_run("합계 25,000원이에요.", [_pick()]))
+
+    assert exc_info.value.removed == ["TOTAL_MISMATCH"]
+
+
+def test_고른_책의_가격도_말할_수_있다() -> None:
+    reply = finish(
+        _run("20,000원짜리와 10,000원짜리를 골랐어요.", [_pick()])
+    ).data.reply
+
+    assert "20,000원" in reply
+
+
+def test_고른_조합에_없는_가격은_지운다() -> None:
+    with pytest.raises(GroundingFailed):
+        finish(_run("12,345원짜리를 골랐어요.", [_pick()]))
+
+
+def test_조합을_골랐어도_담았다고_하면_지운다() -> None:
+    # 고르기는 쓰기가 아니다. 확인 전에 "담았어요"는 거짓이다
+    with pytest.raises(GroundingFailed) as exc_info:
+        finish(_run("두 권을 장바구니에 담았어요.", [_pick()]))
+
+    assert exc_info.value.removed == ["ACTION_NOT_DONE"]
+
+
+def test_조합의_합계와_장바구니_합계를_함께_말할_수_있다() -> None:
+    calls = [_view(37000), _pick()]
+
+    reply = finish(
+        _run("장바구니 합계는 37,000원이고 고른 조합 합계는 30,000원이에요.", calls)
+    ).data.reply
+
+    assert "37,000원" in reply and "30,000원" in reply
+
+
+def test_담기가_막힌_기록도_고른_책으로_풀린_ISBN은_믿는다() -> None:
+    blocked = _call(
+        ToolName.CART_ADD,
+        {"ok": False, "error": "CONFIRMATION_REQUIRED"},
+        {"isbn": A, "quantity": 1},
+    )
+
+    data = finish(_run("확인해 주시면 담을게요.", [_pick(), blocked])).data
+
+    assert data.resolved_reference is not None
+    assert data.resolved_reference.isbns == [A, B]
+    assert [b.action for b in data.buttons] == [
+        "confirm_selection"
+    ]  # 장바구니 보기는 없다

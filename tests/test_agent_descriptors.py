@@ -36,6 +36,8 @@ def test_구현한_도구만_설명을_준다() -> None:
         "cart_update",
         "cart_remove",
         "book_offer",
+        "selection_pick",
+        "book_compare",
         "ui_guide",
     ]
     assert set(FROM_LLM_NAME.values()) == set(ARG_MODELS)
@@ -44,7 +46,7 @@ def test_구현한_도구만_설명을_준다() -> None:
 def test_LLM_이름으로_도구를_되찾고_모르는_이름은_없다() -> None:
     assert FROM_LLM_NAME["cart_add"] == ToolName.CART_ADD
     assert "cart.add" not in FROM_LLM_NAME  # 점이 든 이름은 LLM 이 쓰지 않는다
-    assert "selection_pick" not in FROM_LLM_NAME  # 아직 안 만든 도구
+    assert "order_create" not in FROM_LLM_NAME  # 없는 도구
 
 
 def test_허용한_도구만_설명을_준다() -> None:

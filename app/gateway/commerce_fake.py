@@ -10,6 +10,7 @@ BE의 조회 순서(created_at 내림차순)가 같이 재현된다.
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from app.gateway.catalog import BookText
 from app.gateway.commerce import (
     MAX_CART_ITEMS,
     MAX_QUANTITY,
@@ -29,6 +30,8 @@ class FakeBook:
     stock: int
     # False면 판매 중지. 장바구니에는 남지만 가격이 없다(BE GetCartUseCase).
     active: bool = True
+    # 소개글(book.compare 가 읽는다). 진짜는 AI 서버의 카탈로그에 있고 BE 가 주지 않는다(#363)
+    description: str | None = None
 
 
 @dataclass
@@ -88,6 +91,16 @@ class FakeCommerce:
             if book is not None and book.active:
                 offers.append(BookOffer(isbn, book.title, book.price, book.stock > 0))
         return offers
+
+    # --- CatalogGateway. 진짜는 BE 가 아니라 AI 서버의 카탈로그지만 가짜는 한 서가를 같이 쓴다 ---
+
+    async def get_texts(self, isbns: Sequence[str]) -> list[BookText]:
+        texts: list[BookText] = []
+        for isbn in dict.fromkeys(isbns):
+            book = self._books.get(isbn)
+            if book is not None:
+                texts.append(BookText(isbn, book.title, book.description))
+        return texts
 
     # --- 평가·테스트용. CommerceGateway에는 없다 ---
 

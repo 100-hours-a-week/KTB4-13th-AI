@@ -24,6 +24,7 @@ from langchain_core.messages import (
 from langgraph.graph import END, START, StateGraph
 
 from app.agent import descriptors, prompts
+from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import AgentActRequest, ToolCall
@@ -89,7 +90,12 @@ def _text(message: BaseMessage) -> str:
     )
 
 
-def build_graph(model: Any, gateway: CommerceGateway, ctx: TurnContext):
+def build_graph(
+    model: Any,
+    gateway: CommerceGateway,
+    ctx: TurnContext,
+    comparer: Comparer | None = None,
+):
     """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다."""
     tools = descriptors.tool_definitions(ctx.allow_tools)
     # 허용한 도구가 하나도 없으면 도구 없이 부른다(빈 도구 목록은 공급자가 거절한다)
@@ -148,7 +154,9 @@ def build_graph(model: Any, gateway: CommerceGateway, ctx: TurnContext):
                     )
                 )
                 continue
-            call = await execute(ctx, gateway, name, requested["args"])
+            call = await execute(
+                ctx, gateway, name, requested["args"], comparer=comparer
+            )
             recorded.append(call)
             replies.append(
                 ToolMessage(
@@ -185,11 +193,19 @@ def build_graph(model: Any, gateway: CommerceGateway, ctx: TurnContext):
 
 
 async def run_agent(
-    req: AgentActRequest, *, model: Any, gateway: CommerceGateway
+    req: AgentActRequest,
+    *,
+    model: Any,
+    gateway: CommerceGateway,
+    comparer: Comparer | None = None,
 ) -> AgentRun:
-    """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다."""
+    """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
+
+    comparer 가 없으면 book.compare 는 쓸 수 없다. 소개글을 읽는 호출은 도구를 고르는 model 과 따로
+    한다(소개글 속 지시문이 도구 선택에 섞이지 않게).
+    """
     ctx = TurnContext.from_request(req)
-    graph = build_graph(model, gateway, ctx)
+    graph = build_graph(model, gateway, ctx, comparer)
     out: _State = await graph.ainvoke(
         {
             "messages": [

@@ -12,12 +12,17 @@ import openai
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import parse_request
 from app.core import body, responses
 from app.core.config import get_settings
-from app.gateway.commerce_provider import CommerceNotConfigured, get_commerce
+from app.gateway.commerce_provider import (
+    CommerceNotConfigured,
+    get_catalog,
+    get_commerce,
+)
 from app.gateway.llm import LLMUnavailableError, get_chat_model
 
 logger = logging.getLogger(__name__)
@@ -79,8 +84,11 @@ async def act(request: Request) -> JSONResponse:
 
     try:
         gateway = get_commerce(req.user_id)
+        catalog = get_catalog()
         model = agent_model()
-        run = await run_agent(req, model=model, gateway=gateway)
+        # 비교는 소개글을 읽는 별도 호출이다. 도구를 고르는 호출과 메시지를 섞지 않는다
+        comparer = LlmComparer(catalog, model)
+        run = await run_agent(req, model=model, gateway=gateway, comparer=comparer)
         finished = finish(run)
     except CommerceNotConfigured:
         # 진짜 BE 장바구니는 11단계에서 연결한다. 그 전에 가짜로 답하지 않는다
