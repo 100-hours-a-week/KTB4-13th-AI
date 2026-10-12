@@ -448,12 +448,76 @@ def _catalog_categories_for(category: str) -> tuple[str, ...] | None:
 
     대응표에 없는 값(예: 이미 카탈로그 분류명 그대로거나, 대응표가 모르는 값)이면
     None — 호출부가 예전처럼 ①의 정확 일치 필터를 그대로 쓴다(categories.py
-    docstring: "여기 없는 값은 쓰는 쪽에서 건너뛴다").
+    docstring: "여기 없는 값은 쓰는 쪽에서 건너뛴다"). 카탈로그 분류명도 아닌 값은
+    chat()이 후보 검색 전에 _settle_category로 걸러 낸다(#359).
     """
     match = categories.ONBOARDING_TO_CATALOG.get(category)
     if match is None:
         return None
     return match.core + match.partial
+
+
+async def _category_has_books(name: str) -> bool:
+    """카탈로그에 이 분류명의 책이 한 권이라도 있는지(#359). 분류 색인을 타므로 가볍다."""
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM v_books WHERE category = $1)", name
+        )
+
+
+async def _is_filterable_category(name: str) -> bool:
+    """이 분야 값으로 후보를 거를 수 있는지(#359).
+
+    온보딩 값(대응표)이면 거를 수 있다. 어린이처럼 분류로 가를 수 없는 온보딩 값은 못 거른다(#228).
+    그 밖의 값은 카탈로그 분류명 그대로일 때만 거를 수 있어 책 표에 물어본다.
+    """
+    if name in categories.ONBOARDING_TO_CATALOG:
+        return True
+    if name in categories.UNFILTERED_ONBOARDING:
+        return False
+    return await _category_has_books(name)
+
+
+def _move_category_to_semantic(spec: Spec) -> Spec:
+    """분야 필터를 풀고 그 말을 검색 문장에 붙인다. 이미 문장에 든 말이면 다시 붙이지 않는다.
+
+    제목·저자를 콕 집은 요청은 검색어가 제목·저자라(_query_text) 붙여도 쓰이지 않고,
+    카드 프롬프트 첫 줄만 분위기 문장으로 바뀐다(_card_prompt_intro). 그래서 필터만 푼다.
+    """
+    word = (spec.filters.category or "").strip()
+    filters = spec.filters.model_copy(update={"category": None})
+    pinned = spec.intent == "exact" and (spec.exact.title or spec.exact.author)
+    if not word or pinned:
+        return spec.model_copy(update={"filters": filters})
+    semantic = spec.semantic or ""
+    if word.casefold() not in semantic.casefold():
+        semantic = f"{semantic} {word}".strip()
+    return spec.model_copy(update={"filters": filters, "semantic": semantic})
+
+
+async def _settle_category(spec: Spec) -> Spec:
+    """1단계가 낸 분야 값을 검사해, 필터로 못 쓰는 값이면 검색 문장으로 옮긴다(#359).
+
+    1단계 LLM은 분야 칸에 "SF", "알고리즘", "입문자용" 같은 말도 넣는다. 대응표에도 카탈로그
+    분류명에도 없는 값은 ①의 정확 일치 필터에 걸려 후보가 0건이 된다(평가 #322: 이런 값이
+    걸린 14턴이 전부 카드 0장). 사용자가 한 말이라 버리지 않고 검색 문장(semantic)으로 옮긴다.
+
+    분야는 쓸 수 있는 값인데 찾을 말(semantic·제목·저자)이 비었으면 분야 이름을 검색 문장으로
+    쓴다. 되묻기(#283)가 안내한 "경제경영 책 추천해줘"에 1단계가 분야만 채우면, 검색어가
+    비어 같은 질문을 되풀이했다.
+
+    고친 spec을 응답에 그대로 싣는다. 못 쓰는 분야 값이 "걸린 조건"으로 안내되거나 다음 턴까지
+    남지 않게 한다.
+    """
+    category = spec.filters.category
+    if category is None:
+        return spec
+    if not await _is_filterable_category(category):
+        return _move_category_to_semantic(spec)
+    if not (spec.semantic or spec.exact.title or spec.exact.author):
+        return spec.model_copy(update={"semantic": category})
+    return spec
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -1168,7 +1232,9 @@ async def chat(request: Request) -> JSONResponse:
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
-        # ISBN을 book_id로 바꾸다 실패해도 후보 검색 실패와 같은 500이다.
+        # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
+        # 후보 검색 실패와 같은 500이다.
+        spec = await _settle_category(spec)
         shown = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
