@@ -8,12 +8,14 @@ complete()는 httpx.MockTransport로 응답 본문만 흉내 내 네트워크 �
 """
 
 import asyncio
+import json
 
 import httpx
 import openai
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
@@ -21,6 +23,7 @@ import app.gateway.llm as llm_gateway
 from app.gateway.llm import (
     LLMUnavailableError,
     complete,
+    get_chat_model,
     invoke_chain,
     last_known_status,
     message_text,
@@ -219,3 +222,119 @@ def test_choices가_비정상이면_LLMUnavailableError(monkeypatch, choices) ->
     # LLMUnavailableError로 통일돼야 ③이 degraded로 내려간다.
     with pytest.raises(LLMUnavailableError):
         _call_with_response(monkeypatch, {**_OK_BODY, "choices": choices})
+
+
+# --- get_chat_model(json_mode, model_id) — 도구 호출을 쓰는 ⑦용 (#345) ---
+
+
+def _chat_openai_kwargs(monkeypatch, **call) -> dict:
+    """get_chat_model()이 ChatOpenAI에 넘기는 인자를 가로챈다. 네트워크는 안 탄다."""
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(llm_gateway, "ChatOpenAI", factory)
+    # .env가 있는 로컬과 없는 CI에서 같은 값으로 시작하게 필요한 것을 전부 고정한다.
+    monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("LLM_MODEL_ID", "openai/gpt-4o-mini")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
+    get_chat_model(**call)
+    return captured
+
+
+def test_기본값이면_JSON_응답_고정이_실린다(monkeypatch) -> None:
+    # ③⑤는 인자 없이 부른다. 이 동작이 바뀌면 안 된다.
+    kwargs = _chat_openai_kwargs(monkeypatch)
+
+    assert kwargs["model_kwargs"] == {"response_format": {"type": "json_object"}}
+
+
+def test_json_mode를_끄면_response_format이_안_실린다(monkeypatch) -> None:
+    kwargs = _chat_openai_kwargs(monkeypatch, json_mode=False)
+
+    assert kwargs["model_kwargs"] == {}
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+def test_json_mode와_상관없이_ZDR_재시도_타임아웃은_그대로다(
+    monkeypatch, json_mode
+) -> None:
+    kwargs = _chat_openai_kwargs(monkeypatch, json_mode=json_mode)
+
+    assert kwargs["extra_body"] == {"provider": {"zdr": True}}
+    assert kwargs["max_retries"] == 0
+    assert kwargs["timeout"] == 30
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        pytest.param(None, "openai/gpt-4o-mini", id="안_주면_LLM_MODEL_ID"),
+        pytest.param("openai/gpt-5.4-mini", "openai/gpt-5.4-mini", id="주면_그_모델"),
+    ],
+)
+def test_model_id를_주면_그_모델로_만든다(monkeypatch, model_id, expected) -> None:
+    kwargs = _chat_openai_kwargs(monkeypatch, model_id=model_id)
+
+    assert kwargs["model"] == expected
+
+
+@tool
+def _get_cart() -> str:
+    """장바구니에 담긴 책 목록을 조회한다."""
+    return ""
+
+
+def test_json_mode를_끄면_도구를_바인딩해도_요청이_나가고_도구_호출을_받는다(
+    monkeypatch,
+) -> None:
+    """실제 원인 재현: json_mode=True로는 이 호출이 요청을 보내기도 전에 ValueError였다.
+
+    ChatOpenAI까지 실제로 거치되 응답만 MockTransport로 흉내 낸다. 요청 본문에
+    response_format이 없고 tools가 실렸는지를 와이어에서 본다.
+    """
+    sent: list[dict] = []
+    body = {
+        **_OK_BODY,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "_get_cart", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json=body)
+
+    real = ChatOpenAI
+
+    def factory(**kwargs):
+        kwargs["http_async_client"] = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return real(**kwargs)
+
+    monkeypatch.setattr(llm_gateway, "ChatOpenAI", factory)
+    monkeypatch.setenv("LLM_MOCK", "false")
+
+    model = get_chat_model(json_mode=False).bind_tools([_get_cart])
+    result = asyncio.run(model.ainvoke("장바구니 보여줘"))
+
+    assert [tc["name"] for tc in result.tool_calls] == ["_get_cart"]
+    assert "response_format" not in sent[0]
+    assert sent[0]["tools"][0]["function"]["name"] == "_get_cart"
