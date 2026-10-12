@@ -822,6 +822,53 @@
       }
     },
     {
+      "id": "like-07",
+      "kind": "like",
+      "about": "좋아한 책을 제목으로만 말한다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_like-07",
+        "conversation": [
+          {"role": "user", "text": "데미안 재밌게 읽었는데 비슷한 느낌의 책 있어?"},
+          {"role": "assistant", "text": "비슷한 결의 소설을 골라 봤어요."},
+          {"role": "user", "text": "두 번째 책이 끌리네"}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "『데미안』을 재미있게 읽었고 비슷한 책을 찾음", "keywords": ["데미안"], "stated": true}
+        ],
+        "must_not_extract": [],
+        "forbidden": ["성장", "헤세"]
+      }
+    },
+    {
+      "id": "like-08",
+      "kind": "like",
+      "about": "좋아하는 책 두 권을 제목으로만 말한다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_like-08",
+        "conversation": [
+          {"role": "user", "text": "미움받을 용기랑 아몬드를 좋아해요. 둘 다 좋아하는 사람한테 맞는 책 있을까요"},
+          {"role": "assistant", "text": "두 책을 좋아하는 분들이 많이 찾는 책을 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "『미움받을 용기』와 『아몬드』를 좋아함", "keywords": ["미움받을 용기", "아몬드"], "stated": true}
+        ],
+        "must_not_extract": [],
+        "forbidden": ["심리학", "아들러", "손원평"]
+      }
+    },
+    {
       "id": "multi-01",
       "kind": "multi",
       "about": "좋아한다고 했다가 질렸다고 한다",
