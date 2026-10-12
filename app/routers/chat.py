@@ -1113,10 +1113,17 @@ def _no_card_response(
 #    reply 끝에 질문 한 줄을 붙인다. 명세의 reply 최대 200자는 지킨다.
 _REPLY_MAX_CHARS = 200
 # 지시어는 낱말 앞머리에서만 잡는다. "학생이거든요", "어린이 책", "아까운"처럼 다른 낱말 속에 든 글자는 지시어가 아니다.
-_REFERENCE = re.compile(
-    r"((?<![가-힣])(이거|그거|저거|이것(?!저것)|그것|저것|[이그저] 책)|아까(?![운워웠우])|방금|조금 전|위에서|앞에서"
-    r"|[첫두세네]\s?번째|\d+번째|\d+번 책)"
+# 가리키는 곳이 다른 두 갈래로 나눈다(#359). "이거", "그 책"은 같은 메시지의 앞말을 가리킬 수 있고
+# ("토비의 스프링은 어려웠어. 그것보다 쉬운 책"), "아까", "첫 번째"는 앞선 턴만 가리킨다.
+_PRONOUN = re.compile(
+    r"(?<![가-힣])(이거|그거|저거|이것(?!저것)|그것|저것|[이그저] 책)"
 )
+_EARLIER_TURN = re.compile(
+    r"(아까(?![운워웠우])|방금|조금 전|위에서|앞에서|[첫두세네]\s?번째|\d+번째|\d+번 책)"
+)
+# 지시어 앞에 이만큼 글자가 있으면 가리킬 말이 같은 메시지에 있다고 본다. "아", "음", "그럼" 같은
+# 짧은 말머리는 가리킬 말이 아니다. 책 제목은 "데미안"처럼 석 자부터 흔하다.
+_ANTECEDENT_MIN_CHARS = 3
 _ONLY_JAMO = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ!?.~,;]+$")
 _DIGIT = re.compile(r"\d")
 _YEAR_WORD = re.compile(r"(\d{4}\s*년|올해|작년|재작년|금년)")
@@ -1159,6 +1166,23 @@ _SLOT_RULES = (
 )
 
 
+def _points_nowhere(text: str) -> bool:
+    """첫 턴 메시지에 가리킬 말이 없는 지시어가 있는지.
+
+    앞선 턴을 가리키는 말은 첫 턴에 가리킬 것이 없다. "이거", "그 책"은 그 앞에 다른 말이
+    있으면 같은 메시지 안에서 가리킬 수 있다고 보고 1단계 LLM에게 넘긴다 — 책 이름을 말한
+    사용자에게 "어떤 책을 말씀하시는 건가요?"로 되묻는 쪽이 더 나쁘다(평가 #322: 5번 중 5번).
+    글자 수로만 보므로 "나 요즘 우울한데 그 책 추천해줘"처럼 가리킬 말 없이 긴 문장도 넘어간다.
+    """
+    if _EARLIER_TURN.search(text):
+        return True
+    pronoun = _PRONOUN.search(text)
+    if pronoun is None:
+        return False
+    said_before = _NON_WORD.sub("", text[: pronoun.start()])
+    return len(said_before) < _ANTECEDENT_MIN_CHARS
+
+
 def _unanswerable_request(
     message: str, spec: Spec, recent_turns: list[Turn]
 ) -> tuple[str, str] | None:
@@ -1169,7 +1193,7 @@ def _unanswerable_request(
             "무슨 말씀인지 잘 모르겠어요.",
             '찾고 싶은 책이나 읽고 싶은 분위기를 다시 말씀해 주시겠어요? 예) "잔잔한 소설 추천해줘"',
         )
-    if not recent_turns and spec.anchor_book is None and _REFERENCE.search(text):
+    if not recent_turns and spec.anchor_book is None and _points_nowhere(text):
         # 첫 턴이라 "이거", "그 책"이 가리킬 책이 없다. 서버는 대화를 저장하지 않아 요청에 실린 것만 안다.
         return (
             "어떤 책을 말씀하시는 건가요?",

@@ -109,6 +109,36 @@ def test_다른_낱말_속에_든_글자는_지시어로_보지_않는다(messag
     assert chat._unanswerable_request(message, _spec(), []) is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        # 책 이름을 먼저 말하고 지시어로 받는다(#359).
+        "토비의 스프링은 너무 어려웠어. 그것보다 쉬운 스프링 책",
+        "데미안 읽었는데 이거랑 비슷한 책",
+        "미움받을 용기 그 책 같은 거 추천해줘",
+        "채식주의자, 이 책이랑 분위기 비슷한 소설",
+    ],
+)
+def test_지시어_앞에_가리킬_말이_있으면_묻지_않는다(message: str) -> None:
+    assert chat._unanswerable_request(message, _spec(), []) is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # 짧은 말머리는 가리킬 말이 아니다.
+        "아 그거 말고 다른 책",
+        "음 이 책이랑 비슷한 거",
+        "아니 그 책 말고",
+        # 앞선 턴을 가리키는 말은 앞에 다른 말이 있어도 첫 턴에는 가리킬 것이 없다.
+        "소설 좋아하는데 아까 그 책 같은 거 추천해줘",
+        "재밌어 보이는데 두 번째 책이랑 비슷한 걸로",
+    ],
+)
+def test_가리킬_말이_없는_지시어는_앞에_말이_있어도_묻는다(message: str) -> None:
+    assert chat._unanswerable_request(message, _spec(), []) is not None
+
+
 @pytest.mark.parametrize("message", ["ㅁㄴㅇㄹ", "ㅋㅋㅋ", "ㅎㅎ?", "..."])
 def test_자모와_기호뿐인_입력은_다시_말해_달라고_한다(message: str) -> None:
     result = chat._unanswerable_request(message, _spec(), _HISTORY)
