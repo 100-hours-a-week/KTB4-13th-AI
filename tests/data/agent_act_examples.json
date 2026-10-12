@@ -1,0 +1,343 @@
+{
+  "_설명": "명세 ⑦(위키 PR #225)의 예시 JSON을 그대로 뽑은 것. 명세가 바뀌면 같이 고친다.",
+  "request": {
+    "user_id": 123,
+    "conversation_id": "cv_…",
+    "message": "2만 7천원 안에서 2권 골라 담아줘",
+    "context_cards": [
+      {
+        "isbn": "9788900000011",
+        "rank": 1,
+        "match_score": 92
+      },
+      {
+        "isbn": "9788900000028",
+        "rank": 2,
+        "match_score": 87
+      },
+      {
+        "isbn": "9788900000035",
+        "rank": 3,
+        "match_score": 81
+      }
+    ],
+    "focused_isbn": "9788900000011",
+    "user_context": {
+      "logged_in": true
+    },
+    "allow_tools": null,
+    "idempotency_key": "idem_…"
+  },
+  "responses": {
+    "pick": {
+      "message": "agent_success",
+      "data": {
+        "reply": "《달러구트 꿈 백화점》 + 《아무튼, 산》 = 26,300원. 이 둘 담을까요?",
+        "not_shopping": false,
+        "tool_calls": [
+          {
+            "name": "book.offer",
+            "arguments": {
+              "isbns": [
+                "9788900000011",
+                "9788900000028",
+                "9788900000035"
+              ]
+            },
+            "result": {
+              "offers": [
+                {
+                  "isbn": "9788900000011",
+                  "price": 13500,
+                  "in_stock": true
+                },
+                {
+                  "isbn": "9788900000028",
+                  "price": 14000,
+                  "in_stock": true
+                },
+                {
+                  "isbn": "9788900000035",
+                  "price": 12800,
+                  "in_stock": true
+                }
+              ]
+            },
+            "grounded": true
+          },
+          {
+            "name": "selection.pick",
+            "arguments": {
+              "budget_total": 27000,
+              "count": 2
+            },
+            "result": {
+              "chosen": [
+                "9788900000011",
+                "9788900000035"
+              ],
+              "total_price": 26300,
+              "alternatives_considered": 3
+            },
+            "grounded": true
+          }
+        ],
+        "resolved_reference": {
+          "ref": "2만 7천원 2권",
+          "isbns": [
+            "9788900000011",
+            "9788900000035"
+          ]
+        },
+        "selection": {
+          "goal": "budget_pick",
+          "constraints": {
+            "budget_total": 27000,
+            "count": 2
+          },
+          "chosen": [
+            {
+              "isbn": "9788900000011",
+              "price": 13500,
+              "match_score": 92
+            },
+            {
+              "isbn": "9788900000035",
+              "price": 12800,
+              "match_score": 81
+            }
+          ],
+          "total_price": 26300,
+          "alternatives_considered": 3
+        },
+        "buttons": [
+          {
+            "label": "담기",
+            "action": "confirm_selection",
+            "isbns": [
+              "9788900000011",
+              "9788900000035"
+            ]
+          },
+          {
+            "label": "다른 조합",
+            "action": "reselect"
+          }
+        ]
+      }
+    },
+    "add": {
+      "message": "agent_success",
+      "data": {
+        "reply": "《달러구트 꿈 백화점》을 장바구니에 담았어요.",
+        "not_shopping": false,
+        "tool_calls": [
+          {
+            "name": "cart.view",
+            "arguments": {},
+            "result": {
+              "items": [
+                {
+                  "isbn": "9788900000035",
+                  "title": "아무튼, 산",
+                  "price": 12800,
+                  "quantity": 1,
+                  "available": true
+                }
+              ]
+            },
+            "grounded": true
+          },
+          {
+            "name": "cart.add",
+            "arguments": {
+              "isbn": "9788900000011",
+              "quantity": 1
+            },
+            "result": {
+              "ok": true
+            },
+            "grounded": true
+          }
+        ],
+        "resolved_reference": {
+          "ref": "1번",
+          "isbns": [
+            "9788900000011"
+          ]
+        },
+        "selection": null,
+        "buttons": [
+          {
+            "label": "장바구니 보기",
+            "action": "navigate",
+            "target": "CART-001"
+          }
+        ]
+      }
+    },
+    "already_in_cart": {
+      "message": "agent_success",
+      "data": {
+        "reply": "《달러구트 꿈 백화점》은 이미 장바구니에 2권 담겨 있어요. 수량을 바꾸시려면 알려 주세요.",
+        "not_shopping": false,
+        "tool_calls": [
+          {
+            "name": "cart.view",
+            "arguments": {},
+            "result": {
+              "items": [
+                {
+                  "isbn": "9788900000011",
+                  "title": "달러구트 꿈 백화점",
+                  "price": 13500,
+                  "quantity": 2,
+                  "available": true
+                }
+              ]
+            },
+            "grounded": true
+          }
+        ],
+        "resolved_reference": {
+          "ref": "1번",
+          "isbns": [
+            "9788900000011"
+          ]
+        },
+        "selection": null,
+        "buttons": [
+          {
+            "label": "장바구니 보기",
+            "action": "navigate",
+            "target": "CART-001"
+          }
+        ]
+      }
+    },
+    "ask_back": {
+      "message": "agent_success",
+      "data": {
+        "reply": "어떤 책 말씀이실까요? 방금 추천한 1번 《달러구트 꿈 백화점》이 맞을까요?",
+        "not_shopping": false,
+        "tool_calls": [],
+        "resolved_reference": {
+          "ref": "그 책",
+          "isbns": []
+        },
+        "selection": null,
+        "buttons": [
+          {
+            "label": "네, 1번",
+            "action": "confirm_reference",
+            "isbn": "9788900000011"
+          },
+          {
+            "label": "아니요",
+            "action": "dismiss"
+          }
+        ]
+      }
+    },
+    "compare": {
+      "message": "agent_success",
+      "data": {
+        "reply": "1번은 문장이 담백해 부담이 적고, 3번은 화제작인데 호흡이 무거워요. 가격은 700원 차이(1번 13,500 / 3번 12,800)예요.",
+        "not_shopping": false,
+        "tool_calls": [
+          {
+            "name": "book.offer",
+            "arguments": {
+              "isbns": [
+                "9788900000011",
+                "9788900000035"
+              ]
+            },
+            "result": {
+              "offers": [
+                {
+                  "isbn": "9788900000011",
+                  "price": 13500,
+                  "in_stock": true
+                },
+                {
+                  "isbn": "9788900000035",
+                  "price": 12800,
+                  "in_stock": true
+                }
+              ]
+            },
+            "grounded": true
+          },
+          {
+            "name": "book.compare",
+            "arguments": {
+              "isbns": [
+                "9788900000011",
+                "9788900000035"
+              ]
+            },
+            "result": {
+              "basis": "description"
+            },
+            "grounded": true
+          }
+        ],
+        "resolved_reference": {
+          "ref": "1번, 3번",
+          "isbns": [
+            "9788900000011",
+            "9788900000035"
+          ]
+        },
+        "selection": null,
+        "buttons": [
+          {
+            "label": "1번 담기",
+            "action": "confirm_reference",
+            "isbn": "9788900000011"
+          }
+        ]
+      }
+    },
+    "delivery": {
+      "message": "agent_success",
+      "data": {
+        "reply": "주문 상태는 주문내역에서 확인하실 수 있어요.",
+        "not_shopping": false,
+        "tool_calls": [
+          {
+            "name": "ui.guide",
+            "arguments": {
+              "target": "ORDER-LIST-001"
+            },
+            "result": {
+              "label": "주문내역"
+            },
+            "grounded": true
+          }
+        ],
+        "resolved_reference": null,
+        "selection": null,
+        "buttons": [
+          {
+            "label": "주문내역",
+            "action": "navigate",
+            "target": "ORDER-LIST-001"
+          }
+        ]
+      }
+    },
+    "not_shopping": {
+      "message": "agent_success",
+      "data": {
+        "reply": "",
+        "not_shopping": true,
+        "tool_calls": [],
+        "resolved_reference": null,
+        "selection": null,
+        "buttons": []
+      }
+    }
+  }
+}
