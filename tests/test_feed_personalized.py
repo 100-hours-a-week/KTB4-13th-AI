@@ -201,3 +201,37 @@ def test_정확_계산은_벡터_색인을_쓰지_않는다(distance: str, uses_
             await conn.close()
 
     assert ("book_embeddings_hnsw_idx" in asyncio.run(_go())) is uses_index
+
+
+# ---------------------------------------------------------------------------
+# 뺄 책을 요청으로 받았을 때(#330)
+# ---------------------------------------------------------------------------
+
+
+def _ids_excluding(book_ids: list[int], **params) -> list[int]:
+    async def check(conn):
+        items, _ = await personalized.fetch(
+            conn,
+            _request(**params),
+            Page(issued_at=_NOW),
+            _CENTROID,
+            {},
+            exclusion.owned(book_ids),
+        )
+        return [item["book_id"] for item in items]
+
+    return _run(check)
+
+
+def test_받은_책을_빼고_복제_표의_이력은_보지_않는다() -> None:
+    # 복제 표에는 9100704 를 산 것으로 남아 있다. 요청은 9100701 을 가졌다고 한다.
+    assert _ids_excluding([9100701]) == [9100704, 9100702, 9100703]
+
+
+def test_가진_책이_없다고_받으면_아무것도_빼지_않는다() -> None:
+    assert _ids_excluding([]) == [9100701, 9100704, 9100702, 9100703]
+
+
+def test_받은_책으로_빼면서_필터도_함께_건다() -> None:
+    # 필터가 붙으면 자리 번호가 뒤로 이어진다. 9100702(2024)만 남는다.
+    assert _ids_excluding([9100701], pub_year_from="2023") == [9100702]
