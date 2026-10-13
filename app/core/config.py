@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30
     llm_mock: bool = False
+    # ⑦ 쇼핑 에이전트만 쓰는 모델(#356). 비어 있으면 llm_model_id 를 쓴다. ③ 평가의 기준 모델이 같이
+    # 움직이지 않게 따로 둔다. 도구 호출을 쓰므로 ZDR 과 도구를 같이 지원하는 모델이어야 한다(#345).
+    agent_llm_model_id: str = ""
+    # ⑦ 쇼핑 에이전트가 쓸 진짜 BE 장바구니가 아직 없다(11단계). false(기본)면 /agent/act 는 503 으로
+    # 답하고, true 면 메모리 가짜 장바구니로 동작한다. 배포 환경에서 가짜로 답하는 일이 없게 기본은 꺼 둔다.
+    commerce_mock: bool = False
 
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.

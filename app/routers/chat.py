@@ -124,6 +124,17 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 재고 조건(in_stock_only)은 지시문과 예시에 넣지 않는다(#319). AI가 재고를 받지
 # 않게 되어(#307) 챗봇은 이 조건을 쓰지 않는다. 예시에 있으면 모델이 사용자가
 # 말하지 않은 재고 조건을 지어낸다.
+#
+# 주제와 조건이 같이 온 메시지("2020년 이후에 나온 인공지능 책")에서 조건만 내고 주제를
+# 빠뜨리는 경우가 있었다(#359). 그러면 검색어가 비어 추천을 못 한다. 다른 예시들이 조건
+# 하나만 담은 꼴이라 그대로 따라 한 것으로 보고, 주제와 조건을 같이 담은 예시를 하나 둔다.
+# 평가(#322)에서 이 질문에 카드가 나온 비율이 10번 중 6번에서 9번으로 올랐다. 예시의
+# 낱말은 평가 질문에 없는 것으로 골랐다 — 평가 질문을 예시로 쓰면 그 질문만 맞히게 된다.
+#
+# 같이 넣어 본 두 가지는 뺐다(#359). "주제는 semantic에 남겨라"는 지시문과 분야 칸에 넣을
+# 수 있는 값 목록이다. 넣으면 "책 추천해줘"처럼 주제가 없는 말에도 모델이 분위기를 지어내
+# semantic을 채웠다(되묻기 5번 중 4번 → 0번). 목록을 주면 분야 칸을 더 자주 채워, 말하지
+# 않은 분야로 후보가 걸러지기도 했다. 못 쓰는 분야 값은 서버가 걸러 낸다(_settle_category).
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -167,6 +178,9 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "둘 다 넣어라:\n"
     '{{"semantic": "비 오는 날 읽을 가벼운 책", '
     '"filters": {{"price_max": 10000}}}}\n\n'
+    "주제+조건 예시(형식일 뿐 실제 값 아님) — 메시지가 "
+    '"만오천원 이하 요리책 추천해줘"면 둘 다 넣어라:\n'
+    '{{"semantic": "요리책", "filters": {{"price_max": 15000}}}}\n\n'
     "조건 제거 예시(형식일 뿐 실제 값 아님) — 지금 filters.price_max가 "
     '20000이고 메시지가 "2만원 이하 아니어도돼"면, 키를 빼지 말고 null로 '
     "명시해라:\n"
@@ -448,12 +462,76 @@ def _catalog_categories_for(category: str) -> tuple[str, ...] | None:
 
     대응표에 없는 값(예: 이미 카탈로그 분류명 그대로거나, 대응표가 모르는 값)이면
     None — 호출부가 예전처럼 ①의 정확 일치 필터를 그대로 쓴다(categories.py
-    docstring: "여기 없는 값은 쓰는 쪽에서 건너뛴다").
+    docstring: "여기 없는 값은 쓰는 쪽에서 건너뛴다"). 카탈로그 분류명도 아닌 값은
+    chat()이 후보 검색 전에 _settle_category로 걸러 낸다(#359).
     """
     match = categories.ONBOARDING_TO_CATALOG.get(category)
     if match is None:
         return None
     return match.core + match.partial
+
+
+async def _category_has_books(name: str) -> bool:
+    """카탈로그에 이 분류명의 책이 한 권이라도 있는지(#359). 분류 색인을 타므로 가볍다."""
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM v_books WHERE category = $1)", name
+        )
+
+
+async def _is_filterable_category(name: str) -> bool:
+    """이 분야 값으로 후보를 거를 수 있는지(#359).
+
+    온보딩 값(대응표)이면 거를 수 있다. 어린이처럼 분류로 가를 수 없는 온보딩 값은 못 거른다(#228).
+    그 밖의 값은 카탈로그 분류명 그대로일 때만 거를 수 있어 책 표에 물어본다.
+    """
+    if name in categories.ONBOARDING_TO_CATALOG:
+        return True
+    if name in categories.UNFILTERED_ONBOARDING:
+        return False
+    return await _category_has_books(name)
+
+
+def _move_category_to_semantic(spec: Spec) -> Spec:
+    """분야 필터를 풀고 그 말을 검색 문장에 붙인다. 이미 문장에 든 말이면 다시 붙이지 않는다.
+
+    제목·저자를 콕 집은 요청은 검색어가 제목·저자라(_query_text) 붙여도 쓰이지 않고,
+    카드 프롬프트 첫 줄만 분위기 문장으로 바뀐다(_card_prompt_intro). 그래서 필터만 푼다.
+    """
+    word = (spec.filters.category or "").strip()
+    filters = spec.filters.model_copy(update={"category": None})
+    pinned = spec.intent == "exact" and (spec.exact.title or spec.exact.author)
+    if not word or pinned:
+        return spec.model_copy(update={"filters": filters})
+    semantic = spec.semantic or ""
+    if word.casefold() not in semantic.casefold():
+        semantic = f"{semantic} {word}".strip()
+    return spec.model_copy(update={"filters": filters, "semantic": semantic})
+
+
+async def _settle_category(spec: Spec) -> Spec:
+    """1단계가 낸 분야 값을 검사해, 필터로 못 쓰는 값이면 검색 문장으로 옮긴다(#359).
+
+    1단계 LLM은 분야 칸에 "SF", "알고리즘", "입문자용" 같은 말도 넣는다. 대응표에도 카탈로그
+    분류명에도 없는 값은 ①의 정확 일치 필터에 걸려 후보가 0건이 된다(평가 #322: 이런 값이
+    걸린 14턴이 전부 카드 0장). 사용자가 한 말이라 버리지 않고 검색 문장(semantic)으로 옮긴다.
+
+    분야는 쓸 수 있는 값인데 찾을 말(semantic·제목·저자)이 비었으면 분야 이름을 검색 문장으로
+    쓴다. 되묻기(#283)가 안내한 "경제경영 책 추천해줘"에 1단계가 분야만 채우면, 검색어가
+    비어 같은 질문을 되풀이했다.
+
+    고친 spec을 응답에 그대로 싣는다. 못 쓰는 분야 값이 "걸린 조건"으로 안내되거나 다음 턴까지
+    남지 않게 한다.
+    """
+    category = spec.filters.category
+    if category is None:
+        return spec
+    if not await _is_filterable_category(category):
+        return _move_category_to_semantic(spec)
+    if not (spec.semantic or spec.exact.title or spec.exact.author):
+        return spec.model_copy(update={"semantic": category})
+    return spec
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -1049,10 +1127,17 @@ def _no_card_response(
 #    reply 끝에 질문 한 줄을 붙인다. 명세의 reply 최대 200자는 지킨다.
 _REPLY_MAX_CHARS = 200
 # 지시어는 낱말 앞머리에서만 잡는다. "학생이거든요", "어린이 책", "아까운"처럼 다른 낱말 속에 든 글자는 지시어가 아니다.
-_REFERENCE = re.compile(
-    r"((?<![가-힣])(이거|그거|저거|이것(?!저것)|그것|저것|[이그저] 책)|아까(?![운워웠우])|방금|조금 전|위에서|앞에서"
-    r"|[첫두세네]\s?번째|\d+번째|\d+번 책)"
+# 가리키는 곳이 다른 두 갈래로 나눈다(#359). "이거", "그 책"은 같은 메시지의 앞말을 가리킬 수 있고
+# ("토비의 스프링은 어려웠어. 그것보다 쉬운 책"), "아까", "첫 번째"는 앞선 턴만 가리킨다.
+_PRONOUN = re.compile(
+    r"(?<![가-힣])(이거|그거|저거|이것(?!저것)|그것|저것|[이그저] 책)"
 )
+_EARLIER_TURN = re.compile(
+    r"(아까(?![운워웠우])|방금|조금 전|위에서|앞에서|[첫두세네]\s?번째|\d+번째|\d+번 책)"
+)
+# 지시어 앞에 이만큼 글자가 있으면 가리킬 말이 같은 메시지에 있다고 본다. "아", "음", "그럼" 같은
+# 짧은 말머리는 가리킬 말이 아니다. 책 제목은 "데미안"처럼 석 자부터 흔하다.
+_ANTECEDENT_MIN_CHARS = 3
 _ONLY_JAMO = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ!?.~,;]+$")
 _DIGIT = re.compile(r"\d")
 _YEAR_WORD = re.compile(r"(\d{4}\s*년|올해|작년|재작년|금년)")
@@ -1095,6 +1180,23 @@ _SLOT_RULES = (
 )
 
 
+def _points_nowhere(text: str) -> bool:
+    """첫 턴 메시지에 가리킬 말이 없는 지시어가 있는지.
+
+    앞선 턴을 가리키는 말은 첫 턴에 가리킬 것이 없다. "이거", "그 책"은 그 앞에 다른 말이
+    있으면 같은 메시지 안에서 가리킬 수 있다고 보고 1단계 LLM에게 넘긴다 — 책 이름을 말한
+    사용자에게 "어떤 책을 말씀하시는 건가요?"로 되묻는 쪽이 더 나쁘다(평가 #322: 5번 중 5번).
+    글자 수로만 보므로 "나 요즘 우울한데 그 책 추천해줘"처럼 가리킬 말 없이 긴 문장도 넘어간다.
+    """
+    if _EARLIER_TURN.search(text):
+        return True
+    pronoun = _PRONOUN.search(text)
+    if pronoun is None:
+        return False
+    said_before = _NON_WORD.sub("", text[: pronoun.start()])
+    return len(said_before) < _ANTECEDENT_MIN_CHARS
+
+
 def _unanswerable_request(
     message: str, spec: Spec, recent_turns: list[Turn]
 ) -> tuple[str, str] | None:
@@ -1105,7 +1207,7 @@ def _unanswerable_request(
             "무슨 말씀인지 잘 모르겠어요.",
             '찾고 싶은 책이나 읽고 싶은 분위기를 다시 말씀해 주시겠어요? 예) "잔잔한 소설 추천해줘"',
         )
-    if not recent_turns and spec.anchor_book is None and _REFERENCE.search(text):
+    if not recent_turns and spec.anchor_book is None and _points_nowhere(text):
         # 첫 턴이라 "이거", "그 책"이 가리킬 책이 없다. 서버는 대화를 저장하지 않아 요청에 실린 것만 안다.
         return (
             "어떤 책을 말씀하시는 건가요?",
@@ -1168,7 +1270,9 @@ async def chat(request: Request) -> JSONResponse:
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
     try:
-        # ISBN을 book_id로 바꾸다 실패해도 후보 검색 실패와 같은 500이다.
+        # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
+        # 후보 검색 실패와 같은 500이다.
+        spec = await _settle_category(spec)
         shown = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
