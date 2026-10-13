@@ -676,3 +676,215 @@ def test_오류_응답에_사용자_메시지가_실리지_않는다() -> None:
 
     assert res.status_code == 400
     assert secret not in res.text
+
+
+# --- 같은 요청의 재시도(멱등 키) ---
+
+
+def _add_turn() -> list:
+    return [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")]
+
+
+def test_같은_키와_본문으로_다시_보내면_LLM을_부르지_않고_처음_응답을_돌려준다(
+    monkeypatch, idempotency_rows
+) -> None:
+    model, _fake_be = _wire(
+        monkeypatch, _add_turn()
+    )  # 한 턴어치 답만 있다. 또 부르면 실패한다
+    body = _request(message="1번 담아줘", idempotency_key="idem_retry")
+
+    first = client.post(URL, json=body)
+    llm_calls = len(model.calls)
+    second = client.post(URL, json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert first.json()["data"]["reply"] == "1번 책을 장바구니에 담았어요."
+    assert len(model.calls) == llm_calls  # 다시 처리하지 않았다
+
+
+def test_처음_응답은_사용자에게_간_응답_그대로_저장된다(
+    monkeypatch, idempotency_rows
+) -> None:
+    _wire(monkeypatch, _add_turn())
+    body = _request(idempotency_key="idem_stored")
+
+    res = client.post(URL, json=body)
+
+    (stored,) = idempotency_rows.values()
+    assert stored[1] == res.json()
+
+
+def test_같은_키에_다른_본문이면_409다(monkeypatch, idempotency_rows) -> None:
+    model, _fake_be = _wire(monkeypatch, _add_turn())
+    client.post(URL, json=_request(message="1번 담아줘", idempotency_key="idem_x"))
+    llm_calls = len(model.calls)
+
+    res = client.post(
+        URL, json=_request(message="2번 담아줘", idempotency_key="idem_x")
+    )
+
+    assert res.status_code == 409
+    assert res.json() == {"message": "idempotency_conflict", "data": None}
+    assert len(model.calls) == llm_calls  # 충돌이면 처리하지 않는다
+
+
+def test_키가_다르면_각각_처리한다(monkeypatch, idempotency_rows) -> None:
+    _model, fake = _wire(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+            ai_text("담았어요."),
+            ai_calls((ToolName.CART_ADD, {"book": card(2)})),
+            ai_text("담았어요."),
+        ],
+    )
+
+    first = client.post(URL, json=_request(message="1번 담아줘", idempotency_key="k1"))
+    second = client.post(URL, json=_request(message="2번 담아줘", idempotency_key="k2"))
+
+    assert first.status_code == second.status_code == 200
+    assert len(idempotency_rows) == 2
+    assert fake.cart_state(UID) == {A: 1, B: 1}
+
+
+def test_읽기만_한_턴은_저장하지_않고_같은_키로_다시_처리한다(
+    monkeypatch, idempotency_rows
+) -> None:
+    model, _fake_be = _wire(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_text("비어 있어요."),
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_text("비어 있어요."),
+        ],
+    )
+    body = _request(message="장바구니 보여줘", idempotency_key="idem_read")
+
+    client.post(URL, json=body)
+    assert idempotency_rows == {}
+    res = client.post(URL, json=body)
+
+    assert res.status_code == 200
+    assert len(model.calls) == 4  # 두 번 다 처리했다
+
+
+def test_쓰기가_거절된_턴은_저장하지_않는다(monkeypatch, idempotency_rows) -> None:
+    _wire(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1), "quantity": 9999})),
+            ai_text("재고가 부족해요."),
+        ],
+    )
+
+    res = client.post(URL, json=_request(idempotency_key="idem_rejected"))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["tool_calls"][0]["result"]["ok"] is False
+    assert idempotency_rows == {}
+
+
+def test_오류_응답은_저장하지_않는다(monkeypatch, idempotency_rows) -> None:
+    _wire(monkeypatch, [ai_text("담았어요.")])  # 도구 없이 담았다고 해서 422 다
+
+    res = client.post(URL, json=_request(idempotency_key="idem_422"))
+
+    assert res.status_code == 422
+    assert idempotency_rows == {}
+
+
+def test_기록소가_고장_나도_200으로_답한다(monkeypatch) -> None:
+    # idempotency_rows 를 쓰지 않는다: 테스트 환경에는 DB 풀이 없어 조회도 저장도 실패한다
+    _wire(monkeypatch, _add_turn())
+
+    res = client.post(URL, json=_request(idempotency_key="idem_down"))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["reply"] == "1번 책을 장바구니에 담았어요."
+
+
+def _lose_the_race(monkeypatch, idempotency_rows, earlier_digest: str, body: dict):
+    """조회할 때는 없었는데 저장할 때 보니 같은 키가 먼저 저장된 상황."""
+    key = agent.replay.key_of(body["idempotency_key"])
+    earlier = {"message": "agent_success", "data": {"reply": "먼저 끝난 응답"}}
+    idempotency_rows[key] = (earlier_digest, earlier)
+
+    async def not_found(key, digest):
+        return None
+
+    monkeypatch.setattr(agent.replay, "find", not_found)
+    return earlier
+
+
+def test_같은_요청이_동시에_처리되면_먼저_끝난_쪽의_응답이_나간다(
+    monkeypatch, idempotency_rows
+) -> None:
+    _wire(monkeypatch, _add_turn())
+    body = _request(idempotency_key="idem_race")
+    earlier = _lose_the_race(
+        monkeypatch, idempotency_rows, agent.idempotency.body_hash(body), body
+    )
+
+    res = client.post(URL, json=body)
+
+    assert res.status_code == 200
+    assert res.json() == earlier
+
+
+def test_동시에_처리됐는데_본문이_다르면_409다(monkeypatch, idempotency_rows) -> None:
+    _wire(monkeypatch, _add_turn())
+    body = _request(idempotency_key="idem_race2")
+    _lose_the_race(monkeypatch, idempotency_rows, "다른_본문의_해시", body)
+
+    res = client.post(URL, json=body)
+
+    assert res.status_code == 409
+    assert res.json() == {"message": "idempotency_conflict", "data": None}
+
+
+def test_멱등_로그에_대화_원문이_남지_않는다(
+    monkeypatch, idempotency_rows, caplog
+) -> None:
+    _wire(monkeypatch, _add_turn())
+    secret = "비밀스러운_사용자_발화"
+    body = _request(message=secret, idempotency_key="idem_log")
+
+    with caplog.at_level(logging.DEBUG):
+        client.post(URL, json=body)
+        client.post(URL, json=body)  # 재생 경로도
+
+    assert secret not in caplog.text
+
+
+# --- 턴 전체 시간 제한 ---
+
+
+def test_턴이_시간_제한을_넘으면_504다(monkeypatch, idempotency_rows) -> None:
+    monkeypatch.setenv("AGENT_TURN_TIMEOUT_SECONDS", "0.05")
+    _wire(monkeypatch, [])
+
+    async def too_slow(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(agent, "run_agent", too_slow)
+
+    res = client.post(URL, json=_request(idempotency_key="idem_slow"))
+
+    assert res.status_code == 504
+    assert res.json() == {"message": "generation_timeout", "data": None}
+    assert idempotency_rows == {}  # 오류 응답은 저장하지 않는다
+
+
+def test_시간_제한_안에_끝나면_영향이_없다(monkeypatch, idempotency_rows) -> None:
+    monkeypatch.setenv("AGENT_TURN_TIMEOUT_SECONDS", "5")
+    _wire(monkeypatch, _add_turn())
+
+    res = client.post(URL, json=_request(idempotency_key="idem_fast"))
+
+    assert res.status_code == 200
+
+
+def test_시간_제한의_기본값은_명세의_30초다() -> None:
+    assert get_settings().agent_turn_timeout_seconds == 30

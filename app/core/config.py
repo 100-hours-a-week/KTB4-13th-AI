@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # ⑦ 쇼핑 에이전트가 쓸 진짜 BE 장바구니가 아직 없다(11단계). false(기본)면 /agent/act 는 503 으로
     # 답하고, true 면 메모리 가짜 장바구니로 동작한다. 배포 환경에서 가짜로 답하는 일이 없게 기본은 꺼 둔다.
     commerce_mock: bool = False
+    # ⑦ 한 턴(LLM 호출 최대 4번과 도구 실행)의 시간 제한. 명세 ⑦ 의 504 "생성 30초 초과". llm_timeout_seconds 는
+    # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
+    agent_turn_timeout_seconds: float = 30
 
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
