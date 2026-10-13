@@ -47,7 +47,14 @@ def _isbn(book_id: int) -> str:
     return str(9780000000000 + book_id)
 
 
-def _fetch(params, user_id: int = _USER, page=None, without_product=(), full=False):
+def _fetch(
+    params,
+    user_id: int = _USER,
+    page=None,
+    without_product=(),
+    full=False,
+    excluded=None,
+):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         tx = conn.transaction()
@@ -100,7 +107,7 @@ def _fetch(params, user_id: int = _USER, page=None, without_product=(), full=Fal
                 ]
             )
             items, has_more = await cold_start.fetch(
-                conn, req, page or Page(issued_at=_NOW)
+                conn, req, page or Page(issued_at=_NOW), excluded
             )
             if full:
                 return items, has_more
@@ -288,4 +295,67 @@ def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
 
     assert "Seq Scan on v_books" not in plan
     # 가격순은 상품 표를 가격 색인 순서로 읽는다(#207)
+    assert "Seq Scan on v_products" not in plan
+
+
+# ---------------------------------------------------------------------------
+# 뺄 책을 요청으로 받았을 때(#330)
+# ---------------------------------------------------------------------------
+
+_ALL = {book_id for book_id, _, _ in _BOOKS}
+
+
+@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
+def test_받은_책을_빼고_복제_표의_이력은_보지_않는다(sort: str) -> None:
+    # 복제 표에는 9100605(구매)·9100606(담기)·9100607(2.0점)이 있다. 요청은 9100601·9100602 를 가졌다고 한다.
+    ids, _ = _fetch(
+        [("sort", sort), ("size", "50")], excluded=exclusion.owned([9100601, 9100602])
+    )
+
+    assert set(ids) == _ALL - {9100601, 9100602}
+
+
+def test_가진_책이_없다고_받으면_아무것도_빼지_않는다() -> None:
+    ids, _ = _fetch([("size", "50")], excluded=exclusion.owned([]))
+
+    assert set(ids) == _ALL
+
+
+def test_받은_책으로_빼도_쪽을_이어_받으면_빠지거나_겹치지_않는다() -> None:
+    excluded = exclusion.owned([9100601])
+    first, has_more = _fetch([("size", "4")], excluded=excluded)
+    second, _ = _fetch(
+        [("size", "4")], page=Page(offset=4, issued_at=_NOW), excluded=excluded
+    )
+
+    assert has_more is True
+    assert len(first) == 4
+    assert set(first) | set(second) == _ALL - {9100601}
+    assert not set(first) & set(second)
+
+
+@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
+def test_받은_책으로_뺄_때도_책_표를_통째로_훑지_않는다(sort: str) -> None:
+    async def _go():
+        conn = await asyncpg.connect(_DB_URL)
+        try:
+            excluded = exclusion.owned(list(range(9200001, 9200201)))
+            if sort == "match":
+                sql = cold_start.popular_first_sql(
+                    "", excluded.sql(1), limit="$2::int + $3::int"
+                )
+            else:
+                sql = cold_start.ORDERED_SQL[sort].format(
+                    where="", excluded=excluded.sql(1)
+                )
+            rows = await cold_start.run_ordered(
+                conn, "EXPLAIN " + sql + "LIMIT $2 OFFSET $3", *excluded.params, 16, 0
+            )
+            return "\n".join(r[0] for r in rows)
+        finally:
+            await conn.close()
+
+    plan = asyncio.run(_go())
+
+    assert "Seq Scan on v_books" not in plan
     assert "Seq Scan on v_products" not in plan

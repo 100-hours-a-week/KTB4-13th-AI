@@ -47,3 +47,16 @@ def replicated(user_id: int, issued_at: datetime | None) -> Exclusion:
     카드를 보고 돌아와 산 책이 다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
     """
     return Exclusion(_REPLICATED, (user_id, history.DISLIKED_MAX_RATING, issued_at))
+
+
+def owned(book_ids: list[int]) -> Exclusion:
+    """요청에 실려 온 가진 책(산 책·나의 도서관 책)으로 뺀다(#330). 복제 표는 읽지 않는다.
+
+    별점이 낮은 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어서 산 책에 들어 있다.
+    요청에는 이력마다의 시각이 없어서, 스크롤 중에 산 책은 다음 페이지에서 바로 빠진다.
+    복제 표로 뺄 때처럼 커서를 받은 시각으로 가를 수 없다.
+    """
+    if not book_ids:
+        # 가진 책이 없는 사용자가 대부분이다. 조건을 아예 붙이지 않는다.
+        return Exclusion("true", ())
+    return Exclusion("b.book_id <> ALL({0}::int[])", (sorted(set(book_ids)),))
