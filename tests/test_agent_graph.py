@@ -165,6 +165,46 @@ def test_그래프_상태는_조회한_장바구니를_남긴다() -> None:
     assert [line.isbn for line in run.ctx.cart_snapshot] == [A]
 
 
+def test_장바구니를_못_본_LLM이_조회와_번호_빼기를_같이_부르면_빼지_않는다() -> None:
+    # 같은 묶음의 조회 결과는 LLM 이 아직 받지 못했다. 그 목록의 2번째를 빼면 LLM 이 보지 않은 책이 빠진다
+    run, _model, fake = _run(
+        [
+            ai_calls(
+                (ToolName.CART_VIEW, {}),
+                (ToolName.CART_REMOVE, {"book": cart(2)}),
+            ),
+            ai_text("확인해 볼게요."),
+        ],
+        fake=_fake(seed=[(A, 1), (B, 1), (C, 1)]),
+    )
+
+    assert fake.cart_state(UID) == {A: 1, B: 1, C: 1}
+    assert run.tool_calls[1].result == {"ok": False, "error": "CART_NOT_LOADED"}
+    # 묶음이 끝난 뒤에는 LLM 이 그 목록을 받았으니 다음 묶음부터 번호의 기준이 된다
+    assert [line.isbn for line in run.ctx.cart_snapshot] == [C, B, A]
+
+
+def test_같은_묶음에서_담고_다시_조회해도_번호는_LLM이_앞서_본_목록으로_푼다() -> None:
+    # 앞 묶음에서 LLM 이 본 목록은 [A]. 이번 묶음의 조회는 [B, A]를 돌려주지만 "1번째"는 LLM 이 본 A 다
+    run, _model, fake = _run(
+        [
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_calls(
+                (ToolName.CART_ADD, {"book": card(2)}),
+                (ToolName.CART_VIEW, {}),
+                (ToolName.CART_REMOVE, {"book": cart(1)}),
+            ),
+            ai_text("바꿔 드렸어요."),
+        ],
+        fake=_fake(seed=[(A, 1)]),
+    )
+
+    assert fake.cart_state(UID) == {B: 1}
+    assert run.tool_calls[-1].arguments == {"isbn": A}  # 방금 담은 B 가 아니다
+    # 기준이 되는 것은 LLM 이 받은 조회 결과다. 조회한 뒤에 뺀 A 는 이 목록에 남아 있다(다시 조회해야 안다)
+    assert [line.isbn for line in run.ctx.cart_snapshot] == [B, A]
+
+
 # --- LLM 이 받는 것 ---
 
 
