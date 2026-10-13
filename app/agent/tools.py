@@ -30,22 +30,26 @@ class ViewArgs(_Args):
 
 
 class AddArgs(_Args):
-    book: BookRef
+    book: BookRef = Field(description="담을 책")
     # 범위(1~500)와 재고는 여기서 막지 않는다. BE 가 판단하고, 거절하면 그 이유를 결과에 적는다.
-    quantity: int = 1
+    quantity: int = Field(default=1, description="담을 수량. 말하지 않았으면 1")
 
 
 class UpdateArgs(_Args):
-    book: BookRef
-    quantity: int
+    book: BookRef = Field(description="수량을 바꿀 책(이미 담긴 책)")
+    quantity: int = Field(description="바꿀 수량. 0은 안 된다")
 
 
 class RemoveArgs(_Args):
-    book: BookRef
+    book: BookRef = Field(description="장바구니에서 뺄 책")
 
 
 class OfferArgs(_Args):
-    books: list[BookRef] = Field(min_length=1, max_length=MAX_CONTEXT_CARDS)
+    books: list[BookRef] = Field(
+        min_length=1,
+        max_length=MAX_CONTEXT_CARDS,
+        description="가격과 재고를 조회할 책들(1~10개)",
+    )
 
 
 # LLM 용 도구 설명(스키마)을 만드는 6단계가 이 인자 모델에서 만든다
@@ -84,12 +88,24 @@ async def _write(arguments: dict[str, Any], call: Awaitable[None]) -> _Done:
     return arguments, {"ok": True}
 
 
+def _total(lines: list[CartLine]) -> int:
+    """구매할 수 있는 책의 합계. 판매 중지(가격 없음)나 재고가 모자란 책은 뺀다.
+
+    LLM 이 더하면 틀리고, 틀린 숫자는 답변의 숫자 검사로도 못 걸러서 코드가 계산해 결과에 싣는다.
+    """
+    return sum(
+        line.price * line.quantity
+        for line in lines
+        if line.available and line.price is not None
+    )
+
+
 async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _Done:
     lines = await gateway.get_cart(ctx.user_id)
     # 번호를 푸는 목록(cart_snapshot)은 여기서 바꾸지 않는다. 같은 묶음의 "장바구니 n번째"는 LLM 이 이 결과를
     # 받기 전에 본 목록으로 풀어야 한다. 묶음이 끝나면 부르는 쪽이 ctx.commit_cart_view() 로 올린다.
     ctx.pending_cart = lines
-    return {}, {"items": [_line(line) for line in lines]}
+    return {}, {"items": [_line(line) for line in lines], "total": _total(lines)}
 
 
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:

@@ -16,6 +16,10 @@ class ToolErrorCode(StrEnum):
     )
     LOGIN_REQUIRED = "LOGIN_REQUIRED"  # 로그인하지 않았는데 쓰기 도구다
     INVALID_ARGUMENTS = "INVALID_ARGUMENTS"  # 모르는 칸, 자료형, 빈 목록
+    UNKNOWN_TOOL = "UNKNOWN_TOOL"  # LLM 이 없는 도구 이름을 불렀다(그래프가 막는다)
+    TOO_MANY_CALLS = (
+        "TOO_MANY_CALLS"  # 한 번에 부를 수 있는 도구 수를 넘었다(그래프가 막는다)
+    )
 
     # 책을 하나로 가리킬 수 없다 — 실행하지 않는다
     BOOK_NOT_IN_CARDS = "BOOK_NOT_IN_CARDS"
