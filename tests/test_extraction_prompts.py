@@ -151,9 +151,11 @@ def test_지시문이_보여_주는_답의_모양을_서버가_그대로_읽을_
     assert empty == {"extractions": []}
     assert set(filled) == {"extractions"}
     assert [set(item) for item in filled["extractions"]] == [
-        {"type", "value", "confidence"}
+        {"type", "value", "confidence", "evidence", "owner", "basis"}
     ]
-    assert len(screen(filled)) == 1
+    # 예시의 근거가 사용자의 말에서 옮긴 것이라면 서버가 버리지 않는다
+    said = [filled["extractions"][0]["evidence"]]
+    assert len(screen(filled, user_turns=said)) == 1
 
 
 def test_지시문의_예시_낱말은_평가_묶음에_없다() -> None:
