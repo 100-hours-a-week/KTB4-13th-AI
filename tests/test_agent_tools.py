@@ -1167,10 +1167,28 @@ def test_지금_보고_있는_책은_말에_근거가_없어도_된다() -> None
 
 
 def test_book_offer로_카드_제목을_알게_되면_제목으로_말한_요청이_통과한다() -> None:
-    spy, fake, ctx = _setup()
-    _words(ctx, "책2 담아줘")
+    # 제목에서 맞춘 낱말이 세 글자 이상이어야 근거다("책2" 같은 짧은 제목은 근거가 못 된다)
+    books = [
+        FakeBook(A, "파이썬 입문서", 10000, 100),
+        FakeBook(B, "자바 프로그래밍", 12000, 100),
+        FakeBook(C, "러스트 시스템", 14000, 100),
+    ]
+    fake = FakeCommerce(books, users=[UID])
+    spy = _Spy(fake)
+    ctx = TurnContext(
+        user_id=UID,
+        logged_in=True,
+        cards=[
+            ContextCard(isbn=A, rank=1, match_score=92),
+            ContextCard(isbn=B, rank=2, match_score=87),
+            ContextCard(isbn=C, rank=3, match_score=81),
+        ],
+        focused_isbn=None,
+        allow_tools=None,
+        message="프로그래밍 책 담아줘",
+    )
 
-    # 제목을 모르는 동안에는 카드 2번이 "책2"인지 말과 맞춰 볼 수 없다
+    # 제목을 모르는 동안에는 카드 2번이 "프로그래밍 책"인지 말과 맞춰 볼 수 없다
     blocked = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
     assert blocked.result["error"] == "REFERENCE_NOT_STATED"
 
