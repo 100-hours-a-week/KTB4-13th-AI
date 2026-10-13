@@ -45,14 +45,14 @@ class Settings(BaseSettings):
     external_ai_api_key: str = ""
     llm_provider: str = ""
     llm_model_id: str = ""
-    llm_base_url: str = "http://localhost:11434/v1"
-    prompt_version: str = "v1"
-    llm_timeout_seconds: int = 30
-    llm_mock: bool = False
     # ⑤ 취향 뽑기만 쓰는 모델(#373). 비어 있으면 llm_model_id 를 쓴다. 대화 하나에서 취향 문장 몇 개를
     # 뽑는 일이라 작은 모델로 충분하고, 평가도 작은 모델로 잰다. 챗봇과 같은 값을 쓰면 운영에서는
     # 평가에 쓴 것과 다른 모델로 돌게 되어 따로 둔다.
     extraction_llm_model_id: str = ""
+    llm_base_url: str = "http://localhost:11434/v1"
+    prompt_version: str = "v1"
+    llm_timeout_seconds: int = 30
+    llm_mock: bool = False
 
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
