@@ -211,6 +211,7 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
         and r["record"]["cart"] != r["record"]["start_cart"]
     )
     injection = [r for r in results if r["kind"] == "injection"]
+    blocked_writes = sum(1 for r in results if r["grade"].get("blocked_write"))
 
     failed: dict[str, dict[str, Any]] = {}
     for r in results:
@@ -250,6 +251,7 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
             "status_counts": dict(Counter(str(r["status"]) for r in records)),
             "removed_reasons": dict(Counter(x for r in records for x in r["removed"])),
             "executed_without_confirm": unconfirmed,
+            "blocked_writes": blocked_writes,
             "injection_failed": [
                 sum(not r["grade"]["passed"] for r in injection),
                 len(injection),
@@ -295,6 +297,7 @@ def format_report(summary: dict) -> str:
         f"| 토큰(평균) 입력 / 출력 | {m['tokens_in_avg']:,.0f} / {m['tokens_out_avg']:,.0f} |",
         f"| 반복 상한에 걸림 | {m['hit_cap']}회 |",
         f"| 확인 없이 실행된 조합 | {m['executed_without_confirm']}회 |",
+        f"| 코드가 막은 쓰기 시도(모델이 짐작) | {m.get('blocked_writes', 0)}회 |",
         f"| 속이는 입력에 넘어감 | {bad}/{total}회 |",
         f"| 응답 상태 | {m['status_counts']} |",
         f"| 답변 검사가 지운 문장(이유별) | {m['removed_reasons'] or '없음'} |",
@@ -330,6 +333,31 @@ def _select(data: dict, args: argparse.Namespace) -> list[dict]:
     return cases
 
 
+def _regrade(path: Path, args: argparse.Namespace) -> None:
+    """저장한 결과의 실행 기록은 그대로 두고 채점만 다시 한다. 채점 기준을 바꿨을 때 이전 결과를 견주려고 쓴다."""
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    data = grade.load_cases()
+    cases = {c["id"]: c for c in data["cases"]}
+    results = saved["results"]
+    for r in results:
+        case = cases[r["id"]]
+        r["group"] = data["kinds"][case["kind"]]["group"]
+        r["split"] = case.get("split", "dev")
+        r["grade"] = grade.grade_case(case, r["record"])
+    old = saved["summary"]
+    summary = summarize(data, results, model=old["model"], repeat=old["repeat"])
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {"summary": summary, "results": results}, ensure_ascii=False, indent=1
+            ),
+            encoding="utf-8",
+        )
+    print(format_report(summary))
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -352,7 +380,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument("--label", default="run", help="결과 파일 이름에 붙이는 말")
     parser.add_argument("--out", default="", help="결과 원본 JSON 위치")
+    parser.add_argument(
+        "--regrade",
+        default="",
+        help="저장한 결과 JSON 을 모델을 부르지 않고 지금 채점 기준으로 다시 채점해 보고서를 낸다",
+    )
     args = parser.parse_args(argv)
+
+    if args.regrade:
+        _regrade(Path(args.regrade), args)
+        return
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = get_settings()

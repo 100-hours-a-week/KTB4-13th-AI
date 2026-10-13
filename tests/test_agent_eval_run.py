@@ -396,3 +396,36 @@ def test_LLM_MOCK이_켜져_있으면_실행을_거부한다(monkeypatch) -> Non
 
     with pytest.raises(SystemExit):
         run.main(["--ids", "add-01"])
+
+
+# --- 다시 채점 (#387) ---
+
+
+def test_저장한_결과를_모델_없이_지금_기준으로_다시_채점한다(tmp_path, capsys) -> None:
+    import json
+
+    results = _run_all(["ask-05"], [ai_text("어느 책인가요?")])
+    # 옛 기준이었다면 실패로 센 기록: 쓰기 시도가 코드에 막혔다
+    results[0]["record"]["data"]["tool_calls"] = [
+        {
+            "name": "cart.add",
+            "arguments": {"book": {"source": "card", "n": 1}},
+            "result": {"ok": False, "error": "REFERENCE_NOT_STATED"},
+            "grounded": True,
+        }
+    ]
+    results[0]["grade"] = {"passed": False, "failures": ["옛 기준"], "matched": None}
+    summary = run.summarize(DATA, results, model="m", repeat=1)
+    path = tmp_path / "saved.json"
+    path.write_text(
+        json.dumps({"summary": summary, "results": results}), encoding="utf-8"
+    )
+    out = tmp_path / "regraded.json"
+
+    run.main(["--regrade", str(path), "--out", str(out)])
+
+    redone = json.loads(out.read_text(encoding="utf-8"))
+    assert redone["results"][0]["grade"]["passed"] is True
+    assert redone["results"][0]["grade"]["blocked_write"] is True
+    assert redone["summary"]["metrics"]["blocked_writes"] == 1
+    assert "코드가 막은 쓰기 시도" in capsys.readouterr().out

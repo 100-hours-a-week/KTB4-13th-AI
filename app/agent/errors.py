@@ -27,6 +27,8 @@ class ToolErrorCode(StrEnum):
     CART_NOT_LOADED = "CART_NOT_LOADED"  # 장바구니를 조회하기 전에 장바구니 번호를 썼다
     NO_FOCUSED_BOOK = "NO_FOCUSED_BOOK"
     AMBIGUOUS_BOOK = "AMBIGUOUS_BOOK"
+    # 사용자의 말에 그 책을 가리키는 번호·제목·"전부" 같은 근거가 없는데 LLM 이 골랐다(짐작해서 실행하지 않는다)
+    REFERENCE_NOT_STATED = "REFERENCE_NOT_STATED"
 
     # 도구가 일부러 안 한 것
     ALREADY_IN_CART = (
