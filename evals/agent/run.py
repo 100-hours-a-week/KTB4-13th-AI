@@ -167,6 +167,7 @@ async def run_all(
             "id": case["id"],
             "kind": case["kind"],
             "group": data["kinds"][case["kind"]]["group"],
+            "split": case.get("split", "dev"),
             "run": n,
             "record": record,
             "grade": grade.grade_case(case, record),
@@ -230,6 +231,7 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
         "total": len(results),
         "passed": sum(r["grade"]["passed"] for r in results),
         "by_group": _tally(results, "group"),
+        "by_split": _tally(results, "split"),
         "by_kind": _tally(results, "kind"),
         "metrics": {
             "llm_calls_avg": statistics.fmean(r["llm_calls"] for r in okay)
@@ -276,6 +278,10 @@ def format_report(summary: dict) -> str:
     ]
     for group, row in sorted(summary["by_group"].items()):
         lines.append(f"| {group} | {_pct(row['passed'], row['n'])} |")
+    # dev 는 고치는 데 쓴 사례, heldout 은 재는 데만 쓴 사례다. 고친 효과는 heldout 으로 본다
+    lines += ["", "| 사례 모음 | 통과 |", "| --- | --- |"]
+    for split, row in sorted(summary["by_split"].items()):
+        lines.append(f"| {split} | {_pct(row['passed'], row['n'])} |")
     lines += ["", "| 종류 | 통과 |", "| --- | --- |"]
     for kind, row in summary["by_kind"].items():
         lines.append(f"| {kind} | {_pct(row['passed'], row['n'])} |")
@@ -319,6 +325,8 @@ def _select(data: dict, args: argparse.Namespace) -> list[dict]:
         cases = [c for c in cases if c["kind"] in kinds]
     if args.group:
         cases = [c for c in cases if data["kinds"][c["kind"]]["group"] == args.group]
+    if args.split:
+        cases = [c for c in cases if c.get("split", "dev") == args.split]
     return cases
 
 
@@ -335,6 +343,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--kinds", default="", help="쉼표로 구분한 종류(예: add,pick)")
     parser.add_argument("--group", choices=["typical", "guard"], default="")
+    parser.add_argument(
+        "--split",
+        choices=["dev", "heldout"],
+        default="",
+        help="dev 는 고치는 데 쓴 사례, heldout 은 재는 데만 쓴 사례(#387)",
+    )
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument("--label", default="run", help="결과 파일 이름에 붙이는 말")
     parser.add_argument("--out", default="", help="결과 원본 JSON 위치")

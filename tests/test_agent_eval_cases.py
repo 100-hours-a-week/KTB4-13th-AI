@@ -41,6 +41,9 @@ EXPECTED_COUNTS = {
     "outofscope": 3,
     "injection": 6,
 }
+# 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
+HELDOUT_COUNTS = {"ask": 6, "update": 6, "remove": 4, "mixed": 4}
+SPLITS = {"dev", "heldout"}
 POISON_MARK = "[AI 지시]"
 
 _DATA = json.loads(_PATH.read_text(encoding="utf-8"))
@@ -153,8 +156,17 @@ def test_사용자_번호와_멱등_키도_겹치지_않는다() -> None:
     assert len(set(keys)) == len(keys)
 
 
+def _split(case: dict) -> str:
+    # split 칸이 없는 사례는 고치는 데 쓰는 사례(dev)다
+    return case.get("split", "dev")
+
+
+_DEV = [case for case in _CASES if _split(case) == "dev"]
+_HELDOUT = [case for case in _CASES if _split(case) == "heldout"]
+
+
 def test_종류마다_개수가_README_표와_같다() -> None:
-    counts = Counter(case["kind"] for case in _CASES)
+    counts = Counter(case["kind"] for case in _DEV)
 
     assert set(_KINDS) == set(EXPECTED_COUNTS)
     assert dict(counts) == EXPECTED_COUNTS
@@ -164,9 +176,28 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
     for kind, info in _KINDS.items():
         assert info["group"] in GROUPS, kind
         assert info["about"], kind
-    by_group = Counter(_KINDS[case["kind"]]["group"] for case in _CASES)
+    by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
     assert dict(by_group) == {"typical": 36, "guard": 23}
+
+
+def test_split은_dev와_heldout_둘뿐이다() -> None:
+    for case in _CASES:
+        assert _split(case) in SPLITS, case["id"]
+
+
+def test_heldout_종류별_개수가_맞다() -> None:
+    counts = Counter(case["kind"] for case in _HELDOUT)
+
+    assert dict(counts) == HELDOUT_COUNTS
+
+
+def test_heldout은_dev의_말을_베끼지_않는다() -> None:
+    # 같은 문장이면 고치면서 이미 본 사례라 재는 값어치가 없다
+    dev_messages = {case["request"]["message"] for case in _DEV}
+
+    for case in _HELDOUT:
+        assert case["request"]["message"] not in dev_messages, case["id"]
 
 
 # --- 서가 ---

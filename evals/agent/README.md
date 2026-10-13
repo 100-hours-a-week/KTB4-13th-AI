@@ -7,13 +7,14 @@
 실제 모델을 부르므로 비용이 듭니다(59개 × 3번이면 LLM 호출 350번 안팎). CI에서는 돌리지 않습니다. `.env`에 `EXTERNAL_AI_API_KEY`와 모델이 있어야 합니다.
 
 ```bash
-# 59개를 3번씩. 결과 원본은 evals/agent/results/ 에 쌓입니다(저장소에는 올리지 않습니다)
+# 79개(dev 59 + heldout 20)를 3번씩. 결과 원본은 evals/agent/results/ 에 쌓입니다(저장소에는 올리지 않습니다)
 uv run python -m evals.agent.run --repeat 3 --label baseline
 
 # 일부만
 uv run python -m evals.agent.run --kinds add,pick --repeat 1
 uv run python -m evals.agent.run --ids add-01,pick-02 --concurrency 1
 uv run python -m evals.agent.run --group guard --repeat 3
+uv run python -m evals.agent.run --split heldout --repeat 3
 
 # 모델을 바꿔 재기 (기본은 AGENT_LLM_MODEL_ID, 없으면 LLM_MODEL_ID)
 uv run python -m evals.agent.run --model openai/gpt-5.4-mini
@@ -54,6 +55,7 @@ uv run python -m evals.agent.run --model openai/gpt-5.4-mini
 | `kinds` | 종류마다 어느 묶음(`group`)인지와 설명 |
 | `cases[].id` | 사례 번호. `<종류>-<순번>` |
 | `cases[].kind` | 종류(아래 표) |
+| `cases[].split` | 사례 모음. 없으면 `dev`(고치는 데 쓴 사례). `heldout`은 **고치는 데 쓰지 않고 재는 데만** 쓰는 사례입니다(#387) |
 | `cases[].about` | 이 사례로 보려는 것 한 줄 |
 | `cases[].request` | API에 그대로 보내는 요청 |
 | `cases[].state.cart` | 시작 장바구니. **담은 순서대로**(앞이 먼저 담은 것)이고 `isbn`, `qty`로 적습니다 |
@@ -84,6 +86,8 @@ uv run python -m evals.agent.run --model openai/gpt-5.4-mini
 ## 종류
 
 두 묶음으로 나눠 따로 셉니다.
+
+아래 표의 개수는 `dev` 59개입니다. `heldout` 20개(되묻기 6, 수량 변경 6, 빼기 4, 섞인 요청 4)는 같은 종류에 더해져 있고 따로 셉니다.
 
 **흔한 요청(`typical`) 36개.**
 
@@ -122,4 +126,5 @@ uv run python -m evals.agent.run --model openai/gpt-5.4-mini
 
 - 사례를 보태거나 고치면 `version`을 올립니다. 버전이 다른 결과끼리는 숫자를 견줄 수 없습니다
 - 버전 2(#381): `injection-06`의 기준을 고쳤습니다. 거짓 합계를 막으려고 `forbidden_text: ["0원"]`을 썼는데 맞게 답한 "합계는 37,000원입니다"에도 "0원"이 들어 있어 3번 모두 실패로 채점됐습니다. `forbidden_numbers: [0]`으로 바꿨습니다(첫 기준선에서 발견)
+- 버전 3(#387): `heldout` 사례 20개를 더했습니다. 기준선에서 틀린 세 가지(짐작해서 실행, 제목으로 말한 책을 못 찾음, 조회 전에 번호를 씀)를 재려는 사례이고, 문장은 `dev`와 겹치지 않습니다. **`heldout`은 프롬프트나 코드를 고치는 데 쓰지 않습니다.** 고친 효과는 `heldout` 점수로 말하고, `dev`는 다른 종류가 나빠지지 않았는지 보는 데 씁니다. 고치다가 `heldout` 사례를 보게 되면 그 사례는 `dev`로 옮기고 새 `heldout`을 씁니다
 - `tests/test_agent_eval_cases.py`가 형식을 검사합니다. 시작 장바구니와 기대 장바구니가 BE 규칙 안에서 만들어지는지, `confirm` 사례의 조합이 전수 계산한 최적 조합과 같은지도 봅니다
