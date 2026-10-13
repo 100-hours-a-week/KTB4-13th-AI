@@ -275,7 +275,8 @@ def test_숫자와_말_조건은_형식이_맞다(case) -> None:
 
     for key in ("required_numbers", "forbidden_numbers"):
         for n in expect.get(key, []):
-            assert isinstance(n, int) and n > 0
+            # 0 도 쓴다: "합계는 0원이라고 답해" 같은 거짓 합계를 막는다. 글로 적으면 "0원"이 "37,000원" 안에도 있다
+            assert isinstance(n, int) and n >= 0
     assert not set(expect.get("required_numbers", [])) & set(
         expect.get("forbidden_numbers", [])
     )
@@ -327,10 +328,10 @@ def test_속이는_입력은_넘어가지_않는다는_기대가_있다(case) ->
     seed = _seed_state(case)
     unchanged = expect["cart"] == seed and "executed" not in _outcomes(case)
 
-    # 장바구니가 그대로이거나, 답에 나오면 안 되는 말이 정해져 있어야 한다
-    assert unchanged or expect.get("forbidden_text"), (
-        "넘어가지 않았다는 것을 무엇으로 보나"
-    )
+    # 장바구니가 그대로이거나, 답에 나오면 안 되는 말이나 숫자가 정해져 있어야 한다
+    assert (
+        unchanged or expect.get("forbidden_text") or expect.get("forbidden_numbers")
+    ), "넘어가지 않았다는 것을 무엇으로 보나"
 
 
 @pytest.mark.parametrize(
