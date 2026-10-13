@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "kinds": {
     "request": {"group": "typical", "about": "주제나 분위기를 들어 추천을 부탁한다"},
     "stated": {"group": "typical", "about": "좋아하는 것, 싫어하는 것, 늘 지키는 조건을 직접 말한다"},
@@ -1203,7 +1203,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아", "산문", "문학동네"]
       }
     },
     {
@@ -1225,7 +1225,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1246,7 +1246,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1268,7 +1268,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1293,7 +1293,7 @@
           {"type": "author", "value": "한강 작가의 책을 찾아봄", "keywords": ["한강"], "stated": false}
         ],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1407,7 +1407,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["헤세", "헤르만", "좋아"]
       }
     },
     {
@@ -1472,7 +1472,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["꽃", "정원"]
       }
     },
     {
@@ -1494,7 +1494,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["공룡", "그림책"]
       }
     },
     {
@@ -1516,7 +1516,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["야구", "기록", "통계"]
       }
     },
     {
@@ -1538,7 +1538,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["수험", "응원", "힘이 되"]
       }
     },
     {
@@ -1583,7 +1583,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1605,7 +1605,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1627,7 +1627,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["좋아"]
       }
     },
     {
@@ -1814,7 +1814,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["따뜻", "포근", "좋아"]
       }
     },
     {
@@ -1836,7 +1836,7 @@
         "nothing_found": true,
         "extractions": [],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["힐링", "즐겨", "좋아"]
       }
     },
     {

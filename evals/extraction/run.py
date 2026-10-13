@@ -88,6 +88,11 @@ async def run(
     return scores
 
 
+def _failures(scores: Sequence[Score]) -> dict[str, int]:
+    """실패 이유별 횟수(호출 기준). 한 호출에 이유가 여럿이면 각각 센다."""
+    return dict(Counter(f for s in scores for f in s.failures))
+
+
 def _rate(scores: Sequence[Score]) -> dict[str, Any]:
     passed = sum(s.passed for s in scores)
     return {
@@ -119,11 +124,10 @@ def summarize(scores: Sequence[Score], runs: int) -> dict[str, Any]:
         "total": _rate(scores),
         "by_group": {group: _rate(items) for group, items in by_group.items()},
         "by_kind": {
-            kind: {"group": groups[kind], **_rate(items)}
+            kind: {"group": groups[kind], **_rate(items), "failures": _failures(items)}
             for kind, items in by_kind.items()
         },
-        # 실패 이유별 횟수(호출 기준). 한 호출에 이유가 여럿이면 각각 센다
-        "failures": dict(Counter(f for s in scores for f in s.failures)),
+        "failures": _failures(scores),
         # 같은 대화인데 통과와 실패가 섞였거나, 뽑은 개수가 달랐던 대화
         "unstable": [
             case_id
@@ -145,14 +149,15 @@ def render(summary: dict[str, Any]) -> str:
     """사람이 읽는 결과 표. PR 본문에 그대로 붙일 수 있게 마크다운 표로 낸다."""
 
     def row(name: str, group: str, item: dict[str, Any]) -> str:
+        why = ", ".join(f"{k} {v}" for k, v in item.get("failures", {}).items())
         return (
             f"| {name} | {group} | {item['cases']} | {item['passed']}/{item['runs']} "
-            f"| {item['pass_rate']:.0%} |"
+            f"| {item['pass_rate']:.0%} | {why} |"
         )
 
     lines = [
-        "| 종류 | 묶음 | 대화 | 통과/호출 | 통과율 |",
-        "| --- | --- | --- | --- | --- |",
+        "| 종류 | 묶음 | 대화 | 통과/호출 | 통과율 | 실패 이유(호출 수) |",
+        "| --- | --- | --- | --- | --- | --- |",
         *(row(kind, item["group"], item) for kind, item in summary["by_kind"].items()),
         *(
             row(f"**{group} 합계**", group, item)

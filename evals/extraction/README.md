@@ -95,6 +95,11 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 
 핵심어와 금지어는 띄어쓰기와 대소문자를 보지 않고 견줍니다.
 
+뽑을 것이 없는 대화에도 `forbidden`을 적어 둔 곳이 있습니다. **사용자가 하지 않은 말**입니다. 챗봇이 한 말("힐링"), 남의 취향("야구"), 좋아한다고 하지 않았는데 붙인 "좋아"가 그렇습니다. 그런 대화에서 무엇인가 뽑았을 때 실패 이유로 둘을 가를 수 있습니다.
+
+- `extracted`만 나오면: 사용자가 한 말을 명세보다 더 뽑은 것입니다. 고칠지는 정하지 않았습니다([#377](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/377))
+- `forbidden`도 같이 나오면: 사용자가 하지 않은 말을 적은 것입니다. 틀린 것입니다([#378](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/378))
+
 **코드로 보지 않는 것**이 있습니다. 뜻을 봐야 해서 LLM 채점으로 미뤘습니다.
 
 - 종류(`type`)가 맞는지. 맞은 개수는 참고로 셉니다

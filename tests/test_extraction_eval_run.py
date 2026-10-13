@@ -128,6 +128,7 @@ def test_종류별과_묶음별로_통과율을_낸다() -> None:
         "runs": 12,
         "passed": 12,
         "pass_rate": 1.0,
+        "failures": {},
     }
     assert summary["by_group"]["guard"]["runs"] == 4
     assert summary["calls"] == 16
@@ -150,6 +151,31 @@ def test_돌릴_때마다_결과가_달라진_대화를_알려_준다() -> None:
     assert summary["unstable"] == ["request-01"]
     assert summary["by_kind"]["request"]["passed"] == 2
     assert summary["failures"] == {"missed": 2}
+
+
+def test_실패_이유를_종류별로도_센다() -> None:
+    # 뽑으면 안 되는 대화에서 뽑았을 때, 사용자가 한 말을 더 뽑은 것(extracted 만)과 하지 않은 말을
+    # 적은 것(forbidden 도 같이)을 종류별로 가를 수 있어야 한다(#377, #378)
+    def unsaid(request: dict) -> Outcome:
+        item = {
+            "type": "mood",
+            "value": "힐링 소설을 즐겨 읽음",
+            "confidence": 0.7,
+            "vector": [0.1],
+            "dim": 1,
+            "source_conversation_id": request["conversation_id"],
+        }
+        return Outcome(200, {"extractions": [item], "nothing_found": False}, 1.0)
+
+    cases = run.select(_CASES, ids=["assistant-02", "none-01"])
+
+    summary, _calls = _run(cases, unsaid)
+
+    assert summary["by_kind"]["assistant"]["failures"] == {
+        "extracted": 1,
+        "forbidden": 1,
+    }
+    assert summary["by_kind"]["none"]["failures"] == {"extracted": 1}
 
 
 def test_실패한_호출은_오류로_세고_나머지는_계속_돈다() -> None:
