@@ -38,7 +38,9 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> dict:
         return [[0.1, 0.2] for _ in texts], 2, "fake-model"
 
     monkeypatch.setattr(
-        extractions.service, "get_chat_model", lambda: RunnableLambda(_answer)
+        extractions.service,
+        "get_chat_model",
+        lambda **_kwargs: RunnableLambda(_answer),
     )
     monkeypatch.setattr(extractions.service.embedding, "embed", _embed)
     return state

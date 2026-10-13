@@ -8,6 +8,7 @@ AI 는 입력도 결과도 저장하지 않는다. 뽑은 취향은 BE 가 저�
 import logging
 from typing import Any
 
+from app.core.config import get_settings
 from app.extraction import prompts, rules
 from app.extraction.schemas import ExtractionRequest
 from app.gateway import embedding
@@ -41,7 +42,8 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     """
     chain = (
         prompts.EXTRACTION_PROMPT
-        | get_chat_model()
+        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다
+        | get_chat_model(model_id=get_settings().extraction_llm_model_id or None)
         | message_text
         | parse_json_response
     )
