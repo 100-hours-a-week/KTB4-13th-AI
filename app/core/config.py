@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     external_ai_api_key: str = ""
     llm_provider: str = ""
     llm_model_id: str = ""
+    # ⑤ 취향 뽑기만 쓰는 모델(#373). 비어 있으면 llm_model_id 를 쓴다. 대화 하나에서 취향 문장 몇 개를
+    # 뽑는 일이라 작은 모델로 충분하고, 평가도 작은 모델로 잰다. 챗봇과 같은 값을 쓰면 운영에서는
+    # 평가에 쓴 것과 다른 모델로 돌게 되어 따로 둔다.
+    extraction_llm_model_id: str = ""
     llm_base_url: str = "http://localhost:11434/v1"
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30

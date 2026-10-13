@@ -304,7 +304,7 @@ curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/agent/act \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"conversation_id":"cv_20260904_x1","message":"이거 장바구니에 담아줘","context_cards":[{"book_id":1088,"rank":1,"price":13500,"match_score":92,"in_stock":true},{"book_id":4021,"rank":2,"price":14000,"match_score":87,"in_stock":true}],"focused_book_id":1088,"user_context":{"logged_in":true,"has_default_address":true},"allow_tools":null,"idempotency_key":"idem_a1b2c3"}'
+  -d '{"user_id":123,"conversation_id":"cv_20260904_x1","message":"이거 장바구니에 담아줘","context_cards":[{"isbn":"9788900000011","rank":1,"match_score":92},{"isbn":"9788900000028","rank":2,"match_score":87}],"focused_isbn":"9788900000011","user_context":{"logged_in":true},"allow_tools":null,"idempotency_key":"idem_a1b2c3"}'
 ```
 
 ```json
@@ -312,18 +312,24 @@ curl -X POST https://ai.internal.bookjeok.com/agent/act \
   "message": "agent_success",
   "data": {
     "reply": "담았어요. 장바구니에서 확인해 보세요.",
+    "not_shopping": false,
     "tool_calls": [
       {
+        "name": "cart.view",
+        "arguments": {},
+        "result": { "items": [] },
+        "grounded": true
+      },
+      {
         "name": "cart.add",
-        "arguments": { "book_id": 1088, "qty": 1 },
-        "result": { "cart_count": 3 },
+        "arguments": { "isbn": "9788900000011", "quantity": 1 },
+        "result": { "ok": true },
         "grounded": true
       }
     ],
     "resolved_reference": {
       "ref": "이거",
-      "book_ids": [1088],
-      "confidence": 0.96
+      "isbns": ["9788900000011"]
     },
     "selection": null,
     "buttons": [
@@ -332,6 +338,8 @@ curl -X POST https://ai.internal.bookjeok.com/agent/act \
   }
 }
 ```
+
+담기 전에 장바구니를 조회해 이미 담긴 책인지 확인한다. 담기가 요청 수량으로 바꾸는 방식이라서, 이미 담긴 책을 담으면 수량이 줄 수 있기 때문이다.
 
 ### 예시 9: 서버 상태 점검 `GET /health`
 

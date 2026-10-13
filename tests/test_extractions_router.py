@@ -4,6 +4,8 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 
 from app.extraction.schemas import (
     MAX_CONVERSATION_TURNS,
@@ -17,6 +19,31 @@ from app.routers import extractions
 client = TestClient(app)
 
 URL = "/preferences/extractions"
+
+
+@pytest.fixture(autouse=True)
+def fake_llm(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """이 파일의 어떤 테스트도 진짜 LLM 과 임베딩 모델을 부르지 않게 한다.
+
+    로컬 `.env` 에 실제 키가 있으면, 가짜로 바꾸지 않은 테스트 하나가 돈이 드는 호출을 한다.
+    기본 답은 "뽑을 것 없음"이고, 테스트가 `fake_llm["reply"]` 를 바꿔 다른 답을 시킨다.
+    """
+    state = {"reply": '{"extractions": []}', "calls": 0}
+
+    def _answer(_prompt) -> AIMessage:
+        state["calls"] += 1
+        return AIMessage(content=state["reply"])
+
+    async def _embed(texts: list[str], purpose: str):
+        return [[0.1, 0.2] for _ in texts], 2, "fake-model"
+
+    monkeypatch.setattr(
+        extractions.service,
+        "get_chat_model",
+        lambda **_kwargs: RunnableLambda(_answer),
+    )
+    monkeypatch.setattr(extractions.service.embedding, "embed", _embed)
+    return state
 
 
 def _request(**overrides) -> dict:
@@ -286,3 +313,114 @@ def test_LLM_장애의_예외_메시지는_로그에_남기지_않는다(
 
     assert "비 오는 날" not in caplog.text
     assert exc_type.__name__ in caplog.text
+
+
+# --- 실제로 뽑기 (#373). LLM 과 임베딩은 위의 가짜다 ---
+
+
+def test_LLM이_뽑은_취향이_명세의_모양으로_나간다(fake_llm) -> None:
+    fake_llm["reply"] = json.dumps(
+        {
+            "extractions": [
+                {
+                    "type": "mood",
+                    "value": "이별 후 위로되는 소설을 찾음",
+                    "confidence": 0.7,
+                    "evidence": "이별 후에 위로가 될 만한 걸로",
+                    "owner": "user",
+                    "basis": "requested",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    res = client.post(URL, json=_request())
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "message": "extract_success",
+        "data": {
+            "extractions": [
+                {
+                    "type": "mood",
+                    "value": "이별 후 위로되는 소설을 찾음",
+                    "confidence": 0.7,
+                    "vector": [0.1, 0.2],
+                    "dim": 2,
+                    "source_conversation_id": "cv_20260903_a1",
+                }
+            ],
+            "nothing_found": False,
+        },
+    }
+
+
+def test_LLM이_뽑을_것이_없다고_하면_nothing_found다(fake_llm) -> None:
+    res = client.post(URL, json=_request())
+
+    assert res.json()["data"] == {"extractions": [], "nothing_found": True}
+    assert fake_llm["calls"] == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"consented": False}, id="동의하지_않음"),
+        pytest.param({"conversation": []}, id="빈_대화"),
+    ],
+)
+def test_뽑지_않는_요청은_LLM을_부르지_않는다(fake_llm, overrides) -> None:
+    # 동의하지 않은 사용자의 대화가 외부 LLM 으로 나가면 안 된다. 빈 대화에 돈을 쓸 이유도 없다
+    res = client.post(URL, json=_request(**overrides))
+
+    assert res.json()["data"] == {"extractions": [], "nothing_found": True}
+    assert fake_llm["calls"] == 0
+
+
+def test_형식이_틀린_요청은_LLM을_부르지_않는다(fake_llm) -> None:
+    res = client.post(URL, json=_request(user_id="123"))
+
+    assert res.status_code == 400
+    assert fake_llm["calls"] == 0
+
+
+def test_LLM의_답이_약속한_모양이_아니면_503이다(fake_llm) -> None:
+    fake_llm["reply"] = '{"mock": true}'
+
+    res = client.post(URL, json=_request())
+
+    assert res.status_code == 503
+    assert res.json() == {"message": "upstream_unavailable", "data": None}
+
+
+def test_임베딩이_실패하면_503이다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, fake_llm
+) -> None:
+    fake_llm["reply"] = json.dumps(
+        {
+            "extractions": [
+                {
+                    "type": "mood",
+                    "value": "위로되는 소설을 찾음",
+                    "confidence": 0.7,
+                    "evidence": "이별 후에 위로가 될 만한 걸로",
+                    "owner": "user",
+                    "basis": "requested",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    async def _fail(texts, purpose):
+        raise RuntimeError("위로되는 소설을 찾음 을 벡터로 못 바꿈")
+
+    monkeypatch.setattr(extractions.service.embedding, "embed", _fail)
+
+    with caplog.at_level("DEBUG"):
+        res = client.post(URL, json=_request())
+
+    assert res.status_code == 503
+    assert res.json() == {"message": "upstream_unavailable", "data": None}
+    assert "위로되는 소설" not in caplog.text
