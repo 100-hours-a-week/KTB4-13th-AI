@@ -137,7 +137,7 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed
 | `expect.toward` | 결과가 그쪽으로 기울어야 하는 것(분위기, 조건). 많을수록 좋다 |
 | `expect.compare_to` | 견줄 짝. 마지막 취향 기억 하나만 뺀 같은 사용자다 |
 | `expect.never_owned` | 가진 책이 나오면 안 된다 |
-| `expect.editions` | 가진 책과 제목·저자가 같은 다른 판본이 몇 권 나오는지도 센다 |
+| `expect.editions` | 가진 책과 제목이 같은 다른 판본이 몇 권 나오는지도 센다. 저자는 보지 않는다(저자 칸에 옮긴이가 같이 적혀 있어 판본마다 글자가 다르다) |
 | `expect.cold_start` | 개인화하지 않은 목록이 나와야 한다 |
 | `expect.pile` | 좋아한 책의 권수. 권수가 같은 사용자끼리 위 20권이 겹치는 정도를 본다 |
 
@@ -172,6 +172,8 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed
 | `low-rating` | 산 책 세 권에 1점을 줌 | 그 관심사가 안 나오고 고른 분야는 나오나 | 3 |
 | `owned` | 고전 한 권의 판본 셋을 가짐 | 가진 책이 안 나오나, 다른 판본은 몇 권 나오나 | 6 |
 | `pile` | 서로 다른 관심사의 책을 5, 10, 20, 40권 좋아함 | 사용자마다 다른 책이 나오나 | 16 |
+
+`condition` 가운데 "번역서는 읽지 않음"과 "오디오북으로만 들음"에는 기울어야 하는 쪽(`toward`)이 없습니다. 책 표로 가를 수 없는 조건이라 주제가 남아 있는지만 봅니다.
 
 `dislike`, `condition`, `topic-mood`는 짝(`compare_to`)이 있습니다. 짝은 마지막 취향 기억 하나만 뺀 사용자라서, 두 결과의 차이가 그 기억 하나 때문에 생긴 것입니다.
 
