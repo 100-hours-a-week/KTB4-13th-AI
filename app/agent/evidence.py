@@ -155,6 +155,28 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     )
 
 
+def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
+    """이 책을 LLM 이 가리킬 때 쓸 수 있는 말들(카드 번호, 장바구니 번호, 지금 보는 책)."""
+    refs = [BookRef(source="card", n=card.rank) for card in ctx.cards if card.isbn == isbn]
+    refs += [
+        BookRef(source="cart", n=position)
+        for position, line in enumerate(ctx.cart_snapshot or [], start=1)
+        if line.isbn == isbn
+    ]
+    if ctx.focused_isbn == isbn:
+        refs.append(BookRef(source="focused"))
+    return refs
+
+
+def stated(ctx: TurnContext, isbn: str) -> bool:
+    """사용자가 이 책을 가리켰는가. 책을 조회했다고 사용자가 그 책을 가리킨 것은 아니다.
+
+    "그거 담아줘"를 되묻으려고 카드 세 장의 제목을 조회해도 세 권이 "정해진 책"은 아니다
+    (ResolvedReference: 하나로 정해지지 않으면 isbns 는 빈 목록).
+    """
+    return any(has_evidence(ctx, ref, isbn) for ref in natural_refs(ctx, isbn))
+
+
 def require(ctx: TurnContext, ref: BookRef, isbn: str) -> None:
     """근거가 없으면 RefError. 쓰기 도구가 BE 를 부르기 전에 쓴다."""
     if not has_evidence(ctx, ref, isbn):

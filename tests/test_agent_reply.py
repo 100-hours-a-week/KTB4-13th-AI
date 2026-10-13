@@ -954,3 +954,58 @@ def test_담기가_막힌_기록도_고른_책으로_풀린_ISBN은_믿는다() 
     assert [b.action for b in data.buttons] == [
         "confirm_selection"
     ]  # 장바구니 보기는 없다
+
+
+# --- resolved_reference: 사용자가 가리킨 책만 정해진 책이다 (#387) ---
+
+
+def _lookup(*isbns: str) -> ToolCall:
+    return _call(
+        ToolName.BOOK_OFFER,
+        {
+            "offers": [
+                {"isbn": i, "title": f"책{i[-1]}", "price": 1000, "in_stock": True}
+                for i in isbns
+            ]
+        },
+        {"isbns": list(isbns)},
+    )
+
+
+def _run_saying(message: str, text: str, calls: list[ToolCall]) -> AgentRun:
+    run = _run(text, calls)
+    run.ctx.message = message
+    return run
+
+
+def test_되묻느라_선택지를_조회했다고_그_책들이_정해진_책은_아니다() -> None:
+    # "그거 담아줘": 카드 두 장의 제목을 조회해 선택지로 보여 준다. 어느 책인지는 정해지지 않았다
+    run = _run_saying(
+        "그거 담아줘", "1번 책1, 2번 책2 중 어느 책인가요?", [_lookup(A, B)]
+    )
+
+    assert finish(run).data.resolved_reference is None
+
+
+def test_사용자가_번호로_말한_책을_조회하면_정해진_책이다() -> None:
+    run = _run_saying("1번 재고 있어?", "재고가 있어요.", [_lookup(A)])
+
+    reference = finish(run).data.resolved_reference
+    assert reference is not None
+    assert reference.isbns == [A]
+    assert reference.ref == "카드 1번"
+
+
+def test_번호를_둘_말하면_둘이_정해진_책이다() -> None:
+    run = _run_saying(
+        "1번이랑 2번 가격 알려줘", "둘 다 1,000원이에요.", [_lookup(A, B)]
+    )
+
+    assert finish(run).data.resolved_reference.isbns == [A, B]
+
+
+def test_말하지_않은_번호의_책은_빠진다() -> None:
+    # 1번만 물었는데 2번까지 조회했다
+    run = _run_saying("1번 재고 있어?", "1번 재고가 있어요.", [_lookup(A, B)])
+
+    assert finish(run).data.resolved_reference.isbns == [A]
