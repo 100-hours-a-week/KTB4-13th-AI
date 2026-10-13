@@ -7,7 +7,7 @@
 #
 # 서버에서는 쓰지 않는다. 운영과 개발 서버는 벡터 채우기 작업으로 벡터를 만든다.
 #
-# 사용법: scripts/load_book_vectors.sh <벡터 파일> [DB이름]
+# 사용법: scripts/load_book_vectors.sh <벡터 파일> [DB이름] [--any-db]
 #   먼저 scripts/ingest_catalog.sh 로 책을 넣어 둔다. 책을 ISBN 으로 잇기 때문이다.
 #
 # 벡터 파일: 한 줄에 책 하나, 탭으로 나눈 두 칸.
@@ -22,6 +22,10 @@
 #
 # 주의: book_embeddings 를 비우고 다시 채운다. 벡터 색인도 지웠다가 다시 만든다. 한 건씩 색인에 끼워
 # 넣으면 수십만 건에서 훨씬 느리다.
+#   - 그래서 이름이 _eval 로 끝나는 DB 만 받는다. 개발 DB 이름을 잘못 주면 그 DB 의 벡터가 지워지고,
+#     다시 만드는 데 CPU 로 두 시간이 걸린다. 다른 DB 에 넣으려면 세 번째 인자로 --any-db 를 준다
+#     (평가 실행기 evals/feed/run.py 와 같은 규칙).
+#   - 전체가 한 트랜잭션이다. 중간에 실패하면 벡터와 색인이 넣기 전 그대로 남는다.
 
 set -euo pipefail
 
@@ -33,7 +37,13 @@ if [ ! -f "$VECTORS_PATH" ]; then
     exit 1
 fi
 
-psql -v ON_ERROR_STOP=1 -d "$DB_NAME" <<SQL
+if [[ "$DB_NAME" != *_eval && "${3:-}" != "--any-db" ]]; then
+    echo "평가용 DB(이름이 _eval 로 끝남)가 아닙니다: $DB_NAME" >&2
+    echo "이 스크립트는 그 DB 의 책 벡터를 모두 지우고 다시 넣습니다. 그래도 넣으려면 --any-db 를 붙이세요." >&2
+    exit 1
+fi
+
+psql -v ON_ERROR_STOP=1 --single-transaction -d "$DB_NAME" <<SQL
 DROP TABLE IF EXISTS stg_book_vectors;
 CREATE UNLOGGED TABLE stg_book_vectors (isbn13 text PRIMARY KEY, embedding vector(384) NOT NULL);
 \copy stg_book_vectors FROM '$VECTORS_PATH'
