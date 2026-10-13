@@ -13,8 +13,11 @@ from app.extraction.rules import (
     MAX_VALUE_CHARS,
     MIN_CONFIDENCE,
     Candidate,
+    same_as_existing,
     screen,
+    text_key,
 )
+from app.extraction.schemas import ExistingPreference
 
 
 def _item(type_="mood", value="잔잔한 소설을 찾음", confidence=0.8, **extra) -> dict:
@@ -244,3 +247,105 @@ def test_중복은_합친_뒤에_상한을_센다() -> None:
     kept = screen(_out(*same, other))
 
     assert [c.type for c in kept] == ["mood", "topic"]
+
+
+# --- 글자가 사실상 같은 문장 (#369) ---
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        pytest.param("SF 소설을 좋아함", "sf 소설을 좋아함", id="대소문자"),
+        pytest.param("SF 소설을 좋아함", "SF소설을  좋아함", id="띄어쓰기"),
+        pytest.param("잔잔한 소설을 찾음", "잔잔한 소설을 찾음.", id="끝의_마침표"),
+        pytest.param("잔잔한 소설을 찾음!", "잔잔한 소설을 찾음…", id="끝의_문장부호"),
+    ],
+)
+def test_대소문자_띄어쓰기_끝의_문장부호만_다르면_같은_글자다(a, b) -> None:
+    assert text_key(a) == text_key(b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        pytest.param("추리 소설을 좋아함", "추리 소설은 읽지 않음", id="뜻이_반대"),
+        pytest.param("조용한 산문을 좋아함", "차분한 산문을 좋아함", id="뜻만_같음"),
+        pytest.param("C# 입문서를 찾음", "C 입문서를 찾음", id="글자_속_기호"),
+        pytest.param("배우고 싶은 언어는 C#", "배우고 싶은 언어는 C", id="끝의_기호"),
+        pytest.param("평점 3.5 이상만 읽음", "평점 35 이상만 읽음", id="숫자_속_점"),
+    ],
+)
+def test_글자가_다르면_뜻이_가까워도_다른_글자다(a, b) -> None:
+    # 뜻이 같은지는 여기서 보지 않는다. 문장 벡터로도 가를 수 없어 LLM 에게 맡긴다(#369)
+    assert text_key(a) != text_key(b)
+
+
+def _existing(*pairs) -> list[ExistingPreference]:
+    return [ExistingPreference(type=type_, value=value) for type_, value in pairs]
+
+
+def test_종류와_글자가_같은_기존_취향의_위치를_돌려준다() -> None:
+    existing = _existing(
+        ("topic", "기후 위기를 다룬 책을 찾음"), ("mood", "잔잔한 소설을 찾음.")
+    )
+
+    assert same_as_existing(Candidate("mood", "잔잔한 소설을 찾음", 0.8), existing) == 1
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        pytest.param([], id="기존_취향_없음"),
+        pytest.param([("topic", "잔잔한 소설을 찾음")], id="종류가_다름"),
+        pytest.param([("mood", "조용한 소설을 찾음")], id="글자가_다름"),
+    ],
+)
+def test_같은_기존_취향이_없으면_None이다(existing) -> None:
+    candidate = Candidate("mood", "잔잔한 소설을 찾음", 0.8)
+
+    assert same_as_existing(candidate, _existing(*existing)) is None
+
+
+def test_이미_저장된_취향과_글자가_같은_후보는_빠진다() -> None:
+    kept = screen(
+        _out(
+            _item(value="잔잔한 소설을 찾음", confidence=0.9),
+            _item(type_="topic", value="기후 위기를 다룬 책을 찾음", confidence=0.7),
+        ),
+        _existing(("mood", "잔잔한  소설을 찾음.")),
+    )
+
+    assert kept == [Candidate("topic", "기후 위기를 다룬 책을 찾음", 0.7)]
+
+
+def test_기존_취향과_글자가_같아도_종류가_다르면_남는다() -> None:
+    kept = screen(
+        _out(_item(type_="author", value="김초엽")), _existing(("topic", "김초엽"))
+    )
+
+    assert kept == [Candidate("author", "김초엽", 0.8)]
+
+
+def test_기존_취향과_같아_빠진_후보는_상한_자리를_차지하지_않는다() -> None:
+    old = [
+        _item(value=f"이미 있음 {n}", confidence=0.9) for n in range(MAX_EXTRACTIONS)
+    ]
+    new = [_item(value=f"새 취향 {n}", confidence=0.6) for n in range(MAX_EXTRACTIONS)]
+
+    kept = screen(
+        _out(*old, *new),
+        _existing(*[("mood", f"이미 있음 {n}") for n in range(MAX_EXTRACTIONS)]),
+    )
+
+    assert [c.value for c in kept] == [f"새 취향 {n}" for n in range(MAX_EXTRACTIONS)]
+
+
+def test_한_대화_안의_중복도_띄어쓰기와_끝의_문장부호를_무시하고_합친다() -> None:
+    kept = screen(
+        _out(
+            _item(value="잔잔한 소설을 찾음", confidence=0.6),
+            _item(value="잔잔한소설을 찾음.", confidence=0.9),
+        )
+    )
+
+    assert kept == [Candidate("mood", "잔잔한 소설을 찾음", 0.9)]
