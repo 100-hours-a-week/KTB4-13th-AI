@@ -23,6 +23,10 @@ _DESCRIPTIONS: dict[ToolName, str] = {
         "장바구니에 이미 담긴 책의 수량을 바꾼다. 수량 0은 안 된다. 빼려면 cart_remove 를 쓴다."
     ),
     ToolName.CART_REMOVE: "장바구니에서 책을 뺀다.",
+    ToolName.UI_GUIDE: (
+        "사용자를 앱의 화면으로 안내하는 버튼을 붙인다. 배송이나 주문 상태를 묻는 말에는 "
+        "ORDER-LIST-001(주문내역)로 안내하고, 장바구니를 보러 가게 하려면 CART-001로 안내한다."
+    ),
     ToolName.BOOK_OFFER: (
         "책의 제목, 가격, 재고를 조회한다. 사용자가 제목으로 말했을 때 어느 카드인지 알아내는 "
         "데에도 쓴다."

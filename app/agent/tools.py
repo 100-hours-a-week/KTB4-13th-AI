@@ -1,15 +1,15 @@
-"""⑦ LLM 이 부르는 도구를 실행한다(#354). BE 에 시키는 5개만 있다.
+"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358). BE 에 시키는 5개와 화면 안내(ui.guide)가 있다.
 
 순서는 항상 같다: 실행해도 되는지 검사(guard) → 인자 확인 → 책을 ISBN 으로 확정(reference) → BE 호출.
 어느 단계에서 막히든 예외를 던지지 않고 결과에 `{"ok": false, "error": "<코드>"}` 로 남긴다(명세 ⑦).
 결과에는 코드 이름만 적고 사용자 발화는 싣지 않는다.
 
 LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 책)로만 가리키고, ISBN 과 user_id 는 여기서
-채운다. 기록하는 arguments 도 코드가 채운 값이다. selection.pick·book.compare·ui.guide 는 뒤 단계에서 만든다.
+채운다. 기록하는 arguments 도 코드가 채운 값이다. selection.pick·book.compare 는 뒤 단계에서 만든다.
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -52,6 +52,22 @@ class OfferArgs(_Args):
     )
 
 
+# ui.guide 로 안내할 수 있는 화면(FE 화면 식별자 → 버튼 글자). 목록에 없는 화면은 받지 않는다
+UI_TARGETS: dict[str, str] = {
+    "CART-001": "장바구니 보기",
+    "ORDER-LIST-001": "주문내역",
+}
+
+
+class UiGuideArgs(_Args):
+    target: Literal["CART-001", "ORDER-LIST-001"] = Field(
+        description=(
+            "이동을 안내할 화면. CART-001=장바구니, "
+            "ORDER-LIST-001=주문내역(주문한 책의 배송 상태도 여기서 본다)"
+        )
+    )
+
+
 # LLM 용 도구 설명(스키마)을 만드는 6단계가 이 인자 모델에서 만든다
 ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.CART_VIEW: ViewArgs,
@@ -59,6 +75,7 @@ ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.CART_UPDATE: UpdateArgs,
     ToolName.CART_REMOVE: RemoveArgs,
     ToolName.BOOK_OFFER: OfferArgs,
+    ToolName.UI_GUIDE: UiGuideArgs,
 }
 
 _Done = tuple[dict[str, Any], dict[str, Any]]  # (기록할 arguments, 결과)
@@ -160,12 +177,20 @@ async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) ->
     return {"isbns": isbns}, result
 
 
+async def _ui_guide(
+    ctx: TurnContext, gateway: CommerceGateway, args: UiGuideArgs
+) -> _Done:
+    """화면 이동 버튼만 붙인다. BE 를 부르지 않고, 버튼은 마무리 단계(reply)가 이 기록으로 만든다."""
+    return {"target": args.target}, {"ok": True, "label": UI_TARGETS[args.target]}
+
+
 _HANDLERS: dict[ToolName, _Handler] = {
     ToolName.CART_VIEW: _view,
     ToolName.CART_ADD: _add,
     ToolName.CART_UPDATE: _update,
     ToolName.CART_REMOVE: _remove,
     ToolName.BOOK_OFFER: _offer,
+    ToolName.UI_GUIDE: _ui_guide,
 }
 
 

@@ -637,9 +637,7 @@ def test_로그인하지_않은_요청의_잘못된_인자는_로그인_이유�
 # --- 아직 만들지 않은 도구 ---
 
 
-@pytest.mark.parametrize(
-    "name", [ToolName.SELECTION_PICK, ToolName.BOOK_COMPARE, ToolName.UI_GUIDE]
-)
+@pytest.mark.parametrize("name", [ToolName.SELECTION_PICK, ToolName.BOOK_COMPARE])
 def test_뒤_단계에서_만들_도구는_아직_실행하지_않는다(name) -> None:
     spy, _fake, ctx = _setup()
 
@@ -657,7 +655,6 @@ def test_도구_이름은_구현했거나_아직_안_만든_것_둘_중_하나�
     assert set(_HANDLERS) | {
         ToolName.SELECTION_PICK,
         ToolName.BOOK_COMPARE,
-        ToolName.UI_GUIDE,
     } == set(ToolName)
 
 
@@ -702,3 +699,56 @@ def test_조회와_담기_결과는_명세_예시와_같은_칸을_가진다() -
 
 def test_FakeCommerce는_도구가_기대하는_BE_모양이다() -> None:
     assert isinstance(FakeCommerce([], users=[]), CommerceGateway)
+
+
+# --- 화면 안내(ui.guide) ---
+
+
+@pytest.mark.parametrize(
+    ("target", "label"),
+    [("ORDER-LIST-001", "주문내역"), ("CART-001", "장바구니 보기")],
+)
+def test_화면_안내는_BE를_부르지_않고_버튼_글자를_돌려준다(target, label) -> None:
+    spy, fake, ctx = _setup()
+
+    call = _run(ctx, spy, ToolName.UI_GUIDE, {"target": target})
+
+    assert call.result == {"ok": True, "label": label}
+    assert call.arguments == {"target": target}
+    assert spy.calls == []
+    assert fake.cart_state(UID) == {}
+
+
+def test_화면_안내는_로그인하지_않아도_된다() -> None:
+    # 장바구니를 바꾸는 도구가 아니라 이동 버튼만 붙인다
+    spy, _fake, ctx = _setup(logged_in=False)
+
+    call = _run(ctx, spy, ToolName.UI_GUIDE, {"target": "ORDER-LIST-001"})
+
+    assert call.result["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param({"target": "HOME-001"}, id="목록에_없는_화면"),
+        pytest.param({"target": "https://evil.example"}, id="바깥_주소"),
+        pytest.param({}, id="화면_없음"),
+        pytest.param({"target": "CART-001", "isbn": A}, id="모르는_칸"),
+        pytest.param({"target": ["CART-001"]}, id="목록"),
+    ],
+)
+def test_목록에_없는_화면이나_모르는_칸은_안내하지_않는다(args) -> None:
+    spy, _fake, ctx = _setup()
+
+    call = _run(ctx, spy, ToolName.UI_GUIDE, args)
+
+    assert call.result == {"ok": False, "error": "INVALID_ARGUMENTS"}
+
+
+def test_허용하지_않은_화면_안내도_막는다() -> None:
+    spy, _fake, ctx = _setup(allow_tools=[ToolName.CART_VIEW])
+
+    call = _run(ctx, spy, ToolName.UI_GUIDE, {"target": "CART-001"})
+
+    assert call.result == {"ok": False, "error": "TOOL_NOT_ALLOWED"}

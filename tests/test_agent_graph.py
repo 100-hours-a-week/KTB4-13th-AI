@@ -269,7 +269,7 @@ def test_도구_결과는_JSON_글자로_LLM에게_돌아간다() -> None:
     }
 
 
-def test_LLM에게_주는_도구는_구현한_5개이고_허용한_것만이다() -> None:
+def test_LLM에게_주는_도구는_구현한_6개이고_허용한_것만이다() -> None:
     _run_result, model, _fake_be = _run([ai_text("네.")])
     names = [t["function"]["name"] for t in model.tools_seen[0]]
     assert names == [
@@ -278,6 +278,7 @@ def test_LLM에게_주는_도구는_구현한_5개이고_허용한_것만이다(
         "cart_update",
         "cart_remove",
         "book_offer",
+        "ui_guide",
     ]
 
     _run_result, model, _fake_be = _run(

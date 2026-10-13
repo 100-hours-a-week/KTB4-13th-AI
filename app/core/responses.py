@@ -15,6 +15,10 @@ def success(
     return JSONResponse({"message": message, "data": data}, headers=headers)
 
 
-def error(status: int, message: str) -> JSONResponse:
+def error(
+    status: int, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
     """성공과 같은 모양이고 data 만 null 이다."""
-    return JSONResponse({"message": message, "data": None}, status_code=status)
+    return JSONResponse(
+        {"message": message, "data": None}, status_code=status, headers=headers
+    )
