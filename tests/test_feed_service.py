@@ -57,7 +57,7 @@ def test_프로필이_없으면_개인화를_끈_목록으로_간다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # BE 는 개인화 추천에 동의한 사용자만 ⑥ 을 부른다. 프로필이 없으면 이력이 있어도 개인화하지 않는다(#266).
-    async def _cold(conn, req, page):
+    async def _cold(conn, req, page, excluded=None):
         return [{"book_id": 7, "match_score": 0}], False
 
     outcome = _run(_req(), None, monkeypatch, cold_start__fetch=_cold)
@@ -78,7 +78,7 @@ def test_취향_벡터를_못_만든_사용자도_같은_길로_간다(
         "computed_at": None,
     }
 
-    async def _cold(conn, req, page):
+    async def _cold(conn, req, page, excluded=None):
         return [], False
 
     outcome = _run(_req(), row, monkeypatch, cold_start__fetch=_cold)
@@ -89,7 +89,7 @@ def test_취향_벡터를_못_만든_사용자도_같은_길로_간다(
 def test_개인화를_끈_목록은_모두_0점이라_점수_하한이_있으면_조회하지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _cold(conn, req, page):
+    async def _cold(conn, req, page, excluded=None):
         raise AssertionError("목록을 조회하면 안 된다")
 
     outcome = _run(
@@ -108,7 +108,7 @@ def test_프로필이_있으면_채점한_목록을_준다(monkeypatch: pytest.M
         "computed_at": None,
     }
 
-    async def _personalized(conn, req, page, centroid, tag_weights):
+    async def _personalized(conn, req, page, centroid, tag_weights, excluded=None):
         assert centroid == [0.1, 0.2]
         assert tag_weights == {"에세이": 3}
         return [{"book_id": 9, "match_score": 84}], False
@@ -130,12 +130,12 @@ def test_벡터_조회가_안_되면_규칙_점수만으로_답하고_알린다(
         "computed_at": None,
     }
 
-    async def _personalized(conn, req, page, centroid, tag_weights):
+    async def _personalized(conn, req, page, centroid, tag_weights, excluded=None):
         raise RuntimeError("벡터 색인 이상")
 
     got: list[dict] = []
 
-    async def _rule_only(conn, req, page, tag_weights):
+    async def _rule_only(conn, req, page, tag_weights, excluded=None):
         got.append(tag_weights)
         return [{"book_id": 3, "match_score": 25}], False
 
@@ -160,7 +160,7 @@ def test_더_볼_것이_있으면_다음_페이지_커서를_준다(
 ) -> None:
     monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
 
-    async def _cold(conn, req, page):
+    async def _cold(conn, req, page, excluded=None):
         return [{"book_id": 1, "match_score": 0}], True
 
     outcome = _run(_req(), None, monkeypatch, cold_start__fetch=_cold)
@@ -169,7 +169,7 @@ def test_더_볼_것이_있으면_다음_페이지_커서를_준다(
 
 
 def test_마지막_페이지면_커서를_주지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _cold(conn, req, page):
+    async def _cold(conn, req, page, excluded=None):
         return [], False
 
     outcome = _run(_req(), None, monkeypatch, cold_start__fetch=_cold)
@@ -186,15 +186,15 @@ _PROFILE_ROW = {
 }
 
 
-async def _vector_down(conn, req, page, centroid, tag_weights):
+async def _vector_down(conn, req, page, centroid, tag_weights, excluded=None):
     raise RuntimeError("벡터 색인 이상")
 
 
-async def _vector_up(conn, req, page, centroid, tag_weights):
+async def _vector_up(conn, req, page, centroid, tag_weights, excluded=None):
     return [{"book_id": 9, "match_score": 80}], False
 
 
-async def _rule_only_page(conn, req, page, tag_weights):
+async def _rule_only_page(conn, req, page, tag_weights, excluded=None):
     return [{"book_id": page.offset + 1, "match_score": 0}], True
 
 
@@ -252,13 +252,13 @@ def test_책_벡터가_한_권도_없으면_규칙_점수만으로_답하고_알
 ) -> None:
     # 모델을 바꾸며 책 벡터를 다시 채우는 동안에는 벡터 조회가 에러 없이 0건이다.
     # 빈 목록으로 두지 않고 벡터를 못 쓸 때와 같이 규칙 점수로 채운다(명세 ④, #210).
-    async def _no_match(conn, req, page, centroid, tag_weights):
+    async def _no_match(conn, req, page, centroid, tag_weights, excluded=None):
         return [], False
 
     async def _no_book_vectors(conn):
         return False
 
-    async def _rule_only(conn, req, page, tag_weights):
+    async def _rule_only(conn, req, page, tag_weights, excluded=None):
         return [{"book_id": 3, "match_score": 25}], False
 
     outcome = _run(
@@ -278,10 +278,10 @@ def test_책_벡터가_있는데_0건이면_빈_목록_그대로다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # 필터에 맞는 책이 없어 0건인 것은 축소가 아니다(명세: 필터로 0건이면 빈 목록으로 200).
-    async def _no_match(conn, req, page, centroid, tag_weights):
+    async def _no_match(conn, req, page, centroid, tag_weights, excluded=None):
         return [], False
 
-    async def _rule_only(conn, req, page, tag_weights):
+    async def _rule_only(conn, req, page, tag_weights, excluded=None):
         raise AssertionError("규칙 점수로 넘어가면 안 된다")
 
     outcome = _run(
@@ -307,7 +307,7 @@ def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점�
         calls.append((user_id, reflected_at, until))
         return {"에세이": 2, "경제학": 3}
 
-    async def _personalized(conn, req, page, centroid, tag_weights):
+    async def _personalized(conn, req, page, centroid, tag_weights, excluded=None):
         assert tag_weights == {"에세이": 5, "경제학": 3}
         return [{"book_id": 9, "match_score": 80}], False
 
@@ -369,3 +369,94 @@ def test_페이지_사이에_프로필_판_번호가_바뀌어도_이어서_준�
     )
 
     assert [item["book_id"] for item in outcome.items] == [9]
+
+
+# ---------------------------------------------------------------------------
+# 뺄 책을 요청으로 받는다(#330)
+# ---------------------------------------------------------------------------
+
+_A, _B = "9788936434120", "9788954651135"
+
+
+def _exclusion_seen(monkeypatch: pytest.MonkeyPatch, profile_row, **params):
+    """목록을 만드는 쪽이 넘겨받은 뺄 책의 조건."""
+    seen = []
+
+    async def _cold(conn, req, page, excluded=None):
+        seen.append(excluded)
+        return [], False
+
+    async def _personalized(conn, req, page, centroid, tag_weights, excluded=None):
+        seen.append(excluded)
+        return [{"book_id": 1}], False
+
+    async def _to_book_ids(conn, isbns):
+        return [{_A: 10, _B: 20}[i] for i in isbns if i in (_A, _B)]
+
+    _run(
+        _req(**params),
+        profile_row,
+        monkeypatch,
+        cold_start__fetch=_cold,
+        personalized__fetch=_personalized,
+        isbn__to_book_ids=_to_book_ids,
+    )
+    return seen[0]
+
+
+@pytest.mark.parametrize("profile_row", [None, _PROFILE_ROW])
+def test_가진_책이_안_왔으면_조건을_넘기지_않아_복제_표로_빼게_한다(
+    monkeypatch: pytest.MonkeyPatch, profile_row
+) -> None:
+    assert _exclusion_seen(monkeypatch, profile_row) is None
+
+
+@pytest.mark.parametrize("profile_row", [None, _PROFILE_ROW])
+def test_가진_책이_오면_book_id로_바꿔_그_책들을_빼는_조건을_넘긴다(
+    monkeypatch: pytest.MonkeyPatch, profile_row
+) -> None:
+    excluded = _exclusion_seen(
+        monkeypatch, profile_row, purchased_isbns=_A, library_isbns=_B
+    )
+
+    assert excluded.params == ([10, 20],)
+
+
+def test_책_표에_없는_ISBN은_빼고_넘긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    excluded = _exclusion_seen(monkeypatch, None, purchased_isbns=f"{_A},9780000000001")
+
+    assert excluded.params == ([10],)
+
+
+def test_가진_책이_없다고_오면_아무것도_빼지_않는_조건을_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 복제 표에 이력이 남아 있어도 읽지 않는다. BE 가 "가진 책이 없다"고 한 것이다.
+    excluded = _exclusion_seen(monkeypatch, None, purchased_isbns="")
+
+    assert excluded is not None
+    assert excluded.params == ()
+
+
+def test_벡터를_못_써서_규칙_점수로_갈_때도_같은_조건을_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = []
+
+    async def _rule_only(conn, req, page, tag_weights, excluded=None):
+        seen.append(excluded)
+        return [], False
+
+    async def _to_book_ids(conn, isbns):
+        return [10]
+
+    _run(
+        _req(purchased_isbns=_A),
+        _PROFILE_ROW,
+        monkeypatch,
+        personalized__fetch=_vector_down,
+        rule_only__fetch=_rule_only,
+        isbn__to_book_ids=_to_book_ids,
+    )
+
+    assert seen[0].params == ([10],)

@@ -191,3 +191,32 @@ def test_책_표를_통째로_훑지_않는다() -> None:
             await conn.close()
 
     assert "Seq Scan on v_books" not in asyncio.run(_go())
+
+
+# ---------------------------------------------------------------------------
+# 뺄 책을 요청으로 받았을 때(#330)
+# ---------------------------------------------------------------------------
+
+
+def _ids_excluding(book_ids: list[int]) -> set[int]:
+    async def check(conn):
+        items, _ = await rule_only.fetch(
+            conn,
+            _request(size="50"),
+            Page(issued_at=_NOW),
+            {_LIKED: 4},
+            exclusion.owned(book_ids),
+        )
+        return {item["book_id"] for item in items}
+
+    # 로컬 카탈로그의 책도 후보로 섞여 나온다. 이 파일이 넣은 책만 본다.
+    return _run(check) & {book_id for book_id, _, _ in _BOOKS}
+
+
+def test_받은_책을_빼고_복제_표의_이력은_보지_않는다() -> None:
+    # 복제 표에는 9100804 를 산 것으로 남아 있다. 요청은 9100802 를 가졌다고 한다.
+    assert _ids_excluding([9100802]) == {9100801, 9100803, 9100804}
+
+
+def test_가진_책이_없다고_받으면_아무것도_빼지_않는다() -> None:
+    assert _ids_excluding([]) == {9100801, 9100802, 9100803, 9100804}
