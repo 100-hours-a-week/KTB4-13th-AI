@@ -324,6 +324,9 @@ def test_LLM이_뽑은_취향이_명세의_모양으로_나간다(fake_llm) -> N
                     "type": "mood",
                     "value": "이별 후 위로되는 소설을 찾음",
                     "confidence": 0.7,
+                    "evidence": "이별 후에 위로가 될 만한 걸로",
+                    "owner": "user",
+                    "basis": "requested",
                 }
             ]
         },
@@ -395,7 +398,14 @@ def test_임베딩이_실패하면_503이다(
     fake_llm["reply"] = json.dumps(
         {
             "extractions": [
-                {"type": "mood", "value": "위로되는 소설을 찾음", "confidence": 0.7}
+                {
+                    "type": "mood",
+                    "value": "위로되는 소설을 찾음",
+                    "confidence": 0.7,
+                    "evidence": "이별 후에 위로가 될 만한 걸로",
+                    "owner": "user",
+                    "basis": "requested",
+                }
             ]
         },
         ensure_ascii=False,

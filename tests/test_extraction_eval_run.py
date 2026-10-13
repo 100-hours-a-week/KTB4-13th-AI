@@ -270,6 +270,9 @@ def test_API를_그대로_거쳐_응답과_시간을_받는다(monkeypatch) -> N
                     "type": "topic",
                     "value": "쿠버네티스 입문서를 찾음",
                     "confidence": 0.7,
+                    "evidence": "쿠버네티스 처음 배우는데 입문서 추천해줘",
+                    "owner": "user",
+                    "basis": "requested",
                 }
             ]
         },

@@ -53,8 +53,18 @@ def _request(existing=()) -> ExtractionRequest:
     return req
 
 
-def _item(type_="mood", value="잔잔한 소설을 찾음", confidence=0.8) -> dict:
-    return {"type": type_, "value": value, "confidence": confidence}
+def _item(type_="mood", value="잔잔한 소설을 찾음", confidence=0.8, **over) -> dict:
+    """LLM 이 낸 후보 하나. 근거는 _request() 의 사용자 말에서 옮긴 것으로 채운다."""
+    item = {
+        "type": type_,
+        "value": value,
+        "confidence": confidence,
+        "evidence": "잔잔한 소설 추천해줘",
+        "owner": "user",
+        "basis": "stated",
+    }
+    item.update(over)
+    return item
 
 
 def _run(llm_output, req=None) -> list[dict]:
@@ -305,3 +315,57 @@ def test_기록에는_개수만_남고_대화와_뽑은_문장은_남지_않는�
     assert "LLM 이 낸 후보 2, 응답 1" in caplog.text
     for secret in ("잔잔한 소설", "없는 종류", "기후 위기", "추천해줘"):
         assert secret not in caplog.text
+
+
+def test_챗봇이_한_말을_근거로_든_취향은_나가지_않는다(
+    monkeypatch, embed_calls
+) -> None:
+    # 근거로 쓸 수 있는 것은 사용자가 한 말뿐이다. 챗봇의 말은 규칙에 넘기지도 않는다
+    req = parse_request(
+        {
+            "user_id": 1,
+            "consented": True,
+            "conversation": [
+                {"role": "user", "text": "불편한 편의점 재고 있어?"},
+                {
+                    "role": "assistant",
+                    "text": "네, 힐링 소설을 즐겨 읽는 분들께 인기예요.",
+                },
+            ],
+            "conversation_id": "cv_1",
+        }
+    )
+    _use_model(
+        monkeypatch,
+        _answer_json(
+            _item(
+                value="힐링 소설을 즐겨 읽음",
+                evidence="힐링 소설을 즐겨 읽는 분들께 인기예요",
+            )
+        ),
+    )
+
+    assert _extract(req) == []
+
+
+def test_남의_취향이라고_적은_것은_나가지_않는다(monkeypatch, embed_calls) -> None:
+    _use_model(
+        monkeypatch,
+        _answer_json(_item(owner="other"), _item(type_="topic", value="시집을 찾음")),
+    )
+
+    assert [item["value"] for item in _extract()] == ["시집을 찾음"]
+
+
+def test_세_칸은_응답에_나가지_않는다(monkeypatch, embed_calls) -> None:
+    # 서버 안에서 거르는 데만 쓴다. 응답은 명세 ⑤의 여섯 칸 그대로다
+    _use_model(monkeypatch, _answer_json(_item()))
+
+    assert set(_extract()[0]) == {
+        "type",
+        "value",
+        "confidence",
+        "vector",
+        "dim",
+        "source_conversation_id",
+    }
