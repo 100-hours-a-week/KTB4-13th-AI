@@ -124,14 +124,32 @@ def _count(
     return hit, unknown
 
 
+def _measured(response: Response, wants_cold: bool) -> bool:
+    """재려던 목록이 왔는가. API 가 실패했거나 기능을 줄여 답했거나, 개인화 여부가 기대와 다르면 아니다.
+
+    취향이 있는 사용자에게 개인화하지 않은 목록이 왔다면 프로필이 쓰이지 않은 것이다.
+    """
+    return (
+        response.profile_status == 200
+        and response.feed_status == 200
+        and response.degraded is None
+        and response.cold_start is wants_cold
+    )
+
+
 def score(
     case: Mapping[str, Any],
     response: Response,
     shelf: Mapping[str, Book],
     interests: Mapping[str, Any],
     twin: Response | None = None,
+    twin_wants_cold: bool = False,
 ) -> Score:
-    """사용자 한 명을 채점한다. shelf 는 ISBN 으로 찾는 책 정보, twin 은 견줄 짝의 결과다."""
+    """사용자 한 명을 채점한다. shelf 는 ISBN 으로 찾는 책 정보, twin 은 견줄 짝의 결과다.
+
+    짝을 재지 못했으면 이 사용자도 재지 못한 것으로 친다. 짝의 목록이 비면 짝의 책이 0권으로 세어져,
+    기억 하나를 더한 뒤가 오히려 나아진 것처럼 보이기 때문이다(#393 리뷰).
+    """
     expect = case["expect"]
     show_keys = expect.get("show", [])
     avoid_keys = expect.get("avoid", [])
@@ -157,17 +175,13 @@ def score(
             else:
                 unsure += 1
 
-    # 취향이 있는 사용자에게 개인화하지 않은 목록이 왔다면 프로필이 쓰이지 않은 것이다.
-    wants_cold = bool(expect.get("cold_start"))
-    ok = (
-        response.profile_status == 200
-        and response.feed_status == 200
-        and response.degraded is None
-        and response.cold_start is wants_cold
-    )
+    ok = _measured(response, bool(expect.get("cold_start")))
+    twin_ok = twin is not None and _measured(twin, twin_wants_cold)
+    if twin is not None and not twin_ok:
+        ok = False
 
     twin_show = twin_avoid = twin_toward = same_as_twin = None
-    if twin is not None:
+    if twin is not None and twin_ok:
         twin_show, _ = _count(show_keys, twin.isbns, shelf, interests)
         twin_avoid, _ = _count(avoid_keys, twin.isbns, shelf, interests)
         twin_toward, _ = _count(toward_keys, twin.isbns, shelf, interests)

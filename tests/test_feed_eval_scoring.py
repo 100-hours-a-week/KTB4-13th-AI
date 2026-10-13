@@ -247,6 +247,26 @@ def test_짝이_있으면_같은_관심사를_짝의_목록에서도_세고_겹�
     assert got.same_as_twin == 1
 
 
+def test_짝을_재지_못했으면_그_사용자도_재지_못한_것으로_친다() -> None:
+    # 짝의 목록이 비면 짝의 책이 0권으로 세어져, 기억을 더한 뒤가 오히려 나아진 것처럼 보인다.
+    shelf = _shelf(_book("1", kdc="594.5"))
+    case = _case("dislike", show=["cooking"], compare_to="one-topic-01")
+    mine = _response(["1"])
+
+    for broken in (
+        _response([], feed_status=500),
+        _response([], profile_status=400),
+        _response(["1"], degraded="rule_only"),
+        # 짝은 취향 기억이 남아 있는 사용자다. 개인화하지 않은 목록이 왔다면 프로필이 쓰이지 않은 것이다.
+        _response(["1"], cold_start=True),
+    ):
+        got = score(case, mine, shelf, INTERESTS, twin=broken)
+
+        assert got.ok is False
+        assert got.twin_show is None
+        assert got.same_as_twin is None
+
+
 def test_짝이_없으면_짝의_숫자는_비어_있다() -> None:
     got = score(
         _case(show=["cooking"]), _response(["1"]), _shelf(_book("1")), INTERESTS
@@ -363,6 +383,27 @@ def test_짝이_있는_종류는_짝과의_차이를_낸다() -> None:
     assert row["avoid_mean"] == 1.0
     assert row["twin_avoid_mean"] == 0.0
     assert row["same_as_twin_mean"] == 1.0
+
+
+def test_짝을_재지_못한_사용자는_짝과의_차이에_넣지_않는다() -> None:
+    shelf = _shelf(_book("1", kdc="594.5"), _book("2", kdc="594.5"))
+    fine = _case("dislike", show=["cooking"], compare_to="x")
+    broken = {**_case("dislike", show=["cooking"], compare_to="y"), "id": "dislike-02"}
+    summary = summarize(
+        _scores(
+            (fine, _response(["1"]), shelf, _response(["1", "2"])),
+            (broken, _response(["1", "2"]), shelf, _response([], feed_status=500)),
+        ),
+        KINDS,
+        INTERESTS,
+    )
+    row = summary["kinds"]["dislike"]
+
+    assert row["users"] == 2
+    assert row["measured"] == 1
+    # 짝이 실패한 사용자가 섞이면 (2 + 0) / 2 = 1.0 이 된다.
+    assert row["twin_show_mean"] == 2.0
+    assert row["show_mean"] == 1.0
 
 
 def test_책이_쌓인_사용자는_권수가_같은_사용자끼리_겹치는_책을_낸다() -> None:

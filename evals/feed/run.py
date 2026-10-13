@@ -127,16 +127,21 @@ async def run(
         isbns.update(history["purchased_isbns"], history["library_isbns"])
     shelf = await facts(isbns)
 
-    return [
-        score(
-            case,
-            responses[case["id"]],
-            shelf,
-            interests,
-            twin=responses.get(case["expect"].get("compare_to")),
+    scores = []
+    for case in picked:
+        twin = case["expect"].get("compare_to")
+        scores.append(
+            score(
+                case,
+                responses[case["id"]],
+                shelf,
+                interests,
+                twin=responses.get(twin),
+                # 짝이 재료 없는 사용자라면 개인화하지 않은 목록이 와야 제대로 잰 것이다
+                twin_wants_cold=bool(twin and by_id[twin]["expect"].get("cold_start")),
+            )
         )
-        for case in picked
-    ]
+    return scores
 
 
 def database_name(url: str) -> str:

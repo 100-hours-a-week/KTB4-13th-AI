@@ -118,6 +118,30 @@ def test_짝이_있는_사용자를_고르면_짝도_부르되_채점은_고른_
     assert scores[0].same_as_twin == 0
 
 
+def test_고른_목록에_없는_짝이_실패해도_재지_못한_사용자로_알린다() -> None:
+    from evals.feed.scoring import summarize
+
+    server = FakeServer()
+    picked = runner.select(CASES, ids=["dislike-01"])
+    twin = BY_ID["dislike-01"]["expect"]["compare_to"]
+
+    async def twin_fails(case: dict) -> Response:
+        if case["id"] == twin:
+            return Response(200, 500, None, None, (), 0.01)
+        return await server.target(case)
+
+    scores = asyncio.run(
+        runner.run(picked, BY_ID, twin_fails, server.facts, BUNDLE["interests"])
+    )
+    text = runner.render(
+        summarize(scores, BUNDLE["kinds"], BUNDLE["interests"]), BUNDLE["top"]
+    )
+
+    # 짝은 채점 대상이 아니라서, 여기서 막지 않으면 실패가 어디에도 드러나지 않는다.
+    assert scores[0].ok is False
+    assert "재지 못한 사용자 1명" in text
+
+
 def test_짝도_같이_고르면_두_번_부르지_않는다() -> None:
     server = FakeServer()
     twin = BY_ID["dislike-01"]["expect"]["compare_to"]
