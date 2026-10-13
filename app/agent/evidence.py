@@ -157,7 +157,9 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
 
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
     """이 책을 LLM 이 가리킬 때 쓸 수 있는 말들(카드 번호, 장바구니 번호, 지금 보는 책)."""
-    refs = [BookRef(source="card", n=card.rank) for card in ctx.cards if card.isbn == isbn]
+    refs = [
+        BookRef(source="card", n=card.rank) for card in ctx.cards if card.isbn == isbn
+    ]
     refs += [
         BookRef(source="cart", n=position)
         for position, line in enumerate(ctx.cart_snapshot or [], start=1)
