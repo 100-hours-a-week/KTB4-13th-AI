@@ -2,7 +2,7 @@
 
 명세: docs/wiki/ai/1-model-api/spec.md ⑤ POST /preferences/extractions
 BE 가 대화 세션 하나를 실어 보내면 취향 사실을 뽑아 돌려준다. AI 는 입력도 결과도 저장하지 않고
-BE 가 저장한다. 지금은 요청 검사와 응답 모양까지만 있고, 뽑는 로직은 #299 의 뒤 단계에서 채운다.
+BE 가 저장한다. 외부 LLM 이나 임베딩이 안 되면 500 이 아니라 503·504 로 답한다.
 """
 
 import json
@@ -53,6 +53,10 @@ async def extract_preferences(request: Request) -> JSONResponse:
             logger.warning("취향 기억 추출: LLM 장애 (%s)", type(exc).__name__)
             if isinstance(exc, LLMTimeoutError):
                 return responses.error(504, "generation_timeout")
+            return responses.error(503, "upstream_unavailable")
+        except service.EmbeddingUnavailableError as exc:
+            # 원인의 메시지에는 취향 문장이 실려 올 수 있어 종류만 남긴다(예외가 이미 그렇게 담고 있다).
+            logger.warning("취향 기억 추출: 임베딩 장애 (%s)", exc)
             return responses.error(503, "upstream_unavailable")
         except Exception:
             # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
