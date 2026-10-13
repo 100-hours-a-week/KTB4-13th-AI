@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from app.agent.compare import CompareError
+from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import ContextCard, ToolCall, ToolName
 from app.agent.tools import ARG_MODELS, execute
@@ -84,8 +86,8 @@ def _setup(seed=(), **ctx_overrides):
     return _Spy(fake), fake, TurnContext(**values)
 
 
-def _run(ctx, spy, name, args):
-    return asyncio.run(execute(ctx, spy, name, args))
+def _run(ctx, spy, name, args, comparer=None):
+    return asyncio.run(execute(ctx, spy, name, args, comparer=comparer))
 
 
 def _see_cart(ctx, spy) -> ToolCall:
@@ -634,28 +636,366 @@ def test_로그인하지_않은_요청의_잘못된_인자는_로그인_이유�
     assert call.result == {"ok": False, "error": "LOGIN_REQUIRED"}
 
 
-# --- 아직 만들지 않은 도구 ---
+# --- 조합 고르기(selection.pick) ---
 
 
-@pytest.mark.parametrize("name", [ToolName.SELECTION_PICK, ToolName.BOOK_COMPARE])
-def test_뒤_단계에서_만들_도구는_아직_실행하지_않는다(name) -> None:
+def _pick_setup(offers, *, logged_in=True, allow_tools=None):
+    """(감시 래퍼, 가짜 BE, 요청 상태). offers 는 카드 1번부터의 (가격, 점수, 재고)이다."""
+    books = [
+        FakeBook(isbn, f"책{i}", price, stock)
+        for i, (isbn, (price, _score, stock)) in enumerate(zip(ISBNS, offers), 1)
+    ]
+    fake = FakeCommerce(books, users=[UID])
+    cards = [
+        ContextCard(isbn=isbn, rank=i, match_score=score)
+        for i, (isbn, (_price, score, _stock)) in enumerate(zip(ISBNS, offers), 1)
+    ]
+    ctx = TurnContext(
+        user_id=UID,
+        logged_in=logged_in,
+        cards=cards,
+        focused_isbn=None,
+        allow_tools=allow_tools,
+    )
+    return _Spy(fake), fake, ctx
+
+
+# (가격, 점수, 재고). 1+2 는 예산 30,000원을 넘고 1+3 이 점수 합이 가장 크다
+THREE = [(20000, 92, 5), (15000, 87, 5), (10000, 81, 5)]
+
+
+def test_예산_안에서_점수_합이_가장_큰_조합을_코드가_고른다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert call.arguments == {"budget_total": 30000, "count": 2}
+    assert call.result["ok"] is True
+    assert [b["isbn"] for b in call.result["chosen"]] == [A, C]
+    assert call.result["chosen"][0] == {
+        "isbn": A,
+        "title": "책1",
+        "price": 20000,
+        "match_score": 92,
+    }
+    assert call.result["total_price"] == 30000
+    assert call.result["alternatives_considered"] == 3  # 3권 중 2권 = 3가지
+    assert ctx.picked == {A, C}
+    assert fake.cart_state(UID) == {}  # 장바구니는 건드리지 않는다
+
+
+def test_가격과_재고는_LLM이_아니라_BE에서_직접_읽는다() -> None:
+    spy, _fake, ctx = _pick_setup(THREE)
+
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert spy.calls == ["get_cart", "get_offers"]  # 읽기뿐이다. 담지 않는다
+
+
+def test_이미_장바구니에_있는_책은_고르지_않는다() -> None:
+    # 확인 버튼으로 담으면 BE 가 수량을 바꾸므로(2권이 1권이 됨) 이미 담긴 책은 후보가 아니다
+    spy, fake, ctx = _pick_setup(THREE)
+    asyncio.run(fake.add_item(UID, A, 2))
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert [b["isbn"] for b in call.result["chosen"]] == [B, C]  # 1번이 담겨 있어 2+3
+    assert call.result["alternatives_considered"] == 1
+    assert fake.cart_state(UID) == {A: 2}
+
+
+def test_카드가_모두_장바구니에_있으면_고를_조합이_없다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    for isbn in (A, B, C):
+        asyncio.run(fake.add_item(UID, isbn, 1))
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 99000, "count": 1})
+
+    assert call.result["error"] == "NO_COMBINATION"
+
+
+def test_품절_책은_점수가_높아도_고르지_않는다() -> None:
+    spy, _fake, ctx = _pick_setup([(10000, 99, 0), (12000, 80, 5), (13000, 70, 5)])
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert [b["isbn"] for b in call.result["chosen"]] == [B, C]
+    assert call.result["alternatives_considered"] == 1  # 재고 있는 2권 중 2권
+
+
+def test_판매_중지한_책과_BE가_모르는_책도_고르지_않는다() -> None:
+    spy, fake, ctx = _pick_setup([(10000, 99, 5), (12000, 80, 5), (13000, 70, 5)])
+    fake.discontinue(A)
+    ctx.cards.append(ContextCard(isbn="9780000000000", rank=4, match_score=100))
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert [b["isbn"] for b in call.result["chosen"]] == [B, C]
+
+
+def test_예산_안에_드는_조합이_없으면_이유를_남기고_아무것도_고르지_않는다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 10000, "count": 2})
+
+    assert call.result == {
+        "ok": False,
+        "error": "NO_COMBINATION",
+        "alternatives_considered": 3,
+    }
+    assert ctx.picked == set()
+    assert fake.cart_state(UID) == {}
+
+
+def test_카드가_없으면_고를_조합이_없다() -> None:
+    spy, _fake, ctx = _setup(cards=[])
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 50000, "count": 1})
+
+    assert call.result["error"] == "NO_COMBINATION"
+    assert call.result["alternatives_considered"] == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"budget_total": 0, "count": 2},
+        {"budget_total": -1, "count": 2},
+        {"budget_total": 30000, "count": 0},
+        {"budget_total": 30000, "count": 11},  # 카드는 10장까지다
+        {"budget_total": "30000", "count": 2},
+        {"budget_total": 30000},
+        {
+            "budget_total": 30000,
+            "count": 2,
+            "isbns": [A],
+        },  # LLM 이 책을 정해 줄 수 없다
+    ],
+)
+def test_잘못된_인자는_BE를_부르지_않고_막는다(args) -> None:
+    spy, _fake, ctx = _pick_setup(THREE)
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, args)
+
+    assert call.result == {"ok": False, "error": "INVALID_ARGUMENTS"}
+    assert spy.calls == []
+
+
+def test_로그인하지_않아도_고르기는_된다() -> None:
+    # 고르기는 읽기다. 담기만 로그인이 필요하다
+    spy, _fake, ctx = _pick_setup(THREE, logged_in=False)
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert call.result["ok"] is True
+
+
+def test_허용하지_않은_요청이면_고르지_않는다() -> None:
+    spy, _fake, ctx = _pick_setup(THREE, allow_tools=[ToolName.CART_VIEW])
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert call.result == {"ok": False, "error": "TOOL_NOT_ALLOWED"}
+    assert spy.calls == []
+
+
+# --- AI 가 고른 책은 확인 없이 담지 않는다 ---
+
+
+def test_고른_책을_담으려_하면_BE를_부르지_않고_확인이_필요하다고_막는다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+    spy.calls.clear()
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.result == {"ok": False, "error": "CONFIRMATION_REQUIRED"}
+    assert call.arguments == {"isbn": A, "quantity": 1}
+    assert spy.calls == []  # 조회도 담기도 하지 않았다
+    assert fake.cart_state(UID) == {}
+
+
+def test_지목한_책으로_담으려_해도_고른_책이면_막는다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    ctx.focused_isbn = C
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": {"source": "focused"}})
+
+    assert call.result["error"] == "CONFIRMATION_REQUIRED"
+    assert fake.cart_state(UID) == {}
+
+
+def test_고르지_않은_책은_사용자가_말한_대로_담긴다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})  # 2번은 고르지 않았다
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {B: 1}
+
+
+def test_조합을_못_골랐으면_담기가_막히지_않는다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 1000, "count": 2})
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 1}
+
+
+def test_조합을_고르기_전에_담은_것은_그대로다() -> None:
+    spy, fake, ctx = _pick_setup(THREE)
+    _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert fake.cart_state(UID) == {B: 1}
+
+
+def test_고른_책은_다음_요청으로_이어지지_않는다() -> None:
+    # 확인은 요청마다 새로 받는다. 요청 상태(TurnContext)는 요청이 만든다
+    spy, _fake, ctx = _pick_setup(THREE)
+    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+    next_turn = TurnContext(
+        user_id=UID,
+        logged_in=True,
+        cards=ctx.cards,
+        focused_isbn=None,
+        allow_tools=None,
+    )
+
+    assert next_turn.picked == set()
+
+
+# --- 비교(book.compare) ---
+
+
+class _FakeComparer:
+    """소개글을 읽는 부품의 가짜. 받은 ISBN 을 기록하고 미리 정한 요약이나 오류를 돌려준다."""
+
+    def __init__(
+        self, summary: str = "1번은 입문용이고 2번은 실무용이에요.", error=None
+    ):
+        self.summary = summary
+        self.error = error
+        self.calls: list[list[str]] = []
+
+    async def compare(self, isbns):
+        self.calls.append(list(isbns))
+        if self.error is not None:
+            raise CompareError(self.error)
+        return self.summary
+
+
+def test_비교는_코드가_채운_ISBN으로_요약만_받아_결과에_남긴다() -> None:
+    spy, _fake, ctx = _setup()
+    comparer = _FakeComparer()
+
+    call = _run(
+        ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(3)]}, comparer
+    )
+
+    assert comparer.calls == [[A, C]]
+    assert call.arguments == {"isbns": [A, C]}
+    assert call.result == {
+        "ok": True,
+        "basis": "description",
+        "summary": "1번은 입문용이고 2번은 실무용이에요.",
+    }
+    assert spy.calls == []  # 비교는 BE 를 부르지 않는다(가격은 book.offer 가 읽는다)
+
+
+def test_장바구니_번호로도_비교할_수_있다() -> None:
+    spy, _fake, ctx = _setup(seed=[(A, 1), (B, 1)])
+    comparer = _FakeComparer()
+    _see_cart(ctx, spy)  # 나중에 담은 B 가 1번째
+
+    _run(ctx, spy, ToolName.BOOK_COMPARE, {"books": [cart(1), cart(2)]}, comparer)
+
+    assert comparer.calls == [[B, A]]
+
+
+def test_같은_책을_두_번_가리키면_비교하지_않는다() -> None:
+    spy, _fake, ctx = _setup()
+    comparer = _FakeComparer()
+
+    call = _run(
+        ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(1)]}, comparer
+    )
+
+    assert call.result == {"ok": False, "error": "INVALID_ARGUMENTS"}
+    assert comparer.calls == []
+
+
+def test_목록에_없는_책은_소개글을_읽지_않는다() -> None:
+    spy, _fake, ctx = _setup()
+    comparer = _FakeComparer()
+
+    call = _run(
+        ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(9)]}, comparer
+    )
+
+    assert call.result == {"ok": False, "error": "BOOK_NOT_IN_CARDS"}
+    assert comparer.calls == []
+
+
+@pytest.mark.parametrize("books", [[card(1)], [card(1), card(2), card(3), cart(1)], []])
+def test_두_권에서_세_권까지만_비교한다(books) -> None:
+    spy, _fake, ctx = _setup()
+    comparer = _FakeComparer()
+
+    call = _run(ctx, spy, ToolName.BOOK_COMPARE, {"books": books}, comparer)
+
+    assert call.result == {"ok": False, "error": "INVALID_ARGUMENTS"}
+    assert comparer.calls == []
+
+
+@pytest.mark.parametrize("code", ["NO_DESCRIPTION", "COMPARE_FAILED"])
+def test_비교하지_못하면_그_이유를_결과에_남긴다(code) -> None:
+    spy, _fake, ctx = _setup()
+    comparer = _FakeComparer(error=ToolErrorCode(code))
+
+    call = _run(
+        ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(2)]}, comparer
+    )
+
+    assert call.result == {"ok": False, "error": code}
+    assert call.arguments == {"isbns": [A, B]}
+
+
+def test_로그인하지_않아도_비교는_된다() -> None:
+    spy, _fake, ctx = _setup(logged_in=False)
+    comparer = _FakeComparer()
+
+    call = _run(
+        ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(2)]}, comparer
+    )
+
+    assert call.result["ok"] is True
+
+
+# --- 실행할 부품이 없는 도구 ---
+
+
+def test_비교_부품이_없으면_비교는_실행하지_않는다() -> None:
     spy, _fake, ctx = _setup()
 
-    call = _run(ctx, spy, name, {})
+    call = _run(ctx, spy, ToolName.BOOK_COMPARE, {"books": [card(1), card(2)]})
 
     assert call.result == {"ok": False, "error": "TOOL_NOT_IMPLEMENTED"}
     assert spy.calls == []
 
 
-def test_도구_이름은_구현했거나_아직_안_만든_것_둘_중_하나다() -> None:
-    # 도구를 새로 만들면서 인자 모델이나 실행기를 빠뜨리지 않게
+def test_모든_도구에_인자_모델이_있고_실행기가_있다() -> None:
+    # 도구를 새로 만들면서 인자 모델이나 실행기를 빠뜨리지 않게. 비교는 부품(comparer)을 받아 실행해서
+    # 실행기 표에 없다
     from app.agent.tools import _HANDLERS
 
-    assert set(ARG_MODELS) == set(_HANDLERS)
-    assert set(_HANDLERS) | {
-        ToolName.SELECTION_PICK,
-        ToolName.BOOK_COMPARE,
-    } == set(ToolName)
+    assert set(ARG_MODELS) == set(ToolName)
+    assert set(_HANDLERS) | {ToolName.BOOK_COMPARE} == set(ToolName)
 
 
 # --- 기록의 모양 ---

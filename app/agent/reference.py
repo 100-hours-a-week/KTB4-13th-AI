@@ -5,7 +5,7 @@ LLM 은 책을 ISBN 으로 부르지 않는다. 어느 목록의 몇 번째인�
 (없는 번호, 같은 번호가 둘, 조회 전의 장바구니 번호, 지목한 책 없음) 실행하지 않고 RefError 를 던진다.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -58,6 +58,8 @@ class TurnContext:
     # 장바구니 번호는 LLM 이 본 이 목록 기준으로만 푼다. 그 뒤에 쓰기가 있어도 다시 만들지 않는다.
     # 그래야 한 번에 "1번 담고 장바구니 3번째 빼줘"를 불러도 번호가 밀리지 않는다.
     cart_snapshot: list[CartLine] | None = None
+    # 이번 턴에 selection.pick 이 고른 책. 사용자가 확인하기 전에는 담지 못한다(tools._add)
+    picked: set[str] = field(default_factory=set)
     # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
     # LLM 이 본 적 없는 목록의 n번째가 실행된다. 묶음이 끝나 결과를 LLM 에게 돌려줄 때 commit_cart_view 로 올린다.
     pending_cart: list[CartLine] | None = None

@@ -1,19 +1,24 @@
-"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358). BE 에 시키는 5개와 화면 안내(ui.guide)가 있다.
+"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358, #363). BE 에 시키는 5개와 AI 서버 안의 3개가 있다.
+
+AI 서버 안의 도구는 화면 안내(ui.guide), 조합 고르기(selection.pick, 코드 계산), 비교(book.compare,
+소개글을 읽는 별도 호출)다.
 
 순서는 항상 같다: 실행해도 되는지 검사(guard) → 인자 확인 → 책을 ISBN 으로 확정(reference) → BE 호출.
 어느 단계에서 막히든 예외를 던지지 않고 결과에 `{"ok": false, "error": "<코드>"}` 로 남긴다(명세 ⑦).
 결과에는 코드 이름만 적고 사용자 발화는 싣지 않는다.
 
 LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 책)로만 가리키고, ISBN 과 user_id 는 여기서
-채운다. 기록하는 arguments 도 코드가 채운 값이다. selection.pick·book.compare 는 뒤 단계에서 만든다.
+채운다. 기록하는 arguments 도 코드가 채운 값이다.
 """
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.agent import guard
+from app.agent import guard, selection
+from app.agent.compare import CompareError, Comparer
 from app.agent.errors import RefError, ToolErrorCode
 from app.agent.reference import BookRef, TurnContext, resolve
 from app.agent.schemas import MAX_CONTEXT_CARDS, ToolCall, ToolName
@@ -52,6 +57,23 @@ class OfferArgs(_Args):
     )
 
 
+class PickArgs(_Args):
+    budget_total: int = Field(
+        ge=1, description="예산(원). 고른 책의 가격 합계가 이 값 이하여야 한다"
+    )
+    count: int = Field(
+        ge=1,
+        le=MAX_CONTEXT_CARDS,
+        description="고를 책의 권수. 같은 책은 한 번만 고른다",
+    )
+
+
+class CompareArgs(_Args):
+    books: list[BookRef] = Field(
+        min_length=2, max_length=3, description="소개글로 견줄 책들(2~3권)"
+    )
+
+
 # ui.guide 로 안내할 수 있는 화면(FE 화면 식별자 → 버튼 글자). 목록에 없는 화면은 받지 않는다
 UI_TARGETS: dict[str, str] = {
     "CART-001": "장바구니 보기",
@@ -75,6 +97,8 @@ ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.CART_UPDATE: UpdateArgs,
     ToolName.CART_REMOVE: RemoveArgs,
     ToolName.BOOK_OFFER: OfferArgs,
+    ToolName.SELECTION_PICK: PickArgs,
+    ToolName.BOOK_COMPARE: CompareArgs,
     ToolName.UI_GUIDE: UiGuideArgs,
 }
 
@@ -128,6 +152,10 @@ async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
     arguments = {"isbn": isbn, "quantity": args.quantity}
+    # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
+    # 프롬프트로 부탁하는 것으로는 못 막아서 BE 를 부르기 전에 코드가 막는다
+    if isbn in ctx.picked:
+        return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
     # BE 의 담기는 "요청 수량으로 바꾸기"라서 이미 2권 담긴 책을 담으면 1권이 된다. LLM 이 조회를
     # 건너뛰고 바로 담으라고 해도 막히도록, 담기 전에 BE 에서 다시 읽어 확인한다.
     cart = await gateway.get_cart(ctx.user_id)
@@ -177,6 +205,71 @@ async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) ->
     return {"isbns": isbns}, result
 
 
+async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _Done:
+    """직전 카드 안에서 예산과 권수에 맞는 조합을 코드가 고른다. 장바구니는 건드리지 않는다.
+
+    가격과 재고는 LLM 이 읽어 오게 하지 않고 여기서 BE 에서 직접 읽는다(LLM 이 틀린 값을 넘길 수 없다).
+    이미 장바구니에 있는 책은 고르지 않는다. 확인 버튼으로 담을 때 BE 의 담기가 "요청 수량으로 바꾸기"라서
+    2권 담긴 책이 1권이 될 수 있기 때문이다.
+    """
+    arguments = {"budget_total": args.budget_total, "count": args.count}
+    ordered = sorted(ctx.cards, key=lambda card: card.rank)
+    in_cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
+    offers = {o.isbn: o for o in await gateway.get_offers([c.isbn for c in ordered])}
+    candidates: dict[str, selection.Candidate] = {}
+    for card in ordered:
+        offer = offers.get(card.isbn)
+        # 품절이거나 BE 가 모르는 책, 이미 담긴 책은 고르지 않는다. 같은 책이 카드에 두 번 있어도 한 번만 센다
+        if (
+            offer is not None
+            and offer.in_stock
+            and card.isbn not in in_cart
+            and card.isbn not in candidates
+        ):
+            candidates[card.isbn] = selection.Candidate(
+                card.isbn, offer.title, offer.price, card.match_score, card.rank
+            )
+
+    considered = selection.alternatives(len(candidates), args.count)
+    chosen = selection.choose(list(candidates.values()), args.budget_total, args.count)
+    if chosen is None:
+        failure = _fail(
+            ToolErrorCode.NO_COMBINATION.value, alternatives_considered=considered
+        )
+        return arguments, failure
+
+    ctx.picked.update(c.isbn for c in chosen)
+    return arguments, {
+        "ok": True,
+        "chosen": [
+            {
+                "isbn": c.isbn,
+                "title": c.title,
+                "price": c.price,
+                "match_score": c.match_score,
+            }
+            for c in chosen
+        ],
+        "total_price": sum(c.price for c in chosen),
+        "alternatives_considered": considered,
+    }
+
+
+async def _compare(
+    comparer: Comparer, ctx: TurnContext, gateway: CommerceGateway, args: CompareArgs
+) -> _Done:
+    """소개글을 읽는 별도 호출이 만든 요약만 돌려준다. 소개글 원문은 결과에 싣지 않는다."""
+    isbns = list(dict.fromkeys(resolve(ctx, ref) for ref in args.books))
+    arguments = {"isbns": isbns}
+    if len(isbns) < 2:  # 같은 책을 두 번 가리켰다
+        return arguments, _fail(ToolErrorCode.INVALID_ARGUMENTS.value)
+    try:
+        summary = await comparer.compare(isbns)
+    except CompareError as e:
+        return arguments, _fail(e.code.value)
+    return arguments, {"ok": True, "basis": "description", "summary": summary}
+
+
 async def _ui_guide(
     ctx: TurnContext, gateway: CommerceGateway, args: UiGuideArgs
 ) -> _Done:
@@ -190,6 +283,7 @@ _HANDLERS: dict[ToolName, _Handler] = {
     ToolName.CART_UPDATE: _update,
     ToolName.CART_REMOVE: _remove,
     ToolName.BOOK_OFFER: _offer,
+    ToolName.SELECTION_PICK: _pick,
     ToolName.UI_GUIDE: _ui_guide,
 }
 
@@ -203,9 +297,16 @@ def _failed(
 
 
 async def execute(
-    ctx: TurnContext, gateway: CommerceGateway, name: ToolName, raw_args: Any
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    name: ToolName,
+    raw_args: Any,
+    *,
+    comparer: Comparer | None = None,
 ) -> ToolCall:
     """도구 하나를 실행하고 기록을 돌려준다. 막히거나 BE 가 거절해도 예외를 던지지 않는다.
+
+    comparer 는 book.compare 만 쓴다. 없으면 그 도구는 TOOL_NOT_IMPLEMENTED 로 막힌다.
 
     grounded 는 이 결과가 실제로 실행해서 얻은 값이라는 뜻으로 true 로 둔다. 답변이 이 결과를
     뒷받침하는지는 마무리 단계(7단계)가 판단해서 바꾼다.
@@ -217,6 +318,8 @@ async def execute(
         return _failed(name, given, blocked)
 
     handler = _HANDLERS.get(name)
+    if name == ToolName.BOOK_COMPARE and comparer is not None:
+        handler = partial(_compare, comparer)
     if handler is None:
         return _failed(name, given, ToolErrorCode.TOOL_NOT_IMPLEMENTED)
 
