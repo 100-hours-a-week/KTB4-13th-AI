@@ -10,6 +10,7 @@ from app.extraction.schemas import (
     MAX_TURN_CHARS,
     parse_request,
 )
+from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
 from app.main import app
 from app.routers import extractions
 
@@ -232,3 +233,56 @@ def test_대화_원문을_로그에_남기지_않는다(
 
     assert "비 오는 날" not in caplog.text
     assert "잔잔한 에세이" not in caplog.text
+
+
+# --- LLM 장애와 시간 초과 (#371) ---
+
+
+def _extract_raises(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    async def _raise(req):
+        raise exc
+
+    monkeypatch.setattr(extractions.service, "extract", _raise)
+
+
+def test_LLM_장애면_503이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    _extract_raises(monkeypatch, LLMUnavailableError("연결 실패"))
+
+    res = client.post(URL, json=_request())
+
+    assert res.status_code == 503
+    assert res.json() == {"message": "upstream_unavailable", "data": None}
+
+
+def test_LLM이_제한_시간_안에_답하지_않으면_504다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _extract_raises(monkeypatch, LLMTimeoutError("30초 초과"))
+
+    res = client.post(URL, json=_request())
+
+    assert res.status_code == 504
+    assert res.json() == {"message": "generation_timeout", "data": None}
+
+
+def test_LLM_장애가_아닌_오류는_여전히_500이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 코드 버그까지 503으로 답하면 BE가 "다시 부르면 된다"고 읽어 버그가 가려진다
+    _extract_raises(monkeypatch, RuntimeError("버그"))
+
+    res = client.post(URL, json=_request())
+
+    assert res.status_code == 500
+
+
+@pytest.mark.parametrize("exc_type", [LLMUnavailableError, LLMTimeoutError])
+def test_LLM_장애의_예외_메시지는_로그에_남기지_않는다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, exc_type
+) -> None:
+    # 공급자의 오류 메시지나 LLM의 답이 예외 메시지에 실려 올 수 있다. 종류만 남긴다
+    _extract_raises(monkeypatch, exc_type("비 오는 날 읽을 책이라는 말이 든 메시지"))
+
+    with caplog.at_level("DEBUG"):
+        client.post(URL, json=_request())
+
+    assert "비 오는 날" not in caplog.text
+    assert exc_type.__name__ in caplog.text

@@ -19,6 +19,14 @@ class LLMUnavailableError(Exception):
     """
 
 
+class LLMTimeoutError(LLMUnavailableError):
+    """LLM 이 제한 시간(LLM_TIMEOUT_SECONDS) 안에 답하지 못했다.
+
+    명세는 시간 초과(504)와 그 밖의 장애(503)를 나눠 답하게 한다(⑤, #371). LLMUnavailableError
+    의 하위 타입이라, 둘을 가르지 않는 호출부(③)는 지금처럼 LLMUnavailableError 하나만 잡으면 된다.
+    """
+
+
 # ⑧ /health 의 llm 칸이 읽는 값. health가 호출될 때마다 LLM에 핑을 보내면
 # 비용·지연이 붙으므로, ③ 등 실제 요청이 invoke_chain을 지날 때 관측한 최근
 # 성공/실패를 대신 재사용한다. 기동 직후(첫 채팅 요청 전)엔 아직 관측된 실패가
@@ -115,6 +123,9 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
         # 잡히므로 따로 적는다. 이건 with_structured_output 경로에서 던져진다
         # (지금 json_object 경로에선 거부가 빈 content로 와서 parse 단계에서 걸림).
         _llm_ok = False
+        # openai 의 시간 초과 예외는 연결 실패 예외의 하위 타입이라 먼저 가려낸다.
+        if isinstance(e, openai.APITimeoutError):
+            raise LLMTimeoutError(str(e)) from e
         raise LLMUnavailableError(str(e)) from e
     except (IndexError, KeyError, TypeError) as e:
         # OpenAI 호환 서버가 choices를 빈 목록·null로 줄 때,
