@@ -615,6 +615,23 @@ def test_SPEC_PROMPT에_톤_조정_지시문과_예시가_실린다(
     assert '"semantic": "비 오는 날 읽을 무겁지 않은 책"' in prompt
 
 
+def test_SPEC_PROMPT에_주제와_조건을_같이_담은_예시가_실린다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """주제와 조건이 같이 온 메시지의 예시가 프롬프트에 나가는지 본다(#359).
+
+    예시가 없으면 모델이 조건만 내고 주제를 빠뜨려 검색어가 빈다. 실제로 줄었는지는 가짜
+    모델로 볼 수 없어 평가 질문 묶음(#322)으로 쟀다. 결과는 PR 본문에 남긴다.
+    """
+    sent: list[str] = []
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _capture_spec_prompt(sent))
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert '{"semantic": "요리책", "filters": {"price_max": 15000}}' in sent[0]
+
+
 def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
