@@ -14,11 +14,13 @@ import openai
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+import app.agent.graph as graph_module
 from app.agent import prompts
 from app.agent.compare import LlmComparer
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
 from app.agent.graph import MAX_CALLS_PER_STEP, MAX_TOOL_STEPS, run_agent
 from app.agent.schemas import AgentActRequest, ToolName, parse_request
+from app.gateway.commerce import CommerceError, CommerceErrorCode
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError
 
@@ -165,8 +167,15 @@ def test_그래프_상태는_조회한_장바구니를_남긴다() -> None:
     assert [line.isbn for line in run.ctx.cart_snapshot] == [A]
 
 
-def test_장바구니를_못_본_LLM이_조회와_번호_빼기를_같이_부르면_빼지_않는다() -> None:
-    # 같은 묶음의 조회 결과는 LLM 이 아직 받지 못했다. 그 목록의 2번째를 빼면 LLM 이 보지 않은 책이 빠진다
+def test_장바구니를_못_본_LLM이_조회와_번호_빼기를_같이_부르면_빼지_않는다(
+    monkeypatch,
+) -> None:
+    # 선읽기가 안 된 상황(BE 가 거절했다고 본다). 같은 묶음의 조회 결과는 LLM 이 아직 받지 못했다.
+    # 그 목록의 2번째를 빼면 LLM 이 보지 않은 책이 빠진다
+    async def no_prefetch(ctx, gateway) -> None:
+        return None
+
+    monkeypatch.setattr(graph_module, "prefetch_cart", no_prefetch)
     run, _model, fake = _run(
         [
             ai_calls(
@@ -670,3 +679,89 @@ def test_비교_부품이_없는_실행에서는_비교를_못_한다() -> None:
     )
 
     assert run.tool_calls[0].result == {"ok": False, "error": "TOOL_NOT_IMPLEMENTED"}
+
+
+# --- 장바구니 선읽기 (#387) ---
+
+
+def _state_text(model) -> str:
+    # 첫 호출의 메시지는 (시스템 프롬프트, 이번 요청의 상태, 사용자 말)이다
+    return model.calls[0][1].content
+
+
+def test_로그인했으면_장바구니를_먼저_읽어_번호_붙은_목록으로_보여_준다() -> None:
+    _run_result, model, _fake_be = _run(
+        [ai_text("네.")],
+        req=_request("그거 빼줘"),
+        fake=_fake(seed=[(A, 2), (B, 1)]),
+    )
+
+    text = _state_text(model)
+    # 최근에 담은 책이 1번이다
+    assert "1. 책2 1권" in text
+    assert "2. 책1 2권" in text
+    # LLM 에게는 ISBN 도 가격도 합계도 주지 않는다. 가격은 cart_view 결과로만 말한다
+    assert A not in text and B not in text
+    assert "원" not in text and "합계: " not in text
+
+
+def test_선읽기_덕분에_조회_없이_처음부터_장바구니_번호를_쓸_수_있다() -> None:
+    run, _model, fake = _run(
+        [ai_calls((ToolName.CART_REMOVE, {"book": cart(2)})), ai_text("뺐어요.")],
+        req=_request("장바구니 두 번째 빼줘"),
+        fake=_fake(seed=[(A, 1), (B, 1), (C, 1)]),
+    )
+
+    # 조회는 [C, B, A]. 두 번째는 B 다
+    assert fake.cart_state(UID) == {A: 1, C: 1}
+    assert [tc.name for tc in run.tool_calls] == [ToolName.CART_REMOVE]
+
+
+def test_빈_장바구니도_알려_준다() -> None:
+    _result, model, _fake_be = _run([ai_text("네.")], req=_request("뭐 있어?"))
+
+    assert "지금 장바구니: 비어 있음" in _state_text(model)
+
+
+def test_로그아웃이면_장바구니를_읽지_않는다() -> None:
+    class Spy(FakeCommerce):
+        reads = 0
+
+        async def get_cart(self, user_id):
+            Spy.reads += 1
+            return await super().get_cart(user_id)
+
+    Spy.reads = 0
+    books = [FakeBook(A, "책1", 10000, 100)]
+    spy = Spy(books, users=[UID])
+
+    _result, model, _fake_be = _run(
+        [ai_text("로그인해 주세요.")], req=_request("빼줘", logged_in=False), fake=spy
+    )
+
+    assert Spy.reads == 0
+    assert "지금 장바구니" not in _state_text(model)
+
+
+def test_허용한_도구에_장바구니가_없으면_읽지_않는다() -> None:
+    _result, model, _fake_be = _run(
+        [ai_text("네.")],
+        req=_request("재고 있어?", allow_tools=[ToolName.BOOK_OFFER]),
+        fake=_fake(seed=[(A, 1)]),
+    )
+
+    assert "지금 장바구니" not in _state_text(model)
+
+
+def test_장바구니를_읽다_BE가_거절하면_선읽기_없이_진행한다() -> None:
+    class Down(FakeCommerce):
+        async def get_cart(self, user_id):
+            raise CommerceError(CommerceErrorCode.CART_NOT_FOUND)
+
+    down = Down([FakeBook(A, "책1", 10000, 100)], users=[UID])
+
+    run, model, _fake_be = _run([ai_text("네.")], req=_request("뭐 있어?"), fake=down)
+
+    assert run.final_text == "네."
+    assert "지금 장바구니" not in _state_text(model)
+    assert run.ctx.cart_snapshot is None
