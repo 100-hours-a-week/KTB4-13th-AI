@@ -96,6 +96,7 @@ def test_답변_검사의_결과도_기록한다() -> None:
     assert record["status"] == 422
     assert record["removed"] == ["ACTION_NOT_DONE"]
     assert record["data"] is None
+    assert record["raw_reply"] == "담았어요."  # 지워지기 전의 LLM 글이 남는다
     assert grade.grade_case(CASES["add-01"], record)["failures"] == ["요청 오류 422"]
 
 
@@ -107,6 +108,9 @@ def test_쓰기가_성공한_턴에서_검사가_지운_문장의_이유를_센�
 
     assert record["status"] == 200
     assert record["removed"] == ["ACTION_RESTATED"]
+    # 사용자에게 간 답과 LLM 이 쓴 원문이 다르다. 어떤 말투가 지워졌는지 원문으로 모은다
+    assert record["raw_reply"] == "추가되었습니다."
+    assert record["reply"] == "1번 책을 장바구니에 담았어요."
 
 
 def test_LLM_장애는_503으로_기록한다() -> None:

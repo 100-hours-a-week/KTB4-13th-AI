@@ -96,6 +96,9 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
     record: dict[str, Any] = {
         "status": 200,
         "reply": "",
+        # LLM 이 쓴 마지막 글(답변 검사 전). 검사가 지운 문장이 무엇이었는지, 실제 모델이 어떤 말투로 답하는지
+        # 모으는 데 쓴다. 서버 로그에는 원문을 남기지 않지만(대화 원문), 평가용 가짜 사용자의 글은 남겨도 된다
+        "raw_reply": "",
         "data": None,
         "removed": [],
         "error": None,
@@ -118,6 +121,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 run = await run_agent(req, model=model, gateway=fake, comparer=comparer)
             finished = finish(run)
             record.update(
+                raw_reply=run.final_text,
                 reply=finished.data.reply,
                 data=finished.data.model_dump(mode="json"),
                 removed=finished.removed,
@@ -128,7 +132,12 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 tokens_out=sum(t.output_tokens for t in run.timings),
             )
         except GroundingFailed as e:
-            record.update(status=422, removed=e.removed, error="grounding_failed")
+            record.update(
+                status=422,
+                removed=e.removed,
+                error="grounding_failed",
+                raw_reply=run.final_text,
+            )
         except Exception as e:  # noqa: BLE001 - 어떤 오류든 기록으로 남기고 다음 사례로 간다
             record.update(status=_error_status(e), error=type(e).__name__)
         record["ms"] = (time.perf_counter() - started) * 1000
