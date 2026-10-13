@@ -351,3 +351,117 @@ def test_되물어야_하는_사례는_어떤_짐작도_근거를_얻지_못한�
             case["request"]["message"],
             ref,
         )
+
+
+# --- 리뷰 반영 (#394) ---
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "재밌겠다 담아줘",
+        "읽고 싶다 담아줘",
+        "별로다 빼줘",
+        "좋겠다, 담아줘",
+        "그거 담아줘",
+    ],
+)
+def test_다로_끝나는_말투의_다는_전체_표현이_아니다(message: str) -> None:
+    # "-다" 어미 뒤에 "담아줘/빼줘"가 와도 어떤 짐작도 근거를 얻지 못해야 한다
+    ctx = _ctx(message, cart=[SW, DB, PY], cards=[PY, DB, K8S])
+
+    for n, isbn in enumerate([PY, DB, K8S], 1):
+        assert not evidence.has_evidence(ctx, _card(n), isbn), (message, n)
+    for n, isbn in enumerate([SW, DB, PY], 1):
+        assert not evidence.has_evidence(ctx, _cart(n), isbn), (message, n)
+
+
+def test_따로_쓴_다는_전체_표현이다() -> None:
+    ctx = _ctx("그거 다 빼줘", cart=[SW, DB, PY])
+
+    assert evidence.has_evidence(ctx, _cart(2), DB)
+    # 앞에 한글이 붙으면 어미다
+    assert not evidence.has_evidence(_ctx("싫다 빼줘", cart=[SW, DB, PY]), _cart(2), DB)
+    # 둘 다도 같다: "둘"이 다른 낱말의 끝이면 세지 않는다
+    assert not evidence.has_evidence(_ctx("고둘다 빼줘", cart=[DB, PY]), _cart(1), DB)
+
+
+def test_전부터는_전체_표현이_아니다() -> None:
+    # "전부터 읽고 싶던 거 담아줘"의 "전부터"는 "전부"가 아니다
+    ctx = _ctx("전부터 읽고 싶던 거 담아줘", cards=[PY, DB])
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+def test_카드_전부의_제목을_알아야_제목을_근거로_본다() -> None:
+    # 카드 셋 제목이 모두 파이썬이고 1번만 조회했다면 "파이썬 책"은 1번만 가리키지 못한다
+    ctx = _ctx("파이썬 책 담아줘", cards=[PY, DB, K8S], know_titles=False)
+    ctx.titles = {PY: "처음 만나는 파이썬"}
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+    ctx.titles = {
+        PY: "처음 만나는 파이썬",
+        DB: "데이터베이스 설계 노트",
+        K8S: "쿠버네티스 입문 가이드",
+    }
+    assert evidence.has_evidence(ctx, _card(1), PY)
+
+
+def test_카드_셋이_다_파이썬_책이면_파이썬_책은_어느_하나의_근거도_아니다() -> None:
+    ctx = _ctx("파이썬 책 담아줘", cards=[PY, DB, K8S], know_titles=False)
+    ctx.titles = {PY: "파이썬 기초", DB: "파이썬 심화", K8S: "파이썬 실전"}
+
+    for n, isbn in enumerate([PY, DB, K8S], 1):
+        assert not evidence.has_evidence(ctx, _card(n), isbn)
+
+
+def test_두_글자_흔한_낱말_하나는_제목의_근거가_아니다() -> None:
+    wide = "9788900001999"
+    ctx = _ctx("나는 그게 좋아 담아줘", cards=[PY, wide], know_titles=False)
+    ctx.titles = {PY: "처음 만나는 파이썬", wide: "나는 나로 살기로 했다"}
+
+    assert not evidence.has_evidence(ctx, _card(2), wide)
+    # 제목을 제대로 말하면 근거다
+    said = _ctx("나는 나로 살기로 했다 담아줘", cards=[PY, wide], know_titles=False)
+    said.titles = ctx.titles
+    assert evidence.has_evidence(said, _card(2), wide)
+
+
+def test_세_글자_이상_낱말은_하나만으로도_근거다() -> None:
+    ctx = _ctx("파이썬 빼줘", cart=[DB, PY])
+
+    assert evidence.has_evidence(ctx, _cart(2), PY)
+
+
+def test_카드의_맨_처음은_1번이고_장바구니의_처음_담은_책은_마지막_번호다() -> None:
+    cards = _ctx("맨 처음 거 담아줘", cards=[PY, DB, K8S])
+    assert evidence.has_evidence(cards, _card(1), PY)
+    assert not evidence.has_evidence(cards, _card(3), K8S)
+
+    # 장바구니는 최근에 담은 책이 1번이다. "처음 담은 거"는 가장 오래된 마지막 번호
+    cart = _ctx("처음 담은 거 빼줘", cart=[SW, DB, PY])
+    assert evidence.has_evidence(cart, _cart(3), PY)
+    assert not evidence.has_evidence(cart, _cart(1), SW)
+
+
+def test_마지막_카드는_마지막_번호다() -> None:
+    ctx = _ctx("마지막 카드 담아줘", cards=[PY, DB, K8S])
+
+    assert evidence.has_evidence(ctx, _card(3), K8S)
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("열한 번째 책 담아줘", set()),
+        ("스물한 번째 책", set()),
+        ("한 번째 책", {1}),
+        ("열 번째", {10}),
+    ],
+)
+def test_한글_뒤에_붙은_순서_낱말은_세지_않는다(
+    message: str, expected: set[int]
+) -> None:
+    assert evidence.ordinals(message) == expected

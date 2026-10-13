@@ -37,23 +37,30 @@ _NATIVE = {
     "아홉": 9,
     "열": 10,
 }
+# "열한 번째"의 "한"을 1번째로 읽지 않게, 한글 바로 뒤에 붙은 낱말은 순서로 세지 않는다
 _NATIVE_ORDINAL = re.compile(
-    r"(첫|한|두|세|석|네|넉|다섯|여섯|일곱|여덟|아홉|열)\s*(?:번째|째)"
+    r"(?<![가-힣])(첫|한|두|세|석|네|넉|다섯|여섯|일곱|여덟|아홉|열)\s*(?:번째|째)"
 )
 _SHORT_ORDINAL = {"첫째": 1, "둘째": 2, "셋째": 3, "넷째": 4}
 # 숫자는 "3번"만으로 순서로 본다(카드 3번). "3권", "3개"는 수량이라 세지 않는다
 _DIGIT_ORDINAL = re.compile(r"(\d+)\s*(?:번째|번|째)")
 
-_TOP = re.compile(
+# 장바구니는 최근에 담은 책이 1번이라 "처음 담은 거"가 마지막 번호다. 카드는 보인 순서라 "맨 처음"이 1번이다
+_CART_FIRST = re.compile(
     r"맨\s*위|제일\s*위|가장\s*위|맨\s*앞|가장\s*최근|최근에\s*담은|방금\s*담은"
 )
-_BOTTOM = re.compile(
+_CART_LAST = re.compile(
     r"맨\s*아래|맨\s*밑|제일\s*아래|가장\s*아래|맨\s*뒤|처음\s*담은|맨\s*처음"
 )
+_CARD_FIRST = re.compile(r"맨\s*위|제일\s*위|가장\s*위|맨\s*앞|맨\s*처음")
+_CARD_LAST = re.compile(
+    r"맨\s*아래|맨\s*밑|제일\s*아래|가장\s*아래|맨\s*뒤|마지막\s*(?:카드|거|것|책)"
+)
 # 목록 전체를 말하는 낱말. "다 빼줘"는 수를 말하지 않았을 때만 전체로 본다("그 두 권 다 빼줘"는 일부다)
-_ALL_WORDS = re.compile(r"전부|모두|모든")
-_BARE_ALL = re.compile(r"다\s*(?:담|빼|지워|넣|삭제)")
-_COUNT_ALL = re.compile(r"([둘셋넷])\s*다")
+# "다"는 앞뒤에 한글이 붙지 않은 낱말일 때만 센다. "좋겠다 담아줘"의 "다"는 어미다
+_ALL_WORDS = re.compile(r"전부(?!터)|모두|모든")
+_BARE_ALL = re.compile(r"(?<![가-힣])다\s*(?:담|빼|지워|넣|삭제)")
+_COUNT_ALL = re.compile(r"(?<![가-힣])([둘셋넷])\s*다(?![가-힣])")
 _COUNT_WORDS = {"둘": 2, "셋": 3, "넷": 4}
 # 말한 수량("두 권", "2권", "둘"). 전체가 아니라 그 수만큼을 말한 것일 수 있다
 _DIGIT_COUNT = re.compile(r"(\d+)\s*권")
@@ -63,6 +70,9 @@ _BARE_COUNT = re.compile(r"([둘셋넷])(?![가-힣])")
 # 제목에서 뽑은 낱말 가운데 위치를 말하는 낱말은 제목의 근거로 세지 않는다("처음 거 빼줘")
 _POSITION_WORDS = frozenset({"처음", "마지막", "최근", "방금"})
 _TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
+# 제목에서 맞춘 낱말의 글자 수 합이 이만큼은 돼야 근거로 본다. 두 글자 낱말 하나("나는", "그게")는 제목에 있어도
+# 말버릇일 수 있다
+_MIN_TITLE_MATCH = 3
 
 
 def ordinals(message: str) -> set[int]:
@@ -104,6 +114,26 @@ def _list_size(ctx: TurnContext, ref: BookRef) -> int:
     return len({card.isbn for card in ctx.cards})
 
 
+def _ends(ctx: TurnContext, ref: BookRef) -> tuple[int, int]:
+    """목록의 첫 번호와 마지막 번호. 카드는 rank 가 이어지지 않을 수 있어 가장 작은·큰 rank 를 쓴다."""
+    if ref.source == "cart":
+        return 1, len(ctx.cart_snapshot or [])
+    ranks = [card.rank for card in ctx.cards]
+    return min(ranks), max(ranks)
+
+
+def _says_position(message: str, ctx: TurnContext, ref: BookRef) -> bool:
+    """ "맨 위", "맨 아래" 같은 위치로 이 번호를 가리켰는가."""
+    first, last = _ends(ctx, ref)
+    if ref.source == "cart":
+        starts, ends = _CART_FIRST, _CART_LAST
+    else:
+        starts, ends = _CARD_FIRST, _CARD_LAST
+    return (ref.n == first and bool(starts.search(message))) or (
+        ref.n == last and bool(ends.search(message))
+    )
+
+
 def _stated_counts(message: str) -> set[int]:
     """말에 나온 수량들."""
     counts = {int(n) for n in _DIGIT_COUNT.findall(message)}
@@ -137,7 +167,7 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     n = ref.n
     if n in ordinals(message):
         return True
-    if (n == 1 and _TOP.search(message)) or (n == size and _BOTTOM.search(message)):
+    if _says_position(message, ctx, ref):
         return True
     if _says_all(message, size):
         return True
@@ -146,13 +176,19 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     title = titles.get(isbn)
     if title is None:
         return False
+    # 카드 전부의 제목을 모르면 "이 책만 가리키는 낱말"인지 알 수 없다. 카드 셋이 다 파이썬 책인데 하나만
+    # 조회했다면 "파이썬 책"은 그 하나의 근거가 아니다
+    if ref.source == "card" and len(titles) < _list_size(ctx, ref):
+        return False
     # 다른 책의 제목 글자 안에도 있는 낱말은 이 책만 가리키지 못한다("설계"는 두 제목에 다 들어 있다)
     others = [_flat(t) for other, t in titles.items() if other != isbn]
     spoken = _flat(message)
-    return any(
-        token in spoken and not any(token in other for other in others)
+    matched = [
+        token
         for token in title_tokens(title)
-    )
+        if token in spoken and not any(token in other for other in others)
+    ]
+    return sum(len(token) for token in matched) >= _MIN_TITLE_MATCH
 
 
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
