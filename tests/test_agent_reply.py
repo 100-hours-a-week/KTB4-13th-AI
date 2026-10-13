@@ -12,7 +12,7 @@ import pytest
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.reference import TurnContext
-from app.agent.reply import FALLBACK_REPLY, GroundingFailed, finish
+from app.agent.reply import FALLBACK_REPLY, LOGIN_REPLY, GroundingFailed, finish
 from app.agent.schemas import AgentActData, ContextCard, ToolCall, ToolName
 from app.gateway.commerce import CartLine
 
@@ -109,7 +109,7 @@ def _run(
     )
 
 
-# --- 행동 검사: 하지 않은 일을 했다고 답하면 안 된다 ---
+# --- 쓰기의 결과: LLM 이 아니라 코드가 기록으로 말한다 ---
 
 
 def test_도구를_안_불렀는데_담았다고_하면_지우고_남는_게_없어_422다() -> None:
@@ -134,30 +134,87 @@ def test_도구를_안_불렀는데_담았다고_하면_지우고_남는_게_없
         "넣어 드렸습니다.",
     ],
 )
-def test_담기_성공이_있으면_담았다는_말은_남는다(text) -> None:
+def test_담기_성공이_있으면_LLM의_완료_표현은_코드가_만든_문장으로_바뀐다(text) -> None:
     finished = finish(_run(text, [_add()]))
 
-    assert finished.data.reply == text
-    assert finished.removed == []
+    assert finished.data.reply == "1번 책을 장바구니에 담았어요."
+    assert finished.removed == ["ACTION_RESTATED"]
 
 
 @pytest.mark.parametrize(
     "text",
-    ["담았어요.", "담아드렸습니다.", "추가했어요.", "넣었어요."],
+    [
+        "추가되었습니다.",
+        "담겼어요.",
+        "추가됐어요.",
+        "담기 완료했습니다.",
+        "넣어 놨어요.",
+        "담아 뒀어요.",
+        "장바구니에 추가가 완료되었어요.",
+    ],
 )
-def test_담기가_실패했는데_담았다고_하면_지운다(text) -> None:
+def test_말투가_달라도_완료_표현은_코드의_문장으로_바뀐다(text) -> None:
+    # 리뷰에서 "추가되었습니다" 같은 말이 목록에 없어 그대로 나간 것을 확인했다
+    finished = finish(_run(text, [_add()]))
+
+    assert finished.data.reply == "1번 책을 장바구니에 담았어요."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "추가되었습니다.",
+        "담겼어요.",
+        "추가됐어요.",
+        "담기 완료했습니다.",
+        "넣어 놨어요.",
+        "담아 뒀어요.",
+    ],
+)
+def test_하지_않은_담기를_이런_말투로_해도_거짓_완료로_잡는다(text) -> None:
+    with pytest.raises(GroundingFailed) as exc_info:
+        finish(_run(text, []))
+
+    assert exc_info.value.removed == ["ACTION_NOT_DONE"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["삭제되었습니다.", "빠졌어요.", "제거 완료했어요.", "지워 드렸어요."],
+)
+def test_하지_않은_빼기를_이런_말투로_해도_거짓_완료로_잡는다(text) -> None:
     with pytest.raises(GroundingFailed):
-        finish(_run(text, [_add(ok=False)]))
+        finish(_run(text, []))
 
 
-def test_담기_실패의_이유를_함께_말했다면_그_문장만_남는다() -> None:
+@pytest.mark.parametrize(
+    "text",
+    ["변경되었습니다.", "수정했어요.", "바뀌었어요.", "수량을 늘렸어요."],
+)
+def test_하지_않은_수량_변경을_이런_말투로_해도_거짓_완료로_잡는다(text) -> None:
+    with pytest.raises(GroundingFailed):
+        finish(_run(text, []))
+
+
+def test_담기가_실패했는데_담았다고_하면_지우고_실패를_코드가_말한다() -> None:
+    finished = finish(_run("담았어요.", [_add(ok=False)]))
+
+    # 담았다는 거짓말이 지워져도 422 가 아니다. 무슨 일이 있었는지 코드가 알린다
+    assert finished.data.reply == "1번 책은 재고가 부족해서 담지 못했어요."
+    assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_담기_실패의_이유를_LLM이_함께_말하면_그_문장은_남는다() -> None:
     finished = finish(
         _run(
             "담았어요. 다만 재고가 부족해서 실제로는 담기지 않았어요.", [_add(ok=False)]
         )
     )
 
-    assert finished.data.reply == "다만 재고가 부족해서 실제로는 담기지 않았어요."
+    assert finished.data.reply == (
+        "1번 책은 재고가 부족해서 담지 못했어요.\n"
+        "다만 재고가 부족해서 실제로는 담기지 않았어요."
+    )
     assert finished.removed == ["ACTION_NOT_DONE"]
 
 
@@ -176,25 +233,35 @@ def test_성공한_기록은_grounded가_그대로_true다() -> None:
 
 
 def test_빼기는_빼기_성공이_있어야_한다() -> None:
-    assert finish(_run("뺐어요.", [_remove()])).data.reply == "뺐어요."
-    with pytest.raises(GroundingFailed):
-        finish(_run("뺐어요.", [_add()]))  # 담기가 성공했다고 빼기가 되지는 않는다
+    assert (
+        finish(_run("뺐어요.", [_remove()])).data.reply
+        == "《책3》을 장바구니에서 뺐어요."
+    )
+    # 담기가 성공했다고 빼기가 되지는 않는다. 안 한 빼기를 했다는 말은 지우고 담은 것만 말한다
+    finished = finish(_run("뺐어요.", [_add()]))
+    assert finished.data.reply == "1번 책을 장바구니에 담았어요."
+    assert finished.removed == ["ACTION_NOT_DONE"]
 
 
 def test_수량_변경은_수량_변경_성공이_있어야_한다() -> None:
-    assert (
-        finish(_run("수량을 바꿨어요.", [_update()])).data.reply == "수량을 바꿨어요."
-    )
-    with pytest.raises(GroundingFailed):
-        finish(_run("수량을 바꿨어요.", [_update(ok=False)]))
+    ok = finish(_run("수량을 바꿨어요.", [_update()]))
+    assert ok.data.reply == "《책3》의 수량을 2권으로 바꿨어요."
+
+    failed = finish(_run("수량을 바꿨어요.", [_update(ok=False)]))
+    assert failed.data.reply == "수량이 올바르지 않아 《책3》의 수량을 바꾸지 못했어요."
+    assert failed.removed == ["ACTION_NOT_DONE"]
 
 
 def test_한_문장에_두_가지를_했다고_하면_둘_다_성공해야_한다() -> None:
     both = finish(_run("1번을 담고 장바구니의 책은 뺐어요.", [_add(), _remove()]))
-    assert both.removed == []
+    assert both.removed == ["ACTION_RESTATED"]
+    assert both.data.reply == (
+        "1번 책을 장바구니에 담았어요. 《책3》을 장바구니에서 뺐어요."
+    )
 
-    with pytest.raises(GroundingFailed):
-        finish(_run("1번을 담고 장바구니의 책은 뺐어요.", [_add()]))
+    one = finish(_run("1번을 담고 장바구니의 책은 뺐어요.", [_add()]))
+    assert one.removed == ["ACTION_NOT_DONE"]
+    assert one.data.reply == "1번 책을 장바구니에 담았어요."
 
 
 @pytest.mark.parametrize(
@@ -213,6 +280,10 @@ def test_한_문장에_두_가지를_했다고_하면_둘_다_성공해야_한�
         "추가하지 못했어요.",
         "담지 않았어요.",
         "로그인하셔야 담을 수 있어요.",
+        "담아 드릴게요.",
+        "장바구니에 담긴 책은 2권이에요.",
+        "추가 배송비는 없어요.",
+        "추가로 궁금한 점이 있으세요?",
     ],
 )
 def test_완료_표현이_아닌_말은_도구가_없어도_지우지_않는다(text) -> None:
@@ -225,8 +296,163 @@ def test_완료_표현이_아닌_말은_도구가_없어도_지우지_않는다(
 def test_행동_검사는_문장_단위로_지운다() -> None:
     finished = finish(_run("뺐어요. 장바구니에는 책이 한 권 남아 있어요.", [_add()]))
 
-    assert finished.data.reply == "장바구니에는 책이 한 권 남아 있어요."
+    assert finished.data.reply == (
+        "1번 책을 장바구니에 담았어요.\n장바구니에는 책이 한 권 남아 있어요."
+    )
     assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_일부만_성공하면_어느_책이_됐고_안_됐는지_코드가_말한다() -> None:
+    # 리뷰에서 한 권만 담겼는데 "두 권 모두 담았어요"가 통과한 것을 확인했다
+    already = _call(
+        ToolName.CART_ADD,
+        {"ok": False, "error": "ALREADY_IN_CART", "title": "나무", "quantity": 1},
+        {"isbn": A, "quantity": 1},
+    )
+
+    finished = finish(_run("두 권 모두 장바구니에 담았어요.", [already, _add(isbn=B)]))
+
+    assert finished.data.reply == (
+        "《나무》는 이미 장바구니에 1권 담겨 있어서 그대로 뒀어요. "
+        "2번 책을 장바구니에 담았어요."
+    )
+    assert "두 권 모두" not in finished.data.reply
+
+
+def test_쓰기가_성공한_턴은_LLM이_합계만_말해도_422가_아니다() -> None:
+    # 리뷰에서 담기가 성공했는데 답이 "합계는 99,000원입니다." 한 문장이라 지워져 422 가 난 것을 확인했다
+    finished = finish(_run("합계는 99,000원입니다.", [_view(total=37000), _add()]))
+
+    assert finished.data.reply == "《책》을 장바구니에 담았어요."
+    assert finished.removed == ["TOTAL_MISMATCH"]
+
+
+def test_쓰기가_성공한_턴은_LLM이_빈_글이어도_안내_문장이_아니라_결과를_말한다() -> (
+    None
+):
+    finished = finish(_run("", [_add()]))
+
+    assert finished.data.reply == "1번 책을 장바구니에 담았어요."
+    assert finished.data.reply != FALLBACK_REPLY
+
+
+def test_수량이_2권_이상이면_권수를_말한다() -> None:
+    call = _call(ToolName.CART_ADD, {"ok": True}, {"isbn": A, "quantity": 3})
+
+    assert finish(_run("", [call])).data.reply == "1번 책 3권을 장바구니에 담았어요."
+
+
+def test_같은_책을_여러_번_시도하면_마지막_시도만_말한다() -> None:
+    finished = finish(_run("", [_add(ok=False), _add()]))
+
+    assert finished.data.reply == "1번 책을 장바구니에 담았어요."
+
+
+def test_로그인하지_않아_막힌_쓰기는_로그인을_안내한다() -> None:
+    blocked = _call(
+        ToolName.CART_ADD,
+        {"ok": False, "error": "LOGIN_REQUIRED"},
+        {"book": {"source": "card", "n": 1}},
+    )
+
+    finished = finish(_run("", [blocked]))
+
+    assert finished.data.reply == LOGIN_REPLY
+
+
+def test_책을_풀기_전에_막힌_호출은_결과_문장을_만들지_않는다() -> None:
+    # 이 호출의 arguments 는 LLM 이 준 값 그대로다. 거기 든 isbn 을 믿고 말하면 안 된다
+    blocked = _call(
+        ToolName.CART_ADD,
+        {"ok": False, "error": "BOOK_NOT_IN_CARDS"},
+        {"book": {"source": "card", "n": 9}, "isbn": "9780000000000"},
+    )
+
+    finished = finish(_run("어느 책 말씀이신가요?", [blocked]))
+
+    assert finished.data.reply == "어느 책 말씀이신가요?"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("나무", "《나무》를 장바구니에 담았어요."),
+        ("책", "《책》을 장바구니에 담았어요."),
+        ("2024", "《2024》를 장바구니에 담았어요."),  # 이천이십사 -> 사
+        ("Python", "《Python》을(를) 장바구니에 담았어요."),
+    ],
+)
+def test_조사는_제목의_받침에_따라_고른다(title, expected) -> None:
+    offer = _call(
+        ToolName.BOOK_OFFER,
+        {"offers": [{"isbn": A, "title": title, "price": 1, "in_stock": True}]},
+        {"isbns": [A]},
+    )
+
+    assert finish(_run("", [offer, _add()])).data.reply == expected
+
+
+# --- 책 제목 속의 글자는 검사에 걸리지 않는다 ---
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "총, 균, 쇠",
+        "권총의 역사",
+        "총액의 비밀",
+        "5000원으로 시작하는 주식",
+        "담았어요",
+    ],
+)
+def test_제목에_합계나_금액이나_완료_표현이_든_책의_가격을_말해도_지우지_않는다(
+    title,
+) -> None:
+    # 리뷰에서 《총, 균, 쇠》는 22,000원이 합계 주장으로 읽혀 지워지고 422 가 난 것을 확인했다
+    offer = _call(
+        ToolName.BOOK_OFFER,
+        {"offers": [{"isbn": A, "title": title, "price": 22000, "in_stock": True}]},
+        {"isbns": [A]},
+    )
+    text = f"《{title}》는 22,000원이고 재고가 있어요."
+
+    finished = finish(_run(text, [offer]))
+
+    assert finished.data.reply == text  # 사용자에게는 가리지 않은 글이 간다
+    assert finished.removed == []
+
+
+def test_따옴표가_없어도_도구가_알려_준_제목은_가린다() -> None:
+    offer = _call(
+        ToolName.BOOK_OFFER,
+        {
+            "offers": [
+                {"isbn": A, "title": "권총의 역사", "price": 15000, "in_stock": True}
+            ]
+        },
+        {"isbns": [A]},
+    )
+
+    finished = finish(_run("권총의 역사는 15,000원이에요.", [offer]))
+
+    assert finished.removed == []
+
+
+def test_제목을_가려도_진짜_합계_거짓은_잡는다() -> None:
+    offer = _call(
+        ToolName.BOOK_OFFER,
+        {
+            "offers": [
+                {"isbn": A, "title": "총, 균, 쇠", "price": 22000, "in_stock": True}
+            ]
+        },
+        {"isbns": [A]},
+    )
+
+    with pytest.raises(GroundingFailed):
+        finish(
+            _run("《총, 균, 쇠》 합계는 99,000원이에요.", [_view(total=37000), offer])
+        )
 
 
 # --- 숫자 검사: 합계는 마지막 조회의 total 이어야 한다 ---
@@ -255,9 +481,10 @@ def test_맞는_합계는_남는다() -> None:
 
 @pytest.mark.parametrize("word", ["합계", "총액", "총합", "총 금액", "전체 금액", "총"])
 def test_합계를_뜻하는_여러_말을_같게_본다(word) -> None:
-    with pytest.raises(GroundingFailed):
-        finish(_run(f"{word}은 99,000원이에요.", [_view(total=37000)]))
-    assert finish(_run(f"{word}은 37,000원이에요.", [_view(total=37000)])).removed == []
+    with pytest.raises(GroundingFailed) as exc_info:
+        finish(_run(f"{word} 99,000원이에요.", [_view(total=37000)]))
+    assert exc_info.value.removed == ["TOTAL_MISMATCH"]
+    assert finish(_run(f"{word} 37,000원이에요.", [_view(total=37000)])).removed == []
 
 
 def test_조회하지_않고_합계를_말하면_지운다() -> None:
@@ -271,8 +498,8 @@ def test_조회_뒤에_쓰기가_성공했으면_그_합계는_인정하지_않�
         _run("담았어요. 합계는 37,000원입니다.", [_view(total=37000), _add()])
     )
 
-    assert finished.data.reply == "담았어요."
-    assert finished.removed == ["TOTAL_MISMATCH"]
+    assert finished.data.reply == "《책》을 장바구니에 담았어요."
+    assert finished.removed == ["ACTION_RESTATED", "TOTAL_MISMATCH"]
 
 
 def test_쓰기가_실패했으면_조회한_합계는_여전히_맞다() -> None:
@@ -291,7 +518,10 @@ def test_쓰기_뒤에_다시_조회했으면_새_합계를_인정한다() -> No
 
     finished = finish(_run("담았어요. 합계는 37,000원입니다.", calls))
 
-    assert finished.removed == []
+    assert finished.removed == ["ACTION_RESTATED"]
+    assert finished.data.reply == (
+        "《책》을 장바구니에 담았어요.\n합계는 37,000원입니다."
+    )
 
 
 def test_빈_장바구니의_합계_0원은_맞는_말이다() -> None:

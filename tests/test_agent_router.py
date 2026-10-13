@@ -128,7 +128,9 @@ def test_담아_달라는_요청이_끝까지_돌아_장바구니가_바뀐다(m
 
     assert res.status_code == 200
     data = res.json()["data"]
-    assert data["reply"] == "《책1》을 담았어요."
+    assert (
+        data["reply"] == "1번 책을 장바구니에 담았어요."
+    )  # LLM 의 문장이 아니라 코드가 만든 문장
     assert data["not_shopping"] is False
     assert [c["name"] for c in data["tool_calls"]] == ["cart.add"]
     assert data["tool_calls"][0]["arguments"] == {"isbn": A, "quantity": 1}
@@ -223,6 +225,27 @@ def test_도구를_안_불렀는데_담았다고_답하면_422다(monkeypatch) -
     assert res.status_code == 422
     assert res.json() == {"message": "grounding_failed", "data": None}
     assert fake.cart_state(UID) == {}
+
+
+def test_담기가_성공한_턴은_LLM이_합계만_말해도_422가_아니라_결과를_말한다(
+    monkeypatch,
+) -> None:
+    # 리뷰에서 확인한 사고: 담기가 성공했는데 답이 낡은 합계 한 문장이라 지워져 422 가 났다
+    _wire(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+            ai_text("합계는 99,000원입니다."),
+        ],
+        fake=_fake(seed=[(B, 1)]),
+    )
+
+    res = client.post(URL, json=_request(message="1번 담고 합계 알려줘"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["reply"] == "1번 책을 장바구니에 담았어요."
 
 
 def test_합계를_지어내면_그_문장만_지우고_200이다(monkeypatch) -> None:
