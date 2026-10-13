@@ -254,7 +254,7 @@ def test_LLM이_받는_첫_메시지는_지시와_요청_상태와_사용자_말
     assert isinstance(system, SystemMessage) and system.content == prompts.SYSTEM_PROMPT
     assert isinstance(state, SystemMessage)
     assert "로그인: 예" in state.content
-    assert "1번, 2번" in state.content
+    assert "카드 1번, 카드 2번" in state.content
     assert "지금 보고 있는 책: 있음" in state.content
     assert isinstance(user, HumanMessage) and user.content == "1번 담아줘"
 
@@ -698,8 +698,10 @@ def test_로그인했으면_장바구니를_먼저_읽어_번호_붙은_목록�
 
     text = _state_text(model)
     # 최근에 담은 책이 1번이다
-    assert "1. 책2 1권" in text
-    assert "2. 책1 2권" in text
+    assert "장바구니 1번째: 책2 1권" in text
+    assert "장바구니 2번째: 책1 2권" in text
+    # 카드 번호와 겹치지 않게 "카드 N번"으로 적는다(1번이 카드인지 장바구니인지 헷갈린 사고)
+    assert "카드 1번" in text
     # LLM 에게는 ISBN 도 가격도 합계도 주지 않는다. 가격은 cart_view 결과로만 말한다
     assert A not in text and B not in text
     assert "원" not in text and "합계: " not in text
