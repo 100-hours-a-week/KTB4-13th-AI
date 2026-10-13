@@ -45,10 +45,19 @@ class TurnContext:
     cards: list[ContextCard]
     focused_isbn: str | None
     allow_tools: list[ToolName] | None
-    # 마지막으로 조회한 장바구니(BE 조회 순서, 나중에 담은 책이 1번). 조회하기 전에는 None.
-    # 장바구니 번호는 LLM 이 본 이 목록 기준으로 푼다. 그 뒤에 쓰기가 있어도 다시 만들지 않는다.
+    # LLM 이 결과를 받아 본 장바구니(BE 조회 순서, 나중에 담은 책이 1번). 본 적이 없으면 None.
+    # 장바구니 번호는 LLM 이 본 이 목록 기준으로만 푼다. 그 뒤에 쓰기가 있어도 다시 만들지 않는다.
     # 그래야 한 번에 "1번 담고 장바구니 3번째 빼줘"를 불러도 번호가 밀리지 않는다.
     cart_snapshot: list[CartLine] | None = None
+    # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
+    # LLM 이 본 적 없는 목록의 n번째가 실행된다. 묶음이 끝나 결과를 LLM 에게 돌려줄 때 commit_cart_view 로 올린다.
+    pending_cart: list[CartLine] | None = None
+
+    def commit_cart_view(self) -> None:
+        """한 묶음의 도구 결과를 LLM 에게 돌려줄 때 부른다. 이 묶음에서 조회한 장바구니가 다음 번호의 기준이 된다."""
+        if self.pending_cart is not None:
+            self.cart_snapshot = self.pending_cart
+            self.pending_cart = None
 
     @classmethod
     def from_request(cls, req: AgentActRequest) -> Self:

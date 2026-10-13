@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.agent.reference import TurnContext
-from app.agent.schemas import ContextCard, ToolName
+from app.agent.schemas import ContextCard, ToolCall, ToolName
 from app.agent.tools import ARG_MODELS, execute
 from app.gateway.commerce import CommerceGateway
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
@@ -88,6 +88,13 @@ def _run(ctx, spy, name, args):
     return asyncio.run(execute(ctx, spy, name, args))
 
 
+def _see_cart(ctx, spy) -> ToolCall:
+    """장바구니 조회만 한 묶음. 결과를 LLM 에게 돌려주는 시점까지 흉내 낸다."""
+    call = _run(ctx, spy, ToolName.CART_VIEW, {})
+    ctx.commit_cart_view()
+    return call
+
+
 def card(n: int) -> dict:
     return {"source": "card", "n": n}
 
@@ -99,7 +106,9 @@ def cart(n: int) -> dict:
 # --- 조회 ---
 
 
-def test_장바구니_조회는_BE_순서대로_돌려주고_번호를_풀_목록으로_기억한다() -> None:
+def test_장바구니_조회는_BE_순서대로_돌려주고_묶음이_끝나면_번호를_풀_목록으로_기억한다() -> (
+    None
+):
     spy, _fake, ctx = _setup(seed=[(A, 1), (B, 2)])
 
     call = _run(ctx, spy, ToolName.CART_VIEW, {})
@@ -117,6 +126,8 @@ def test_장바구니_조회는_BE_순서대로_돌려주고_번호를_풀_목�
         "quantity": 2,
         "available": True,
     }
+    assert ctx.cart_snapshot is None  # 아직 LLM 이 받지 못했다
+    ctx.commit_cart_view()
     assert [line.isbn for line in ctx.cart_snapshot] == [B, A]
     assert call.grounded is True
 
@@ -127,6 +138,7 @@ def test_빈_장바구니도_목록으로_기억한다() -> None:
     call = _run(ctx, spy, ToolName.CART_VIEW, {})
 
     assert call.result == {"items": []}
+    ctx.commit_cart_view()
     assert ctx.cart_snapshot == []
 
 
@@ -137,6 +149,7 @@ def test_조회는_인자를_받지_않는다() -> None:
 
     assert call.result == {"ok": False, "error": "INVALID_ARGUMENTS"}
     assert spy.calls == []
+    assert ctx.pending_cart is None
     assert ctx.cart_snapshot is None
 
 
@@ -254,7 +267,7 @@ def test_품절_책은_BE가_거절한다() -> None:
 
 def test_장바구니_번호로_수량을_바꾼다() -> None:
     spy, fake, ctx = _setup(seed=[(B, 3), (D, 2)])  # 목록은 [D, B]
-    _run(ctx, spy, ToolName.CART_VIEW, {})
+    _see_cart(ctx, spy)
 
     call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(2), "quantity": 1})
 
@@ -314,7 +327,7 @@ def test_재고보다_크게_바꾸면_BE가_거절하고_수량은_그대로다
 
 def test_장바구니_맨_위는_가장_나중에_담은_책이다() -> None:
     spy, fake, ctx = _setup(seed=[(A, 1), (B, 1), (C, 1)])
-    _run(ctx, spy, ToolName.CART_VIEW, {})
+    _see_cart(ctx, spy)
 
     call = _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(1)})
 
@@ -391,7 +404,7 @@ def test_가격_조회는_1개에서_10개까지만_받는다(books) -> None:
 def test_한_번에_부른_도구들은_같은_목록_기준으로_번호를_푼다() -> None:
     # "1번 담고 장바구니 1번째 빼줘": 담기가 먼저 실행돼도 장바구니 1번은 LLM 이 본 목록의 1번이다
     spy, fake, ctx = _setup(seed=[(C, 1)])
-    _run(ctx, spy, ToolName.CART_VIEW, {})  # 목록: [C]
+    _see_cart(ctx, spy)  # 목록: [C]
 
     added = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
     removed = _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(1)})
@@ -402,15 +415,54 @@ def test_한_번에_부른_도구들은_같은_목록_기준으로_번호를_푼
     assert fake.cart_state(UID) == {A: 1}
 
 
-def test_다시_조회하면_번호가_새_목록_기준으로_바뀐다() -> None:
+def test_다시_조회하면_묶음이_끝난_뒤부터_번호가_새_목록_기준으로_바뀐다() -> None:
     spy, _fake, ctx = _setup(seed=[(C, 1)])
-    _run(ctx, spy, ToolName.CART_VIEW, {})
+    _see_cart(ctx, spy)
     _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
     assert ctx.cart_snapshot[0].isbn == C  # 아직 낡은 목록
 
     _run(ctx, spy, ToolName.CART_VIEW, {})
+    assert ctx.cart_snapshot[0].isbn == C  # 조회했어도 LLM 이 받기 전이라 그대로다
 
+    ctx.commit_cart_view()
     assert [line.isbn for line in ctx.cart_snapshot] == [A, C]
+    assert ctx.pending_cart is None
+
+
+def test_조회와_같은_묶음의_장바구니_번호는_본_적_없는_목록으로_풀지_않는다() -> None:
+    # 장바구니를 한 번도 못 본 LLM 이 조회와 "장바구니 2번째 빼기"를 같이 불렀다
+    spy, fake, ctx = _setup(seed=[(A, 1), (B, 1), (C, 1)])
+
+    viewed = _run(ctx, spy, ToolName.CART_VIEW, {})
+    removed = _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(2)})
+
+    assert viewed.result["items"]
+    assert removed.result == {"ok": False, "error": "CART_NOT_LOADED"}
+    assert fake.cart_state(UID) == {A: 1, B: 1, C: 1}
+
+
+def test_같은_묶음에서_담고_다시_조회해도_번호는_앞서_본_목록으로_푼다() -> None:
+    # 앞 묶음에서 본 목록은 [A]. 이번 묶음의 조회가 [B, A]를 돌려줘도 "1번째"는 LLM 이 본 A 다
+    spy, fake, ctx = _setup(seed=[(A, 1)])
+    _see_cart(ctx, spy)
+
+    _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+    _run(ctx, spy, ToolName.CART_VIEW, {})
+    removed = _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(1)})
+
+    assert removed.result == {"ok": True}
+    assert removed.arguments == {"isbn": A}  # 방금 담은 B 가 아니다
+    assert fake.cart_state(UID) == {B: 1}
+
+
+def test_조회하지_않은_묶음이_끝나도_본_목록은_그대로다() -> None:
+    spy, _fake, ctx = _setup(seed=[(A, 1)])
+    _see_cart(ctx, spy)
+    seen = ctx.cart_snapshot
+
+    ctx.commit_cart_view()
+
+    assert ctx.cart_snapshot is seen
 
 
 # --- 책을 가리킬 수 없으면 실행하지 않는다 ---
