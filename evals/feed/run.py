@@ -465,7 +465,10 @@ def main(
             "summary": summary,
             "scores": [asdict(s) for s in scores],
         }
-        Path(args.out).write_text(
+        out = Path(args.out)
+        # 다 돌린 뒤에 폴더가 없어 저장하지 못하면 결과가 사라진다
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
             json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(f"\n사용자마다의 결과: {args.out}")

@@ -299,6 +299,21 @@ def test_out_을_주면_사용자마다의_결과를_파일로_남긴다(tmp_pat
 # ── 기준선 ───────────────────────────────────────────────────────────────
 
 
+def test_out_의_폴더가_없으면_만든다(tmp_path, capsys) -> None:
+    # 다 돌린 뒤에 폴더가 없어 저장하지 못하면 결과가 사라진다.
+    server = FakeServer()
+    path = tmp_path / "results" / "after.json"
+
+    code = runner.main(
+        ["--ids", "one-field-01", "--yes", "--out", str(path)],
+        target=server.target,
+        facts=server.facts,
+    )
+
+    assert code == 0
+    assert json.loads(path.read_text(encoding="utf-8"))["scores"]
+
+
 def test_기준선은_지금_묶음으로_잰_것이다() -> None:
     # 사용자를 고치고 기준선을 다시 재지 않으면, 바꾼 뒤의 숫자를 낡은 기준선과 견주게 된다.
     baseline = json.loads(

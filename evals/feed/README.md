@@ -22,7 +22,7 @@
 DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed.run            # 몇 명을 돌릴지만 본다
 DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed.run --yes      # 전부 돌린다
 DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed.run --kinds dislike,author --yes
-DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed.run --yes --out result.json
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed.run --yes --out evals/feed/results/after.json
 ```
 
 - `--kinds`, `--ids`, `--group`으로 사용자를 고릅니다. 짝이 있는 사용자를 고르면 짝도 같이 부릅니다.
@@ -30,6 +30,7 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed
 - 187명 전부에 30초쯤 걸립니다. LLM은 부르지 않고, 취향 기억의 벡터만 로컬 임베딩 모델로 만듭니다.
 - **이름이 `_eval`로 끝나는 DB에만 돌립니다.** 실행기가 가상 사용자의 프로필을 DB에 쓰기 때문입니다. 끝나면 지웁니다. 다른 DB에 돌리려면 `--any-db`를 붙입니다.
 - 묶음을 만든 책 표와 권수가 다른 DB에 돌리면 결과 위에 주의가 찍힙니다.
+- `--out`으로 사용자마다의 결과를 파일로 남깁니다. `evals/feed/results/` 아래에 두면 저장소에 섞이지 않습니다.
 
 ## 결과 읽는 법
 
