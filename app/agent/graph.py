@@ -167,6 +167,10 @@ def build_graph(model: Any, gateway: CommerceGateway, ctx: TurnContext):
                 )
             )
 
+        # 이 묶음의 결과를 LLM 에게 돌려주는 지금부터, 이 묶음에서 조회한 장바구니가 번호의 기준이다.
+        # 묶음 안에서는 올리지 않는다. LLM 이 아직 받지 못한 목록으로 "장바구니 n번째"를 풀면 안 된다.
+        ctx.commit_cart_view()
+
         timing = StepTiming("tools", (perf_counter() - started) * 1000)
         return {
             "messages": replies,

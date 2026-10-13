@@ -184,6 +184,7 @@ def test_요청에서_만든_상태는_요청의_값_그대로다() -> None:
     assert ctx.focused_isbn == B
     assert ctx.allow_tools == [ToolName.CART_VIEW, ToolName.CART_ADD]
     assert ctx.cart_snapshot is None
+    assert ctx.pending_cart is None
 
 
 def test_요청에서_만든_상태를_바꿔도_요청은_그대로다() -> None:
