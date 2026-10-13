@@ -21,6 +21,7 @@ from langchain_openai.chat_models.base import OpenAIRefusalError
 
 import app.gateway.llm as llm_gateway
 from app.gateway.llm import (
+    LLMTimeoutError,
     LLMUnavailableError,
     complete,
     get_chat_model,
@@ -338,3 +339,67 @@ def test_json_mode를_끄면_도구를_바인딩해도_요청이_나가고_도�
     assert [tc["name"] for tc in result.tool_calls] == ["_get_cart"]
     assert "response_format" not in sent[0]
     assert sent[0]["tools"][0]["function"]["name"] == "_get_cart"
+
+
+# --- 시간 초과는 다른 장애와 구분한다 — ⑤가 504로 답하는 데 쓴다 (#371) ---
+
+
+def test_invoke_chain은_시간_초과를_LLMTimeoutError로_바꾼다() -> None:
+    request = httpx.Request("POST", "http://localhost:11434/v1")
+    chain = _raising(openai.APITimeoutError(request=request))
+
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(invoke_chain(chain, None))
+
+    assert last_known_status() == "unavailable"
+
+
+def test_시간_초과도_LLMUnavailableError로_잡힌다() -> None:
+    # ③은 LLMUnavailableError만 잡아 축소 응답으로 내려간다. 시간 초과가 여기서 빠지면 500이 된다.
+    request = httpx.Request("POST", "http://localhost:11434/v1")
+    chain = _raising(openai.APITimeoutError(request=request))
+
+    with pytest.raises(LLMUnavailableError):
+        asyncio.run(invoke_chain(chain, None))
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(
+            openai.APIConnectionError(request=httpx.Request("POST", "http://x/v1")),
+            id="연결_실패",
+        ),
+        pytest.param(OpenAIRefusalError("거부"), id="거부"),
+        pytest.param(IndexError("choices가 빔"), id="응답_형식"),
+        pytest.param(LLMUnavailableError("JSON 없음"), id="체인이_직접_던짐"),
+    ],
+)
+def test_시간_초과가_아닌_장애는_LLMTimeoutError가_아니다(exc) -> None:
+    # openai의 시간 초과 예외는 연결 실패 예외의 하위 타입이다. 거꾸로 연결 실패까지 시간 초과로
+    # 보면 ⑤가 503이어야 할 것을 504로 답한다.
+    with pytest.raises(LLMUnavailableError) as exc_info:
+        asyncio.run(invoke_chain(_raising(exc), None))
+
+    assert not isinstance(exc_info.value, LLMTimeoutError)
+
+
+def test_서버가_제한_시간_안에_답하지_않으면_LLMTimeoutError다(monkeypatch) -> None:
+    """ChatOpenAI까지 실제로 거친다. httpx 시간 초과가 SDK와 langchain-openai를 지나 무엇으로 오는지 본다."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("응답 없음", request=request)
+
+    real = ChatOpenAI
+
+    def factory(**kwargs):
+        kwargs["http_async_client"] = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return real(**kwargs)
+
+    monkeypatch.setattr(llm_gateway, "ChatOpenAI", factory)
+    monkeypatch.setenv("LLM_MOCK", "false")
+
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(complete("아무 프롬프트"))
