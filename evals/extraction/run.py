@@ -13,6 +13,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import statistics
 import sys
 from collections import Counter
@@ -245,7 +246,12 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
         print("실제로 돌리려면 --yes 를 붙인다. 돈이 드는 호출이다.")
         return 0
 
-    scores = asyncio.run(run(cases, target or api_target(), args.runs))
+    # 서버는 요청마다 로그를 남긴다. 수십 번 부르면 결과 표가 묻히므로 도는 동안은 경고부터만 보인다
+    logging.disable(logging.INFO)
+    try:
+        scores = asyncio.run(run(cases, target or api_target(), args.runs))
+    finally:
+        logging.disable(logging.NOTSET)
     summary = summarize(scores, args.runs)
     print()
     print(render(summary))

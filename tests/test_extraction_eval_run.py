@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import logging
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -202,6 +203,14 @@ def test_yes를_붙이면_돌리고_표를_낸다(capsys) -> None:
     assert code == 0
     assert len(calls) == 2
     assert "request" in out and "100%" in out
+
+
+def test_도는_동안_줄인_로그를_끝나면_되돌린다(capsys) -> None:
+    target, _calls = _target()
+
+    run.main(["--ids", "none-01", "--yes"], target=target)
+
+    assert logging.root.manager.disable == logging.NOTSET
 
 
 def test_결과를_파일로_남긴다(tmp_path, capsys) -> None:
