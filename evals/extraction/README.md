@@ -69,6 +69,8 @@
 
 실행기는 대화마다 API를 같은 프로세스에서 그대로 부릅니다. 서버를 따로 띄우지 않아도 되고, LLM은 `.env`의 설정대로 **진짜를 부르므로 돈이 듭니다.**
 
+모델은 `.env`의 `EXTRACTION_LLM_MODEL_ID`를 쓰고, 비어 있으면 `LLM_MODEL_ID`를 씁니다. 지금까지의 측정은 `openai/gpt-4o-mini`로 했습니다. 어느 모델로 부를지는 돌리기 전에 나오는 줄에서 확인합니다.
+
 ```
 uv run python -m evals.extraction.run --kinds request --runs 3
 uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out result.json

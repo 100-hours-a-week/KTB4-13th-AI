@@ -207,7 +207,9 @@ def _model_line() -> str:
     settings = get_settings()
     if settings.llm_mock:
         return "LLM_MOCK=true 라서 진짜 LLM 을 부르지 않는다(이 API 는 503 으로 답한다)"
-    return f"모델 {settings.llm_model_id or '(설정 없음)'}, 공급자 {settings.llm_provider or '(설정 없음)'}"
+    # ⑤는 자기 모델 설정이 있으면 그것을, 없으면 챗봇과 같은 모델을 쓴다(app/extraction/service.py)
+    model = settings.extraction_llm_model_id or settings.llm_model_id
+    return f"모델 {model or '(설정 없음)'}, 공급자 {settings.llm_provider or '(설정 없음)'}"
 
 
 def _split(text: str | None) -> list[str] | None:

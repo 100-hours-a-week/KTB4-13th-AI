@@ -220,6 +220,27 @@ def test_yes_없이는_계획만_알려_주고_한_번도_부르지_않는다(ca
     assert "--yes" in out
 
 
+@pytest.mark.parametrize(
+    ("own", "shown"),
+    [
+        pytest.param("openai/gpt-4o-mini", "openai/gpt-4o-mini", id="⑤만_쓰는_모델"),
+        pytest.param("", "openai/gpt-4o", id="비어_있으면_공용_모델"),
+    ],
+)
+def test_계획은_취향_뽑기가_실제로_부를_모델을_알려_준다(
+    monkeypatch, capsys, own, shown
+) -> None:
+    # 돈이 드는 호출을 허락하기 전에 보는 줄이다. 실제로 부를 모델과 다르면 값을 잘못 어림한다
+    monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.setenv("LLM_MODEL_ID", "openai/gpt-4o")
+    monkeypatch.setenv("EXTRACTION_LLM_MODEL_ID", own)
+    target, _calls = _target()
+
+    run.main(["--ids", "none-01"], target=target)
+
+    assert f"모델 {shown}," in capsys.readouterr().out
+
+
 def test_yes를_붙이면_돌리고_표를_낸다(capsys) -> None:
     target, calls = _target()
 
