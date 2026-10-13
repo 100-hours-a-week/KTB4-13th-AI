@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+from collections import Counter
 
 import pytest
 
@@ -269,3 +270,22 @@ def test_out_을_주면_사용자마다의_결과를_파일로_남긴다(tmp_pat
     assert saved["scores"][0]["case_id"] == "one-field-01"
     assert len(saved["scores"][0]["isbns"]) == 3
     assert "kinds" in saved["summary"]
+
+
+# ── 기준선 ───────────────────────────────────────────────────────────────
+
+
+def test_기준선은_지금_묶음으로_잰_것이다() -> None:
+    # 사용자를 고치고 기준선을 다시 재지 않으면, 바꾼 뒤의 숫자를 낡은 기준선과 견주게 된다.
+    baseline = json.loads(
+        runner.CASES_PATH.with_name("baseline.json").read_text(encoding="utf-8")
+    )
+    kinds = baseline["summary"]["kinds"]
+
+    assert baseline["bundle_version"] == BUNDLE["version"]
+    assert baseline["catalog"] == BUNDLE["catalog"]
+    assert {kind: row["users"] for kind, row in kinds.items()} == dict(
+        Counter(case["kind"] for case in CASES)
+    )
+    # 재지 못한 사용자가 있는 기준선은 견줄 기준이 못 된다.
+    assert all(row["measured"] == row["users"] for row in kinds.values())
