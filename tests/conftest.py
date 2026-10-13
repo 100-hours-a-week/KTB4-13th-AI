@@ -6,8 +6,10 @@
 DB 를 실제로 쓰지 않는 테스트까지 환경 파일에 의존하지 않도록 여기서 채운다.
 """
 
+import json
 import os
 
+import asyncpg
 import pytest
 
 # import 시점에 넣는다 — 테스트 모듈이 app.main 을 import 하면서
@@ -15,6 +17,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql://test@127.0.0.1:5432/test")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
+from app.core import db
 from app.core.auth import verify_service_token
 from app.core.config import get_settings
 from app.main import app as _app
@@ -38,3 +41,52 @@ def _bypass_service_token():
     _app.dependency_overrides[verify_service_token] = lambda: None
     yield
     _app.dependency_overrides.pop(verify_service_token, None)
+
+
+class _IdempotencyConn:
+    """idempotency_records 표를 메모리 딕셔너리로 흉내 내는 연결. app.core.idempotency 의 질의 두 개만 받는다."""
+
+    def __init__(self, rows: dict) -> None:
+        self.rows = rows
+
+    async def fetchrow(self, query: str, key: str):
+        row = self.rows.get(key)
+        if row is None:
+            return None
+        body_hash, response = row
+        return {
+            "body_hash": body_hash,
+            "stored_response": json.dumps(response, ensure_ascii=False),
+        }
+
+    async def execute(self, query: str, key: str, body_hash: str, response: str):
+        if key in self.rows:
+            raise asyncpg.UniqueViolationError("duplicate key")
+        self.rows[key] = (body_hash, json.loads(response))
+
+
+class _IdempotencyAcquire:
+    def __init__(self, rows: dict) -> None:
+        self.rows = rows
+
+    async def __aenter__(self) -> _IdempotencyConn:
+        return _IdempotencyConn(self.rows)
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+class _IdempotencyPool:
+    def __init__(self, rows: dict) -> None:
+        self.rows = rows
+
+    def acquire(self) -> _IdempotencyAcquire:
+        return _IdempotencyAcquire(self.rows)
+
+
+@pytest.fixture
+def idempotency_rows(monkeypatch) -> dict:
+    """DB 없이 멱등 기록을 메모리에 둔다. {키: (본문 해시, 저장한 응답)}. 테스트가 직접 들여다볼 수 있다."""
+    rows: dict = {}
+    monkeypatch.setattr(db, "get_pool", lambda: _IdempotencyPool(rows))
+    return rows

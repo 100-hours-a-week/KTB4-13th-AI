@@ -1,10 +1,11 @@
 """⑦ 쇼핑 에이전트: POST /agent/act (V2)
 
 명세: 위키 저장소 docs/ai/1-model-api/spec.md ⑦ POST /agent/act (PR #225)
-요청 검사 → 그래프(LLM 이 도구를 고르고 코드가 검사·실행) → 답변 검사 → 응답. 대화 원문은 로그에 남기지
-않고, 로그에는 호출 수와 지연 같은 숫자만 남긴다.
+요청 검사 → 같은 키의 재시도면 저장한 응답 → 그래프(LLM 이 도구를 고르고 코드가 검사·실행) → 답변 검사 →
+응답. 대화 원문은 로그에 남기지 않고, 로그에는 호출 수와 지연 같은 숫자만 남긴다.
 """
 
+import asyncio
 import json
 import logging
 
@@ -12,11 +13,12 @@ import openai
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.agent import guard, replay
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import parse_request
-from app.core import body, responses
+from app.core import body, idempotency, responses
 from app.core.config import get_settings
 from app.gateway.commerce_provider import (
     CommerceNotConfigured,
@@ -82,14 +84,32 @@ async def act(request: Request) -> JSONResponse:
     if req is None:
         return responses.error(400, "invalid_request")
 
+    # 같은 요청의 재시도는 다시 처리하지 않고 처음 응답을 돌려준다. 같은 키에 다른 본문이면 409
+    key = replay.key_of(req.idempotency_key)
+    digest = idempotency.body_hash(payload)
+    try:
+        stored = await replay.find(key, digest)
+    except replay.IdempotencyConflict:
+        return responses.error(409, "idempotency_conflict")
+    if stored is not None:
+        logger.info("⑦ 같은 키의 재시도라 저장한 응답을 돌려준다")
+        return responses.success(stored["message"], stored["data"])
+
     try:
         gateway = get_commerce(req.user_id)
         catalog = get_catalog()
         model = agent_model()
         # 비교는 소개글을 읽는 별도 호출이다. 도구를 고르는 호출과 메시지를 섞지 않는다
         comparer = LlmComparer(catalog, model)
-        run = await run_agent(req, model=model, gateway=gateway, comparer=comparer)
+        # 한 턴은 LLM 을 최대 4번(비교는 한 번 더) 부른다. LLM 호출 하나의 제한(LLM_TIMEOUT_SECONDS)만으로는
+        # 턴 전체가 길어져서 턴 전체를 따로 끊는다
+        async with asyncio.timeout(get_settings().agent_turn_timeout_seconds):
+            run = await run_agent(req, model=model, gateway=gateway, comparer=comparer)
         finished = finish(run)
+    except TimeoutError:
+        # 끊기 전에 쓰기가 성공했을 수 있다. 같은 키로 다시 오면 "이미 담겨 있어요"로 사실대로 답한다
+        logger.warning("⑦ 턴 시간 제한을 넘었다")
+        return responses.error(504, "generation_timeout")
     except CommerceNotConfigured:
         # 진짜 BE 장바구니는 11단계에서 연결한다. 그 전에 가짜로 답하지 않는다
         logger.warning("⑦ 장바구니가 연결되지 않았다(COMMERCE_MOCK 꺼짐)")
@@ -116,4 +136,22 @@ async def act(request: Request) -> JSONResponse:
         finished.removed,
         sum(t.ms for t in run.timings),
     )
-    return responses.success("agent_success", finished.data.model_dump(mode="json"))
+    envelope = {
+        "message": "agent_success",
+        "data": finished.data.model_dump(mode="json"),
+    }
+    # 장바구니를 바꾼 턴만 저장한다(명세: 읽기만 하는 턴에서는 키를 무시). 거절된 쓰기와 오류 응답은 저장하지 않아
+    # 재시도하면 다시 처리한다
+    if any(
+        c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
+        for c in run.tool_calls
+    ):
+        try:
+            earlier = await replay.save(key, digest, envelope)
+        except replay.IdempotencyConflict:
+            return responses.error(409, "idempotency_conflict")
+        if earlier is not None:
+            # 같은 요청이 동시에 처리되어 먼저 끝난 쪽의 응답이 있다. 사용자에게는 그것이 처음 응답이다
+            logger.info("⑦ 같은 키가 먼저 처리되어 그 응답을 돌려준다")
+            return responses.success(earlier["message"], earlier["data"])
+    return responses.success(envelope["message"], envelope["data"])
