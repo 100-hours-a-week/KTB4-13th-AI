@@ -13,6 +13,7 @@ from app.extraction.rules import (
     MAX_VALUE_CHARS,
     MIN_CONFIDENCE,
     Candidate,
+    drop_reason,
     same_as_existing,
     screen,
     text_key,
@@ -349,3 +350,143 @@ def test_한_대화_안의_중복도_띄어쓰기와_끝의_문장부호를_무�
     )
 
     assert kept == [Candidate("mood", "잔잔한 소설을 찾음", 0.9)]
+
+
+# --- 근거, 누구의 취향인지, 직접 말했는지 (#378) ---
+#
+# LLM 에게 취향마다 세 칸을 더 적게 하고 코드가 본다. 프롬프트로 "하지 마라"고만 하면 지키지 않아서다.
+
+_SAID = ["잔잔한 소설 추천해줘", "나는 원래 시집을 좋아해"]
+
+
+def _claim(**over) -> dict:
+    item = {
+        "type": "mood",
+        "value": "잔잔한 소설을 찾음",
+        "confidence": 0.7,
+        "evidence": "잔잔한 소설 추천해줘",
+        "owner": "user",
+        "basis": "requested",
+    }
+    item.update(over)
+    return item
+
+
+def _kept(*items, said=_SAID) -> list[str]:
+    return [c.value for c in screen(_out(*items), user_turns=said)]
+
+
+def test_사용자가_한_말을_근거로_든_사용자의_취향은_남는다() -> None:
+    assert _kept(_claim()) == ["잔잔한 소설을 찾음"]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        pytest.param("잔잔한 소설", id="일부만_옮김"),
+        pytest.param("잔잔한 추천해줘", id="가운데를_줄여_옮김"),
+        pytest.param("잔잔한 소설 추천해줘.", id="문장부호를_붙임"),
+        pytest.param("  잔잔한   소설  ", id="띄어쓰기가_다름"),
+        pytest.param("시집을 좋아해", id="다른_말에서_옮김"),
+    ],
+)
+def test_근거는_사용자가_한_말_하나에_낱말이_모두_들어_있으면_된다(evidence) -> None:
+    # 모델은 사용자의 말을 조금 줄여서 옮긴다. 글자 그대로만 받으면 맞는 취향까지 버린다
+    # (실측: "쿠버네티스 처음 배우는데 입문서 추천해줘"를 "쿠버네티스 입문서 추천해줘"로 옮김)
+    assert _kept(_claim(evidence=evidence)) == ["잔잔한 소설을 찾음"]
+
+
+def test_근거의_낱말이_사용자의_여러_말에_흩어져_있으면_근거가_아니다() -> None:
+    # "잔잔한"은 첫 말에, "시집을"은 둘째 말에 있다. 한 말에서 옮긴 것이 아니다
+    assert _kept(_claim(evidence="잔잔한 시집을")) == []
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        pytest.param("힐링 소설을 즐겨 읽는 분들께 인기가 많아요", id="챗봇이_한_말"),
+        pytest.param("잔잔한 소설을 추천해 달라고 함", id="고쳐_쓴_말"),
+        pytest.param("", id="빈_근거"),
+        pytest.param("소설", id="너무_짧은_근거"),
+        pytest.param(None, id="근거_없음"),
+        pytest.param(["잔잔한 소설 추천해줘"], id="근거가_목록"),
+    ],
+)
+def test_사용자가_한_말에_없는_근거를_든_취향은_버린다(evidence) -> None:
+    assert _kept(_claim(evidence=evidence)) == []
+
+
+def test_근거_칸이_아예_없어도_버린다() -> None:
+    item = _claim()
+    del item["evidence"]
+
+    assert _kept(item) == []
+
+
+@pytest.mark.parametrize("owner", ["other", "friend", "", None])
+def test_사용자_본인의_취향이_아니면_버린다(owner) -> None:
+    assert _kept(_claim(owner=owner)) == []
+
+
+@pytest.mark.parametrize("basis", ["guessed", "", None])
+def test_직접_말했는지를_적지_않았으면_버린다(basis) -> None:
+    assert _kept(_claim(basis=basis)) == []
+
+
+@pytest.mark.parametrize(
+    "value", ["잔잔한 소설을 좋아함", "잔잔한 소설을 좋아하는 편임"]
+)
+def test_찾기만_했는데_좋아한다고_쓴_취향은_버린다(value) -> None:
+    assert _kept(_claim(value=value, basis="requested")) == []
+
+
+def test_좋아한다고_직접_말한_것은_좋아한다고_써도_남는다() -> None:
+    kept = _kept(
+        _claim(
+            type="topic",
+            value="시집을 좋아함",
+            evidence="나는 원래 시집을 좋아해",
+            basis="stated",
+        )
+    )
+
+    assert kept == ["시집을 좋아함"]
+
+
+def test_찾기만_한_취향의_문장에_좋아지다_같은_말이_있는_것은_괜찮다() -> None:
+    # "좋아함"만 본다. "기분이 좋아지는"은 좋아한다는 말이 아니다
+    kept = _kept(
+        _claim(value="기분이 좋아지는 소설을 찾음", evidence="잔잔한 소설 추천해줘")
+    )
+
+    assert kept == ["기분이 좋아지는 소설을 찾음"]
+
+
+def test_한_항목이_걸려도_나머지는_남는다() -> None:
+    kept = _kept(
+        _claim(value="힐링 소설을 즐겨 읽음", evidence="힐링 소설을 즐겨 읽는 분들께"),
+        _claim(),
+    )
+
+    assert kept == ["잔잔한 소설을 찾음"]
+
+
+def test_사용자가_한_말을_주지_않으면_세_칸을_보지_않는다() -> None:
+    # 세 칸을 보는 것은 대화가 있을 때다. 형식만 거르는 쓰임(평가 묶음 검사)은 그대로다
+    assert [c.value for c in screen(_out(_item()))] == ["잔잔한 소설을 찾음"]
+
+
+@pytest.mark.parametrize(
+    ("over", "reason"),
+    [
+        ({}, None),
+        ({"owner": "other"}, "owner"),
+        ({"basis": "guessed"}, "basis"),
+        ({"evidence": "챗봇이 한 말"}, "evidence"),
+        ({"value": "잔잔한 소설을 좋아함"}, "unsaid_like"),
+    ],
+)
+def test_버리는_이유를_알려_준다(over, reason) -> None:
+    item = _claim(**over)
+
+    assert drop_reason(item, _SAID) == reason
