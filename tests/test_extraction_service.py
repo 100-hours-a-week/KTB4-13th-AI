@@ -200,7 +200,9 @@ def _use_model(monkeypatch: pytest.MonkeyPatch, reply) -> list:
             raise reply
         return AIMessage(content=reply)
 
-    monkeypatch.setattr(service, "get_chat_model", lambda: RunnableLambda(_answer))
+    monkeypatch.setattr(
+        service, "get_chat_model", lambda **_kwargs: RunnableLambda(_answer)
+    )
     return seen
 
 
@@ -369,3 +371,44 @@ def test_세_칸은_응답에_나가지_않는다(monkeypatch, embed_calls) -> N
         "dim",
         "source_conversation_id",
     }
+
+
+# --- ⑤만 쓰는 모델 (#373) ---
+
+
+def _model_asked(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """extract() 가 get_chat_model 에 넘긴 인자를 본다."""
+    asked: dict = {}
+
+    def _factory(**kwargs):
+        asked.update(kwargs)
+        return RunnableLambda(lambda _prompt: AIMessage(content=_answer_json()))
+
+    monkeypatch.setattr(service, "get_chat_model", _factory)
+    _extract()
+    return asked
+
+
+def test_EXTRACTION_LLM_MODEL_ID를_정하면_그_모델로_부른다(
+    monkeypatch, embed_calls
+) -> None:
+    # 챗봇과 같은 모델을 쓰면 운영(gpt-4o)에서는 평가에 쓴 모델과 다른 모델로 돈다. ⑤만 따로 고른다
+    monkeypatch.setenv("EXTRACTION_LLM_MODEL_ID", "openai/gpt-4o-mini")
+
+    assert _model_asked(monkeypatch) == {"model_id": "openai/gpt-4o-mini"}
+
+
+def test_EXTRACTION_LLM_MODEL_ID가_비어_있으면_공용_모델을_쓴다(
+    monkeypatch, embed_calls
+) -> None:
+    monkeypatch.setenv("EXTRACTION_LLM_MODEL_ID", "")
+
+    # None 이면 게이트웨이가 LLM_MODEL_ID 를 쓴다
+    assert _model_asked(monkeypatch) == {"model_id": None}
+
+
+def test_답을_JSON으로_고정하는_설정은_건드리지_않는다(
+    monkeypatch, embed_calls
+) -> None:
+    # json_mode 를 끄면 모델이 JSON 이 아닌 글로 답할 수 있다. ⑤는 기본값(켬)을 쓴다
+    assert "json_mode" not in _model_asked(monkeypatch)

@@ -281,7 +281,7 @@ def test_API를_그대로_거쳐_응답과_시간을_받는다(monkeypatch) -> N
     monkeypatch.setattr(
         service,
         "get_chat_model",
-        lambda: RunnableLambda(lambda _p: AIMessage(content=reply)),
+        lambda **_kwargs: RunnableLambda(lambda _p: AIMessage(content=reply)),
     )
 
     async def _embed(texts, purpose):
