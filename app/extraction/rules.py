@@ -8,6 +8,7 @@ LLM 의 답은 믿을 수 있는 입력이 아니다. 종류를 지어내거나,
 가를 수 없어서(같은 취향 0.91–0.97, 다른 취향 0.88–0.95 로 범위가 겹친다) LLM 에게 맡긴다(#369).
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
@@ -22,6 +23,17 @@ PREFERENCE_TYPES = frozenset({"mood", "topic", "author", "condition"})
 MAX_VALUE_CHARS = 200
 # 명세 ⑤: 신뢰도가 이보다 낮으면 버린다.
 MIN_CONFIDENCE = 0.5
+# LLM 이 취향마다 같이 적는 세 칸(#378). 프롬프트로 "하지 마라"고만 하면 지키지 않아서, LLM 에게는
+# 가려서 적게만 하고 버리는 것은 코드가 한다.
+OWNER_USER = "user"  # owner: 사용자 본인의 취향이다. 남의 취향("other")은 버린다
+BASIS_STATED = "stated"  # basis: 좋아한다·싫어한다·늘 그렇게 한다고 직접 말했다
+BASIS_REQUESTED = "requested"  # basis: 찾거나 추천을 부탁하기만 했다
+# evidence(근거로 든 사용자의 말)가 이보다 짧으면 근거로 보지 않는다. "응", "소설" 같은 말은 어느
+# 대화에나 있어서 무엇이든 뒷받침하는 것처럼 보인다.
+MIN_EVIDENCE_CHARS = 4
+# 좋아한다고 쓴 문장. "기분이 좋아지는"은 해당하지 않는다.
+_SAYS_LIKE = re.compile(r"좋아(함|하|해)")
+
 # 문장 끝에서 무시하는 문장부호. 글자 속의 기호는 건드리지 않는다 — "C#"과 "C", "3.5"와 "35"는 다르다.
 _TRAILING_PUNCTUATION = ".!?~…。"
 # 명세에 없는 값이다(#367). 대화 하나에서 취향 카드가 한꺼번에 수십 장 생기지 않게 한다. 평가 묶음
@@ -58,6 +70,47 @@ def same_as_existing(
     for index, saved in enumerate(existing):
         if saved.type == candidate.type and text_key(saved.value) == key:
             return index
+    return None
+
+
+def _letters(text: str) -> str:
+    """글자와 숫자만 남긴다. 띄어쓰기, 문장부호, 대소문자를 보지 않고 견주려는 것이다."""
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def _quoted_from(evidence: Any, user_turns: Sequence[str]) -> bool:
+    """근거로 든 말이 사용자가 한 말 하나에서 옮긴 것인가.
+
+    글자 그대로일 필요는 없다. 모델은 가운데를 줄여서 옮기므로, 근거의 낱말이 사용자의 말 하나에
+    모두 들어 있으면 된다. 챗봇의 말이나 지어낸 말은 낱말이 맞지 않아 걸린다.
+    """
+    if not isinstance(evidence, str):
+        return False
+    words = [word for word in map(_letters, evidence.split()) if word]
+    if sum(len(word) for word in words) < MIN_EVIDENCE_CHARS:
+        return False
+    said = [_letters(turn) for turn in user_turns]
+    return any(all(word in turn for word in words) for turn in said)
+
+
+def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
+    """근거·주인·직접 말했는지 때문에 버려야 하면 그 이유, 남겨도 되면 None.
+
+    - owner: 사용자 본인의 취향이 아니다
+    - basis: 직접 말했는지 부탁했는지를 적지 않았다
+    - evidence: 근거로 든 말이 사용자가 한 말에서 옮긴 것이 아니다(챗봇이 한 말이거나 지어낸 말이다)
+    - unsaid_like: 찾기만 했는데 좋아한다고 썼다
+    """
+    if item.get("owner") != OWNER_USER:
+        return "owner"
+    basis = item.get("basis")
+    if basis not in (BASIS_STATED, BASIS_REQUESTED):
+        return "basis"
+    if not _quoted_from(item.get("evidence"), user_turns):
+        return "evidence"
+    value = item.get("value")
+    if basis == BASIS_REQUESTED and isinstance(value, str) and _SAYS_LIKE.search(value):
+        return "unsaid_like"
     return None
 
 
@@ -99,12 +152,15 @@ def _candidate(item: Any) -> Candidate | None:
 
 
 def screen(
-    llm_output: Any, existing: Sequence[ExistingPreference] = ()
+    llm_output: Any,
+    existing: Sequence[ExistingPreference] = (),
+    user_turns: Sequence[str] | None = None,
 ) -> list[Candidate]:
     """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 신뢰도가 높은 순으로 돌려준다.
 
     한 대화에서 같은 취향이 두 번 나오면 하나로 합친다. 표기는 먼저 나온 것, 신뢰도는 높은 값이다.
     이미 저장된 취향(existing)과 종류·글자가 같은 후보는 뺀다. 개수 상한은 그 뒤에 센다.
+    사용자가 한 말(user_turns)을 주면 근거·주인·직접 말했는지도 본다(drop_reason).
     """
     items = llm_output.get("extractions") if isinstance(llm_output, dict) else None
     if not isinstance(items, list):
@@ -114,6 +170,8 @@ def screen(
     for item in items:
         candidate = _candidate(item)
         if candidate is None:
+            continue
+        if user_turns is not None and drop_reason(item, user_turns) is not None:
             continue
         if same_as_existing(candidate, existing) is not None:
             continue
