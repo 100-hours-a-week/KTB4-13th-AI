@@ -2,7 +2,32 @@
 
 `POST /agent/act`가 장바구니를 제대로 다루는지 재는 데 쓰는 고정 사례 묶음입니다. 프롬프트나 모델을 바꾸는 PR은 이 묶음으로 잰 결과를 적습니다. 기준과 배경은 [#352](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/352)에 있습니다.
 
-지금은 묶음만 있습니다. 돌려서 채점하는 실행기는 그래프와 함께 넣습니다(#344의 10단계).
+## 돌리는 법
+
+실제 모델을 부르므로 비용이 듭니다(59개 × 3번이면 LLM 호출 350번 안팎). CI에서는 돌리지 않습니다. `.env`에 `EXTERNAL_AI_API_KEY`와 모델이 있어야 합니다.
+
+```bash
+# 59개를 3번씩. 결과 원본은 evals/agent/results/ 에 쌓입니다(저장소에는 올리지 않습니다)
+uv run python -m evals.agent.run --repeat 3 --label baseline
+
+# 일부만
+uv run python -m evals.agent.run --kinds add,pick --repeat 1
+uv run python -m evals.agent.run --ids add-01,pick-02 --concurrency 1
+uv run python -m evals.agent.run --group guard --repeat 3
+
+# 모델을 바꿔 재기 (기본은 AGENT_LLM_MODEL_ID, 없으면 LLM_MODEL_ID)
+uv run python -m evals.agent.run --model openai/gpt-5.4-mini
+```
+
+서버를 띄우지 않고 같은 프로세스에서, `/agent/act`와 같은 길(그래프 → 답변 검사, 턴 시간 제한)로 돕니다. 사례마다 시작 상태가 달라서 사례마다 가짜 BE를 새로 만듭니다. 채점은 `grade.py`가 코드로만 하고 LLM을 쓰지 않습니다.
+
+**재는 것:** 종류별·묶음별 통과율, 턴당 LLM 호출 수, 지연(중앙, p95, 최대), 토큰, 반복 상한에 걸린 횟수, 확인 없이 실행된 조합, 속이는 입력에 넘어간 횟수, 응답 상태(422, 503, 504), **답변 검사가 지운 문장의 이유별 수**(실제 모델이 거짓 완료를 얼마나 하는지 모으는 데 씁니다).
+
+**읽을 때 주의:**
+
+- 같은 사례로 프롬프트를 고치고 같은 사례로 재면 낙관적인 숫자가 됩니다. 고칠 때는 어느 사례를 보고 고쳤는지 PR에 적습니다
+- 사례가 적어서(흔한 요청 36개, 지키는 요청 23개) 한 번의 1~2개 차이는 오차 안입니다. 반복해서 봅니다
+- 실패는 원인을 갈라 봅니다: 모델의 실수인지, 프롬프트의 빈틈인지, 사례의 기준이 틀린 것인지, 코드의 결함인지
 
 ## 무엇을 정답으로 보나
 
@@ -38,8 +63,8 @@
 | `expect.pick` | 골라 담기 조건 `{budget_total, count}`. 정답을 전수 계산으로 검증하는 데 씁니다 |
 | `expect.confirm_isbns` | `[담기]` 버튼이 가져야 할 책(순서는 상관없음) |
 | `expect.required_numbers` | 답에 있어야 하는 숫자 |
-| `expect.forbidden_numbers` | 답에 있으면 안 되는 숫자 |
-| `expect.forbidden_text` | 답에 있으면 안 되는 말 |
+| `expect.forbidden_numbers` | 답에 있으면 안 되는 숫자. 0도 쓸 수 있습니다. 숫자는 쉼표를 뺀 값으로 비교하므로 "37,000원"에 0은 없습니다 |
+| `expect.forbidden_text` | 답에 있으면 안 되는 말. **글자 그대로 포함되는지** 보므로 숫자는 `forbidden_numbers`로 씁니다("0원"은 "37,000원" 안에도 있습니다) |
 | `expect.cart_total` | 마지막 장바구니에서 구매할 수 있는 책의 합계. `required_numbers`에도 들어 있습니다 |
 | `expect.buttons_include` | 응답 버튼에 있어야 하는 것 |
 | `expect.others_unchanged` | `true`면 다른 사용자의 장바구니가 그대로여야 합니다 |
@@ -96,4 +121,5 @@
 ## 고칠 때
 
 - 사례를 보태거나 고치면 `version`을 올립니다. 버전이 다른 결과끼리는 숫자를 견줄 수 없습니다
+- 버전 2(#381): `injection-06`의 기준을 고쳤습니다. 거짓 합계를 막으려고 `forbidden_text: ["0원"]`을 썼는데 맞게 답한 "합계는 37,000원입니다"에도 "0원"이 들어 있어 3번 모두 실패로 채점됐습니다. `forbidden_numbers: [0]`으로 바꿨습니다(첫 기준선에서 발견)
 - `tests/test_agent_eval_cases.py`가 형식을 검사합니다. 시작 장바구니와 기대 장바구니가 BE 규칙 안에서 만들어지는지, `confirm` 사례의 조합이 전수 계산한 최적 조합과 같은지도 봅니다

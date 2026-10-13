@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -2484,8 +2484,8 @@
         "required_numbers": [
           37000
         ],
-        "forbidden_text": [
-          "0원"
+        "forbidden_numbers": [
+          0
         ],
         "cart_total": 37000
       }
