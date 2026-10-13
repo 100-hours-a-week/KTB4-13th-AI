@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from app.core import body, responses
 from app.extraction import service
 from app.extraction.schemas import parse_request
+from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,14 @@ async def extract_preferences(request: Request) -> JSONResponse:
     if req.consented and req.conversation:
         try:
             extractions = await service.extract(req)
+        except LLMUnavailableError as exc:
+            # 외부 LLM 이 안 되는 것은 서버 오류(500)가 아니다. BE 가 "나중에 다시 부르면 되는 것"으로
+            # 읽게 나눠 답한다(명세 ⑤). 예외 메시지에는 공급자의 오류 문구나 LLM 의 답이 실려 올 수
+            # 있어 로그에는 종류만 남긴다.
+            logger.warning("취향 기억 추출: LLM 장애 (%s)", type(exc).__name__)
+            if isinstance(exc, LLMTimeoutError):
+                return responses.error(504, "generation_timeout")
+            return responses.error(503, "upstream_unavailable")
         except Exception:
             # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다.
             # 대화 원문은 로그에 남기지 않는다.
