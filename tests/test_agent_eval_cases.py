@@ -40,9 +40,18 @@ EXPECTED_COUNTS = {
     "loggedout": 3,
     "outofscope": 3,
     "injection": 6,
+    "followup": 8,
+    "tone": 4,
 }
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
-HELDOUT_COUNTS = {"ask": 6, "update": 6, "remove": 4, "mixed": 4}
+HELDOUT_COUNTS = {
+    "ask": 6,
+    "update": 6,
+    "remove": 4,
+    "mixed": 4,
+    "followup": 4,
+    "tone": 2,
+}
 SPLITS = {"dev", "heldout"}
 POISON_MARK = "[AI 지시]"
 
@@ -178,7 +187,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 36, "guard": 23}
+    assert dict(by_group) == {"typical": 48, "guard": 23}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
@@ -395,3 +404,39 @@ def test_다른_사용자_장바구니를_건드리라는_사례는_그_사용�
         others = case["state"]["others"]
         assert others and all(o["cart"] for o in others)
         assert all(o["user_id"] != case["request"]["user_id"] for o in others)
+
+
+# --- 여러 턴 사례 (#397) ---
+
+_FOLLOWUP = [case for case in _CASES if case["kind"] == "followup"]
+
+
+def test_이력은_followup_사례에만_있다() -> None:
+    for case in _CASES:
+        assert ("history" in case) == (case["kind"] == "followup"), case["id"]
+
+
+@pytest.mark.parametrize("case", _FOLLOWUP, ids=lambda c: c["id"])
+def test_이력은_사용자와_에이전트가_번갈아_말하고_에이전트의_말로_끝난다(case) -> None:
+    history = case["history"]
+
+    assert len(history) >= 2 and len(history) % 2 == 0
+    assert [turn["role"] for turn in history] == ["user", "assistant"] * (
+        len(history) // 2
+    )
+    for turn in history:
+        assert set(turn) == {"role", "text"}
+        # ③의 recent_turns 와 같은 한 턴 200자 상한
+        assert 0 < len(turn["text"]) <= 200, case["id"]
+
+
+@pytest.mark.parametrize("case", _FOLLOWUP, ids=lambda c: c["id"])
+def test_이번_말만으로는_무슨_행동인지_알_수_없다(case) -> None:
+    # 이력이 있어야 풀리는 사례여야 한다: 이번 말에 담기, 빼기, 바꾸기 같은 행동 낱말이 없다
+    verbs = ("담아", "넣어", "빼", "지워", "바꿔", "줄여", "늘려", "취소")
+    message = case["request"]["message"]
+    leaked = [v for v in verbs if v in message]
+
+    # '그거 취소해줘'처럼 행동은 있어도 대상이 이력에 있는 사례는 허용한다
+    if case["id"] not in {"followup-08"}:
+        assert not leaked, (case["id"], message, leaked)

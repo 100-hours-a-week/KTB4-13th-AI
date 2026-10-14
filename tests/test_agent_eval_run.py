@@ -371,8 +371,8 @@ def test_사례를_dev와_heldout으로_가른다() -> None:
     dev = run._select(DATA, _args(split="dev"))
     heldout = run._select(DATA, _args(split="heldout"))
 
-    assert len(dev) == 59
-    assert len(heldout) == 20
+    assert len(dev) == 71
+    assert len(heldout) == 26
     assert {c["id"] for c in dev} | {c["id"] for c in heldout} == set(CASES)
     # split 칸이 없는 옛 사례는 dev 다
     assert all(c.get("split", "dev") == "dev" for c in dev)
@@ -429,3 +429,36 @@ def test_저장한_결과를_모델_없이_지금_기준으로_다시_채점한�
     assert redone["results"][0]["grade"]["blocked_write"] is True
     assert redone["summary"]["metrics"]["blocked_writes"] == 1
     assert "코드가 막은 쓰기 시도" in capsys.readouterr().out
+
+
+# --- 이력(history)을 요청에 싣는 규칙 (#397) ---
+
+
+def test_API가_이력을_받으면_history를_recent_turns로_싣는다() -> None:
+    case = CASES["followup-01"]
+
+    payload = run.request_payload(case, accepts_history=True)
+
+    assert payload["recent_turns"] == case["history"]
+    # 사례 원본은 바뀌지 않는다
+    assert "recent_turns" not in case["request"]
+
+
+def test_API가_이력을_받지_않으면_history를_보내지_않는다() -> None:
+    # 이력 칸이 생기기 전에는 같은 사례 파일로 "이력 없음"의 점수를 잰다
+    payload = run.request_payload(CASES["followup-01"], accepts_history=False)
+
+    assert "recent_turns" not in payload
+
+
+def test_이력이_없는_사례는_이력_칸을_만들지_않는다() -> None:
+    payload = run.request_payload(CASES["add-01"], accepts_history=True)
+
+    assert "recent_turns" not in payload
+
+
+def test_지금_API는_이력을_받지_않아_followup도_그대로_돈다() -> None:
+    # recent_turns 칸이 없는 동안 followup 사례는 이번 말만 보낸다
+    result, _model = _run_case("followup-01", [ai_text("어느 책이요?")])
+
+    assert result["status"] == 200

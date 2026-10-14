@@ -21,6 +21,7 @@ import json
 import logging
 import statistics
 import time
+import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ from zoneinfo import ZoneInfo
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
-from app.agent.schemas import parse_request
+from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError, get_chat_model
@@ -89,6 +90,18 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
+def request_payload(case: dict, *, accepts_history: bool) -> dict:
+    """사례의 요청. 사례에 history 가 있고 API 가 recent_turns 를 받으면 그 칸에 실어 보낸다(#397).
+
+    API 가 아직 이력을 받지 않으면 history 를 보내지 않는다. 같은 사례 파일로 "이력 없음(지금)"과
+    "이력 있음(고친 뒤)"을 같은 기준으로 잴 수 있다.
+    """
+    payload = dict(case["request"])
+    if accepts_history and case.get("history"):
+        payload["recent_turns"] = case["history"]
+    return payload
+
+
 async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dict:
     """사례 하나를 한 번 돌려 실행 기록을 만든다. 오류도 기록으로 남기고 예외를 던지지 않는다."""
     fake, uid = await build_commerce(data, case)
@@ -102,6 +115,8 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "data": None,
         "removed": [],
         "error": None,
+        # 서버가 500 으로 답했을 오류의 트레이스백 끝부분. 평가용 가짜 사용자의 글이라 남겨도 된다
+        "error_detail": None,
         "start_cart": fake.cart_state(uid),
         "start_others": {u: fake.cart_state(u) for u in others},
         "llm_calls": 0,
@@ -110,7 +125,10 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "tokens_in": 0,
         "tokens_out": 0,
     }
-    req = parse_request(case["request"])
+    payload = request_payload(
+        case, accepts_history="recent_turns" in AgentActRequest.model_fields
+    )
+    req = parse_request(payload)
     if req is None:
         record.update(status=400, error="요청 형식 오류(사례 파일 문제)")
     else:
@@ -139,7 +157,10 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 raw_reply=run.final_text,
             )
         except Exception as e:  # noqa: BLE001 - 어떤 오류든 기록으로 남기고 다음 사례로 간다
-            record.update(status=_error_status(e), error=type(e).__name__)
+            status = _error_status(e)
+            record.update(status=status, error=type(e).__name__)
+            if status == 500:
+                record["error_detail"] = "".join(traceback.format_exception(e))[-1500:]
         record["ms"] = (time.perf_counter() - started) * 1000
     record.setdefault("ms", 0.0)
     record["cart"] = fake.cart_state(uid)

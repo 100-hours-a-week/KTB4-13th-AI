@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 6,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -170,6 +170,14 @@
     "injection": {
       "group": "guard",
       "about": "속이는 입력이다"
+    },
+    "followup": {
+      "group": "typical",
+      "about": "되물은 다음 턴. 이전 대화가 있어야 무슨 행동인지 안다"
+    },
+    "tone": {
+      "group": "typical",
+      "about": "평범한 말투(한글 숫자, 구어체)로 책을 가리킨다"
     }
   },
   "cases": [
@@ -3282,6 +3290,877 @@
         "cart": {
           "9788900001001": 1,
           "9788900001063": 2
+        }
+      }
+    },
+    {
+      "id": "followup-01",
+      "kind": "followup",
+      "about": "담기를 되물은 뒤 번호로 답한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "그거 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 책을 담을까요? 카드 1번은 처음 만나는 파이썬, 2번은 데이터베이스 설계 노트, 3번은 쿠버네티스 입문 가이드예요."
+        }
+      ],
+      "request": {
+        "user_id": 9400001,
+        "conversation_id": "eval_followup-01",
+        "message": "1번이요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-01_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "followup-02",
+      "kind": "followup",
+      "about": "빼기를 되물은 뒤 제목으로 답한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "그 책 빼줘"
+        },
+        {
+          "role": "assistant",
+          "text": "장바구니에 처음 만나는 파이썬과 데이터베이스 설계 노트가 있어요. 어느 책을 뺄까요?"
+        }
+      ],
+      "request": {
+        "user_id": 9400002,
+        "conversation_id": "eval_followup-02",
+        "message": "파이썬이요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-02_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "followup-03",
+      "kind": "followup",
+      "about": "빼기를 되물은 뒤 '첫 번째'로 답한다(첫 번째는 나중에 담은 데이터베이스 설계 노트)",
+      "history": [
+        {
+          "role": "user",
+          "text": "빼줘"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 책을 뺄까요? 장바구니 첫 번째는 데이터베이스 설계 노트, 두 번째는 처음 만나는 파이썬이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9400003,
+        "conversation_id": "eval_followup-03",
+        "message": "첫 번째요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-03_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "followup-04",
+      "kind": "followup",
+      "about": "수량 변경을 되물은 뒤 제목과 수량으로 답한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "수량 바꿔줘"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 책을 몇 권으로 바꿀까요?"
+        }
+      ],
+      "request": {
+        "user_id": 9400004,
+        "conversation_id": "eval_followup-04",
+        "message": "쿠버네티스 책 3권이요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 3,
+          "9788900001049": 1
+        }
+      }
+    },
+    {
+      "id": "followup-05",
+      "kind": "followup",
+      "about": "재고 문의를 되물은 뒤 번호로 답해도 담기로 바뀌면 안 된다",
+      "history": [
+        {
+          "role": "user",
+          "text": "재고 있어?"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 책의 재고를 볼까요? 카드 1번은 처음 만나는 파이썬, 2번은 데이터베이스 설계 노트, 3번은 쿠버네티스 입문 가이드예요."
+        }
+      ],
+      "request": {
+        "user_id": 9400005,
+        "conversation_id": "eval_followup-05",
+        "message": "2번이요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {}
+      }
+    },
+    {
+      "id": "followup-06",
+      "kind": "followup",
+      "about": "에이전트가 책을 짚어 담을지 물었고 '네'로 답한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "그거 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "카드 1번 《처음 만나는 파이썬》을 담을까요?"
+        }
+      ],
+      "request": {
+        "user_id": 9400006,
+        "conversation_id": "eval_followup-06",
+        "message": "네",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-06_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "followup-07",
+      "kind": "followup",
+      "about": "에이전트가 담을지 물었고 '아니요'로 답하면 담지 않는다",
+      "history": [
+        {
+          "role": "user",
+          "text": "그거 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "카드 1번 《처음 만나는 파이썬》을 담을까요?"
+        }
+      ],
+      "request": {
+        "user_id": 9400007,
+        "conversation_id": "eval_followup-07",
+        "message": "아니요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-07_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "followup-08",
+      "kind": "followup",
+      "about": "방금 담은 책을 '그거'로 취소한다(장바구니가 둘이라 이력이 있어야 어느 책인지 안다)",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ],
+      "request": {
+        "user_id": 9400008,
+        "conversation_id": "eval_followup-08",
+        "message": "그거 취소해줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-08_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "followup-09",
+      "kind": "followup",
+      "split": "heldout",
+      "about": "비교를 되물은 뒤 번호 둘로 답해도 담기로 바뀌면 안 된다",
+      "history": [
+        {
+          "role": "user",
+          "text": "뭐가 달라?"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 두 책을 비교할까요? 카드 1번 처음 만나는 파이썬, 2번 데이터베이스 설계 노트, 3번 쿠버네티스 입문 가이드가 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9400009,
+        "conversation_id": "eval_followup-09",
+        "message": "1번이랑 3번이요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-09_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {}
+      }
+    },
+    {
+      "id": "followup-10",
+      "kind": "followup",
+      "split": "heldout",
+      "about": "골라 담기를 되물은 뒤 예산과 권수로 답한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "골라줘"
+        },
+        {
+          "role": "assistant",
+          "text": "예산과 권수를 알려 주세요. 카드 안에서 골라 드릴게요."
+        }
+      ],
+      "request": {
+        "user_id": 9400010,
+        "conversation_id": "eval_followup-10",
+        "message": "4만원에 두 권이요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-10_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "confirm",
+        "pick": {
+          "budget_total": 40000,
+          "count": 2
+        },
+        "confirm_isbns": [
+          "9788900001001",
+          "9788900001018"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "followup-11",
+      "kind": "followup",
+      "split": "heldout",
+      "about": "방금 담았다는 말 뒤에 장바구니를 보여 달라고 하면 이전 담기를 되풀이하지 않는다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ],
+      "request": {
+        "user_id": 9400011,
+        "conversation_id": "eval_followup-11",
+        "message": "지금 뭐 담겨 있어?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-11_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart_total": 15000,
+        "required_numbers": [
+          15000
+        ],
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "followup-12",
+      "kind": "followup",
+      "split": "heldout",
+      "about": "빼기를 되물은 뒤 제목 한 낱말로 답한다(셋 중 하나)",
+      "history": [
+        {
+          "role": "user",
+          "text": "빼고 싶은 책이 있어"
+        },
+        {
+          "role": "assistant",
+          "text": "어느 책을 뺄까요? 장바구니에 알고리즘 문제 해결 전략, 리눅스 명령어 사전, 네트워크 한 걸음씩이 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9400012,
+        "conversation_id": "eval_followup-12",
+        "message": "리눅스요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-12_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001032",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001032": 1,
+          "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "tone-01",
+      "kind": "tone",
+      "about": "한글 숫자로 말한 카드 번호",
+      "request": {
+        "user_id": 9500001,
+        "conversation_id": "eval_tone-01",
+        "message": "삼번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-01_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-02",
+      "kind": "tone",
+      "about": "'마지막꺼'는 마지막 카드(맨 뒤)다",
+      "request": {
+        "user_id": 9500002,
+        "conversation_id": "eval_tone-02",
+        "message": "마지막꺼 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-02_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-03",
+      "kind": "tone",
+      "about": "'젤 위에꺼'는 장바구니 맨 위, 가장 나중에 담은 책이다",
+      "request": {
+        "user_id": 9500003,
+        "conversation_id": "eval_tone-03",
+        "message": "젤 위에꺼 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-03_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "tone-04",
+      "kind": "tone",
+      "about": "'방금 거'는 가장 나중에 담은 책이다",
+      "request": {
+        "user_id": 9500004,
+        "conversation_id": "eval_tone-04",
+        "message": "방금 거 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "tone-05",
+      "kind": "tone",
+      "split": "heldout",
+      "about": "한글 숫자 번호 둘",
+      "request": {
+        "user_id": 9500005,
+        "conversation_id": "eval_tone-05",
+        "message": "일번이랑 삼번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-06",
+      "kind": "tone",
+      "split": "heldout",
+      "about": "'제일 밑에꺼'는 장바구니 맨 아래, 가장 먼저 담은 책이다",
+      "request": {
+        "user_id": 9500006,
+        "conversation_id": "eval_tone-06",
+        "message": "제일 밑에꺼 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001032",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 1,
+          "9788900001056": 1
         }
       }
     }

@@ -11,7 +11,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent.errors import RefError, ToolErrorCode
-from app.agent.schemas import AgentActRequest, ContextCard, ToolName
+from app.agent.schemas import AgentActRequest, ContextCard, ToolName, Turn
 from app.gateway.commerce import CartLine
 
 
@@ -60,6 +60,8 @@ class TurnContext:
     cart_snapshot: list[CartLine] | None = None
     # 사용자의 이번 말. LLM 이 고른 책에 사용자의 말이 근거가 되는지 보는 데 쓴다(evidence.py). None 이면 검사하지 않는다
     message: str | None = None
+    # 이번 말 앞의 대화(요청의 recent_turns). LLM 에게 보여 주고, 근거 검사가 직전 에이전트의 말을 본다(#397)
+    turns: list[Turn] = field(default_factory=list)
     # 이번 턴에 알게 된 카드 책의 제목(book.offer 결과). 장바구니 책의 제목은 cart_snapshot 에 있다
     titles: dict[str, str] = field(default_factory=dict)
     # 이번 턴에 selection.pick 이 고른 책. 사용자가 확인하기 전에는 담지 못한다(tools._add)
@@ -83,6 +85,7 @@ class TurnContext:
             focused_isbn=req.focused_isbn,
             allow_tools=None if req.allow_tools is None else list(req.allow_tools),
             message=req.message,
+            turns=list(req.recent_turns),
         )
 
 
