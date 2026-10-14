@@ -406,17 +406,17 @@ def test_20턴을_넘으면_최근_20턴만_쓴다() -> None:
         pytest.param([{"role": "bot", "text": "안녕"}], id="모르는_role"),
         pytest.param([{"role": "user"}], id="text_없음"),
         pytest.param([{"text": "안녕"}], id="role_없음"),
-        pytest.param(
-            [{"role": "user", "text": "가" * (MAX_TURN_CHARS + 1)}], id="201자"
-        ),
         pytest.param([{"role": "user", "text": 1}], id="text_숫자"),
         pytest.param(["안녕"], id="문자열_항목"),
         pytest.param({"role": "user", "text": "안녕"}, id="목록_아님"),
         pytest.param([{"role": "user", "text": "앞\x00뒤"}], id="NUL_문자"),
+        pytest.param(
+            [{"role": "bot", "text": "가" * (MAX_TURN_CHARS + 100)}], id="긴데_role_틀림"
+        ),
     ],
 )
 def test_최근_대화의_형식이_틀리면_거절한다(turns) -> None:
-    # 개수는 잘라서 쓰지만 항목의 형식, 길이, 값이 틀리면 400이다(③과 같다)
+    # 개수와 길이는 잘라서 쓰지만 항목의 형식과 값이 틀리면 400이다. 길어도 형식이 틀리면 거절한다
     assert parse_request(_request(recent_turns=turns)) is None
 
 
@@ -424,6 +424,38 @@ def test_200자까지는_받는다() -> None:
     turns = [{"role": "user", "text": "가" * MAX_TURN_CHARS}]
 
     assert parse_request(_request(recent_turns=turns)) is not None
+
+
+def test_200자를_넘는_줄은_400이_아니라_뒤쪽_200자만_쓴다() -> None:
+    # ⑦의 답변에는 길이 상한이 없어서 호출자가 그대로 싣으면 넘을 수 있다(#402).
+    # 제안과 질문("~담을까요?")은 말 끝에 있어서 뒤쪽을 남긴다
+    turns = [{"role": "assistant", "text": "앞" * 100 + "뒤" * MAX_TURN_CHARS}]
+
+    req = parse_request(_request(recent_turns=turns))
+
+    assert req is not None
+    assert req.recent_turns[0].text == "뒤" * MAX_TURN_CHARS
+
+
+def test_딱_한_글자_넘어도_뒤쪽_200자를_쓴다() -> None:
+    turns = [{"role": "user", "text": "앞" + "가" * MAX_TURN_CHARS}]
+
+    req = parse_request(_request(recent_turns=turns))
+
+    assert req is not None
+    assert req.recent_turns[0].text == "가" * MAX_TURN_CHARS
+
+
+def test_20턴을_넘고_마지막_줄이_길어도_둘_다_처리한다() -> None:
+    turns = _turns(MAX_RECENT_TURNS) + [
+        {"role": "assistant", "text": "앞" * 300 + "끝"}
+    ]
+
+    req = parse_request(_request(recent_turns=turns))
+
+    assert req is not None
+    assert len(req.recent_turns) == MAX_RECENT_TURNS
+    assert req.recent_turns[-1].text == "앞" * (MAX_TURN_CHARS - 1) + "끝"
 
 
 def test_최근_대화의_모르는_칸은_무시한다() -> None:

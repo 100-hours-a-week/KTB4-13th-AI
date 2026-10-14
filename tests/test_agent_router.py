@@ -902,6 +902,24 @@ PROPOSE_1 = [
 ]
 
 
+def test_긴_에이전트_답의_끝에_제안이_있어도_네라고_하면_끝까지_담긴다(
+    monkeypatch,
+) -> None:
+    # ⑦의 답변은 200자를 넘을 수 있다. 호출자가 그대로 싣어도 400이 아니라 뒤쪽 200자로 풀린다(#402)
+    _model, fake = _wire(monkeypatch, _add_turn())
+    long_reply = "장바구니 사정을 길게 설명드립니다. " * 20 + "카드 1번을 담을까요?"
+    turns = [
+        {"role": "user", "text": "그거 담아줘"},
+        {"role": "assistant", "text": long_reply},
+    ]
+    assert len(long_reply) > 200
+
+    res = client.post(URL, json=_request(message="네", recent_turns=turns))
+
+    assert res.status_code == 200
+    assert fake.cart_state(UID) == {A: 1}
+
+
 def _blocked_then_ask() -> list:
     # 담기를 시도했다가 막히고, 막힌 결과를 본 모델이 어느 책인지 되묻는 흐름
     return [
