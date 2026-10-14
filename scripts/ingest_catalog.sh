@@ -11,6 +11,10 @@
 #   1. stg_cat_books에 원본을 가공 없이 통째로 붓는다
 #   2. 거기서 v_books로 변환한다 (active=1만, price 이상치 제외, book_id 임시 발급)
 #
+# isbn13 칸도 채운다(#388). BE 와는 책을 ISBN 으로 주고받아서(#308), 이 칸이 비면 ISBN 으로
+# 책을 찾는 길을 로컬에서 돌려 볼 수 없다. 숫자 13자리가 아닌 값은 비워 둔다 — 칸의 형식 검사
+# (v_books_isbn13_format)에 걸려 적재가 통째로 실패한다. 10자리 ISBN 만 있는 책이 그렇다.
+#
 # \copy에 CSV 포맷 + 흔치 않은 구분자/인용부호를 쓰는 이유: 기본 TEXT 포맷은
 # 백슬래시를 이스케이프로 해석해 JSON을 깨뜨린다.
 #
@@ -72,16 +76,18 @@ WITH filtered AS (
     SELECT
         data,
         (data->>'price')::int AS price_int,
-        row_number() OVER (ORDER BY data->>'isbn13') AS rn
+        -- isbn13 이 없는 책끼리도 순서가 정해지게 원본 키를 더한다
+        row_number() OVER (ORDER BY data->>'isbn13', data->>'rec_key') AS rn
     FROM stg_cat_books
     WHERE (data->>'active')::int = 1
       AND data->>'title' IS NOT NULL
       AND (data->>'price')::int BETWEEN 1000 AND 500000
       -- 1,000원 미만·50만원 초과는 원본 입력 오류라 거른다 (개발-로그.md)
 )
-INSERT INTO v_books (book_id, title, author, publisher, price, in_stock, cover_url, category, pub_year, description)
+INSERT INTO v_books (book_id, isbn13, title, author, publisher, price, in_stock, cover_url, category, pub_year, description)
 SELECT
     rn AS book_id,                          -- 개발용 임시 ID. BE 실제 ID로 재적재 전제
+    CASE WHEN data->>'isbn13' ~ '^[0-9]{13}$' THEN data->>'isbn13' END,
     data->>'title',
     NULLIF(data->>'author', ''),
     NULLIF(data->>'publisher', ''),
@@ -109,6 +115,7 @@ echo "== v_books 적재 결과 =="
 psql -d "$DB_NAME" -c "
 SELECT
     count(*) AS total,
+    count(isbn13) AS with_isbn13,
     count(description) AS with_description,
     count(*) FILTER (WHERE cover_url IS NULL) AS no_cover,
     count(*) FILTER (WHERE author IS NULL) AS no_author
