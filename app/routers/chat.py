@@ -33,7 +33,7 @@ from app.gateway.llm import (
     parse_json_response,
 )
 from app.search import service
-from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
+from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +532,70 @@ async def _settle_category(spec: Spec) -> Spec:
     if not (spec.semantic or spec.exact.title or spec.exact.author):
         return spec.model_copy(update={"semantic": category})
     return spec
+
+
+# 1단계가 조건만 뽑고 주제를 빠뜨렸을 때 메시지에서 주제를 되찾는 규칙(_recover_topic)이 쓰는 말이다.
+# 숫자 뒤에 단위가 붙은 낱말은 조건이다: 2020년, 2만원, 300쪽, 1만원대로. 단위 없는 숫자("1984", "3D프린터")는 주제일 수 있다.
+_CONDITION_WORD = re.compile(
+    r"^\d[\d,]*(만|천|백)?(원|년|쪽|페이지|p|권|살|세|개월|달|일|월|%|대)\S*$",
+    re.IGNORECASE,
+)
+# 요청하는 말의 끝: 보여줘, 알려주세요, 있어?, 있을까요 …("추천…"은 따로 거른다)
+_REQUEST_WORD = re.compile(
+    r"(줘|주세요|줄래|부탁해?요?|있어요?|있나요|있을까요?|싶어요?)[?!.~]*$"
+)
+_TRAILING_PARTICLE = re.compile(r"(에|로|으로|의|은|는|도|이|가|를|을|만)$")
+_PUNCTUATION = ".,!?~\"'()[]“”‘’"
+# 조건이나 요청을 말하는 낱말. 주제가 아니다.
+_NOT_TOPIC = frozenset(
+    {
+        "책", "책들", "이후", "이전", "이하", "이상", "이내", "나온", "나오는", "출간", "출간된", "출판된",
+        "신간", "최근", "요즘", "넘는", "넘지", "않는", "안", "좀", "정도", "가격", "분량", "쪽", "페이지",
+        "저렴한", "싼", "비싼", "얇은", "두꺼운", "살", "수", "있는", "좋은", "괜찮은", "그냥", "제일",
+        "읽을", "볼", "만한", "아무거나",
+    }
+)  # fmt: skip
+
+
+def _has_condition(filters: SearchFilters) -> bool:
+    """가격·출간연도 조건이 걸려 있는지. price_min 0은 조건이 아니다(LLM이 "저렴한"에 0을 넣는다)."""
+    return bool(filters.price_min) or any(
+        value is not None
+        for value in (filters.price_max, filters.pub_year_from, filters.pub_year_to)
+    )
+
+
+def _is_topic_word(word: str) -> bool:
+    if _CONDITION_WORD.match(word) or _REQUEST_WORD.search(word):
+        return False
+    if word.startswith("추천"):
+        return False
+    return word not in _NOT_TOPIC and _TRAILING_PARTICLE.sub("", word) not in _NOT_TOPIC
+
+
+def _recover_topic(spec: Spec, message: str) -> Spec:
+    """1단계가 조건만 뽑고 주제를 빠뜨렸으면 메시지에서 주제를 되찾는다(#359 원인 2).
+
+    "2020년 이후에 나온 인공지능 책 추천해줘"에서 1단계가 pub_year_from만 내고 semantic을 비우는 일이 있다
+    (평가 38번: 같은 프롬프트로 5회 중 1~2회). 검색 문장이 비면 후보를 찾지 않고 "어떤 분야가 좋으세요?"로
+    되물어 카드가 0장이 된다. 이번 메시지에서 조건·요청 말을 뺀 나머지 낱말이 있으면 그것을 검색 문장으로 쓴다.
+    나머지가 없으면("2만원 이하 책 추천해줘") 주제를 모르는 것이니 그대로 되묻는다.
+
+    조건이 걸려 있을 때만 쓴다. 조건 없이 주제를 빠뜨린 경우("책 추천해줘")는 되묻는 것이 맞고, 이름이
+    아닌 말을 주제로 잘못 잡을 위험이 가장 큰 곳이기도 하다. 이미 찾을 말(semantic·제목·저자·출판사)이
+    있거나 exact 의도면 건드리지 않는다. 고친 spec은 응답에 실려 다음 턴으로 이어진다.
+    """
+    if (
+        spec.intent != "semantic"
+        or _query_text(spec)
+        or not _has_condition(spec.filters)
+    ):
+        return spec
+    words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
+    topic = " ".join(w for w in words if _is_topic_word(w))
+    if not topic:
+        return spec
+    return spec.model_copy(update={"semantic": topic[:MAX_QUERY_CHARS]})
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -1273,6 +1337,7 @@ async def chat(request: Request) -> JSONResponse:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
         # 후보 검색 실패와 같은 500이다.
         spec = await _settle_category(spec)
+        spec = _recover_topic(spec, req.message)
         shown = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
