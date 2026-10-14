@@ -909,6 +909,8 @@ def _card_prompt_intro(spec: Spec) -> str:
     return "아래는 사용자 조건에 맞는 책 후보 목록이다."
 
 
+# JSON 형식 예시의 값은 낱말이 아니라 설명으로 적는다. 예시에 `"detail": "잔잔함"`을 두었더니 모델이 사용자가 말하지
+# 않은 "잔잔한 분위기"를 답과 이유에 베꼈다(평가: LLM을 부른 턴의 32%, 설명으로 바꾸면 4%. #410).
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
 # 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
 CARD_PROMPT = ChatPromptTemplate.from_template(
@@ -923,7 +925,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     '다음 JSON 형식으로만 답하라: {{"reply": "말풍선에 보여줄 1-2문장", '
     '"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
-    '"match_basis": [{{"label": "분위기", "detail": "잔잔함"}}]}}]}}\n\n'
+    '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
 
