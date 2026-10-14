@@ -25,9 +25,9 @@ SYSTEM_PROMPT = f"""너는 책 쇼핑몰의 장바구니 도우미다. 사용자
 - 사용자가 지금 보고 있는 책: {{"source": "focused"}}
 
 ## 지킬 것
-1. '장바구니 n번째'로 가리키려면 먼저 cart_view 를 부른다. 한 번에 여러 도구를 부르면 모두 같은 장바구니 목록을 기준으로 한다.
+1. 사용자가 '1번', '2번'처럼 숫자만 말하면 추천 카드 번호다. '장바구니 n번째'는 [이번 요청의 상태]에 적힌 장바구니 목록의 번호다. 목록이 없으면 먼저 cart_view 를 부른다. 한 번에 여러 도구를 부르면 모두 같은 장바구니 목록을 기준으로 한다. 목록에는 가격과 합계가 없으니 필요하면 cart_view 를 부른다.
 2. 사용자가 책 제목으로 말했는데 카드 중 어느 것인지 모르면 book_offer 로 카드의 제목을 확인한 뒤 그 카드 번호를 쓴다.
-3. 사용자가 책을 제목이나 설명으로 말했는데 카드 번호나 지목한 책으로 풀 수 없으면, 되묻기 전에 먼저 확인한다. 장바구니 안의 책이면 cart_view, 카드 안의 책이면 book_offer 를 부른다. 확인해도 하나로 정해지지 않을 때만 도구를 더 부르지 말고 어느 책인지 되묻는다. 짐작해서 실행하지 않는다.
+3. 사용자가 책을 제목이나 설명으로 말했는데 카드 번호나 지목한 책으로 풀 수 없으면, 되묻기 전에 먼저 확인한다. 장바구니 안의 책이면 상태의 장바구니 목록에서 제목으로 찾아 그 번호로 가리키고(목록이 없으면 cart_view), 카드 안의 책이면 book_offer 를 부른다. 확인해도 하나로 정해지지 않을 때만 도구를 더 부르지 말고 어느 책인지 되묻는다. 짐작해서 실행하지 않는다.
 4. 사용자가 시킨 것만 한다. 시키지 않은 담기, 빼기, 수량 변경을 하지 않는다.
    '3권으로 바꿔줘', '5권으로 해줘'는 그 책의 수량을 그 숫자로 바꾸라는 뜻이다. 지금 담긴 수량보다 커도 cart_update 를 부른다(재고는 도구가 확인한다).
 5. 가격, 수량, 합계는 도구 결과에 있는 값만 말한다. 직접 계산하거나 지어내지 않는다. 합계는 cart_view 결과의 total 이다.
@@ -45,7 +45,7 @@ SYSTEM_PROMPT = f"""너는 책 쇼핑몰의 장바구니 도우미다. 사용자
 def state_message(ctx: TurnContext) -> str:
     """이번 요청의 상태. 번호만 알려 주고 ISBN 은 알려 주지 않는다."""
     ranks = sorted({card.rank for card in ctx.cards})
-    cards = ", ".join(f"{rank}번" for rank in ranks) if ranks else "없음"
+    cards = ", ".join(f"카드 {rank}번" for rank in ranks) if ranks else "없음"
     login = (
         "예"
         if ctx.logged_in
@@ -56,5 +56,22 @@ def state_message(ctx: TurnContext) -> str:
         "[이번 요청의 상태]\n"
         f"- 로그인: {login}\n"
         f"- 직전에 보여 준 추천 카드: {cards} (제목과 가격은 book_offer 로 확인한다)\n"
-        f"- 사용자가 지금 보고 있는 책: {focused}"
+        f"- 사용자가 지금 보고 있는 책: {focused}" + _cart_lines(ctx)
+    )
+
+
+def _cart_lines(ctx: TurnContext) -> str:
+    """미리 읽은 장바구니. 번호와 제목, 수량만 준다. 가격과 합계는 cart_view 결과로만 말한다(답변 검사의 근거)."""
+    if ctx.cart_snapshot is None:
+        return ""
+    if not ctx.cart_snapshot:
+        return "\n- 지금 장바구니: 비어 있음"
+    lines = [
+        f"  장바구니 {position}번째: {line.title} {line.quantity}권"
+        + ("" if line.available else " (구매 불가)")
+        for position, line in enumerate(ctx.cart_snapshot, start=1)
+    ]
+    return (
+        "\n- 지금 장바구니(최근에 담은 책이 첫 번째. 가격과 합계는 cart_view 로 확인한다):\n"
+        + "\n".join(lines)
     )

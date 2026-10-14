@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from itertools import combinations
 
-from app.agent import guard
+from app.agent import evidence, guard
 from app.agent.errors import ToolErrorCode
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
@@ -362,10 +362,12 @@ def _resolved(run: AgentRun) -> ResolvedReference | None:
             continue
         for isbn in found:
             # 책을 풀기 전에 막힌 호출은 LLM 이 준 인자가 그대로 남아 있다. 요청 안에서 온 책만 인정한다
+            # 사용자가 가리킨 책만 "정해진 책"이다. 되묻으려고 선택지를 조회한 책은 정해진 것이 아니다(#387)
             if (
                 isinstance(isbn, str)
                 and label(run.ctx, isbn) != "목록 밖의 책"
                 and isbn not in isbns
+                and evidence.stated(run.ctx, isbn)
             ):
                 isbns.append(isbn)
     parts = [label(run.ctx, i) for i in isbns]

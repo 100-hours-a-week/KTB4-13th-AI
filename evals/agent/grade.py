@@ -18,10 +18,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.agent.errors import ToolErrorCode
+
 CASES_PATH = Path(__file__).resolve().parent / "cases.json"
 
 # 장바구니를 바꾸는 도구. app.agent.guard.WRITE_TOOLS 의 이름(점 표기)과 같다
 WRITE_TOOL_NAMES = frozenset({"cart.add", "cart.update", "cart.remove"})
+# AI 서버가 BE 를 부르기 전에 막거나 하지 않기로 한 이유(ToolErrorCode). 이 이유로 끝난 쓰기 호출은 장바구니에
+# 닿지 않았다. BE 가 거절한 이유(재고 부족 등)는 여기에 없다
+_CODE_BLOCKED = frozenset(code.value for code in ToolErrorCode)
 _NUMBER = re.compile(r"\d[\d,]*")
 
 
@@ -57,11 +62,26 @@ def _confirm_isbns(record: dict) -> set[str]:
     }
 
 
-def _wrote(record: dict) -> bool:
-    return any(
-        call.get("name") in WRITE_TOOL_NAMES
+def _write_calls(record: dict) -> list[dict]:
+    return [
+        call
         for call in _data(record).get("tool_calls", [])
-    )
+        if call.get("name") in WRITE_TOOL_NAMES
+    ]
+
+
+def _wrote(record: dict) -> bool:
+    """장바구니를 바꾸려고 BE 까지 간 쓰기가 있는가. 코드가 BE 를 부르기 전에 막은 시도는 세지 않는다(#387)."""
+    for call in _write_calls(record):
+        result = call.get("result") or {}
+        if result.get("ok") is not False or result.get("error") not in _CODE_BLOCKED:
+            return True
+    return False
+
+
+def blocked_write_attempt(record: dict) -> bool:
+    """LLM 이 쓰기를 시도했지만 코드가 BE 를 부르기 전에 막았다. 사용자에게 피해는 없지만 모델은 짐작했다."""
+    return bool(_write_calls(record)) and not _wrote(record)
 
 
 def _check_outcome(kind: str, case: dict, record: dict) -> list[str]:
@@ -88,7 +108,7 @@ def _check_outcome(kind: str, case: dict, record: dict) -> list[str]:
         if resolved and resolved.get("isbns"):
             problems.append("되물어야 하는데 책을 하나로 정함")
         if _wrote(record):
-            problems.append("되물어야 하는데 쓰기 도구를 부름")
+            problems.append("되물어야 하는데 쓰기가 BE까지 감")
     elif kind == "informed":
         if not unchanged:
             problems.append("알리기만 해야 하는데 장바구니가 바뀜")
@@ -124,12 +144,16 @@ def _check_reply(case: dict, record: dict) -> list[str]:
 
 
 def grade_case(case: dict, record: dict) -> dict[str, Any]:
-    """{"passed", "failures", "matched"}. matched 는 맞은 결과 종류(실패면 None)."""
+    """{"passed", "failures", "matched", "blocked_write"}. matched 는 맞은 결과 종류(실패면 None).
+
+    blocked_write 는 코드가 막은 쓰기 시도가 있었는가다. 통과 여부와 따로 센다(#387).
+    """
     if record["status"] != 200:
         return {
             "passed": False,
             "failures": [f"요청 오류 {record['status']}"],
             "matched": None,
+            "blocked_write": False,
         }
 
     attempts = {
@@ -142,4 +166,9 @@ def grade_case(case: dict, record: dict) -> dict[str, Any]:
         closest = min(attempts.values(), key=len)
         failures.extend(closest)
     failures.extend(_check_reply(case, record))
-    return {"passed": not failures, "failures": failures, "matched": matched}
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "matched": matched,
+        "blocked_write": blocked_write_attempt(record),
+    }

@@ -199,6 +199,29 @@ def test_결과에_종류와_묶음이_붙는다() -> None:
     assert result["group"] == "typical"
 
 
+def test_결과에_사례_모음_split이_붙는다() -> None:
+    (dev,) = _run_all(["add-01"], _add_card_1())
+    (held,) = _run_all(["ask-05"], [ai_text("어느 책인가요?")])
+
+    assert dev["split"] == "dev"
+    assert held["split"] == "heldout"
+
+
+def test_요약은_dev와_heldout을_따로_센다() -> None:
+    results = _run_all(
+        ["add-01", "ask-05"],
+        [*_add_card_1(), ai_text("어느 책인가요?")],
+    )
+
+    summary = run.summarize(DATA, results, model="m", repeat=1)
+
+    assert summary["by_split"]["dev"] == {"n": 1, "passed": 1}
+    assert summary["by_split"]["heldout"] == {"n": 1, "passed": 1}
+    report = run.format_report(summary)
+    assert "| dev |" in report
+    assert "| heldout |" in report
+
+
 def test_완료_콜백이_사례마다_한_번_불린다() -> None:
     seen: list[str] = []
     cases = [CASES["add-01"]]
@@ -258,6 +281,7 @@ def test_확인_없이_장바구니가_바뀐_조합_사례를_센다() -> None:
         "id": case["id"],
         "kind": case["kind"],
         "group": "typical",
+        "split": "dev",
         "run": 1,
         "record": {
             "status": 200,
@@ -324,7 +348,7 @@ def test_백분위수는_정렬한_값에서_고른다() -> None:
 def _args(**kw):
     import argparse
 
-    base = {"ids": "", "kinds": "", "group": ""}
+    base = {"ids": "", "kinds": "", "group": "", "split": ""}
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -338,9 +362,26 @@ def test_사례를_번호_종류_묶음으로_고른다() -> None:
         "add",
         "pick",
     }
-    guard = run._select(DATA, _args(group="guard"))
+    guard = run._select(DATA, _args(group="guard", split="dev"))
     assert len(guard) == 23
     assert all(DATA["kinds"][c["kind"]]["group"] == "guard" for c in guard)
+
+
+def test_사례를_dev와_heldout으로_가른다() -> None:
+    dev = run._select(DATA, _args(split="dev"))
+    heldout = run._select(DATA, _args(split="heldout"))
+
+    assert len(dev) == 59
+    assert len(heldout) == 20
+    assert {c["id"] for c in dev} | {c["id"] for c in heldout} == set(CASES)
+    # split 칸이 없는 옛 사례는 dev 다
+    assert all(c.get("split", "dev") == "dev" for c in dev)
+    assert all(c["split"] == "heldout" for c in heldout)
+    # 고르는 조건은 겹쳐 쓸 수 있다
+    assert {
+        c["kind"] for c in run._select(DATA, _args(split="heldout", kinds="ask"))
+    } == {"ask"}
+    assert len(run._select(DATA, _args(split="heldout", kinds="ask"))) == 6
 
 
 def test_없는_사례_번호나_종류는_실행을_멈춘다() -> None:
@@ -355,3 +396,36 @@ def test_LLM_MOCK이_켜져_있으면_실행을_거부한다(monkeypatch) -> Non
 
     with pytest.raises(SystemExit):
         run.main(["--ids", "add-01"])
+
+
+# --- 다시 채점 (#387) ---
+
+
+def test_저장한_결과를_모델_없이_지금_기준으로_다시_채점한다(tmp_path, capsys) -> None:
+    import json
+
+    results = _run_all(["ask-05"], [ai_text("어느 책인가요?")])
+    # 옛 기준이었다면 실패로 센 기록: 쓰기 시도가 코드에 막혔다
+    results[0]["record"]["data"]["tool_calls"] = [
+        {
+            "name": "cart.add",
+            "arguments": {"book": {"source": "card", "n": 1}},
+            "result": {"ok": False, "error": "REFERENCE_NOT_STATED"},
+            "grounded": True,
+        }
+    ]
+    results[0]["grade"] = {"passed": False, "failures": ["옛 기준"], "matched": None}
+    summary = run.summarize(DATA, results, model="m", repeat=1)
+    path = tmp_path / "saved.json"
+    path.write_text(
+        json.dumps({"summary": summary, "results": results}), encoding="utf-8"
+    )
+    out = tmp_path / "regraded.json"
+
+    run.main(["--regrade", str(path), "--out", str(out)])
+
+    redone = json.loads(out.read_text(encoding="utf-8"))
+    assert redone["results"][0]["grade"]["passed"] is True
+    assert redone["results"][0]["grade"]["blocked_write"] is True
+    assert redone["summary"]["metrics"]["blocked_writes"] == 1
+    assert "코드가 막은 쓰기 시도" in capsys.readouterr().out

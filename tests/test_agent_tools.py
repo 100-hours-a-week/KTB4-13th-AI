@@ -1092,3 +1092,118 @@ def test_허용하지_않은_화면_안내도_막는다() -> None:
     call = _run(ctx, spy, ToolName.UI_GUIDE, {"target": "CART-001"})
 
     assert call.result == {"ok": False, "error": "TOOL_NOT_ALLOWED"}
+
+
+# --- 사용자의 말이 책의 근거인지 (evidence, #387) ---
+
+
+def _words(ctx: TurnContext, message: str) -> TurnContext:
+    ctx.message = message
+    return ctx
+
+
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        (ToolName.CART_ADD, {"book": card(1)}),
+        (ToolName.CART_UPDATE, {"book": cart(2), "quantity": 3}),
+        (ToolName.CART_REMOVE, {"book": cart(2)}),
+    ],
+)
+def test_사용자가_누구인지_말하지_않았으면_쓰기는_BE를_부르지_않고_막힌다(
+    name, args
+) -> None:
+    spy, fake, ctx = _setup(seed=[(A, 1), (B, 1), (C, 1)])
+    _see_cart(ctx, spy)
+    spy.calls.clear()
+    before = fake.cart_state(UID)
+    _words(ctx, "그거 해줘")
+
+    call = _run(ctx, spy, name, args)
+
+    assert call.result == {"ok": False, "error": "REFERENCE_NOT_STATED"}
+    assert spy.calls == []
+    assert fake.cart_state(UID) == before
+    # 책을 풀기 전에 막혔으니 기록에는 LLM 이 준 그대로가 남고 ISBN 은 없다
+    assert "isbn" not in call.arguments
+
+
+def test_번호나_제목을_말했으면_쓰기가_실행된다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 1), (B, 1), (C, 1)])
+    _see_cart(ctx, spy)
+
+    # 장바구니는 최근에 담은 책이 1번이라 2번째는 B 다
+    call = _run(
+        _words(ctx, "장바구니 두 번째 빼줘"),
+        spy,
+        ToolName.CART_REMOVE,
+        {"book": cart(2)},
+    )
+
+    assert call.result == {"ok": True}
+    assert B not in fake.cart_state(UID)
+
+
+def test_말한_번호와_다른_책을_고르면_막힌다() -> None:
+    spy, fake, ctx = _setup()
+    before = fake.cart_state(UID)
+
+    # 2번이라고 했는데 카드 1번을 골랐다
+    call = _run(_words(ctx, "2번 담아줘"), spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.result["error"] == "REFERENCE_NOT_STATED"
+    assert fake.cart_state(UID) == before
+
+
+def test_지금_보고_있는_책은_말에_근거가_없어도_된다() -> None:
+    spy, fake, ctx = _setup(focused_isbn=C)
+
+    call = _run(
+        _words(ctx, "담아줘"), spy, ToolName.CART_ADD, {"book": {"source": "focused"}}
+    )
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {C: 1}
+
+
+def test_book_offer로_카드_제목을_알게_되면_제목으로_말한_요청이_통과한다() -> None:
+    # 제목에서 맞춘 낱말이 세 글자 이상이어야 근거다("책2" 같은 짧은 제목은 근거가 못 된다)
+    books = [
+        FakeBook(A, "파이썬 입문서", 10000, 100),
+        FakeBook(B, "자바 프로그래밍", 12000, 100),
+        FakeBook(C, "러스트 시스템", 14000, 100),
+    ]
+    fake = FakeCommerce(books, users=[UID])
+    spy = _Spy(fake)
+    ctx = TurnContext(
+        user_id=UID,
+        logged_in=True,
+        cards=[
+            ContextCard(isbn=A, rank=1, match_score=92),
+            ContextCard(isbn=B, rank=2, match_score=87),
+            ContextCard(isbn=C, rank=3, match_score=81),
+        ],
+        focused_isbn=None,
+        allow_tools=None,
+        message="프로그래밍 책 담아줘",
+    )
+
+    # 제목을 모르는 동안에는 카드 2번이 "프로그래밍 책"인지 말과 맞춰 볼 수 없다
+    blocked = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+    assert blocked.result["error"] == "REFERENCE_NOT_STATED"
+
+    _run(ctx, spy, ToolName.BOOK_OFFER, {"books": [card(1), card(2), card(3)]})
+    ok = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+
+    assert ok.result == {"ok": True}
+    assert fake.cart_state(UID) == {B: 1}
+
+
+def test_AI가_고른_책은_근거보다_확인이_먼저다() -> None:
+    spy, fake, ctx = _setup()
+    ctx.picked.add(A)
+    # 말에 근거가 없어도, 고른 책을 담으려는 시도에는 확인 규칙의 이유가 나간다
+    call = _run(_words(ctx, "바로 담아줘"), spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.result["error"] == "CONFIRMATION_REQUIRED"
+    assert fake.cart_state(UID) == {}

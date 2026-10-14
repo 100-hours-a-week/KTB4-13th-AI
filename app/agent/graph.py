@@ -27,10 +27,10 @@ from app.agent import descriptors, prompts
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
-from app.agent.schemas import AgentActRequest, ToolCall
+from app.agent.schemas import AgentActRequest, ToolCall, ToolName
 from app.agent.tools import execute
 from app.agent.view import llm_view
-from app.gateway.commerce import CommerceGateway
+from app.gateway.commerce import CommerceError, CommerceGateway
 from app.gateway.llm import invoke_chain
 
 # 명세 ⑦: tool 반복은 최대 3번
@@ -196,6 +196,29 @@ def build_graph(
     return builder.compile()
 
 
+# 장바구니를 다루는 도구. 이 중 하나라도 쓸 수 있어야 장바구니를 미리 읽어 보여 준다(allow_tools 를 지킨다)
+_CART_TOOLS = frozenset(
+    {ToolName.CART_VIEW, ToolName.CART_ADD, ToolName.CART_UPDATE, ToolName.CART_REMOVE}
+)
+
+
+async def prefetch_cart(ctx: TurnContext, gateway: CommerceGateway) -> None:
+    """로그인한 사용자의 장바구니를 코드가 먼저 읽어 번호를 풀 목록으로 삼는다(#387).
+
+    "파이썬 책 3권으로 바꿔줘"처럼 장바구니 속 책을 제목으로 말하면, LLM 이 장바구니를 보기 전에는 어느 책인지
+    몰라 되묻거나 조회와 번호를 한 묶음에 섞었다(기준선의 수량 변경 33%). 번호 붙은 목록을 처음부터 보여 준다.
+    읽지 못하면(BE 거절, 로그아웃) 지금까지와 같이 LLM 이 cart.view 로 읽는다.
+    """
+    if not ctx.logged_in:
+        return
+    if ctx.allow_tools is not None and not _CART_TOOLS & set(ctx.allow_tools):
+        return
+    try:
+        ctx.cart_snapshot = await gateway.get_cart(ctx.user_id)
+    except CommerceError:
+        return
+
+
 async def run_agent(
     req: AgentActRequest,
     *,
@@ -209,6 +232,7 @@ async def run_agent(
     한다(소개글 속 지시문이 도구 선택에 섞이지 않게).
     """
     ctx = TurnContext.from_request(req)
+    await prefetch_cart(ctx, gateway)
     graph = build_graph(model, gateway, ctx, comparer)
     out: _State = await graph.ainvoke(
         {

@@ -46,6 +46,9 @@ def _fresh_dev_commerce():
 
 def _request(**overrides) -> dict:
     body = json.loads(json.dumps(EXAMPLES["request"]))
+    # 명세 예시의 말(예산으로 조합 고르기)이 아니라 가짜 LLM 이 카드 1번을 담는 기본 흐름에 맞는 말을 쓴다.
+    # 사용자의 말에 책을 가리키는 근거가 없으면 담기가 실행되지 않는다(evidence)
+    body["message"] = "1번 담아줘"
     body.update(overrides)
     return body
 
@@ -569,7 +572,8 @@ def test_예기치_못한_예외는_500이고_대화_원문이_응답과_로그�
 
 
 def test_정상_처리의_로그에도_대화_원문이_없다(monkeypatch, caplog) -> None:
-    secret = "비밀스러운_사용자_발화"
+    # 카드 1번을 담으려면 사용자의 말에 "1번"이 있어야 한다(evidence). 로그에 없어야 하는 글은 그 말 전체다
+    secret = "비밀스러운_사용자_발화 1번 담아줘"
     _wire(
         monkeypatch,
         [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")],

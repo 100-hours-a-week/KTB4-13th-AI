@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 4,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -2488,6 +2488,801 @@
           0
         ],
         "cart_total": 37000
+      }
+    },
+    {
+      "id": "ask-05",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "'그 책'이 카드 셋 중 누구인지 모른다",
+      "request": {
+        "user_id": 9200001,
+        "conversation_id": "eval_ask-05",
+        "message": "그 책 장바구니에 넣어줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001070",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "ask-06",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "보고 있는 책이 없는데 '이거'라고 한다",
+      "request": {
+        "user_id": 9200002,
+        "conversation_id": "eval_ask-06",
+        "message": "이거 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {
+          "9788900001056": 1,
+          "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "ask-07",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "'방금 거'가 카드 둘 중 누구인지 모른다",
+      "request": {
+        "user_id": 9200003,
+        "conversation_id": "eval_ask-07",
+        "message": "방금 거 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001018",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 2,
+            "match_score": 84
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-07_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "ask-08",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "'그 두 권'이 장바구니 셋 중 어느 둘인지 모른다",
+      "request": {
+        "user_id": 9200004,
+        "conversation_id": "eval_ask-08",
+        "message": "그 두 권 다 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-08_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001018": 1,
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "ask-09",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "'아까 본 책'이 장바구니 둘 중 어느 것인지 모른다",
+      "request": {
+        "user_id": 9200005,
+        "conversation_id": "eval_ask-09",
+        "message": "아까 본 책 수량 늘려줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-09_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001070",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001117",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {
+          "9788900001070": 1,
+          "9788900001117": 1
+        }
+      }
+    },
+    {
+      "id": "ask-10",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "'저 책'이 카드 셋 중 누구인지 모른다(보고 있는 책 없음)",
+      "request": {
+        "user_id": 9200006,
+        "conversation_id": "eval_ask-10",
+        "message": "저 책 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001025",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001032",
+            "rank": 2,
+            "match_score": 88
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 3,
+            "match_score": 80
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-10_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "update-04",
+      "kind": "update",
+      "split": "heldout",
+      "about": "제목으로 가리켜 수량을 줄인다(다른 책도 담겨 있다)",
+      "request": {
+        "user_id": 9200007,
+        "conversation_id": "eval_update-04",
+        "message": "쿠버네티스 책 2권으로 줄여줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001025",
+            "qty": 4
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 2,
+          "9788900001049": 1
+        }
+      }
+    },
+    {
+      "id": "update-05",
+      "kind": "update",
+      "split": "heldout",
+      "about": "제목 일부와 말로 쓴 수량",
+      "request": {
+        "user_id": 9200008,
+        "conversation_id": "eval_update-05",
+        "message": "객체지향 책 세 권으로 해줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-05_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001070",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001070": 3,
+          "9788900001056": 2
+        }
+      }
+    },
+    {
+      "id": "update-06",
+      "kind": "update",
+      "split": "heldout",
+      "about": "'필요해'로 말한 수량",
+      "request": {
+        "user_id": 9200009,
+        "conversation_id": "eval_update-06",
+        "message": "네트워크 한 걸음씩 5권 필요해",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001063": 5
+        }
+      }
+    },
+    {
+      "id": "update-07",
+      "kind": "update",
+      "split": "heldout",
+      "about": "'첫 번째'는 나중에 담은 책이다(1018이 1번)",
+      "request": {
+        "user_id": 9200010,
+        "conversation_id": "eval_update-07",
+        "message": "장바구니 첫 번째 책을 4권으로 바꿔줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-07_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001018": 4
+        }
+      }
+    },
+    {
+      "id": "update-08",
+      "kind": "update",
+      "split": "heldout",
+      "about": "제목으로 가리켜 수량을 늘린다(다른 책도 담겨 있다)",
+      "request": {
+        "user_id": 9200011,
+        "conversation_id": "eval_update-08",
+        "message": "리눅스 명령어 사전 두 권으로 바꿔줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-08_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001117",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 2,
+          "9788900001117": 1
+        }
+      }
+    },
+    {
+      "id": "update-09",
+      "kind": "update",
+      "split": "heldout",
+      "about": "'한 권 줄여줘'는 지금 수량에서 하나 뺀 값이다",
+      "request": {
+        "user_id": 9200012,
+        "conversation_id": "eval_update-09",
+        "message": "면접 대비 CS 요약 한 권 줄여줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-09_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001117",
+            "qty": 3
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001117": 2
+        }
+      }
+    },
+    {
+      "id": "remove-05",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "제목으로 가리켜 지운다",
+      "request": {
+        "user_id": 9200013,
+        "conversation_id": "eval_remove-05",
+        "message": "알고리즘 책은 장바구니에서 지워줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-05_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001032",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001070",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 1,
+          "9788900001070": 1
+        }
+      }
+    },
+    {
+      "id": "remove-06",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "제목 전체를 말해 수량이 둘인 책을 뺀다",
+      "request": {
+        "user_id": 9200014,
+        "conversation_id": "eval_remove-06",
+        "message": "데이터베이스 설계 노트 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 2
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "remove-07",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "번호 둘을 한 번에 말한다(1번 1049, 2번 1025, 3번 1018, 4번 1001)",
+      "request": {
+        "user_id": 9200015,
+        "conversation_id": "eval_remove-07",
+        "message": "장바구니 두 번째랑 세 번째 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-07_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001049": 1
+        }
+      }
+    },
+    {
+      "id": "remove-08",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "제목 일부로 셋 중 하나를 뺀다",
+      "request": {
+        "user_id": 9200016,
+        "conversation_id": "eval_remove-08",
+        "message": "소프트웨어 설계 책 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-08_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1,
+          "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "mixed-04",
+      "kind": "mixed",
+      "split": "heldout",
+      "about": "제목으로 빼고 카드 번호로 담는다(\"빼고\"는 '제외하고'로도 읽혀서 \"빼 주고\"로 썼다)",
+      "request": {
+        "user_id": 9200017,
+        "conversation_id": "eval_mixed-04",
+        "message": "파이썬 책 빼 주고 3번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001018",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 1
+        }
+      }
+    },
+    {
+      "id": "mixed-05",
+      "kind": "mixed",
+      "split": "heldout",
+      "about": "제목으로 수량을 바꾸고 제목으로 뺀다",
+      "request": {
+        "user_id": 9200018,
+        "conversation_id": "eval_mixed-05",
+        "message": "데이터베이스 책은 2권으로 바꾸고 리눅스 책은 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-05_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 2,
+          "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "mixed-06",
+      "kind": "mixed",
+      "split": "heldout",
+      "about": "카드 번호로 담고 제목으로 수량을 바꾼다",
+      "request": {
+        "user_id": 9200019,
+        "conversation_id": "eval_mixed-06",
+        "message": "1번 담고 쿠버네티스 책은 3권으로 바꿔줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001070",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 2,
+            "match_score": 85
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 3,
+            "match_score": 80
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001070": 1,
+          "9788900001025": 3
+        }
+      }
+    },
+    {
+      "id": "mixed-07",
+      "kind": "mixed",
+      "split": "heldout",
+      "about": "장바구니 번호로 빼고 카드 번호로 두 권 담는다(첫 번째=1018)",
+      "request": {
+        "user_id": 9200020,
+        "conversation_id": "eval_mixed-07",
+        "message": "장바구니 첫 번째 빼고 2번 두 권 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001056",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 2,
+            "match_score": 85
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-07_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001063": 2
+        }
       }
     }
   ]

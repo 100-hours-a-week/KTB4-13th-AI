@@ -58,6 +58,10 @@ class TurnContext:
     # 장바구니 번호는 LLM 이 본 이 목록 기준으로만 푼다. 그 뒤에 쓰기가 있어도 다시 만들지 않는다.
     # 그래야 한 번에 "1번 담고 장바구니 3번째 빼줘"를 불러도 번호가 밀리지 않는다.
     cart_snapshot: list[CartLine] | None = None
+    # 사용자의 이번 말. LLM 이 고른 책에 사용자의 말이 근거가 되는지 보는 데 쓴다(evidence.py). None 이면 검사하지 않는다
+    message: str | None = None
+    # 이번 턴에 알게 된 카드 책의 제목(book.offer 결과). 장바구니 책의 제목은 cart_snapshot 에 있다
+    titles: dict[str, str] = field(default_factory=dict)
     # 이번 턴에 selection.pick 이 고른 책. 사용자가 확인하기 전에는 담지 못한다(tools._add)
     picked: set[str] = field(default_factory=set)
     # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
@@ -78,6 +82,7 @@ class TurnContext:
             cards=list(req.context_cards),
             focused_isbn=req.focused_isbn,
             allow_tools=None if req.allow_tools is None else list(req.allow_tools),
+            message=req.message,
         )
 
 

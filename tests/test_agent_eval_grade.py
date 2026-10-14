@@ -173,6 +173,51 @@ def test_ask_back_은_쓰기_도구를_부르면_실패다() -> None:
     assert grade.grade_case(case, record)["passed"] is False
 
 
+def test_ask_back_은_코드가_막은_쓰기_시도는_실패로_세지_않는다() -> None:
+    # 장바구니도 BE 도 건드리지 않았다. 모델이 짐작한 것은 따로 센다(blocked_write)
+    case, record = _passing("ask-01")
+    record["data"]["tool_calls"] = [
+        {
+            "name": "cart.add",
+            "arguments": {"book": {"source": "card", "n": 1}},
+            "result": {"ok": False, "error": "REFERENCE_NOT_STATED"},
+        }
+    ]
+
+    result = grade.grade_case(case, record)
+
+    assert result["passed"] is True
+    assert result["blocked_write"] is True
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"ok": True},
+        # BE 까지 가서 거절된 것도 BE 를 부른 것이다
+        {"ok": False, "error": "INSUFFICIENT_PRODUCT_STOCK"},
+    ],
+)
+def test_ask_back_은_BE까지_간_쓰기는_실패다(result: dict) -> None:
+    case, record = _passing("ask-01")
+    record["data"]["tool_calls"] = [{"name": "cart.add", "result": result}]
+
+    graded = grade.grade_case(case, record)
+
+    assert graded["passed"] is False
+    assert "되물어야 하는데 쓰기가 BE까지 감" in graded["failures"]
+    assert graded["blocked_write"] is False
+
+
+def test_코드가_막은_이유_목록이_ToolErrorCode와_같다() -> None:
+    from app.agent.errors import ToolErrorCode
+
+    assert grade._CODE_BLOCKED == {code.value for code in ToolErrorCode}
+    # BE 가 거절하는 이유는 코드가 막은 것이 아니다
+    assert "INSUFFICIENT_PRODUCT_STOCK" not in grade._CODE_BLOCKED
+    assert "ALREADY_IN_CART" in grade._CODE_BLOCKED
+
+
 def test_ask_back_은_읽기_도구는_불러도_된다() -> None:
     case, record = _passing("ask-01")
     record["data"]["tool_calls"] = [{"name": "cart.view"}]
