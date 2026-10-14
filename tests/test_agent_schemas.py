@@ -411,7 +411,8 @@ def test_20턴을_넘으면_최근_20턴만_쓴다() -> None:
         pytest.param({"role": "user", "text": "안녕"}, id="목록_아님"),
         pytest.param([{"role": "user", "text": "앞\x00뒤"}], id="NUL_문자"),
         pytest.param(
-            [{"role": "bot", "text": "가" * (MAX_TURN_CHARS + 100)}], id="긴데_role_틀림"
+            [{"role": "bot", "text": "가" * (MAX_TURN_CHARS + 100)}],
+            id="긴데_role_틀림",
         ),
     ],
 )
