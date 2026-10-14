@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -174,6 +174,10 @@
     "followup": {
       "group": "typical",
       "about": "되물은 다음 턴. 이전 대화가 있어야 무슨 행동인지 안다"
+    },
+    "tone": {
+      "group": "typical",
+      "about": "평범한 말투(한글 숫자, 구어체)로 책을 가리킨다"
     }
   },
   "cases": [
@@ -3913,6 +3917,250 @@
         "cart": {
           "9788900001032": 1,
           "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "tone-01",
+      "kind": "tone",
+      "about": "한글 숫자로 말한 카드 번호",
+      "request": {
+        "user_id": 9500001,
+        "conversation_id": "eval_tone-01",
+        "message": "삼번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-01_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-02",
+      "kind": "tone",
+      "about": "'마지막꺼'는 마지막 카드(맨 뒤)다",
+      "request": {
+        "user_id": 9500002,
+        "conversation_id": "eval_tone-02",
+        "message": "마지막꺼 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-02_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-03",
+      "kind": "tone",
+      "about": "'젤 위에꺼'는 장바구니 맨 위, 가장 나중에 담은 책이다",
+      "request": {
+        "user_id": 9500003,
+        "conversation_id": "eval_tone-03",
+        "message": "젤 위에꺼 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-03_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001025",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "tone-04",
+      "kind": "tone",
+      "about": "'방금 거'는 가장 나중에 담은 책이다",
+      "request": {
+        "user_id": 9500004,
+        "conversation_id": "eval_tone-04",
+        "message": "방금 거 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "tone-05",
+      "kind": "tone",
+      "split": "heldout",
+      "about": "한글 숫자 번호 둘",
+      "request": {
+        "user_id": 9500005,
+        "conversation_id": "eval_tone-05",
+        "message": "일번이랑 삼번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "tone-06",
+      "kind": "tone",
+      "split": "heldout",
+      "about": "'제일 밑에꺼'는 장바구니 맨 아래, 가장 먼저 담은 책이다",
+      "request": {
+        "user_id": 9500006,
+        "conversation_id": "eval_tone-06",
+        "message": "제일 밑에꺼 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001032",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001049",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 1,
+          "9788900001056": 1
         }
       }
     }

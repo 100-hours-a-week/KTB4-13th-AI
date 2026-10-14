@@ -326,6 +326,8 @@ _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 # 이번 말만으로는 근거가 없고 이력에서 근거가 나오는 사례("네", "그거 취소해줘"). 이력 기반 근거를 만들기(#397)
 # 전에는 막히는 것이 지금 설계의 구멍이다. 구현하면 이 표시가 통과해서(strict) 표시를 지우라고 알려 준다
 _NEEDS_HISTORY = {"followup-06", "followup-08"}
+# 평범한 말투(한글 숫자, "꺼", "젤", "방금 거")는 규칙을 만들기(#397) 전에는 막힌다. 구현하면 통과해서 표시를 지우라고 알려 준다
+_NEEDS_TONE_RULES = {f"tone-0{n}" for n in range(1, 7)}
 
 
 def _executed_params() -> list:
@@ -334,10 +336,10 @@ def _executed_params() -> list:
             case,
             id=case["id"],
             marks=pytest.mark.xfail(
-                strict=True, reason="이력 기반 근거는 #397에서 구현한다"
+                strict=True, reason="이력 기반 근거와 말투 규칙은 #397에서 구현한다"
             ),
         )
-        if case["id"] in _NEEDS_HISTORY
+        if case["id"] in _NEEDS_HISTORY | _NEEDS_TONE_RULES
         else pytest.param(case, id=case["id"])
         for case in _EXECUTED
     ]

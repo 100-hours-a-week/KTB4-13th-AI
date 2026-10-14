@@ -41,9 +41,17 @@ EXPECTED_COUNTS = {
     "outofscope": 3,
     "injection": 6,
     "followup": 8,
+    "tone": 4,
 }
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
-HELDOUT_COUNTS = {"ask": 6, "update": 6, "remove": 4, "mixed": 4, "followup": 4}
+HELDOUT_COUNTS = {
+    "ask": 6,
+    "update": 6,
+    "remove": 4,
+    "mixed": 4,
+    "followup": 4,
+    "tone": 2,
+}
 SPLITS = {"dev", "heldout"}
 POISON_MARK = "[AI 지시]"
 
@@ -179,7 +187,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 44, "guard": 23}
+    assert dict(by_group) == {"typical": 48, "guard": 23}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
