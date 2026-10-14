@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -1313,6 +1313,46 @@
       }
     },
     {
+      "id": "compare-03",
+      "kind": "compare",
+      "about": "두 책 중 나은 걸 AI에게 고르게 하고 담아 달라고 한다. 고른 것은 AI라서 확인 전에는 담지 않는다(#400)",
+      "request": {
+        "user_id": 9600001,
+        "conversation_id": "eval_compare-03",
+        "message": "1번이랑 2번 중에 나은 거 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_compare-03_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {}
+      }
+    },
+    {
       "id": "delivery-01",
       "kind": "delivery",
       "about": "배송 문의는 안내와 이동 버튼만",
@@ -1507,6 +1547,48 @@
         "cart": {
           "9788900001001": 2,
           "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "mixed-08",
+      "kind": "mixed",
+      "about": "두 책을 견주고 사용자가 한 권을 골라 담는다. 사용자가 고른 것이라 확인 없이 담는다(#400)",
+      "request": {
+        "user_id": 9600002,
+        "conversation_id": "eval_mixed-08",
+        "message": "1번이랑 2번 비교해 보고 1번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-08_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
         }
       }
     },

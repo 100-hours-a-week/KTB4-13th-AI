@@ -30,9 +30,9 @@ EXPECTED_COUNTS = {
     "view": 4,
     "offer": 3,
     "pick": 6,
-    "compare": 2,
+    "compare": 3,
     "delivery": 2,
-    "mixed": 3,
+    "mixed": 4,
     "notshop": 3,
     "ask": 4,
     "already": 3,
@@ -187,7 +187,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 48, "guard": 23}
+    assert dict(by_group) == {"typical": 50, "guard": 23}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
