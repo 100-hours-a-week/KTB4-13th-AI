@@ -822,3 +822,9 @@ def test_대화_속_줄바꿈으로_다른_사람의_말을_흉내_낼_수_없�
 def test_시스템_프롬프트는_최근_대화를_이어_가라고_알려_준다() -> None:
     assert "[최근 대화]가 있으면" in prompts.SYSTEM_PROMPT
     assert "되풀이하지 않는다" in prompts.SYSTEM_PROMPT
+
+
+def test_시스템_프롬프트는_장바구니의_위치_낱말이_가리키는_번호를_알려_준다() -> None:
+    # "방금 거"를 오래된 책(두 번째)으로 읽은 사고를 막으려는 안내다(#397)
+    assert "'방금 담은 거', '방금 거'" in prompts.SYSTEM_PROMPT
+    assert "첫 번째(가장 최근에 담은 책)" in prompts.SYSTEM_PROMPT
