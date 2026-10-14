@@ -15,8 +15,10 @@
 - **모델 키.**
 
 ```bash
-# 1) 서버. 로그를 파일로 남깁니다(벡터 검색이 끊겼는지 세는 데 씁니다)
-uv run uvicorn app.main:app --port 8001 2>&1 | tee /tmp/chat-eval-server.log
+# 1) 서버. 로그를 파일로 남깁니다(벡터 검색이 끊겼는지 세는 데 씁니다).
+#    LLM_PROVIDER 를 openrouter 가 아닌 값으로 두어 ZDR 을 끕니다(아래 "읽을 때 주의")
+LLM_PROVIDER=eval-no-zdr DATABASE_URL=postgresql://…/평가DB \
+  uv run uvicorn app.main:app --port 8001 2>&1 | tee /tmp/chat-eval-server.log
 
 # 2) 돌리기. 원본은 evals/chat/results/ 에 저장합니다(올리지 않습니다)
 DATABASE_URL=postgresql://…/평가DB uv run python -m evals.chat.run \
@@ -42,6 +44,8 @@ uv run python -m evals.chat.grade --compare 전.json 후.json
 - **코드로 볼 수 있는 것만 채점합니다.** 카드가 나왔는지, 조건을 지켰는지, 겹치지 않는지입니다. 추천한 책이 질문에 맞는지, 이유가 책소개에 근거하는지는 보지 않습니다(`expect.ungraded`에 적힌 21개). 그래서 통과율은 실제 품질보다 높게 나옵니다.
 - **회차 사이 차이가 1~2문항이면 오차 안입니다.** 같은 질문도 돌릴 때마다 결과가 갈립니다. 5번 돌려 범위로 봅니다. 이보다 작은 변화는 개선으로 보지 않습니다.
 - **벡터 검색이 끊긴 실행은 버립니다.** PC 부하가 높으면 벡터 검색이 제한 시간에 걸려 키워드로만 답합니다. `--server-log`를 주면 끊긴 횟수를 세고, 0이 아니면 그 실행은 코드 탓인지 환경 탓인지 가를 수 없습니다.
+- **평가 서버는 ZDR 을 끄고 돌립니다.** 게이트웨이는 `LLM_PROVIDER=openrouter`일 때 요청에 `provider.zdr`을 실어 ZDR 엔드포인트로만 라우팅하는데, 그러면 `gpt-4o-mini`·`gpt-4o` 모두 Azure 한 곳만 남습니다. 2026-10-14에 이 경로로 기준선을 돌리자 LLM 호출의 7%가 408(제공자 시간 초과)로 실패해 회차마다 13~19%의 턴이 `degraded`가 됐습니다. ZDR 을 끄면 같은 호출이 24번 중 0번 실패했습니다. 평가 질문은 개인정보가 아니라서 ZDR 이 필요 없습니다. `LLM_PROVIDER`를 다른 값으로 두면 앱 코드를 바꾸지 않고 ZDR 만 꺼집니다.
+- **`degraded`가 0이 아닌 회차는 버립니다.** 규칙 기반 카드가 섞여 LLM 이 한 일을 잴 수 없습니다. 요약의 `degraded_turns_per_run`을 봅니다.
 - **같은 질문으로 고치고 같은 질문으로 재면 낙관적인 숫자가 됩니다.** 고칠 때는 어느 질문을 보고 고쳤는지 PR에 적습니다.
 - **평가 모델과 운영 모델이 다를 수 있습니다.** 지금까지는 `openai/gpt-4o-mini`로 쟀고 운영은 `openai/gpt-4o`입니다. PR의 "Model ID" 칸에 어느 모델로 쟀는지 적습니다.
 - **출처별로 따로 봅니다.** `bug` 질문은 우리가 고친 버그를 다시 일으키는 것이라 실사용 품질처럼 읽으면 안 됩니다. 43개(`research`)는 논문의 유형에 맞춰 직접 쓴 문장이라 문장 자체의 근거는 없습니다.
