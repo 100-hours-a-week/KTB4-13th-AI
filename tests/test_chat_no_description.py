@@ -5,9 +5,11 @@
 긴 이유를 지어냈다(평가 32번: 책소개 없는 카드 14장 전부에 긴 이유가 채워짐).
 
 여기서는 DB 와 LLM 을 가짜로 바꿔 끼우고, 소개글이 없는 책에 대해 다음을 본다.
-- 프롬프트가 "소개글 없음"이라고 알린다
 - 모델이 무엇을 쓰든 긴 이유는 null, 근거(match_basis)는 빈 배열, 한 줄 이유는 제목·저자만 쓴 고정 문장이다
 - 소개글이 있는 책의 카드는 그대로다
+- 프롬프트는 바꾸지 않는다: 목록에 "소개글 없음"을 적고 지어내지 말라고 했더니 모델이 그런 책을 아예 안 골라
+  카드가 0장이 됐다(평가 33번 한빛미디어 책 보여줘, 5회 중 4회). 이 결과를 되돌리지 않도록 프롬프트가
+  그대로인지도 지킨다
 """
 
 import json
@@ -98,7 +100,7 @@ def _post() -> dict:
     return res.json()["data"]
 
 
-def test_소개글이_없는_책은_프롬프트에_소개글_없음으로_실린다(
+def test_소개글_없는_책도_프롬프트에_그대로_실리고_소개글_없음_표시는_달지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sent: list[str] = []
@@ -108,35 +110,12 @@ def test_소개글이_없는_책은_프롬프트에_소개글_없음으로_실�
     _post()
 
     prompt = sent[0]
-    assert "- book_id 2: 토지 - 박경리 - (소개글 없음)" in prompt
-    # 소개글이 있는 책은 그대로 실린다.
-    assert (
-        "- book_id 1: 달러구트 꿈 백화점 - 이미예 - 잠든 사이 꿈을 사고파는 상점 이야기."
-        in prompt
+    assert "- book_id 2: 토지 - 박경리 - \n" in prompt or prompt.endswith(
+        "- book_id 2: 토지 - 박경리 - "
     )
-
-
-def test_공백뿐인_소개글도_없는_것으로_본다(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent: list[str] = []
-    _use_candidates(monkeypatch, {**NO_DESCRIPTION, "description": "  \n "})
-    _use_model(monkeypatch, '{"cards": []}', sent)
-
-    _post()
-
-    assert "- book_id 2: 토지 - 박경리 - (소개글 없음)" in sent[0]
-
-
-def test_카드_프롬프트가_소개글_없는_책의_내용을_말하지_말라고_알린다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sent: list[str] = []
-    _use_candidates(monkeypatch, NO_DESCRIPTION)
-    _use_model(monkeypatch, '{"cards": []}', sent)
-
-    _post()
-
-    assert "(소개글 없음)인 책" in sent[0]
-    assert "지어내지 마라" in sent[0]
+    # 표시나 지시를 달면 모델이 소개글 없는 책을 아예 안 골라 카드가 0장이 된다(평가 33번).
+    assert "소개글 없음" not in prompt
+    assert "지어내지 마라" not in prompt
 
 
 def test_소개글_없는_책은_모델이_긴_이유를_써도_null이다(

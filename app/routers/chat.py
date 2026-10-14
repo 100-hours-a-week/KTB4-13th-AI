@@ -911,8 +911,8 @@ def _card_prompt_intro(spec: Spec) -> str:
 
 # 소개글이 없는 책(#86). 카드 생성은 소개글만 근거로 이유를 쓰는데, 소개글 칸을 비운 채 넘기면 모델이
 # 제목·저자만 보고 책 내용을 지어낸다(평가 32번: 소개글 없는 카드 14장 전부에 긴 이유가 채워짐).
-# 그래서 프롬프트에는 "소개글 없음"이라고 알리고, 그 책의 이유는 모델이 쓴 것을 쓰지 않고 규칙으로 쓴다.
-NO_DESCRIPTION_MARK = "(소개글 없음)"
+# 프롬프트로 막지 않는다. 목록에 "소개글 없음"을 적고 지어내지 말라고 하면 모델이 그런 책을 아예 안 골라
+# 카드가 0장이 된다(평가 33번 5회 중 4회, 2026-10-14). 그래서 그 책의 이유는 모델이 쓴 것을 쓰지 않고 규칙으로 쓴다.
 _NO_DESCRIPTION_REASON = "찾으신 {author}의 『{title}』이에요."
 _NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』이에요."
 
@@ -924,8 +924,6 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
-    f"목록에서 {NO_DESCRIPTION_MARK}인 책은 책 내용을 알 수 없다. 그 책의 내용·줄거리·분위기를 "
-    "reply에도 이유에도 지어내지 마라.\n"
     "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
@@ -943,8 +941,7 @@ def _format_listing(candidates: list[dict]) -> str:
     # (실제로 재현됨). 각 줄에 book_id 값을 명시하고, 반드시 그 값을
     # 그대로 쓰라고 못박는다.
     return "\n".join(
-        f"- book_id {c['book_id']}: {c['title']} - {c['author']} - "
-        f"{c['description'] if _has_description(c) else NO_DESCRIPTION_MARK}"
+        f"- book_id {c['book_id']}: {c['title']} - {c['author']} - {c['description']}"
         for c in candidates
     )
 
