@@ -909,6 +909,14 @@ def _card_prompt_intro(spec: Spec) -> str:
     return "아래는 사용자 조건에 맞는 책 후보 목록이다."
 
 
+# 소개글이 없는 책(#86). 카드 생성은 소개글만 근거로 이유를 쓰는데, 소개글 칸을 비운 채 넘기면 모델이
+# 제목·저자만 보고 책 내용을 지어낸다(평가 32번: 소개글 없는 카드 14장 전부에 긴 이유가 채워짐).
+# 그래서 프롬프트에는 "소개글 없음"이라고 알리고, 그 책의 이유는 모델이 쓴 것을 쓰지 않고 규칙으로 쓴다.
+NO_DESCRIPTION_MARK = "(소개글 없음)"
+_NO_DESCRIPTION_REASON = "찾으신 {author}의 『{title}』이에요."
+_NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』이에요."
+
+
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
 # 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
 CARD_PROMPT = ChatPromptTemplate.from_template(
@@ -916,6 +924,8 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다.\n"
+    f"목록에서 {NO_DESCRIPTION_MARK}인 책은 책 내용을 알 수 없다. 그 책의 내용·줄거리·분위기를 "
+    "reply에도 이유에도 지어내지 마라.\n"
     "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
@@ -933,9 +943,22 @@ def _format_listing(candidates: list[dict]) -> str:
     # (실제로 재현됨). 각 줄에 book_id 값을 명시하고, 반드시 그 값을
     # 그대로 쓰라고 못박는다.
     return "\n".join(
-        f"- book_id {c['book_id']}: {c['title']} - {c['author']} - {c['description']}"
+        f"- book_id {c['book_id']}: {c['title']} - {c['author']} - "
+        f"{c['description'] if _has_description(c) else NO_DESCRIPTION_MARK}"
         for c in candidates
     )
+
+
+def _has_description(book: dict) -> bool:
+    """소개글이 있는 책인가. 공백뿐인 소개글은 없는 것으로 본다."""
+    return bool((book.get("description") or "").strip())
+
+
+def _no_description_reason(book: dict) -> str:
+    """소개글이 없는 책의 한 줄 이유. 사용자가 찾은 책의 제목·저자만 쓴다 — 책 내용은 알 수 없다."""
+    if book.get("author"):
+        return _NO_DESCRIPTION_REASON.format(author=book["author"], title=book["title"])
+    return _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title=book["title"])
 
 
 def _parse_match_basis(raw: Any) -> list[dict]:
@@ -1014,8 +1037,19 @@ async def generate_cards(
             continue
         book_id = item.get("book_id")
         book = id_by_book.get(book_id)
-        reason_short = item.get("reason_short")
-        if book is None or not reason_short:
+        if book is None:
+            continue
+        if _has_description(book):
+            reason_short = item.get("reason_short")
+            reason_long = item.get("reason_long")
+            match_basis = _parse_match_basis(item.get("match_basis"))
+        else:
+            # 소개글이 없으면 근거로 쓸 글이 없다(#86). 모델이 뭘 썼든 쓰지 않고 규칙으로 쓴다:
+            # 한 줄 이유는 찾은 책의 제목·저자만, 긴 이유와 근거는 비운다(명세 ③).
+            reason_short = _no_description_reason(book)
+            reason_long = None
+            match_basis = []
+        if not reason_short:
             # 명세: 한 줄 이유를 못 만든 책은 카드에서 뺀다.
             continue
         cards.append(
@@ -1029,8 +1063,8 @@ async def generate_cards(
                 "price": book.get("price"),
                 "cover_url": book.get("cover_url"),
                 "reason_short": reason_short,
-                "reason_long": item.get("reason_long"),
-                "match_basis": _parse_match_basis(item.get("match_basis")),
+                "reason_long": reason_long,
+                "match_basis": match_basis,
             }
         )
     return cards, reply, False
