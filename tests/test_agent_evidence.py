@@ -323,7 +323,27 @@ _EXECUTED = [c for c in _CASES.values() if c["expect"]["outcome"] == "executed"]
 _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 
 
-@pytest.mark.parametrize("case", _EXECUTED, ids=[c["id"] for c in _EXECUTED])
+# 이번 말만으로는 근거가 없고 이력에서 근거가 나오는 사례("네", "그거 취소해줘"). 이력 기반 근거를 만들기(#397)
+# 전에는 막히는 것이 지금 설계의 구멍이다. 구현하면 이 표시가 통과해서(strict) 표시를 지우라고 알려 준다
+_NEEDS_HISTORY = {"followup-06", "followup-08"}
+
+
+def _executed_params() -> list:
+    return [
+        pytest.param(
+            case,
+            id=case["id"],
+            marks=pytest.mark.xfail(
+                strict=True, reason="이력 기반 근거는 #397에서 구현한다"
+            ),
+        )
+        if case["id"] in _NEEDS_HISTORY
+        else pytest.param(case, id=case["id"])
+        for case in _EXECUTED
+    ]
+
+
+@pytest.mark.parametrize("case", _executed_params())
 def test_정확히_말한_사례의_정답_행동은_근거가_있어_막히지_않는다(case: dict) -> None:
     ctx = _case_ctx(case)
 

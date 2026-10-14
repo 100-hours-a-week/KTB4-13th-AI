@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
-from app.agent.schemas import parse_request
+from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError, get_chat_model
@@ -89,6 +89,18 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
+def request_payload(case: dict, *, accepts_history: bool) -> dict:
+    """사례의 요청. 사례에 history 가 있고 API 가 recent_turns 를 받으면 그 칸에 실어 보낸다(#397).
+
+    API 가 아직 이력을 받지 않으면 history 를 보내지 않는다. 같은 사례 파일로 "이력 없음(지금)"과
+    "이력 있음(고친 뒤)"을 같은 기준으로 잴 수 있다.
+    """
+    payload = dict(case["request"])
+    if accepts_history and case.get("history"):
+        payload["recent_turns"] = case["history"]
+    return payload
+
+
 async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dict:
     """사례 하나를 한 번 돌려 실행 기록을 만든다. 오류도 기록으로 남기고 예외를 던지지 않는다."""
     fake, uid = await build_commerce(data, case)
@@ -110,7 +122,10 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "tokens_in": 0,
         "tokens_out": 0,
     }
-    req = parse_request(case["request"])
+    payload = request_payload(
+        case, accepts_history="recent_turns" in AgentActRequest.model_fields
+    )
+    req = parse_request(payload)
     if req is None:
         record.update(status=400, error="요청 형식 오류(사례 파일 문제)")
     else:
