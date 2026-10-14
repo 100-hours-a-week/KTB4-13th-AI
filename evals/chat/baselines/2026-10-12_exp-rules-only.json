@@ -1,0 +1,180 @@
+{
+ "meta": {
+  "cases_version": 1,
+  "server_version": "403aca1+규칙만",
+  "model": "openai/gpt-4o-mini",
+  "started_at": "2026-10-12",
+  "runs": 5,
+  "workers": 4,
+  "note": "비교 실험: 규칙만"
+ },
+ "cases_version": 2,
+ "runs": 5,
+ "skipped_runs": [],
+ "cases": 60,
+ "passed": 253,
+ "total": 300,
+ "pass_rate": 84.3,
+ "passed_per_run": [
+  49,
+  50,
+  50,
+  53,
+  51
+ ],
+ "zero_cards": 6,
+ "zero_cards_total": 280,
+ "zero_cards_rate": 2.1,
+ "zero_cards_by_case": {
+  "32": 1,
+  "38": 5
+ },
+ "by_kind": {
+  "situation": {
+   "passed": 100,
+   "total": 100,
+   "rate": 100.0
+  },
+  "like": {
+   "passed": 29,
+   "total": 40,
+   "rate": 72.5
+  },
+  "lookup": {
+   "passed": 26,
+   "total": 40,
+   "rate": 65.0
+  },
+  "condition": {
+   "passed": 30,
+   "total": 40,
+   "rate": 75.0
+  },
+  "edge": {
+   "passed": 34,
+   "total": 40,
+   "rate": 85.0
+  },
+  "multi": {
+   "passed": 34,
+   "total": 40,
+   "rate": 85.0
+  }
+ },
+ "fail_reasons": {
+  "기준 책이 카드에 나옴": 9,
+  "카드 0장": 6,
+  "되묻지 않음": 6,
+  "같은 책 중복": 5,
+  "엉뚱한 책": 5,
+  "주제 전환 무시": 5,
+  "저자 불일치": 4,
+  "책소개 없는 책에 긴 이유": 4,
+  "빼 달라는 저자가 나옴": 2,
+  "의도 판정": 1,
+  "톤 미반영": 1
+ },
+ "passed_by_case": {
+  "1": 5,
+  "2": 5,
+  "3": 5,
+  "4": 5,
+  "5": 5,
+  "6": 5,
+  "7": 5,
+  "8": 5,
+  "9": 5,
+  "10": 5,
+  "11": 5,
+  "12": 5,
+  "13": 5,
+  "14": 5,
+  "15": 5,
+  "16": 5,
+  "17": 5,
+  "18": 5,
+  "19": 5,
+  "20": 5,
+  "21": 3,
+  "22": 5,
+  "23": 1,
+  "24": 3,
+  "25": 5,
+  "26": 5,
+  "27": 2,
+  "28": 5,
+  "29": 5,
+  "30": 0,
+  "31": 1,
+  "32": 0,
+  "33": 5,
+  "34": 5,
+  "35": 5,
+  "36": 5,
+  "37": 5,
+  "38": 0,
+  "39": 5,
+  "40": 5,
+  "41": 5,
+  "42": 5,
+  "43": 5,
+  "44": 0,
+  "45": 5,
+  "46": 5,
+  "47": 4,
+  "48": 5,
+  "49": 5,
+  "50": 5,
+  "51": 0,
+  "52": 5,
+  "53": 4,
+  "54": 5,
+  "55": 5,
+  "56": 5,
+  "57": 0,
+  "58": 5,
+  "59": 5,
+  "60": 5
+ },
+ "common": {
+  "llm_turns": 338,
+  "unsaid_mood_turns": 92,
+  "unsaid_mood_rate": 27.2,
+  "leak_word": "잔잔",
+  "leak_word_turns": 93,
+  "leak_word_rate": 27.5,
+  "turns_with_card_without_description": 24,
+  "turns_with_same_title_cards": 14,
+  "degraded_turns_per_run": [
+   0,
+   0,
+   0,
+   2,
+   0
+  ],
+  "most_shown_books": [
+   {
+    "title": "1985년의 하와이",
+    "rate": 4.7
+   },
+   {
+    "title": "데미안",
+    "rate": 3.7
+   },
+   {
+    "title": "인사이드 머신러닝 인터뷰",
+    "rate": 3.0
+   },
+   {
+    "title": "스피드파이썬",
+    "rate": 3.0
+   },
+   {
+    "title": "우리에게 위로가 필요할 때",
+    "rate": 3.0
+   }
+  ],
+  "seconds_median": 8.4,
+  "seconds_p90": 11.1
+ }
+}
