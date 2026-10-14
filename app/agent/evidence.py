@@ -14,6 +14,10 @@ LLM 이 고른 책(card n / cart n)마다 아래 중 하나가 사용자의 말�
 
 완벽한 말 풀이가 아니다. 근거를 못 찾으면 사용자에게 되묻는 쪽으로 틀리도록 만들었다(잘못 막으면 한 번
 더 묻고, 잘못 통과시키면 장바구니가 엉뚱하게 바뀐다).
+
+그래서 이 규칙은 잘못 통과하는 구멍만 조인다. 말투를 더 받아 주는 방향(막혀서 되묻는 표현)으로는 늘리지
+않는다. 위치 낱말 뒤에 한글이 붙은 표현("맨 위로 올려줘")처럼 정상인데 막히는 말은 한 번 되묻는 비용으로
+받아들이고, 실제로 자주 막히는 말은 평가 사례로 모은 뒤에 다룬다(#398).
 """
 
 import re
@@ -47,8 +51,11 @@ _DIGIT_ORDINAL = re.compile(r"(\d+)\s*(?:번째|번|째)")
 
 # 장바구니는 최근에 담은 책이 1번이라 "처음 담은 거"가 마지막 번호다. 카드는 보인 순서라 "맨 처음"이 1번이다
 # 위치 낱말은 "맨/제일/가장" 뒤에 위치를 말하는 낱말이 오는 일반 규칙이다. 표현을 하나씩 늘리지 않는다(#397).
-_TOP = r"(?:맨|제일|가장)\s*(?:위|앞)"
-_BOTTOM = r"(?:맨|제일|가장)\s*(?:아래|밑|뒤|끝)"
+# 위치 낱말 뒤에 한글이 바로 붙으면 다른 낱말의 앞부분이라 위치로 세지 않는다("가장 위로가 되는", "제일 앞서가는",
+# "가장 끝내주는", "가장 뒤늦게"). 이어 붙어도 위치로 읽는 것은 "에/에서/의/쪽"과 "거/것"뿐이다(#398)
+_POSITION_END = r"(?:에서?|의|쪽)?(?:거|것)?(?![가-힣])"
+_TOP = rf"(?:맨|제일|가장)\s*(?:위|앞){_POSITION_END}"
+_BOTTOM = rf"(?:맨|제일|가장)\s*(?:아래|밑|뒤|끝){_POSITION_END}"
 _CART_FIRST = re.compile(
     rf"{_TOP}|가장\s*최근|최근에\s*담은|방금\s*담은|방금\s*(?:거|것|책)"
 )
@@ -179,24 +186,26 @@ def _says_all(message: str, size: int) -> bool:
     return False
 
 
+def _explicit(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool:
+    """이번 말이 스스로 이 책을 가리키는가: 번호, 위치, 전체, 제목 낱말. 이력은 보지 않는다."""
+    return (
+        ref.n in ordinals(message)
+        or _says_position(message, ctx, ref)
+        or _says_all(message, _list_size(ctx, ref))
+        or _says_title(ctx, ref, isbn, message)
+    )
+
+
 def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     """사용자의 말에 이 책을 가리키는 근거가 있는가. 말을 모르면(message 가 None) 검사하지 않는다."""
     if ctx.message is None or ref.source == "focused":
         return True
     message = normalize(ctx.message)
     # 가리킬 수 있는 책이 하나뿐이면 짐작이 아니다
-    size = _list_size(ctx, ref)
-    if size <= 1:
-        return True
-    n = ref.n
-    if n in ordinals(message):
-        return True
-    if _says_position(message, ctx, ref):
-        return True
-    if _says_all(message, size):
+    if _list_size(ctx, ref) <= 1:
         return True
 
-    return _says_title(ctx, ref, isbn, message) or _from_history(ctx, isbn, message)
+    return _explicit(ctx, ref, isbn, message) or _from_history(ctx, isbn, message)
 
 
 def _says_title(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool:
@@ -226,14 +235,15 @@ def _says_title(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool
 #  2) 사용자가 그 책을 "그거", "이거", "방금 거"로 가리켰다
 # 선택지를 나열한 말에 대한 "네"는 어느 책인지 모르므로 근거가 아니다.
 _AGREE = re.compile(
-    r"^\s*(?:네|넵|예|응|어|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|오케이|ok|okay)(?![가-힣])",
+    r"^\s*(?:네|넵|예|응|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|오케이|ok|okay)(?![가-힣])",
     re.IGNORECASE,
 )
 _DEICTIC = re.compile(
     r"(?<![가-힣])(?:그거|그것|이거|이것|그\s*책|이\s*책|방금\s*거|방금\s*그거|아까\s*그거|아까\s*그\s*책)"
 )
 _PROPOSAL = re.compile(r"\?|까요|드릴까")
-# "그거 말고 다른 책"의 "그거"는 그 책을 원하지 않는다는 말이다. 부정이 있으면 지시어를 근거로 보지 않는다
+# "그거 말고 다른 책"의 "그거"는 그 책을 원하지 않는다는 말이다. "네? 아니요"의 "네"도 동의가 아니다.
+# 부정이 있으면 지시어도 동의도 근거로 보지 않는다
 _NEGATION = re.compile(r"말고|아니|싫|그만|하지\s*마")
 # 동의 뒤에 길게 이어지는 말은 다른 요청이 섞인 것이라 동의로만 보지 않는다
 _MAX_AGREEMENT_CHARS = 30
@@ -259,15 +269,35 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     return named
 
 
+def _names_other_book(ctx: TurnContext, isbn: str, message: str) -> bool:
+    """이번 말이 이 책이 아닌 다른 책을 스스로 가리키는가(번호, 위치, 제목, 전체)."""
+    others = [
+        (BookRef(source="card", n=card.rank), card.isbn)
+        for card in ctx.cards
+        if card.isbn != isbn
+    ] + [
+        (BookRef(source="cart", n=position), line.isbn)
+        for position, line in enumerate(ctx.cart_snapshot or [], start=1)
+        if line.isbn != isbn
+    ]
+    return any(_explicit(ctx, ref, other, message) for ref, other in others)
+
+
 def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
-    """직전 에이전트의 말이 정확히 한 권을 짚었고 이번 말이 그 책에 대한 동의나 지시어인가."""
+    """직전 에이전트의 말이 정확히 한 권을 짚었고 이번 말이 그 책에 대한 동의나 지시어인가.
+
+    이력은 이번 말이 책을 스스로 가리키지 않을 때만 쓴다. 부정이 있거나("네? 아니요", "그거 말고") 다른 책을
+    가리키면("네 근데 2번으로요") 동의나 지시어가 제안한 책을 뜻하지 않는다.
+    """
     if not ctx.turns or ctx.turns[-1].role != "assistant":
         return False
     last = ctx.turns[-1].text
     if _books_named(ctx, last) != {isbn}:
         return False
+    if _NEGATION.search(message) or _names_other_book(ctx, isbn, message):
+        return False
     if _DEICTIC.search(message):
-        return not _NEGATION.search(message)
+        return True
     return (
         bool(_AGREE.match(message))
         and len(message) <= _MAX_AGREEMENT_CHARS

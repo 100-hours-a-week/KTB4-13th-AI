@@ -797,9 +797,7 @@ def test_끝이나_뒤로_시작하는_다른_낱말은_맨_아래가_아니다(
     "message", ["맨 위 책 담아줘", "맨 위쪽 책 담아줘", "맨 위에 있는 거 담아줘"]
 )
 def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_위다(message: str) -> None:
-    assert evidence.has_evidence(
-        _ctx(message, cards=[PY, DB, K8S]), _card(1), PY
-    )
+    assert evidence.has_evidence(_ctx(message, cards=[PY, DB, K8S]), _card(1), PY)
     assert evidence.has_evidence(_ctx(message, cart=[SW, DB, PY]), _cart(1), SW)
 
 
@@ -807,7 +805,5 @@ def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_위�
     "message", ["맨 아래 책 담아줘", "맨 아래쪽 책 담아줘", "맨 끝에 있는 거 담아줘"]
 )
 def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_아래다(message: str) -> None:
-    assert evidence.has_evidence(
-        _ctx(message, cards=[PY, DB, K8S]), _card(3), K8S
-    )
+    assert evidence.has_evidence(_ctx(message, cards=[PY, DB, K8S]), _card(3), K8S)
     assert evidence.has_evidence(_ctx(message, cart=[SW, DB, PY]), _cart(3), PY)
