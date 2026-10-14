@@ -21,6 +21,7 @@ import json
 import logging
 import statistics
 import time
+import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -114,6 +115,8 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "data": None,
         "removed": [],
         "error": None,
+        # 서버가 500 으로 답했을 오류의 트레이스백 끝부분. 평가용 가짜 사용자의 글이라 남겨도 된다
+        "error_detail": None,
         "start_cart": fake.cart_state(uid),
         "start_others": {u: fake.cart_state(u) for u in others},
         "llm_calls": 0,
@@ -154,7 +157,10 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 raw_reply=run.final_text,
             )
         except Exception as e:  # noqa: BLE001 - 어떤 오류든 기록으로 남기고 다음 사례로 간다
-            record.update(status=_error_status(e), error=type(e).__name__)
+            status = _error_status(e)
+            record.update(status=status, error=type(e).__name__)
+            if status == 500:
+                record["error_detail"] = "".join(traceback.format_exception(e))[-1500:]
         record["ms"] = (time.perf_counter() - started) * 1000
     record.setdefault("ms", 0.0)
     record["cart"] = fake.cart_state(uid)

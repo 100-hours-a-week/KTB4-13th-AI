@@ -892,3 +892,107 @@ def test_시간_제한_안에_끝나면_영향이_없다(monkeypatch, idempotenc
 
 def test_시간_제한의_기본값은_명세의_30초다() -> None:
     assert get_settings().agent_turn_timeout_seconds == 30
+
+
+# --- 최근 대화 (#397) ---
+
+PROPOSE_1 = [
+    {"role": "user", "text": "그거 담아줘"},
+    {"role": "assistant", "text": "카드 1번을 담을까요?"},
+]
+
+
+def _blocked_then_ask() -> list:
+    # 담기를 시도했다가 막히고, 막힌 결과를 본 모델이 어느 책인지 되묻는 흐름
+    return [
+        ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+        ai_text("어느 책을 말씀하시는지 알려 주세요."),
+    ]
+
+
+def test_에이전트가_한_권을_제안했고_네라고_하면_끝까지_담긴다(monkeypatch) -> None:
+    _model, fake = _wire(monkeypatch, _add_turn())
+
+    res = client.post(URL, json=_request(message="네", recent_turns=PROPOSE_1))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert [c["name"] for c in data["tool_calls"]] == ["cart.add"]
+    assert data["tool_calls"][0]["result"] == {"ok": True}
+    assert data["resolved_reference"] == {"ref": "카드 1번", "isbns": [A]}
+    assert fake.cart_state(UID) == {A: 1}
+
+
+def test_같은_네라도_최근_대화가_없으면_담지_않는다(monkeypatch) -> None:
+    # 이번 말만으로는 어느 책인지 몰라 코드가 막는다. 실제 모델은 막힌 결과를 보고 되묻는다
+    _model, fake = _wire(monkeypatch, _blocked_then_ask())
+
+    res = client.post(URL, json=_request(message="네"))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["tool_calls"][0]["result"] == {
+        "ok": False,
+        "error": "REFERENCE_NOT_STATED",
+    }
+    assert data["resolved_reference"] is None
+    assert fake.cart_state(UID) == {}
+
+
+def test_선택지를_나열한_말에_네라고_하면_담지_않는다(monkeypatch) -> None:
+    _model, fake = _wire(monkeypatch, _blocked_then_ask())
+    listed = [
+        {"role": "user", "text": "그거 담아줘"},
+        {"role": "assistant", "text": "카드 1번과 2번, 3번 중 어느 책을 담을까요?"},
+    ]
+
+    res = client.post(URL, json=_request(message="네", recent_turns=listed))
+
+    assert res.status_code == 200
+    assert fake.cart_state(UID) == {}
+
+
+def test_최근_대화만_달라도_같은_키의_다른_본문이라_409다(
+    monkeypatch, idempotency_rows
+) -> None:
+    model, _fake_be = _wire(monkeypatch, _add_turn())
+    client.post(
+        URL,
+        json=_request(
+            message="네", recent_turns=PROPOSE_1, idempotency_key="idem_turns"
+        ),
+    )
+    llm_calls = len(model.calls)
+
+    res = client.post(
+        URL, json=_request(message="네", recent_turns=[], idempotency_key="idem_turns")
+    )
+
+    assert res.status_code == 409
+    assert res.json() == {"message": "idempotency_conflict", "data": None}
+    assert len(model.calls) == llm_calls
+
+
+def test_최근_대화의_글도_로그에_남지_않는다(monkeypatch, caplog) -> None:
+    secret = "비밀스러운_이전_대화"
+    _wire(monkeypatch, _add_turn())
+    turns = [
+        {"role": "user", "text": secret},
+        {"role": "assistant", "text": "카드 1번을 담을까요?"},
+    ]
+
+    with caplog.at_level(logging.DEBUG):
+        client.post(URL, json=_request(message="네", recent_turns=turns))
+
+    assert secret not in caplog.text
+
+
+def test_최근_대화의_role이_틀리면_400이다(monkeypatch) -> None:
+    _wire(monkeypatch, _add_turn())
+
+    res = client.post(
+        URL, json=_request(recent_turns=[{"role": "bot", "text": "안녕"}])
+    )
+
+    assert res.status_code == 400
+    assert res.json() == INVALID
