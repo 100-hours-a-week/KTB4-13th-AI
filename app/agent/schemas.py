@@ -25,6 +25,9 @@ MAX_MESSAGE_CHARS = 200
 MAX_CONTEXT_CARDS = 10
 # 명세에 숫자가 없다. ⑤ 의 conversation_id 와 같은 상한을 둔다.
 MAX_CONVERSATION_ID_CHARS = 200
+# 최근 대화(#397). ③ 의 recent_turns 와 같다: 한 턴 200자, 20턴을 넘으면 최근 20턴만 쓴다.
+MAX_RECENT_TURNS = 20
+MAX_TURN_CHARS = 200
 
 
 class ToolName(StrEnum):
@@ -60,6 +63,13 @@ class _Strict(BaseModel):
 # --- 요청 ---
 
 
+class Turn(_Strict):
+    """최근 대화 한 줄. 사용자와 에이전트(AI)의 말이다."""
+
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=MAX_TURN_CHARS)
+
+
 class ContextCard(_Strict):
     """직전 턴에 보여 준 추천 카드. 가격과 재고는 받지 않는다(이번 턴의 tool 결과로만 말한다)."""
 
@@ -83,6 +93,9 @@ class AgentActRequest(_Strict):
         default_factory=list, max_length=MAX_CONTEXT_CARDS
     )
     focused_isbn: Isbn13 | None = None
+    # 이번 말 앞의 대화. 되물은 뒤의 "1번이요", "네"가 무슨 행동인지 알려면 필요하다(#397). 서버는 대화를
+    # 저장하지 않으므로 BE 가 보낸다. 20턴을 넘으면 최근 20턴만 쓰고(③과 같다), 항목 형식이 틀리면 400 이다.
+    recent_turns: list[Turn] = Field(default_factory=list)
     user_context: UserContext
     allow_tools: list[ToolName] | None = None
     idempotency_key: str = Field(min_length=1)
@@ -92,6 +105,16 @@ class AgentActRequest(_Strict):
     def _not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("message가 비어있음")
+        return value
+
+    @field_validator("recent_turns", mode="before")
+    @classmethod
+    def _recent_turns_tail(cls, value: object) -> object:
+        # null 은 빈 목록이다. 상한을 넘으면 앞을 자르고 최근 것만 쓴다(③과 같다, 200)
+        if value is None:
+            return []
+        if isinstance(value, list) and len(value) > MAX_RECENT_TURNS:
+            return value[-MAX_RECENT_TURNS:]
         return value
 
     # BE 는 비어 있는 목록을 null 로 보낼 수 있다(⑤⑥과 같게).

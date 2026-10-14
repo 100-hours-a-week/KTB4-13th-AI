@@ -14,6 +14,8 @@ from app.agent.schemas import (
     MAX_CONTEXT_CARDS,
     MAX_CONVERSATION_ID_CHARS,
     MAX_MESSAGE_CHARS,
+    MAX_RECENT_TURNS,
+    MAX_TURN_CHARS,
     AgentActData,
     Button,
     ToolName,
@@ -347,3 +349,88 @@ def test_action과_칸이_안_맞는_버튼은_만들_수_없다(button) -> None
     # 7단계(버튼 붙이기)가 잘못된 버튼을 만들 수 없게 모델에서 막는다
     with pytest.raises(ValidationError):
         Button.model_validate(button)
+
+
+# --- 최근 대화 (#397) ---
+
+
+def _turns(n: int) -> list[dict]:
+    return [
+        {"role": "user" if i % 2 == 0 else "assistant", "text": f"말{i}"}
+        for i in range(n)
+    ]
+
+
+def test_최근_대화가_없으면_빈_목록이다() -> None:
+    req = parse_request(_request())
+
+    assert req is not None
+    assert req.recent_turns == []
+
+
+def test_최근_대화를_사용자와_에이전트의_말로_받는다() -> None:
+    turns = [
+        {"role": "user", "text": "그거 담아줘"},
+        {"role": "assistant", "text": "카드 1번을 담을까요?"},
+    ]
+
+    req = parse_request(_request(recent_turns=turns))
+
+    assert req is not None
+    assert [(t.role, t.text) for t in req.recent_turns] == [
+        ("user", "그거 담아줘"),
+        ("assistant", "카드 1번을 담을까요?"),
+    ]
+
+
+def test_최근_대화가_null이면_빈_목록으로_받는다() -> None:
+    req = parse_request(_request(recent_turns=None))
+
+    assert req is not None
+    assert req.recent_turns == []
+
+
+def test_20턴을_넘으면_최근_20턴만_쓴다() -> None:
+    # ③과 같다: 개수 상한을 넘어도 400이 아니라 최근 것만 쓴다
+    req = parse_request(_request(recent_turns=_turns(MAX_RECENT_TURNS + 3)))
+
+    assert req is not None
+    assert len(req.recent_turns) == MAX_RECENT_TURNS
+    assert req.recent_turns[-1].text == f"말{MAX_RECENT_TURNS + 2}"
+    assert req.recent_turns[0].text == "말3"
+
+
+@pytest.mark.parametrize(
+    "turns",
+    [
+        pytest.param([{"role": "bot", "text": "안녕"}], id="모르는_role"),
+        pytest.param([{"role": "user"}], id="text_없음"),
+        pytest.param([{"text": "안녕"}], id="role_없음"),
+        pytest.param(
+            [{"role": "user", "text": "가" * (MAX_TURN_CHARS + 1)}], id="201자"
+        ),
+        pytest.param([{"role": "user", "text": 1}], id="text_숫자"),
+        pytest.param(["안녕"], id="문자열_항목"),
+        pytest.param({"role": "user", "text": "안녕"}, id="목록_아님"),
+        pytest.param([{"role": "user", "text": "앞\x00뒤"}], id="NUL_문자"),
+    ],
+)
+def test_최근_대화의_형식이_틀리면_거절한다(turns) -> None:
+    # 개수는 잘라서 쓰지만 항목의 형식, 길이, 값이 틀리면 400이다(③과 같다)
+    assert parse_request(_request(recent_turns=turns)) is None
+
+
+def test_200자까지는_받는다() -> None:
+    turns = [{"role": "user", "text": "가" * MAX_TURN_CHARS}]
+
+    assert parse_request(_request(recent_turns=turns)) is not None
+
+
+def test_최근_대화의_모르는_칸은_무시한다() -> None:
+    # ⑦ 요청은 모르는 칸을 무시한다(옛 칸을 보내도 400이 아니다). 항목 안도 같다
+    turns = [{"role": "user", "text": "안녕", "extra": 1}]
+
+    req = parse_request(_request(recent_turns=turns))
+
+    assert req is not None
+    assert [(t.role, t.text) for t in req.recent_turns] == [("user", "안녕")]
