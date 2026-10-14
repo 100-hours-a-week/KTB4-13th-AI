@@ -20,3 +20,5 @@ dev/
 evals/agent/results/
 # ④⑥ 평가 실행 결과(--out). 책 표가 PC 마다 달라 저장소에 올리지 않는다. 기준선만 evals/feed/baseline.json 에 둔다
 evals/feed/results/
+# ③ 평가 실행 원본·요약(--out). 모델 호출 기록이라 저장소에는 올리지 않는다. 기준선만 evals/chat/baselines/ 에 둔다
+evals/chat/results/
