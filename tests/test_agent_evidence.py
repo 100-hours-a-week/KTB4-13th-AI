@@ -720,3 +720,94 @@ def test_이력에서_나온_근거로_정해진_책도_resolved_reference에_�
 
     assert evidence.stated(ctx, PY)
     assert not evidence.stated(ctx, DB)
+
+
+# --- 리뷰 반영 (#398): 잘못 통과하는 두 가지만 조인다 ---
+# 말투를 더 받아 주는 규칙은 늘리지 않는다. 막혀서 되묻는 쪽은 평가 사례로 모은 뒤에 다룬다.
+
+
+@pytest.mark.parametrize(
+    ("message", "n", "isbn"),
+    [
+        ("네 근데 2번으로요", 2, DB),
+        ("응 아니 3번", 3, K8S),
+        ("네? 아니요 2번이요", 2, DB),
+        ("좋아 근데 쿠버네티스로", 3, K8S),
+        ("네 근데 맨 아래 걸로 할게요", 3, K8S),
+    ],
+)
+def test_동의_뒤에_다른_책을_말하면_제안한_책이_아니라_말한_책이_근거다(
+    message: str, n: int, isbn: str
+) -> None:
+    ctx = _history(
+        _ctx(message, cards=[PY, DB, K8S]), ("user", "그거 담아줘"), PROPOSE_PY
+    )
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+    assert evidence.has_evidence(ctx, _card(n), isbn)
+
+
+@pytest.mark.parametrize("message", ["네? 아니요", "응 그만할래", "네 아니 됐어요"])
+def test_동의처럼_시작해도_부정이_있으면_동의가_아니다(message: str) -> None:
+    ctx = _history(_ctx(message, cards=[PY, DB, K8S]), ("user", "담아줘"), PROPOSE_PY)
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+@pytest.mark.parametrize("message", ["어", "어?"])
+def test_어는_동의가_아니다(message: str) -> None:
+    ctx = _history(_ctx(message, cards=[PY, DB, K8S]), ("user", "담아줘"), PROPOSE_PY)
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+def test_지시어와_함께_다른_책을_말하면_지시어를_근거로_보지_않는다() -> None:
+    ctx = _history(
+        _ctx("그거 대신 2번 담아줘", cart=[PY, DB]),
+        ("assistant", "《처음 만나는 파이썬》을 장바구니에 담았어요."),
+    )
+
+    assert not evidence.has_evidence(ctx, _cart(1), PY)
+    assert evidence.has_evidence(ctx, _cart(2), DB)
+
+
+@pytest.mark.parametrize(
+    "message", ["가장 위로가 되는 거 담아줘", "제일 앞서가는 책 담아줘"]
+)
+def test_위나_앞으로_시작하는_다른_낱말은_맨_위가_아니다(message: str) -> None:
+    cards = _ctx(message, cards=[PY, DB, K8S])
+    cart = _ctx(message, cart=[SW, DB, PY])
+
+    assert not evidence.has_evidence(cards, _card(1), PY)
+    assert not evidence.has_evidence(cart, _cart(1), SW)
+
+
+@pytest.mark.parametrize(
+    "message", ["가장 끝내주는 거 담아줘", "가장 뒤늦게 나온 거 담아줘"]
+)
+def test_끝이나_뒤로_시작하는_다른_낱말은_맨_아래가_아니다(message: str) -> None:
+    cards = _ctx(message, cards=[PY, DB, K8S])
+    cart = _ctx(message, cart=[SW, DB, PY])
+
+    assert not evidence.has_evidence(cards, _card(3), K8S)
+    assert not evidence.has_evidence(cart, _cart(3), PY)
+
+
+@pytest.mark.parametrize(
+    "message", ["맨 위 책 담아줘", "맨 위쪽 책 담아줘", "맨 위에 있는 거 담아줘"]
+)
+def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_위다(message: str) -> None:
+    assert evidence.has_evidence(
+        _ctx(message, cards=[PY, DB, K8S]), _card(1), PY
+    )
+    assert evidence.has_evidence(_ctx(message, cart=[SW, DB, PY]), _cart(1), SW)
+
+
+@pytest.mark.parametrize(
+    "message", ["맨 아래 책 담아줘", "맨 아래쪽 책 담아줘", "맨 끝에 있는 거 담아줘"]
+)
+def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_아래다(message: str) -> None:
+    assert evidence.has_evidence(
+        _ctx(message, cards=[PY, DB, K8S]), _card(3), K8S
+    )
+    assert evidence.has_evidence(_ctx(message, cart=[SW, DB, PY]), _cart(3), PY)
