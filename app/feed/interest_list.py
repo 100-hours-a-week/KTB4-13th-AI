@@ -4,8 +4,10 @@
 관심사마다 책을 뽑는 것과 목록을 조립하는 것은 #449–#452 다.
 """
 
+import re
 from collections import Counter, deque
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass
 
 from app.profile import interests
 
@@ -16,6 +18,47 @@ MAX_INTERESTS = 5
 # 한 작가는 이만큼마다 이만큼까지 둔다. 작가를 말한 사람의 홈이 그 작가 책으로만 차지 않게 한다(#395 의 (안))
 AUTHOR_BLOCK = 20
 AUTHOR_PER_BLOCK = 5
+
+# ⑤ 가 조건을 적는 꼴(app/extraction/rules.py): "300쪽 이하", "1만 원 이하", "1만 5천 원 이하", "9,900원 이하",
+# "2024년 이후". 꼴이 바뀌면 여기도 같이 고친다
+_PAGES = re.compile(r"(\d+)쪽 (이하|이상)")
+_PRICE = re.compile(r"(?:(\d+)만 (?:(\d)천 )?원|([\d,]+)원) (이하|이상)")
+_YEAR = re.compile(r"(\d{4})년 (이후|이전)")
+
+
+@dataclass(frozen=True)
+class Condition:
+    """책 정보로 가르는 조건 하나. field 는 pages·price·year 이고, upper 면 limit 이하(이전)다."""
+
+    field: str
+    limit: int
+    upper: bool
+
+    def met_by(self, value: int | None) -> bool:
+        """책의 값이 조건을 지키는지. 값을 모르면 지키지 않는 것으로 본다."""
+        if value is None:
+            return False
+        return value <= self.limit if self.upper else value >= self.limit
+
+
+def parse_condition(text: str) -> Condition | None:
+    """⑤ 가 적은 조건을 읽는다. 쪽수·가격·출간연도의 꼴이 아니면 None 이다."""
+    if match := _PAGES.fullmatch(text):
+        return Condition("pages", int(match[1]), match[2] == "이하")
+    if match := _PRICE.fullmatch(text):
+        if match[1]:
+            amount = int(match[1]) * 10000 + int(match[2] or 0) * 1000
+        else:
+            amount = int(match[3].replace(",", ""))
+        return Condition("price", amount, match[4] == "이하")
+    if match := _YEAR.fullmatch(text):
+        return Condition("year", int(match[1]), match[2] == "이전")
+    return None
+
+
+def meets_all(conditions: Sequence[Condition], facts: Mapping[str, int | None]) -> bool:
+    """책 정보(pages·price·year)가 조건을 모두 지키는지. 조건이 없으면 거짓이라 순서를 바꾸지 않는다."""
+    return bool(conditions) and all(c.met_by(facts.get(c.field)) for c in conditions)
 
 
 def allocate(

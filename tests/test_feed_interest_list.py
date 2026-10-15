@@ -99,3 +99,34 @@ def test_한_작가의_책만_남아도_모두_놓는다(count: int) -> None:
     out = il.cap_authors(items, _author, block=20, per_block=5)
 
     assert sorted(out) == sorted(items)
+
+
+# --- 조건 ---
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("300쪽 이하", il.Condition("pages", 300, upper=True)),
+        ("500쪽 이상", il.Condition("pages", 500, upper=False)),
+        ("1만 원 이하", il.Condition("price", 10000, upper=True)),
+        ("1만 5천 원 이하", il.Condition("price", 15000, upper=True)),
+        ("9,900원 이하", il.Condition("price", 9900, upper=True)),
+        ("2024년 이후", il.Condition("year", 2024, upper=False)),
+        ("2000년 이전", il.Condition("year", 2000, upper=True)),
+        ("번역서", None),  # 책 정보로 가를 수 없는 것
+    ],
+)
+def test_정해진_꼴의_조건을_읽는다(text: str, expected: il.Condition | None) -> None:
+    assert il.parse_condition(text) == expected
+
+
+def test_책이_조건을_모두_지키는지_본다() -> None:
+    conditions = [il.Condition("pages", 300, True), il.Condition("year", 2024, False)]
+
+    assert il.meets_all(conditions, {"pages": 280, "year": 2025})
+    assert not il.meets_all(conditions, {"pages": 280, "year": 2023})
+    # 쪽수를 모르면 지키지 않는 것으로 본다
+    assert not il.meets_all(conditions, {"pages": None, "year": 2025})
+    # 조건이 없으면 앞으로 옮길 책도 없다
+    assert not il.meets_all([], {"pages": 280})
