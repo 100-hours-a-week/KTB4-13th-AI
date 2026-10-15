@@ -371,8 +371,8 @@ def test_사례를_dev와_heldout으로_가른다() -> None:
     dev = run._select(DATA, _args(split="dev"))
     heldout = run._select(DATA, _args(split="heldout"))
 
-    assert len(dev) == 90
-    assert len(heldout) == 34
+    assert len(dev) == 92
+    assert len(heldout) == 37
     assert {c["id"] for c in dev} | {c["id"] for c in heldout} == set(CASES)
     # split 칸이 없는 옛 사례는 dev 다
     assert all(c.get("split", "dev") == "dev" for c in dev)

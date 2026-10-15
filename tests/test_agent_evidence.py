@@ -324,16 +324,10 @@ def _written_isbns(case: dict) -> set[str]:
 _EXECUTED = [c for c in _CASES.values() if c["expect"]["outcome"] == "executed"]
 _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 
-# 근거 검사가 아직 읽지 못하는 말(#416). 실제 모델은 이 사례들에서 맞는 책을 골랐지만 이 검사에 막혔다.
-# 앞 대화에서 이야기한 책("응 담아", "그럼 두 권 담아줘"), 가격으로 정해지는 책("제일 싼 거"),
-# 소개글로 가리킨 책이다. 고치면 strict 라서 통과하는 순간 실패하므로 여기서 빼면 된다.
-_EVIDENCE_GAPS = {
-    "describe-01",
-    "describe-02",
-    "short-02",
-    "multiturn-01",
-    "multiturn-03",
-}
+# 근거 검사가 아직 읽지 못하는 말(#416). 앞 대화에서 이야기한 책이 한 권뿐인데 이번 말이 그 책을 다시 말하지
+# 않는다("응 담아", "그럼 두 권 담아줘"). 고치면 strict 라서 통과하는 순간 실패하므로 여기서 빼면 된다(#418).
+# 가격이나 소개글로 모델이 해석한 책("제일 싼 거")은 근거로 보지 않고 짚어서 묻는 사례(ask_back)로 바꿨다.
+_EVIDENCE_GAPS = {"short-02", "multiturn-01", "short-05", "multiturn-04"}
 
 
 def _with_gaps(cases: list[dict]) -> list:
