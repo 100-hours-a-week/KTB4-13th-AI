@@ -101,7 +101,7 @@ def test_대화_하나의_형식(case: dict) -> None:
         assert set(item) == {"type", "value", "keywords", "stated"}
         assert item["type"] in TYPES
         assert 0 < len(item["value"]) <= MAX_VALUE_CHARS
-        # 핵심어는 뽑은 문장에 하나라도 들어 있는지 코드로 보는 데 쓴다. 비어 있으면 무엇이든 통과한다.
+        # 찾는 말은 뽑은 문장에 하나라도 들어 있는지 코드로 보는 데 쓴다. 비어 있으면 무엇이든 통과한다.
         assert item["keywords"] and all(k.strip() for k in item["keywords"])
         # 사용자가 직접 말한 취향인지, 부탁한 내용에서 드러난 취향인지.
         assert isinstance(item["stated"], bool)
@@ -120,7 +120,7 @@ def test_넣으면_안_되는_말은_기대_문장에도_없다(case: dict) -> N
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_IDS)
-def test_기대_문장은_자기_핵심어를_담고_있다(case: dict) -> None:
-    # 핵심어가 기대 문장에도 없으면 핵심어를 잘못 적은 것이다.
+def test_기대_문장은_자기_찾는_말을_담고_있다(case: dict) -> None:
+    # 찾는 말이 기대 문장에도 없으면 찾는 말을 잘못 적은 것이다.
     for item in case["expect"]["extractions"]:
         assert [word for word in item["keywords"] if word in item["value"]]

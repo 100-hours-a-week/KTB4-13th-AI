@@ -63,7 +63,7 @@ _KUBE = ("topic", "쿠버네티스 입문서를 찾음", ("쿠버네티스",))
 # --- 뽑아야 하는 대화 ---
 
 
-def test_기대한_취향의_핵심어가_든_문장을_뽑았으면_통과다() -> None:
+def test_기대한_취향의_찾는_말이_든_문장을_뽑았으면_통과다() -> None:
     result = score(_case([_KUBE]), _ok(_got(value="쿠버네티스를 다룬 입문서를 찾음")))
 
     assert result.passed
@@ -71,7 +71,7 @@ def test_기대한_취향의_핵심어가_든_문장을_뽑았으면_통과다()
     assert (result.expected, result.matched, result.extracted) == (1, 1, 1)
 
 
-def test_핵심어는_하나만_들어_있어도_되고_띄어쓰기와_대소문자를_보지_않는다() -> None:
+def test_찾는_말은_하나만_들어_있어도_되고_띄어쓰기와_대소문자를_보지_않는다() -> None:
     case = _case([("topic", "SF 소설을 좋아함", ("에스에프", "SF 소설"))])
 
     assert score(case, _ok(_got(value="sf소설을 즐겨 읽음"))).passed
@@ -85,7 +85,7 @@ def test_뽑아야_하는데_안_뽑았으면_실패다() -> None:
     assert (result.expected, result.matched, result.extracted) == (1, 0, 0)
 
 
-def test_뽑았지만_핵심어가_든_문장이_없으면_실패다() -> None:
+def test_뽑았지만_찾는_말이_든_문장이_없으면_실패다() -> None:
     result = score(_case([_KUBE]), _ok(_got(value="개발 책을 찾음")))
 
     assert result.failures == ("missed",)

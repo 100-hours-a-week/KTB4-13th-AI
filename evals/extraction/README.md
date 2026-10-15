@@ -26,7 +26,7 @@
 | `cases[].about` | 이 대화로 보려는 것 한 줄 |
 | `cases[].request` | API에 그대로 보내는 요청 |
 | `expect.nothing_found` | 뽑을 것이 없어야 하면 `true` |
-| `expect.extractions` | 뽑아야 하는 취향. `type`은 종류, `value`는 기대 문장, `keywords`는 뽑은 문장에 하나라도 들어 있어야 하는 말, `stated`는 사용자가 직접 말한 취향이면 `true`이고 부탁한 내용에서 드러난 것이면 `false` |
+| `expect.extractions` | 뽑아야 하는 취향. `type`은 종류, `value`는 기대 문장, `keywords`는 뽑은 문장에 하나라도 들어 있어야 하는 말(찾는 말), `stated`는 사용자가 직접 말한 취향이면 `true`이고 부탁한 내용에서 드러난 것이면 `false` |
 | `expect.must_not_extract` | 뽑으면 안 되는 취향 문장. 뜻이 같은 것을 뽑으면 실패 |
 | `expect.forbidden` | 뽑은 문장 어디에도 들어가면 안 되는 말 |
 
@@ -95,7 +95,7 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 | `missed` | 뽑아야 하는 취향인데, 그 `keywords` 중 하나라도 든 문장이 없음 |
 | `forbidden` | `forbidden`의 말이 뽑은 문장에 있음 |
 
-핵심어와 금지어는 띄어쓰기와 대소문자를 보지 않고 견줍니다.
+찾는 말과 금지어는 띄어쓰기와 대소문자를 보지 않고 견줍니다.
 
 뽑을 것이 없는 대화에도 `forbidden`을 적어 둔 곳이 있습니다. **사용자가 하지 않은 말**입니다. 챗봇이 한 말("힐링"), 남의 취향("야구"), 좋아한다고 하지 않았는데 붙인 "좋아"가 그렇습니다. 그런 대화에서 무엇인가 뽑았을 때 실패 이유로 둘을 가를 수 있습니다.
 

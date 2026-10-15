@@ -57,7 +57,7 @@ def _run(cases, answer=_ideal, runs=1):
 
 
 def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
-    # 기대 문장이 자기 핵심어를 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
+    # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
     assert len(calls) == len(_CASES) == 80

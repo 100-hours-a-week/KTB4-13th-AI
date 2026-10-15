@@ -1,10 +1,10 @@
 """⑤ 평가 묶음의 코드 채점(#341). 대화 하나의 기대값과 API 응답을 견줘 통과·실패를 매긴다.
 
-코드로 볼 수 있는 것만 본다(#341 의 기준 1–3 과 4 의 핵심어 부분).
+코드로 볼 수 있는 것만 본다(#341 의 기준 1–3 과, 기준 4 가운데 코드로 볼 수 있는 부분).
 
 - 응답의 모양이 명세 ⑤와 같은가
 - 뽑을 것이 없는 대화에서 뽑지 않았는가
-- 뽑아야 하는 취향마다 핵심어가 든 문장이 있는가
+- 뽑아야 하는 취향마다 찾는 말(`keywords`)이 든 문장이 있는가
 - 넣으면 안 되는 말이 뽑은 문장에 없는가
 
 뜻을 봐야 하는 것은 채점하지 않고 표시만 한다. 종류가 맞는지, 뽑으면 안 되는 취향을 다른 말로
@@ -27,7 +27,7 @@ _ITEM_KEYS = {"type", "value", "confidence", "vector", "dim", "source_conversati
 ERROR = "error"  # 200 이 아니다(LLM 장애, 시간 초과, 서버 오류)
 FORMAT = "format"  # 응답의 모양이 명세와 다르다
 EXTRACTED = "extracted"  # 뽑으면 안 되는 것을 뽑았다
-MISSED = "missed"  # 뽑아야 하는 취향의 핵심어가 든 문장이 없다
+MISSED = "missed"  # 뽑아야 하는 취향의 찾는 말이 든 문장이 없다
 FORBIDDEN = "forbidden"  # 넣으면 안 되는 말이 뽑은 문장에 있다
 
 
@@ -47,7 +47,7 @@ class Score:
     passed: bool  # 코드로 볼 수 있는 것을 모두 지켰다
     failures: tuple[str, ...]
     expected: int  # 뽑아야 하는 취향 수
-    matched: int  # 그중 핵심어가 든 문장이 있는 것
+    matched: int  # 그중 찾는 말이 든 문장이 있는 것
     type_matched: int  # 그중 종류까지 같은 것(참고용, 통과에는 안 쓴다)
     extracted: int  # 응답에 나온 취향 수
     extra: int  # 어느 기대와도 맞지 않는 취향 수(실패가 아니다)
