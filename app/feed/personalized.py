@@ -107,7 +107,7 @@ async def _estimated_count(
     return int(json.loads(plan)[0]["Plan"]["Plan Rows"])
 
 
-def budget(seconds: float) -> Callable[[], float]:
+def _budget(seconds: float) -> Callable[[], float]:
     """남은 시간을 돌려주는 함수. 다 썼으면 TimeoutError 로, 질의가 시간을 넘긴 것과 같게 끝낸다."""
     deadline = time.monotonic() + seconds
 
@@ -138,7 +138,7 @@ async def _nearest(
     limit_param = 2 + len(excluded.params)
     where, filter_params = build_where(filters, first_param=limit_param + 1)
     filtered = bool(where)
-    left = budget(NEAREST_BUDGET_SECONDS)
+    left = _budget(NEAREST_BUDGET_SECONDS)
     count = 0
     if filtered:
         count_where, count_params = build_where(filters, first_param=1)
