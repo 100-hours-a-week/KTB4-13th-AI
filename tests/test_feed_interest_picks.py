@@ -262,6 +262,23 @@ def test_키워드_관심사는_그_말이_든_책을_앞에_두고_나머지는
     assert conn.args[0][2] == "cat"
 
 
+# --- 예산을 넘긴 관심사의 대신할 책 (#451) ---
+
+
+def test_분류로_좁힐_수_없는_관심사는_대신할_책이_없다() -> None:
+    conn = _FakeConn()
+
+    for name in ("작가:한강", "키워드:고양이", "그림책"):
+        picks = asyncio.run(
+            interest_picks.pick_popular(
+                conn, name, [1.0], by_name=True, limit=5, timeout=1.0
+            )
+        )
+        assert picks == []
+
+    assert conn.sqls == []
+
+
 # --- 실제 DB ---
 
 
@@ -283,6 +300,7 @@ class _Book:
     author: str = "저자"
     pub_year: int = 2024
     description: str = "소개"
+    embedded: bool = True
 
 
 async def _with_books(books: list[_Book], check):
@@ -307,12 +325,13 @@ async def _with_books(books: list[_Book], check):
                 book.description,
                 isbn,
             )
-            await conn.execute(
-                "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
-                book.book_id,
-                to_vector_literal(_unit_like(book.cosine)),
-                DIM,
-            )
+            if book.embedded:
+                await conn.execute(
+                    "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
+                    book.book_id,
+                    to_vector_literal(_unit_like(book.cosine)),
+                    DIM,
+                )
             if book.class_no:
                 await conn.execute(
                     "INSERT INTO book_classes VALUES ($1, $2)", isbn, book.class_no
@@ -399,3 +418,29 @@ def test_키워드는_가까운_책_가운데_제목이나_소개글에_그_말�
     picks = asyncio.run(_with_books(books, check))
 
     assert [p.book_id for p in picks] == [9100322, 9100323, 9100321]
+
+
+@_needs_db
+def test_대신할_책은_그_분류에서_인기_있는_책이고_유사도_항은_책_벡터로_매긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 실제 분류에는 실제 책이 많다. 테스트 책만 든 분류를 이 관심사의 분류로 친다
+    monkeypatch.setattr(interest_picks, "classes_of", lambda _name: ("쀍분류",))
+    books = [
+        _Book(9100331, category="쀍분류", cosine=0.84, pub_year=2024),
+        _Book(9100332, category="쀍분류", pub_year=2023, embedded=False),
+        _Book(9100333, category="쀍분류", cosine=1.0, pub_year=2025),
+        _Book(9100334, category="에세이", cosine=1.0, pub_year=2026),
+    ]
+
+    async def check(conn):
+        return await interest_picks.pick_popular(
+            conn, "요리", _unit_like(1.0), by_name=True, limit=5, timeout=5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    # 인기도가 비어 있으면 신간순이다. 다른 분류의 책은 더 새것이어도 넣지 않는다
+    assert [p.book_id for p in picks] == [9100333, 9100331, 9100332]
+    # 벡터가 없는 책은 0 이다
+    assert [p.part for p in picks] == pytest.approx([1.0, 0.5, 0.0])

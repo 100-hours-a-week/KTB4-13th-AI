@@ -2,8 +2,8 @@
 
 검색어는 그 관심사의 책 벡터 평균이고, 책이 없으면 이름 벡터다. 뽑은 책 가운데 세부 분류 번호가 이 관심사로
 이어지는 책(AI 책 분류 표)을 앞에 둔다. 말한 "요리"도 594 책부터 나온다.
-작가 관심사는 저자 칸으로, 키워드 관심사는 핵심어의 이름 벡터로 뽑는다(#450). 시간 예산과 대체 자리는
-#451 이 맡는다.
+작가 관심사는 저자 칸으로, 키워드 관심사는 핵심어의 이름 벡터로 뽑는다(#450). 시간 예산을 넘긴 관심사는
+그 분류의 인기 있는 책으로 대신한다(#451).
 """
 
 import json
@@ -17,7 +17,7 @@ import asyncpg
 
 from app.core import categories
 from app.core.pgvector import to_vector_literal
-from app.feed import scoring
+from app.feed import cold_start, scoring
 from app.feed.personalized import (
     EXACT_LIMIT,
     FALLBACK_LIMIT,
@@ -98,6 +98,34 @@ SELECT n.book_id, b.isbn13, b.title, b.author, b.category, n.distance,
 FROM nearest n
 JOIN v_books b USING (book_id)
 ORDER BY n.distance, n.book_id
+"""
+
+# 자리 번호: 검색어($1) → 도서관 분류($2) → 뽑을 권수($3). 분류마다 개인화를 끈 목록과 같은 순서(판매 수 →
+# 신간 → 번호)로 색인 앞부분만 읽어 모은 뒤, 책 벡터를 책 번호로 읽어 검색어와의 거리를 붙인다
+_POPULAR_IN_CLASS = cold_start.popular_first_sql(
+    "",
+    "true",
+    extra="AND b.category = w.category",
+    limit="$3",
+    columns="u.book_id, u.seg, u.sales, u.pub_year",
+)
+_POPULAR_SQL = f"""
+WITH popular AS (
+    SELECT c.book_id, c.seg, c.sales, c.pub_year
+    FROM unnest($2::text[]) AS w(category)
+    CROSS JOIN LATERAL (
+        {_POPULAR_IN_CLASS}
+        LIMIT $3
+    ) c
+    ORDER BY c.seg, c.sales DESC, c.pub_year DESC NULLS LAST, c.book_id
+    LIMIT $3
+)
+SELECT p.book_id, b.isbn13, b.title, b.author, b.category,
+       e.embedding <=> $1::vector AS distance
+FROM popular p
+JOIN v_books b USING (book_id)
+LEFT JOIN book_embeddings e USING (book_id)
+ORDER BY p.seg, p.sales DESC, p.pub_year DESC NULLS LAST, p.book_id
 """
 
 
@@ -277,4 +305,43 @@ async def pick_keyword(
             row, scoring.interest_similarity_part(1 - row["distance"], by_name=True)
         )
         for row in sorted(rows, key=lambda row: not row["mentioned"])
+    ]
+
+
+async def pick_popular(
+    conn: asyncpg.Connection,
+    name: str,
+    vector: Sequence[float],
+    *,
+    by_name: bool,
+    limit: int,
+    timeout: float,
+) -> list[Pick]:
+    """시간 예산을 넘긴 관심사의 대신할 책 limit 권. 그 관심사의 도서관 분류에서 인기 있는 책을 뽑는다.
+
+    지금 장애 때 쓰는 규칙 점수 목록과 같은 색인이라 몇 ms 다(#395). 인기도가 비어 있는 동안은 신간순이다.
+    유사도 항은 책 벡터를 책 번호로 읽어 pick 과 같은 식으로 매기고, 벡터가 없는 책은 0 이다. 분류로 좁힐
+    수 없는 관심사는 빈 목록이고, 그 자리는 다른 관심사가 채운다.
+    """
+    classes = classes_of(name)
+    if not classes:
+        return []
+    rows = await cold_start.run_ordered(
+        conn,
+        _POPULAR_SQL,
+        to_vector_literal(list(vector)),
+        list(classes),
+        limit,
+        timeout=timeout,
+    )
+    length = math.sqrt(sum(x * x for x in vector))
+    return [
+        _as_pick(
+            row,
+            scoring.interest_similarity_part(
+                None if row["distance"] is None else (1 - row["distance"]) * length,
+                by_name=by_name,
+            ),
+        )
+        for row in rows
     ]

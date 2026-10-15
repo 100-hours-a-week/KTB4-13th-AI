@@ -91,8 +91,10 @@ ORDER BY pr.discounted_price, pr.book_id
 }
 
 
-async def run_ordered(conn: asyncpg.Connection, sql: str, *args: Any) -> list:
-    """색인 순서대로 읽는 쿼리를 계획이 흔들리지 않게 돌린다.
+async def run_ordered(
+    conn: asyncpg.Connection, sql: str, *args: Any, timeout: float | None = None
+) -> list:
+    """색인 순서대로 읽는 쿼리를 계획이 흔들리지 않게 돌린다. timeout 을 주지 않으면 연결의 기본 제한이다.
 
     두 구간을 이어 붙이는 쿼리에 PostgreSQL 이 병렬 실행이나 전체 해시 조인을 고르면, 261만 권에서
     1.5초가 걸린다. 이 쿼리는 앞에서부터 조금만 읽고 끝나는 모양이라 둘 다 쓸 일이 없다.
@@ -102,7 +104,7 @@ async def run_ordered(conn: asyncpg.Connection, sql: str, *args: Any) -> list:
         await conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
         await conn.execute("SET LOCAL enable_hashjoin = off")
         await conn.execute("SET LOCAL enable_mergejoin = off")
-        return await conn.fetch(sql, *args)
+        return await conn.fetch(sql, *args, timeout=timeout)
 
 
 async def fetch(
