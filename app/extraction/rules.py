@@ -40,6 +40,9 @@ MAX_KEYWORD_CHARS = 100
 _TITLE_BRACKETS = {"「": "」", "《": "》", "〈": "〉", "<": ">"}
 # 조건은 늘 지킨다고 직접 말한 것(세기 2 이상)만 남긴다(#427)
 MIN_CONDITION_STRENGTH = 2
+# 이번만 쓰는 부탁이라고 밝힌 말. 조건을 말한 사용자의 그 말에 있으면 조건을 뺀다(#427). 지시문으로만
+# 막으면 "이번 주는 200쪽 안쪽으로만"을 조건으로 뽑는 일이 잦았다
+_ONE_TIME = re.compile(r"이번|오늘|당분간")
 # 조건의 핵심어. 쪽수("300쪽 이하"), 가격("1만 원 이하", "15,000원 이하"), 출간연도("2024년 이후")
 _PAGES = re.compile(
     r"(\d{1,5})\s*(?:쪽|페이지|p)\s*(이하|이상|미만|초과)", re.IGNORECASE
@@ -103,19 +106,21 @@ def _letters(text: str) -> str:
 _NAMES = {_letters(name): name for name in categories.NAME_TEXTS}
 
 
-def _quoted_from(evidence: Any, user_turns: Sequence[str]) -> bool:
-    """근거로 든 말이 사용자가 한 말 하나에서 옮긴 것인가.
+def _quoted_turn(evidence: Any, user_turns: Sequence[str]) -> str | None:
+    """근거로 든 말을 옮겨 온 사용자의 말. 옮긴 것이 아니면 None.
 
     글자 그대로일 필요는 없다. 모델은 가운데를 줄여서 옮기므로, 근거의 낱말이 사용자의 말 하나에
     모두 들어 있으면 된다. 챗봇의 말이나 지어낸 말은 낱말이 맞지 않아 걸린다.
     """
     if not isinstance(evidence, str):
-        return False
+        return None
     words = [word for word in map(_letters, evidence.split()) if word]
     if sum(len(word) for word in words) < MIN_EVIDENCE_CHARS:
-        return False
-    said = [_letters(turn) for turn in user_turns]
-    return any(all(word in turn for word in words) for turn in said)
+        return None
+    return next(
+        (turn for turn in user_turns if all(w in _letters(turn) for w in words)),
+        None,
+    )
 
 
 def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
@@ -125,17 +130,21 @@ def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
     - basis: 직접 말했는지 부탁했는지를 적지 않았다
     - evidence: 근거로 든 말이 사용자가 한 말에서 옮긴 것이 아니다(챗봇이 한 말이거나 지어낸 말이다)
     - unsaid_like: 찾기만 했는데 좋아한다고 썼다
+    - one_time: 조건을 말한 사용자의 말이 이번만 쓰는 부탁이라고 밝혔다
     """
     if item.get("owner") != OWNER_USER:
         return "owner"
     basis = item.get("basis")
     if basis not in (BASIS_STATED, BASIS_REQUESTED):
         return "basis"
-    if not _quoted_from(item.get("evidence"), user_turns):
+    turn = _quoted_turn(item.get("evidence"), user_turns)
+    if turn is None:
         return "evidence"
     value = item.get("value")
     if basis == BASIS_REQUESTED and isinstance(value, str) and _SAYS_LIKE.search(value):
         return "unsaid_like"
+    if item.get("type") == "condition" and _ONE_TIME.search(turn):
+        return "one_time"
     return None
 
 

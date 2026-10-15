@@ -636,6 +636,37 @@ def test_사용자가_한_말을_주지_않으면_세_칸을_보지_않는다() 
     assert [c.value for c in screen(_out(_item()))] == ["잔잔한 소설을 찾음"]
 
 
+def test_이번만_쓰는_부탁이라고_밝힌_말의_조건은_버린다() -> None:
+    said = ["이번 주는 바빠서 200쪽 안쪽으로만 보여줘", "나는 두꺼운 책은 못 읽어"]
+    one_time = _claim(
+        type="condition",
+        value="200쪽 이하인 책만 읽음",
+        keyword="200쪽 이하",
+        strength=2,
+        evidence="200쪽 안쪽으로만 보여줘",
+        basis="stated",
+    )
+    always = _claim(
+        type="condition",
+        value="두꺼운 책은 읽지 않음",
+        keyword="300쪽 이하",
+        strength=2,
+        evidence="나는 두꺼운 책은 못 읽어",
+        basis="stated",
+    )
+
+    assert drop_reason(one_time, said) == "one_time"
+    assert _kept(one_time, always, said=said) == ["두꺼운 책은 읽지 않음"]
+
+
+def test_이번만이라는_말은_조건이_아닌_취향에는_코드가_보지_않는다() -> None:
+    # 주제·분위기의 "이번만"은 지시문이 가린다. 코드로 막는 것은 프로필에 남는 조건뿐이다
+    said = ["이번에는 잔잔한 소설 추천해줘"]
+    item = _claim(evidence="잔잔한 소설 추천해줘")
+
+    assert drop_reason(item, said) is None
+
+
 @pytest.mark.parametrize(
     ("over", "reason"),
     [
