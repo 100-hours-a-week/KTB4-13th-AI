@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import copy
 import json
 import logging
 
@@ -203,6 +204,42 @@ def test_걸린_시간의_중앙값과_가장_긴_값을_낸다() -> None:
     summary, _calls = _run(run.select(_CASES, kinds=["onetime"]), timed)
 
     assert summary["seconds"] == {"median": 2.0, "max": 9.0}
+
+
+def test_세_칸의_맞은_비율은_찾은_취향을_분모로_내고_표_아래에_적는다() -> None:
+    case = copy.deepcopy(_BY_ID["request-01"])
+    case["expect"]["extractions"][0].update(
+        strength=1, keyword=["쿠버네티스"], applies_to=["프로그래밍", "IT"]
+    )
+
+    def answer(request: dict) -> Outcome:
+        ideal = _ideal(request)
+        ideal.data["extractions"][0].update(
+            strength=1, keyword="쿠버네티스 입문서", applies_to=["프로그래밍"]
+        )
+        return ideal
+
+    summary, _calls = _run([case], answer, runs=2)
+
+    assert summary["labels"] == {
+        "labeled": 2,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 0.0,
+        "where_labeled": 2,
+        "where": 1.0,
+    }
+    assert (
+        "세기 부호 100%, 크기까지 100%, 핵심어 0%, 어디에 100%(주제 2개)"
+        in run.render(summary)
+    )
+
+
+def test_세_칸을_적은_취향을_못_찾았으면_비율_줄을_내지_않는다() -> None:
+    summary, _calls = _run(run.select(_CASES, kinds=["none"]))
+
+    assert summary["labels"]["labeled"] == 0
+    assert "세기 부호" not in run.render(summary)
 
 
 # --- 돈이 드는 호출을 허락 없이 하지 않는다 ---
