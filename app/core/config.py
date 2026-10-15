@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
     agent_turn_timeout_seconds: float = 30
 
+    # --- 관심사별 홈 추천(#395) ---
+    # 켜면 ⑥이 관심사 점수(와 5단계부터 추천 목록)를 저장하고, 홈과 더 보기가 그 목록을 읽는다. 끄면(기본)
+    # 새 표·칸(book_classes, taste_profile 의 새 칸)을 읽지도 쓰지도 않아, 마이그레이션이 적용되기 전에
+    # 머지돼도 깨지지 않는다(#440). 켜기는 이 기본값을 바꾸는 PR로 하고 운영 설정값은 건드리지 않는다(#420).
+    interest_feed: bool = False
+
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
     dev_cors_origins: str = ""
