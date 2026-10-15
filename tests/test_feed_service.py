@@ -536,19 +536,73 @@ def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조�
     assert (page.mode, page.feed_version) == (service.INTEREST, 4)
 
 
+def test_더_보기도_거르고_남은_책이_첫_쪽을_채우면_저장된_목록을_읽는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _from_saved(monkeypatch, _surface("recommend_more", size="2"), count=2)
+
+    assert [item["book_id"] for item in outcome.items] == [0, 1]
+
+
+def test_더_보기에서_거르고_남은_책이_첫_쪽도_못_채우면_그_자리에서_조회한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _from_saved(
+        monkeypatch,
+        _surface("recommend_more", size="3"),
+        count=2,
+        personalized__fetch=_personalized_page,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [9]
+
+
+def test_저장된_목록으로_시작한_더_보기는_모자라도_그_목록으로_잇는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _from_saved(monkeypatch, _surface("recommend_more", size="2"), count=3)
+
+    second = _from_saved(
+        monkeypatch,
+        _surface("recommend_more", size="2", cursor=first.next_cursor),
+        count=3,
+    )
+
+    assert [item["book_id"] for item in second.items] == [2]
+    assert second.next_cursor is None
+
+
+def test_지금_방식으로_시작한_스크롤은_목록이_생겨도_끊지_않고_지금_방식으로_잇는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    req = _surface("home")
+    started = cursor.issue(
+        cursor.Page(issued_at=datetime(2026, 10, 16, tzinfo=UTC)),
+        req,
+        service.PERSONALIZED,
+        1,
+    )
+
+    outcome = _from_saved(
+        monkeypatch,
+        _surface("home", cursor=started),
+        count=30,
+        personalized__fetch=_personalized_page,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [9]
+
+
 @pytest.mark.parametrize(
-    ("surface", "flag", "saved"),
+    ("flag", "saved"),
     [
-        ("recommend_more", True, _SAVED),  # 더 보기는 아직 지금 방식(#455)
-        ("home", False, _SAVED),  # 플래그가 꺼져 있으면 새 칸을 읽지 않는다
-        ("home", True, None),  # 목록을 아직 뽑지 않은 사람
+        (False, _SAVED),  # 플래그가 꺼져 있으면 새 칸을 읽지 않는다
+        (True, None),  # 목록을 아직 뽑지 않은 사람
     ],
 )
 def test_그_밖에는_지금처럼_채점한_목록을_준다(
-    monkeypatch: pytest.MonkeyPatch,
-    surface: str,
-    flag: bool,
-    saved: interest_page.Stored | None,
+    monkeypatch: pytest.MonkeyPatch, flag: bool, saved: interest_page.Stored | None
 ) -> None:
     monkeypatch.setattr(get_settings(), "interest_feed", flag)
     asked = []
@@ -558,7 +612,7 @@ def test_그_밖에는_지금처럼_채점한_목록을_준다(
         return saved
 
     outcome = _run(
-        _surface(surface),
+        _surface("home"),
         _PROFILE_ROW,
         monkeypatch,
         interest_page__stored=_stored,

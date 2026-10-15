@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 PERSONALIZED = "personalized"
 COLD_START = "cold-start"
 RULE_ONLY = "rule-only"
-# 저장된 관심사별 목록(#454). 기능 플래그(interest_feed)가 켜져 있고 목록이 있을 때 홈이 읽는다.
+# 저장된 관심사별 목록(#454, #455). 기능 플래그(interest_feed)가 켜져 있고 목록이 있을 때 홈과 더 보기가 읽는다.
 INTEREST = "interest"
 
 _PROFILE_SQL = """
@@ -130,10 +130,13 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await cold_start.fetch(conn, req, page, excluded)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
-        if req.surface == "home" and get_settings().interest_feed:
+        # 지금 방식으로 시작한 스크롤은 지금 방식으로 잇는다. 도중에 목록이 생겨도 끊지 않는다
+        if get_settings().interest_feed and page.mode in (None, INTEREST):
             saved = await interest_page.stored(conn, req.user_id)
             if saved is not None:
-                return await _from_saved(conn, req, page, excluded, saved, profile)
+                outcome = await _from_saved(conn, req, page, excluded, saved, profile)
+                if outcome is not None:
+                    return outcome
 
         tag_weights = await _tag_weights(conn, req, page, profile)
 
@@ -174,16 +177,19 @@ async def _from_saved(
     excluded: exclusion.Exclusion | None,
     saved: interest_page.Stored,
     profile: _Profile,
-) -> FeedOutcome:
-    """저장된 관심사별 목록에서 읽는다(#454). 요청 때 벡터를 조회하지 않는다.
+) -> FeedOutcome | None:
+    """저장된 관심사별 목록에서 읽는다(#454, #455). 요청 때 벡터를 조회하지 않는다.
 
-    가진 책이 요청에 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다.
+    가진 책이 요청에 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다. 더 보기에서 거르고 남은 책이 첫 쪽도
+    못 채우면 None 이고, 지금 방식으로 그 자리에서 조회한다(#395 의 (안)). 지금 방식은 벡터 조회에 2초를
+    두고, 넘으면 규칙 점수 목록으로 답한다.
     """
-    cursor.check_mode(page, INTEREST)
     books, version = saved.at(page.feed_version)
     if excluded is None:
         excluded = exclusion.replicated(req.user_id, page.issued_at)
     items = await interest_page.books(conn, req, books, excluded)
+    if req.surface == "recommend_more" and page.mode is None and len(items) < req.size:
+        return None
     shown, has_more = interest_page.page_of(items, req, page)
     return _outcome(
         page, req, shown, has_more, INTEREST, profile.version, None, version
