@@ -311,7 +311,7 @@ async def pick_keyword(
 async def pick_popular(
     conn: asyncpg.Connection,
     name: str,
-    vector: Sequence[float],
+    vector: Sequence[float] | None,
     *,
     by_name: bool,
     limit: int,
@@ -320,8 +320,9 @@ async def pick_popular(
     """시간 예산을 넘긴 관심사의 대신할 책 limit 권. 그 관심사의 도서관 분류에서 인기 있는 책을 뽑는다.
 
     지금 장애 때 쓰는 규칙 점수 목록과 같은 색인이라 몇 ms 다(#395). 인기도가 비어 있는 동안은 신간순이다.
-    유사도 항은 책 벡터를 책 번호로 읽어 pick 과 같은 식으로 매기고, 벡터가 없는 책은 0 이다. 분류로 좁힐
-    수 없는 관심사는 빈 목록이고, 그 자리는 다른 관심사가 채운다.
+    유사도 항은 책 벡터를 책 번호로 읽어 pick 과 같은 식으로 매기고, 벡터가 없는 책은 0 이다. 검색어가
+    없으면(이름 벡터를 못 읽음) 모두 0 이다. 분류로 좁힐 수 없는 관심사는 빈 목록이고, 그 자리는 다른
+    관심사가 채운다.
     """
     classes = classes_of(name)
     if not classes:
@@ -329,12 +330,12 @@ async def pick_popular(
     rows = await cold_start.run_ordered(
         conn,
         _POPULAR_SQL,
-        to_vector_literal(list(vector)),
+        None if vector is None else to_vector_literal(list(vector)),
         list(classes),
         limit,
         timeout=timeout,
     )
-    length = math.sqrt(sum(x * x for x in vector))
+    length = math.sqrt(sum(x * x for x in vector or ()))
     return [
         _as_pick(
             row,
