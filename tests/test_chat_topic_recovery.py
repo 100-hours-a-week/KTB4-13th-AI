@@ -105,6 +105,87 @@ def test_이미_찾을_말이_있으면_건드리지_않는다(overrides: dict) 
     assert chat._recover_topic(spec, "2020년 이후에 나온 인공지능 책 추천해줘") == spec
 
 
+# --- 리뷰(#408)가 찾은 문제: 조건만 말하고 주제는 말하지 않은 문장의 잔말이 검색 문장이 되던 것 ---
+
+CHATTER_ONLY = [
+    pytest.param(
+        "요즘 나온 책 중에 2만원 이하로 뭐 있어?", {"price_max": 20000}, id="중에_뭐"
+    ),
+    pytest.param("만 원 이하로 볼 만한 거 있나요", {"price_max": 10000}, id="만한_거"),
+    pytest.param(
+        "2만원 넘지 않는 걸로 하나 골라 주세요", {"price_max": 20000}, id="걸로_하나"
+    ),
+    pytest.param(
+        "2020년 이후 나온 거 중에 재밌는 거 있어?",
+        {"pub_year_from": 2020},
+        id="재밌는_거",
+    ),
+    pytest.param(
+        "1만원대로 가볍게 읽을 거 하나만", {"price_max": 19999}, id="가볍게_읽을_거"
+    ),
+    pytest.param("올해 나온 책 보여줘", {"pub_year_from": 2026}, id="올해"),
+]
+
+
+@pytest.mark.parametrize(("message", "filters"), CHATTER_ONLY)
+def test_조건만_말한_잔말은_주제로_삼지_않고_그대로_둔다(
+    message: str, filters: dict
+) -> None:
+    spec = _spec(filters=filters)
+
+    assert chat._recover_topic(spec, message) == spec
+
+
+@pytest.mark.parametrize(("message", "filters"), CHATTER_ONLY)
+def test_조건만_말한_잔말에는_검색하지_않고_되묻는다(
+    monkeypatch: pytest.MonkeyPatch, message: str, filters: dict
+) -> None:
+    seen = _capture_candidates_spec(monkeypatch)
+    model = _fake_model({"filters": filters})
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request(message))
+
+    assert res.status_code == 200
+    assert seen[0].semantic is None
+    assert res.json()["data"]["followup"].startswith("어떤 분야가 좋으세요?")
+
+
+@pytest.mark.parametrize(
+    ("message", "filters", "topic"),
+    [
+        (
+            "3만원 이하로 엄마 선물할 책 있을까요?",
+            {"price_max": 30000},
+            "엄마 선물할",
+        ),
+        (
+            "작년에 나온 소설 중에 반응 좋았던 거",
+            {"pub_year_from": 2025},
+            "소설",
+        ),
+        ("2만원 이하 소설 추천해줘", {"price_max": 20000}, "소설"),
+        ("2만원 이하 에세이를 보고 싶어요", {"price_max": 20000}, "에세이"),
+    ],
+)
+def test_책_종류_낱말_바로_앞의_말만_주제로_삼는다(
+    message: str, filters: dict, topic: str
+) -> None:
+    recovered = chat._recover_topic(_spec(filters=filters), message)
+
+    assert recovered.semantic == topic
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["소설 말고 2만원 이하 다른 거 보여줘", "2만원 이하로 에세이 빼고 추천해줘"],
+)
+def test_빼_달라는_말에서는_그_낱말을_주제로_삼지_않는다(message: str) -> None:
+    spec = _spec(filters={"price_max": 20000})
+
+    assert chat._recover_topic(spec, message) == spec
+
+
 def _fake_model(patch: dict) -> RunnableLambda:
     return RunnableLambda(
         lambda _p: AIMessage(content=json.dumps(patch, ensure_ascii=False))
