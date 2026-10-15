@@ -44,6 +44,11 @@ BASIS_REQUESTED = "requested"  # basis: 찾거나 추천을 부탁하기만 했�
 MIN_EVIDENCE_CHARS = 4
 # 좋아한다고 쓴 문장. "기분이 좋아지는"은 해당하지 않는다.
 _SAYS_LIKE = re.compile(r"좋아(함|하|해)")
+# 세기를 높이는 말. 직접 말한 취향의 근거에 있으면 세기의 크기가 3 이다(평가 묶음의 기준과 같다).
+# LLM 이 2 로 적는 일이 잦아 코드가 본다. "팬데믹"의 "팬"은 해당하지 않는다.
+_INTENSIFIER = re.compile(
+    r"진짜|정말|완전|너무|절대|무조건|광팬|(?<![가-힣])팬(?:이|$|\s)"
+)
 
 # 문장 끝에서 무시하는 문장부호. 글자 속의 기호는 건드리지 않는다 — "C#"과 "C", "3.5"와 "35"는 다르다.
 _TRAILING_PUNCTUATION = ".!?~…。"
@@ -130,11 +135,11 @@ def _value(raw: Any) -> str | None:
         return None
 
 
-def _strength(raw: Any, basis: Any) -> int | None:
+def _strength(raw: Any, basis: Any, evidence: Any) -> int | None:
     """세기. 정수가 아니거나 범위 밖이거나 0 이면 None.
 
-    크기는 직접 말했는지(basis)에 맞춘다. 부탁만 했으면 1, 직접 말했으면 2 이상이다. LLM 이 둘을 어긋나게
-    적어도 같은 말에 같은 크기가 나오게 하려는 것이다.
+    크기는 직접 말했는지(basis)에 맞춘다. 부탁만 했으면 1, 직접 말했으면 2, 직접 말하면서 근거에 세기를
+    높이는 말이 있으면 3 이다. LLM 이 어긋나게 적어도 같은 말에 같은 크기가 나오게 하려는 것이다.
     """
     # bool 은 int 의 하위 타입이라 따로 거른다. 2.0 같은 소수는 짐작해서 고치지 않는다
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -145,7 +150,8 @@ def _strength(raw: Any, basis: Any) -> int | None:
     if basis == BASIS_REQUESTED:
         return sign
     if basis == BASIS_STATED:
-        return sign * max(2, abs(raw))
+        strong = isinstance(evidence, str) and _INTENSIFIER.search(evidence)
+        return sign * (3 if strong else max(2, abs(raw)))
     return raw
 
 
@@ -187,7 +193,7 @@ def _candidate(item: Any) -> Candidate | None:
     if not isinstance(type_, str) or type_ not in PREFERENCE_TYPES:
         return None
     value = _value(item.get("value"))
-    strength = _strength(item.get("strength"), item.get("basis"))
+    strength = _strength(item.get("strength"), item.get("basis"), item.get("evidence"))
     keyword = _keyword(item.get("keyword"))
     if value is None or strength is None or keyword is None:
         return None

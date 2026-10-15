@@ -204,6 +204,23 @@ def test_세기의_크기는_직접_말했는지에_맞춘다(strength, basis, e
     assert [c.strength for c in kept] == ([] if expected is None else [expected])
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ("나는 무협 진짜 좋아해", 3),
+        ("그 작가 팬이라서 다 읽어", 3),
+        ("무협 좋아해", 2),
+        ("팬데믹 이야기를 좋아해", 2),  # "팬데믹"의 "팬"은 팬이 아니다
+    ],
+)
+def test_직접_말한_취향의_근거에_세기를_높이는_말이_있으면_세기는_3이다(
+    evidence, expected
+) -> None:
+    kept = screen(_out(_item(strength=2, basis="stated", evidence=evidence)))
+
+    assert [c.strength for c in kept] == [expected]
+
+
 # --- 어디에 (#426) ---
 
 
