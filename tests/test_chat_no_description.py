@@ -164,7 +164,7 @@ def test_소개글_없는_책의_한_줄_이유는_제목_저자만_쓴_문장�
 
     card = _post()["cards"][0]
 
-    assert card["reason_short"] == "찾으신 박경리의 『토지』이에요."
+    assert card["reason_short"] == "찾으신 박경리의 『토지』예요."
     assert card["match_basis"] == []
 
 
@@ -177,7 +177,7 @@ def test_저자가_비어_있으면_제목만_쓴다(monkeypatch: pytest.MonkeyP
 
     card = _post()["cards"][0]
 
-    assert card["reason_short"] == "찾으신 『토지』이에요."
+    assert card["reason_short"] == "찾으신 『토지』예요."
 
 
 def test_모델이_소개글_없는_책의_한_줄_이유를_빠뜨려도_카드는_남는다(
@@ -191,7 +191,7 @@ def test_모델이_소개글_없는_책의_한_줄_이유를_빠뜨려도_카드
     cards = _post()["cards"]
 
     assert [c["book_id"] for c in cards] == [2]
-    assert cards[0]["reason_short"] == "찾으신 박경리의 『토지』이에요."
+    assert cards[0]["reason_short"] == "찾으신 박경리의 『토지』예요."
 
 
 def test_소개글이_있는_책의_카드는_모델이_쓴_그대로다(
@@ -224,3 +224,88 @@ def test_소개글이_있는_책의_카드는_모델이_쓴_그대로다(
     )
     assert with_description["match_basis"] == [{"label": "분위기", "detail": "잔잔함"}]
     assert without_description["reason_long"] is None
+
+
+# --- 한 줄 이유 문장 만들기(#407 리뷰): 저자 칸을 통째로 넣지 않는다 ---
+
+MAX_REASON_SHORT = 80  # 명세 ③ reason_short 상한
+
+
+def _reason(**fields) -> str:
+    return chat._no_description_reason({**NO_DESCRIPTION, **fields})
+
+
+def test_저자가_여럿이면_첫_저자만_쓰고_외를_붙인다() -> None:
+    reason = _reason(
+        title="토지농산조사보고",
+        author="일본 농상무성 농무국, 미츠나리 오야이치로, 우도 요시오, 구자옥",
+    )
+
+    assert reason == "찾으신 일본 농상무성 농무국 외의 『토지농산조사보고』예요."
+
+
+def test_세미콜론으로_나뉜_저자도_첫_저자만_쓰고_역할_말은_뗀다() -> None:
+    reason = _reason(title="해리 포터", author="J.K. 롤링 지음 ;강동혁 옮김")
+
+    assert reason == "찾으신 J.K. 롤링 외의 『해리 포터』예요."
+
+
+@pytest.mark.parametrize("author", ["지은이: 김정희", "저자 : 김정희", "김정희 지음"])
+def test_저자_칸의_역할_말은_이름에_넣지_않는다(author: str) -> None:
+    assert _reason(title="추사집", author=author) == "찾으신 김정희의 『추사집』이에요."
+
+
+def test_저자_한_명이면_외를_붙이지_않는다() -> None:
+    assert _reason(author="박경리") == "찾으신 박경리의 『토지』예요."
+
+
+def test_저자가_너무_길어_80자를_넘으면_저자를_빼고_제목만_쓴다() -> None:
+    reason = _reason(author="가" * 100)
+
+    assert reason == "찾으신 『토지』예요."
+
+
+def test_제목만으로도_80자를_넘으면_제목을_줄여_80자_안에_맞춘다() -> None:
+    reason = _reason(title="가" * 200, author="")
+
+    assert len(reason) <= MAX_REASON_SHORT
+    assert reason.startswith("찾으신 『가가가")
+    assert "…』" in reason
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("토지", "찾으신 『토지』예요."),
+        ("데미안", "찾으신 『데미안』이에요."),
+        ("해리 포터", "찾으신 『해리 포터』예요."),
+        ("Python", "찾으신 『Python』이에요."),
+        ("1984", "찾으신 『1984』이에요."),
+    ],
+    ids=["받침_없음", "받침_있음", "띄어쓴_제목", "영문", "숫자"],
+)
+def test_제목_끝_글자의_받침에_따라_예요와_이에요를_고른다(
+    title: str, expected: str
+) -> None:
+    assert _reason(title=title, author="") == expected
+
+
+@pytest.mark.parametrize(
+    "author",
+    ["", "박경리", "가" * 100, "가나다, 라마바, 사아자", "지은이: 김정희", "A" * 79],
+)
+def test_어떤_저자_칸이어도_한_줄_이유는_80자_안이다(author: str) -> None:
+    assert len(_reason(author=author)) <= MAX_REASON_SHORT
+
+
+def test_저자가_여럿인_책의_카드도_한_줄_이유가_80자_안이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    many = ", ".join(f"저자{i}" for i in range(60))
+    card_reply = json.dumps({"cards": [{"book_id": 2}]}, ensure_ascii=False)
+    _use_candidates(monkeypatch, {**NO_DESCRIPTION, "author": many})
+    _use_model(monkeypatch, card_reply)
+
+    card = _post()["cards"][0]
+
+    assert card["reason_short"] == "찾으신 저자0 외의 『토지』예요."
