@@ -5,14 +5,66 @@
 작가·키워드 관심사는 #450, 시간 예산과 대체 자리는 #451 이 맡는다.
 """
 
+import json
+import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+
+import asyncpg
 
 from app.core import categories
+from app.core.pgvector import to_vector_literal
+from app.feed import scoring
+from app.feed.personalized import (
+    EXACT_LIMIT,
+    FALLBACK_LIMIT,
+    FILTERED_MAX_SCAN_TUPLES,
+    FILTERED_SCAN_MEM_MULTIPLIER,
+)
+from app.search.vector import EF_SEARCH
 
 # 세부 카테고리 → 속한 카테고리. 어느 카테고리에도 속하지 않는 세부 카테고리는 None 이다
 _PARENT = {
     name: parent for parent, group in categories.SUBCATEGORIES.items() for name in group
 }
+
+# 자리 번호: 검색어($1) → 뽑을 권수($2) → 도서관 분류($3, 좁힐 때만). 가까운 순으로 뽑은 뒤 책 정보와
+# 세부 분류 번호를 붙인다. 벡터 색인은 가까운 순서를 대강만 지키므로(relaxed_order) 다시 줄 세운다.
+_SQL = """
+WITH nearest AS (
+    SELECT e.book_id, {distance} AS distance
+    FROM book_embeddings e
+    JOIN v_books b USING (book_id)
+    {where}
+    ORDER BY distance
+    LIMIT $2
+)
+SELECT n.book_id, b.isbn13, b.title, b.author, b.category, c.class_no, n.distance
+FROM nearest n
+JOIN v_books b USING (book_id)
+LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
+ORDER BY n.distance, n.book_id
+"""
+_IN_CLASSES = "WHERE b.category = ANY($3::text[])"
+_INDEX_DISTANCE = "e.embedding <=> $1::vector"
+# 식을 바꿔 벡터 색인을 못 쓰게 한다. 분류 조건으로 책을 고른 뒤 거리를 전부 계산한다.
+_EXACT_DISTANCE = "(e.embedding <=> $1::vector) + 0"
+# 분류 안의 책 수는 세지 않고 실행 계획의 어림값을 받는다. 지금 홈 추천과 같은 이유다(personalized.py, #289)
+_ESTIMATE_SQL = (
+    "EXPLAIN (FORMAT JSON) SELECT 1 FROM v_books b WHERE b.category = ANY($1::text[])"
+)
+
+
+@dataclass(frozen=True)
+class Pick:
+    """관심사에서 뽑은 책 한 권. part 는 매칭 점수의 유사도 항(0–1)이다(scoring.py)."""
+
+    book_id: int
+    isbn13: str | None
+    title: str
+    author: str | None
+    category: str | None
+    part: float
 
 
 def classes_of(name: str) -> tuple[str, ...] | None:
@@ -37,3 +89,70 @@ def numbered_first[T](
     return sorted(
         items, key=lambda item: categories.class_interest(class_no(item)) != name
     )
+
+
+async def pick(
+    conn: asyncpg.Connection,
+    name: str,
+    vector: Sequence[float],
+    *,
+    by_name: bool,
+    limit: int,
+    left: Callable[[], float],
+) -> list[Pick]:
+    """관심사 하나에서 검색어와 가까운 책 limit 권. 번호가 이 관심사로 이어지는 책을 앞에 둔다.
+
+    vector 는 그 관심사의 책 벡터 평균(길이를 줄이지 않은 것)이거나 이름 벡터(by_name)다. 분류 안의 책이
+    적으면 거리를 전부 계산하고, 많으면 벡터 색인으로 뽑는다. 고르는 기준은 지금 홈 추천과 같다
+    (personalized.py). 질의마다 left() 초만 기다리고, 시간을 다 쓰면 TimeoutError 다.
+    """
+    classes = classes_of(name)
+    count = 0
+    if classes:
+        plan = await conn.fetchval(_ESTIMATE_SQL, list(classes), timeout=left())
+        count = int(json.loads(plan)[0]["Plan"]["Plan Rows"])
+
+    async def run(distance: str) -> list[asyncpg.Record]:
+        # SET LOCAL 은 트랜잭션 안에서만 먹는다(지금 홈 추천과 같은 설정)
+        async with conn.transaction():
+            await conn.execute(f"SET LOCAL hnsw.ef_search = {EF_SEARCH}")
+            await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+            await conn.execute("SET LOCAL plan_cache_mode = force_custom_plan")
+            if classes:
+                await conn.execute(
+                    "SET LOCAL hnsw.scan_mem_multiplier = "
+                    f"{FILTERED_SCAN_MEM_MULTIPLIER}"
+                )
+                await conn.execute(
+                    f"SET LOCAL hnsw.max_scan_tuples = {FILTERED_MAX_SCAN_TUPLES}"
+                )
+            return await conn.fetch(
+                _SQL.format(distance=distance, where=_IN_CLASSES if classes else ""),
+                to_vector_literal(list(vector)),
+                limit,
+                *([list(classes)] if classes else []),
+                timeout=left(),
+            )
+
+    if classes and count <= EXACT_LIMIT:
+        rows = await run(_EXACT_DISTANCE)
+    else:
+        rows = await run(_INDEX_DISTANCE)
+        if classes and len(rows) < limit and count <= FALLBACK_LIMIT:
+            rows = await run(_EXACT_DISTANCE)
+
+    # 책 벡터가 길이 1 이라 코사인에 검색어의 길이를 곱하면 내적이다. 책 벡터 평균이면 그 책들과의 유사도 평균
+    length = math.sqrt(sum(x * x for x in vector))
+    return [
+        Pick(
+            book_id=row["book_id"],
+            isbn13=row["isbn13"],
+            title=row["title"],
+            author=row["author"],
+            category=row["category"],
+            part=scoring.interest_similarity_part(
+                (1 - row["distance"]) * length, by_name=by_name
+            ),
+        )
+        for row in numbered_first(name, rows, lambda row: row["class_no"])
+    ]
