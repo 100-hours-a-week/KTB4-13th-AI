@@ -1,4 +1,4 @@
-"""⑨ 대체 자리 다시 뽑기(app/feed/refresh.py) 테스트(#456).
+"""⑨ 대체 자리 다시 뽑기(app/feed/refresh.py, POST /recommendations/feed/refresh) 테스트(#456).
 
 "실제 DB" 절의 테스트만 PostgreSQL 이 필요하다(SEARCH_TEST_DATABASE_URL). 목록 뽑기는 가짜로 바꾼다
 (뽑기는 tests/test_feed_interest_feed.py 에서 본다).
@@ -13,11 +13,15 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core import history
+from app.core.config import get_settings
 from app.feed import interest_feed, refresh
 from app.feed.interest_feed import Feed
 from app.feed.interest_list import Placed
+from app.main import app
+from app.routers import feed as feed_router
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
 _KST = ZoneInfo("Asia/Seoul")
@@ -38,6 +42,40 @@ _KST = ZoneInfo("Asia/Seoul")
 )
 def test_밤_배치가_자정을_넘겨도_같은_밤으로_친다(at: datetime, night: str) -> None:
     assert refresh.night_of(at) == night
+
+
+# --- 주소 ---
+
+client = TestClient(app)
+
+
+def test_플래그가_꺼져_있으면_다시_뽑을_것이_없다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "interest_feed", False)
+
+    res = client.post("/recommendations/feed/refresh", json={})
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "message": "refresh_success",
+        "data": {"refreshed": 0, "remaining": 0},
+    }
+
+
+def test_다시_뽑다_실패하면_500이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "interest_feed", True)
+
+    class _Pool:
+        def acquire(self):
+            raise RuntimeError("DB 없음")
+
+    monkeypatch.setattr(feed_router.db, "get_pool", lambda: _Pool())
+
+    res = client.post("/recommendations/feed/refresh")
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
 
 
 # --- 실제 DB ---
