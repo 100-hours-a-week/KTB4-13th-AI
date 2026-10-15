@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core import categories
 from app.extraction.rules import MAX_EXTRACTIONS, MAX_VALUE_CHARS
 from app.extraction.rules import PREFERENCE_TYPES as TYPES
 from app.extraction.schemas import parse_request
@@ -25,6 +26,16 @@ _DATA = json.loads(_PATH.read_text(encoding="utf-8"))
 _KINDS = _DATA["kinds"]
 _CASES = _DATA["cases"]
 _IDS = [case["id"] for case in _CASES]
+
+# 세기·어디에·핵심어를 적은 기대 취향(#424). 조건은 #427 에서 적는다.
+_LABELED = [
+    (case["id"], item)
+    for case in _CASES
+    for item in case["expect"]["extractions"]
+    if item["type"] != "condition"
+]
+# 명세 ⑤의 핵심어 최대 길이
+_MAX_KEYWORD_CHARS = 100
 
 
 def _in_group(group: str) -> list[dict]:
@@ -98,7 +109,13 @@ def test_대화_하나의_형식(case: dict) -> None:
     assert len(expect["extractions"]) <= MAX_EXTRACTIONS
 
     for item in expect["extractions"]:
-        assert set(item) == {"type", "value", "keywords", "stated"}
+        # 세기·핵심어는 조건 말고 모두, 어디에는 주제에만 있다(명세 ⑤). 조건은 #427 에서 적는다.
+        labels = set()
+        if item["type"] != "condition":
+            labels = {"strength", "keyword"}
+        if item["type"] == "topic":
+            labels.add("applies_to")
+        assert set(item) == {"type", "value", "keywords", "stated", *labels}
         assert item["type"] in TYPES
         assert 0 < len(item["value"]) <= MAX_VALUE_CHARS
         # 찾는 말은 뽑은 문장에 하나라도 들어 있는지 코드로 보는 데 쓴다. 비어 있으면 무엇이든 통과한다.
@@ -124,3 +141,26 @@ def test_기대_문장은_자기_찾는_말을_담고_있다(case: dict) -> None
     # 찾는 말이 기대 문장에도 없으면 찾는 말을 잘못 적은 것이다.
     for item in case["expect"]["extractions"]:
         assert [word for word in item["keywords"] if word in item["value"]]
+
+
+@pytest.mark.parametrize(("case_id", "item"), _LABELED, ids=[i for i, _ in _LABELED])
+def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
+    strength = item["strength"]
+    # 서버는 0 과 피함의 부탁(-1)을 내지 않는다. 기대에 적으면 맞힐 수 없다.
+    assert type(strength) is int and strength in {-3, -2, 1, 2, 3}
+    # 크기는 부탁만 했으면 1, 직접 말했으면 2 이상이다.
+    assert (abs(strength) >= 2) == item["stated"]
+
+    keywords = item["keyword"]
+    assert keywords and all(0 < len(k.strip()) <= _MAX_KEYWORD_CHARS for k in keywords)
+    # 핵심어는 뜻을 뒤집지 않는 말로 적는다. 피함은 세기의 부호로 나타낸다.
+    assert not [k for k in keywords if "않" in k or "싫" in k]
+
+    if "applies_to" in item:
+        names = item["applies_to"]
+        # 어디에는 서버 안 카테고리·세부 카테고리 목록의 이름이다(#423).
+        assert not set(names) - set(categories.NAME_TEXTS)
+        assert len(names) == len(set(names))
+        # 제목만 말한 취향은 어디에도 넣지 않는다(#395).
+        if any(k.startswith("『") for k in keywords):
+            assert names == []

@@ -66,6 +66,35 @@ def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
     assert summary["failures"] == {}
 
 
+def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -> None:
+    # 받아들이는 말과 이름을 하나씩 골라 답한다. 기대값끼리 어긋나면(어디에를 비워야 하는데 이름을
+    # 적었거나, 핵심어가 비었거나) 여기서 드러난다
+    def labeled(request: dict) -> Outcome:
+        ideal = _ideal(request)
+        wanted = next(c for c in _CASES if c["request"] == request)["expect"]
+        for item, want in zip(
+            ideal.data["extractions"], wanted["extractions"], strict=True
+        ):
+            if "strength" in want:
+                item.update(
+                    strength=want["strength"],
+                    keyword=want["keyword"][0],
+                    applies_to=want.get("applies_to", [])[:1],
+                )
+        return ideal
+
+    summary, _calls = _run(_CASES, labeled)
+
+    assert summary["labels"] == {
+        "labeled": 56,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 1.0,
+        "where_labeled": 35,
+        "where": 1.0,
+    }
+
+
 def test_아무것도_안_뽑으면_뽑을_것이_없는_대화만_통과한다() -> None:
     def nothing(request: dict) -> Outcome:
         return Outcome(200, {"extractions": [], "nothing_found": True}, 1.0)
