@@ -1,310 +1,330 @@
 {
- "measured": {
-  "date": "2026-10-13",
-  "server_commit": "3f1d3dd",
-  "note": "프로필을 바꾸기 전의 구조. 취향 벡터 하나(가중평균)로 후보 500권을 뽑아 점수순으로 줄 세운다"
- },
- "bundle_version": 1,
- "catalog": {
-  "built": "2026-10-13",
-  "books": 2107214,
-  "with_vectors": 595329
- },
- "database": {
-  "name": "bookjeok_ai_eval",
-  "books": 2107214,
-  "with_vectors": 595329
- },
- "summary": {
-  "kinds": {
-   "one-field": {
-    "group": "typical",
-    "users": 12,
-    "measured": 12,
-    "least_mean": 19.083,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 0.917,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.102
-   },
-   "one-tag": {
-    "group": "typical",
-    "users": 12,
-    "measured": 12,
-    "least_mean": 7.417,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 0,
-    "unsure_mean": 0,
-    "rough": true,
-    "seconds_median": 0.052
-   },
-   "one-topic": {
-    "group": "typical",
-    "users": 16,
-    "measured": 16,
-    "least_mean": 8.75,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 3.625,
-    "unsure_mean": 7.625,
-    "rough": true,
-    "seconds_median": 0.046
-   },
-   "one-books": {
-    "group": "typical",
-    "users": 18,
-    "measured": 18,
-    "least_mean": 8.278,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 4.556,
-    "unsure_mean": 7.167,
-    "rough": true,
-    "seconds_median": 0.044
-   },
-   "cold": {
-    "group": "typical",
-    "users": 2,
-    "measured": 2,
-    "least_mean": null,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": null,
-    "unsure_mean": null,
-    "rough": false,
-    "seconds_median": 0.002
-   },
-   "fields-2": {
-    "group": "guard",
-    "users": 15,
-    "measured": 15,
-    "least_mean": 4.867,
-    "missing_users": 1,
-    "low_users": 3,
-    "none_mean": 0.133,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.034
-   },
-   "fields-3": {
-    "group": "guard",
-    "users": 10,
-    "measured": 10,
-    "least_mean": 1.5,
-    "missing_users": 3,
-    "low_users": 8,
-    "none_mean": 1.1,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.03
-   },
-   "kids": {
-    "group": "guard",
-    "users": 3,
-    "measured": 3,
-    "least_mean": 10,
-    "missing_users": 0,
-    "low_users": 1,
-    "none_mean": 10,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.053
-   },
-   "bought-vs-onboarding": {
-    "group": "guard",
-    "users": 12,
-    "measured": 12,
-    "least_mean": 0,
-    "missing_users": 12,
-    "low_users": 12,
-    "none_mean": 3.167,
-    "unsure_mean": 8.917,
-    "rough": true,
-    "seconds_median": 0.036
-   },
-   "topics-2": {
-    "group": "guard",
-    "users": 14,
-    "measured": 14,
-    "least_mean": 0.857,
-    "missing_users": 9,
-    "low_users": 13,
-    "none_mean": 7.714,
-    "unsure_mean": 8.929,
-    "rough": true,
-    "seconds_median": 0.025
-   },
-   "books-2": {
-    "group": "guard",
-    "users": 10,
-    "measured": 10,
-    "least_mean": 1,
-    "missing_users": 7,
-    "low_users": 8,
-    "none_mean": 5.5,
-    "unsure_mean": 9,
-    "rough": true,
-    "seconds_median": 0.027
-   },
-   "books-many": {
-    "group": "guard",
-    "users": 4,
-    "measured": 4,
-    "least_mean": 0.5,
-    "missing_users": 3,
-    "low_users": 4,
-    "none_mean": 4.25,
-    "unsure_mean": 12.25,
-    "rough": true,
-    "seconds_median": 0.027
-   },
-   "topic-mood": {
-    "group": "guard",
-    "users": 8,
-    "measured": 8,
-    "least_mean": 2.625,
-    "missing_users": 1,
-    "low_users": 5,
-    "none_mean": 12.875,
-    "unsure_mean": 4.5,
-    "rough": true,
-    "seconds_median": 0.024,
-    "toward_mean": 6.25,
-    "show_mean": 2.625,
-    "twin_show_mean": 10.25,
-    "same_as_twin_mean": 5.625,
-    "twin_toward_mean": 4.125
-   },
-   "dislike": {
-    "group": "guard",
-    "users": 10,
-    "measured": 10,
-    "least_mean": 2.6,
-    "missing_users": 4,
-    "low_users": 6,
-    "none_mean": 9.8,
-    "unsure_mean": 7.6,
-    "rough": true,
-    "seconds_median": 0.027,
-    "avoid_mean": 2.6,
-    "show_mean": 2.6,
-    "twin_show_mean": 10.1,
-    "same_as_twin_mean": 3.6,
-    "twin_avoid_mean": 0.2
-   },
-   "condition": {
-    "group": "guard",
-    "users": 8,
-    "measured": 8,
-    "least_mean": 2.375,
-    "missing_users": 1,
-    "low_users": 5,
-    "none_mean": 8.5,
-    "unsure_mean": 9.125,
-    "rough": true,
-    "seconds_median": 0.027,
-    "toward_mean": 5.25,
-    "show_mean": 2.375,
-    "twin_show_mean": 8.875,
-    "same_as_twin_mean": 5.25,
-    "twin_toward_mean": 4.125
-   },
-   "author": {
-    "group": "guard",
-    "users": 8,
-    "measured": 8,
-    "least_mean": 4.375,
-    "missing_users": 2,
-    "low_users": 5,
-    "none_mean": 15.625,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.033
-   },
-   "low-rating": {
-    "group": "guard",
-    "users": 3,
-    "measured": 3,
-    "least_mean": 16.667,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 3.333,
-    "unsure_mean": 0,
-    "rough": true,
-    "seconds_median": 0.029,
-    "avoid_mean": 0.333
-   },
-   "owned": {
-    "group": "guard",
-    "users": 6,
-    "measured": 6,
-    "least_mean": 17.167,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 2.833,
-    "unsure_mean": 0,
-    "rough": false,
-    "seconds_median": 0.049,
-    "owned_users": 0,
-    "editions_mean": 18.167
-   },
-   "pile": {
-    "group": "guard",
-    "users": 16,
-    "measured": 16,
-    "least_mean": 0,
-    "missing_users": 16,
-    "low_users": 16,
-    "none_mean": 3.625,
-    "unsure_mean": 9.25,
-    "rough": true,
-    "seconds_median": 0.025,
-    "piles": {
-     "5": {
-      "users": 4,
-      "overlap_mean": 0.5,
-      "distinct": 77
-     },
-     "10": {
-      "users": 4,
-      "overlap_mean": 2.167,
-      "distinct": 68
-     },
-     "20": {
-      "users": 4,
-      "overlap_mean": 7,
-      "distinct": 52
-     },
-     "40": {
-      "users": 4,
-      "overlap_mean": 8.833,
-      "distinct": 45
-     }
-    }
-   }
+  "measured": {
+    "date": "2026-10-16",
+    "server_commit": "8694fd7",
+    "note": "기능 플래그를 끈 지금 구조. 취향 벡터 하나(가중평균)로 후보 500권을 뽑아 점수순으로 줄 세운다. 취향 기억은 핵심어 벡터이고(⑤ #426), 취향 벡터에는 살아 있는 좋아함 줄만 섞는다(⑥ #436)"
   },
-  "groups": {
-   "typical": {
-    "users": 60,
-    "measured": 60,
-    "least_mean": 10.466,
-    "missing_users": 0,
-    "low_users": 0,
-    "none_mean": 2.603,
-    "unsure_mean": 4.328
-   },
-   "guard": {
-    "users": 127,
-    "measured": 127,
-    "least_mean": 3.118,
-    "missing_users": 59,
-    "low_users": 86,
-    "none_mean": 5.827,
-    "unsure_mean": 5.543
-   }
+  "bundle_version": 2,
+  "catalog": {
+    "built": "2026-10-13",
+    "books": 2107214,
+    "with_vectors": 595329
+  },
+  "database": {
+    "name": "bookjeok_ai_eval",
+    "books": 2107214,
+    "with_vectors": 595329
+  },
+  "summary": {
+    "kinds": {
+      "one-field": {
+        "group": "typical",
+        "users": 12,
+        "measured": 12,
+        "least_mean": 19.083,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 0.917,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.056
+      },
+      "one-tag": {
+        "group": "typical",
+        "users": 12,
+        "measured": 12,
+        "least_mean": 7.417,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 0,
+        "unsure_mean": 0,
+        "rough": true,
+        "seconds_median": 0.037
+      },
+      "one-topic": {
+        "group": "typical",
+        "users": 17,
+        "measured": 17,
+        "least_mean": 11.412,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 2.118,
+        "unsure_mean": 6.471,
+        "rough": true,
+        "seconds_median": 0.033
+      },
+      "one-books": {
+        "group": "typical",
+        "users": 18,
+        "measured": 18,
+        "least_mean": 8.278,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 4.556,
+        "unsure_mean": 7.167,
+        "rough": true,
+        "seconds_median": 0.033
+      },
+      "cold": {
+        "group": "typical",
+        "users": 2,
+        "measured": 2,
+        "least_mean": null,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": null,
+        "unsure_mean": null,
+        "rough": false,
+        "seconds_median": 0.002
+      },
+      "fields-2": {
+        "group": "guard",
+        "users": 15,
+        "measured": 15,
+        "least_mean": 4.867,
+        "missing_users": 1,
+        "low_users": 3,
+        "none_mean": 0.133,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.031
+      },
+      "fields-3": {
+        "group": "guard",
+        "users": 10,
+        "measured": 10,
+        "least_mean": 1.5,
+        "missing_users": 3,
+        "low_users": 8,
+        "none_mean": 1.1,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.028
+      },
+      "kids": {
+        "group": "guard",
+        "users": 4,
+        "measured": 3,
+        "least_mean": 10,
+        "missing_users": 0,
+        "low_users": 1,
+        "none_mean": 10,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.046
+      },
+      "bought-vs-onboarding": {
+        "group": "guard",
+        "users": 12,
+        "measured": 12,
+        "least_mean": 0,
+        "missing_users": 12,
+        "low_users": 12,
+        "none_mean": 3.167,
+        "unsure_mean": 8.917,
+        "rough": true,
+        "seconds_median": 0.032
+      },
+      "topics-2": {
+        "group": "guard",
+        "users": 14,
+        "measured": 14,
+        "least_mean": 2.143,
+        "missing_users": 6,
+        "low_users": 10,
+        "none_mean": 3.214,
+        "unsure_mean": 10.286,
+        "rough": true,
+        "seconds_median": 0.026
+      },
+      "books-2": {
+        "group": "guard",
+        "users": 10,
+        "measured": 10,
+        "least_mean": 1,
+        "missing_users": 7,
+        "low_users": 8,
+        "none_mean": 5.5,
+        "unsure_mean": 9,
+        "rough": true,
+        "seconds_median": 0.026
+      },
+      "books-many": {
+        "group": "guard",
+        "users": 4,
+        "measured": 4,
+        "least_mean": 0.5,
+        "missing_users": 3,
+        "low_users": 4,
+        "none_mean": 4.25,
+        "unsure_mean": 12.25,
+        "rough": true,
+        "seconds_median": 0.026
+      },
+      "topic-mood": {
+        "group": "guard",
+        "users": 8,
+        "measured": 8,
+        "least_mean": 7.125,
+        "missing_users": 0,
+        "low_users": 2,
+        "none_mean": 7.75,
+        "unsure_mean": 5.125,
+        "rough": true,
+        "seconds_median": 0.024,
+        "toward_mean": 7.375,
+        "show_mean": 7.125,
+        "twin_show_mean": 13.875,
+        "same_as_twin_mean": 3.25,
+        "twin_toward_mean": 1.875
+      },
+      "dislike": {
+        "group": "guard",
+        "users": 10,
+        "measured": 10,
+        "least_mean": 11.8,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 1.7,
+        "unsure_mean": 6.5,
+        "rough": true,
+        "seconds_median": 0.024,
+        "avoid_mean": 0,
+        "show_mean": 11.8,
+        "twin_show_mean": 11.8,
+        "same_as_twin_mean": 20,
+        "twin_avoid_mean": 0
+      },
+      "flip": {
+        "group": "guard",
+        "users": 2,
+        "measured": 2,
+        "least_mean": 17,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 3,
+        "unsure_mean": 0,
+        "rough": true,
+        "seconds_median": 0.015,
+        "avoid_mean": 0,
+        "show_mean": 8.5,
+        "twin_show_mean": 8.5,
+        "same_as_twin_mean": 10,
+        "twin_avoid_mean": 8.5
+      },
+      "condition": {
+        "group": "guard",
+        "users": 8,
+        "measured": 8,
+        "least_mean": 11.25,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 1.875,
+        "unsure_mean": 6.875,
+        "rough": true,
+        "seconds_median": 0.024,
+        "toward_mean": 3.75,
+        "show_mean": 11.25,
+        "twin_show_mean": 11.25,
+        "same_as_twin_mean": 20,
+        "twin_toward_mean": 3.75
+      },
+      "author": {
+        "group": "guard",
+        "users": 8,
+        "measured": 8,
+        "least_mean": 4.875,
+        "missing_users": 4,
+        "low_users": 4,
+        "none_mean": 15.125,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.04
+      },
+      "low-rating": {
+        "group": "guard",
+        "users": 3,
+        "measured": 3,
+        "least_mean": 16.667,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 3.333,
+        "unsure_mean": 0,
+        "rough": true,
+        "seconds_median": 0.029,
+        "avoid_mean": 0.333
+      },
+      "owned": {
+        "group": "guard",
+        "users": 6,
+        "measured": 6,
+        "least_mean": 17.167,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 2.833,
+        "unsure_mean": 0,
+        "rough": false,
+        "seconds_median": 0.042,
+        "owned_users": 0,
+        "editions_mean": 18.167
+      },
+      "pile": {
+        "group": "guard",
+        "users": 16,
+        "measured": 16,
+        "least_mean": 0,
+        "missing_users": 16,
+        "low_users": 16,
+        "none_mean": 3.625,
+        "unsure_mean": 9.25,
+        "rough": true,
+        "seconds_median": 0.022,
+        "piles": {
+          "5": {
+            "users": 4,
+            "overlap_mean": 0.5,
+            "distinct": 77
+          },
+          "10": {
+            "users": 4,
+            "overlap_mean": 2.167,
+            "distinct": 68
+          },
+          "20": {
+            "users": 4,
+            "overlap_mean": 7,
+            "distinct": 52
+          },
+          "40": {
+            "users": 4,
+            "overlap_mean": 8.833,
+            "distinct": 45
+          }
+        }
+      }
+    },
+    "groups": {
+      "typical": {
+        "users": 61,
+        "measured": 61,
+        "least_mean": 11.203,
+        "missing_users": 0,
+        "low_users": 0,
+        "none_mean": 2.186,
+        "unsure_mean": 4.051
+      },
+      "guard": {
+        "users": 130,
+        "measured": 129,
+        "least_mean": 4.953,
+        "missing_users": 52,
+        "low_users": 68,
+        "none_mean": 3.914,
+        "unsure_mean": 5.461
+      }
+    }
+  },
+  "unmeasured": {
+    "kids-04": "지금 구조는 어린이 분야만 고르면 개인화하지 않은 목록을 준다. 개편 뒤 기대(어린이책이 나옴)로 고친 사용자라 지금 구조로는 잴 수 없다(#395 부록 3)"
   }
- }
 }
