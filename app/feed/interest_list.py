@@ -1,11 +1,11 @@
-"""④ 관심사별 홈 추천 목록 — 자리 나누기, 번갈아 놓기(#447, 설계 #395). DB 없이 돈다.
+"""④ 관심사별 홈 추천 목록 — 자리 나누기, 번갈아 놓기, 한 작가 상한(#447, 설계 #395). DB 없이 돈다.
 
 ⑥이 프로필을 계산할 때 200자리 목록을 미리 뽑아 두고, 홈과 더 보기는 그 목록을 읽기만 한다(#395).
 관심사마다 책을 뽑는 것과 목록을 조립하는 것은 #449–#452 다.
 """
 
-from collections import deque
-from collections.abc import Hashable, Mapping, Sequence
+from collections import Counter, deque
+from collections.abc import Callable, Hashable, Mapping, Sequence
 
 from app.profile import interests
 
@@ -13,6 +13,9 @@ from app.profile import interests
 TOTAL_SEATS = 200
 # 자리를 받는 관심사의 수. 넘는 관심사는 점수만 남는다
 MAX_INTERESTS = 5
+# 한 작가는 이만큼마다 이만큼까지 둔다. 작가를 말한 사람의 홈이 그 작가 책으로만 차지 않게 한다(#395 의 (안))
+AUTHOR_BLOCK = 20
+AUTHOR_PER_BLOCK = 5
 
 
 def allocate(
@@ -80,4 +83,34 @@ def interleave[T: Hashable](
             break
         else:
             break
+    return out
+
+
+def cap_authors[T](
+    items: Sequence[T],
+    author_of: Callable[[T], str | None],
+    block: int = AUTHOR_BLOCK,
+    per_block: int = AUTHOR_PER_BLOCK,
+) -> list[T]:
+    """한 작가는 block 권마다 per_block 권까지 둔다. 넘는 책은 순서를 지킨 채 다음 묶음의 앞으로 미룬다.
+
+    작가를 모르는 책은 세지 않는다.
+    """
+    pending = deque(items)
+    out: list[T] = []
+    while pending:
+        counts: Counter[str] = Counter()
+        placed: list[T] = []
+        deferred: list[T] = []
+        while pending and len(placed) < block:
+            item = pending.popleft()
+            author = author_of(item)
+            if author and counts[author] >= per_block:
+                deferred.append(item)
+                continue
+            if author:
+                counts[author] += 1
+            placed.append(item)
+        out.extend(placed)
+        pending.extendleft(reversed(deferred))
     return out

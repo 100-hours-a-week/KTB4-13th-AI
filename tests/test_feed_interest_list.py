@@ -1,5 +1,7 @@
 """④ 관심사별 목록의 자리 나누기·번갈아 놓기·한 작가 상한(app/feed/interest_list.py) 테스트(#447)."""
 
+import pytest
+
 from app.feed import interest_list as il
 
 # --- 자리 나누기 ---
@@ -67,3 +69,33 @@ def test_자리_수를_넘게_놓지_않는다() -> None:
     lists = {"가": [f"가{n}" for n in range(30)]}
 
     assert len(il.interleave(lists, {"가": 10}, total=10)) == 10
+
+
+# --- 한 작가 상한 ---
+
+
+def _author(item: str) -> str | None:
+    return item.split("-")[0] or None
+
+
+def test_한_작가는_묶음마다_정한_수까지_두고_넘는_책은_다음_묶음으로_미룬다() -> None:
+    items = ["김-1", "김-2", "김-3", "이-1", "박-1", "김-4"]
+
+    out = il.cap_authors(items, _author, block=4, per_block=2)
+
+    assert out == ["김-1", "김-2", "이-1", "박-1", "김-3", "김-4"]
+
+
+def test_작가를_모르는_책은_세지_않는다() -> None:
+    items = ["-1", "-2", "-3"]
+
+    assert il.cap_authors(items, _author, block=2, per_block=1) == items
+
+
+@pytest.mark.parametrize("count", [1, 7, 30])
+def test_한_작가의_책만_남아도_모두_놓는다(count: int) -> None:
+    items = [f"김-{n}" for n in range(count)]
+
+    out = il.cap_authors(items, _author, block=20, per_block=5)
+
+    assert sorted(out) == sorted(items)
