@@ -5,12 +5,14 @@
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from app.core import db, history, isbn
+from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.profile import compute, interests, labels
 from app.profile.compute import Profile
@@ -43,6 +45,26 @@ ON CONFLICT (user_id) DO UPDATE SET
     cold_start = EXCLUDED.cold_start,
     profile_version = EXCLUDED.profile_version,
     computed_at = EXCLUDED.computed_at
+"""
+
+
+# 관심사 점수(#440). 기능 플래그(interest_feed)가 켜져 있을 때만 돈다. 꺼져 있으면 새 표·칸을 읽지도
+# 쓰지도 않는다. AI 책 분류 표(book_classes)에 없는 책은 세부 분류 번호 없이 가른다
+_BOOK_INFO_SQL = """
+SELECT b.book_id, b.isbn13, b.category, c.class_no
+FROM v_books b LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
+WHERE b.book_id = ANY($1::int[])
+"""
+
+_READ_FIRST_SEEN_SQL = """
+SELECT book_first_seen::text FROM taste_profile WHERE user_id = $1
+"""
+
+_SAVE_INTERESTS_SQL = """
+UPDATE taste_profile
+SET interest_scores = $2::jsonb, interest_vectors = $3::jsonb,
+    conditions = $4::jsonb, book_first_seen = $5::jsonb
+WHERE user_id = $1
 """
 
 
@@ -142,7 +164,65 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
     version = compute.next_version(await _stored(conn, req.user_id), profile)
     await _save(conn, req.user_id, profile, version, hist.computed_at)
+    if get_settings().interest_feed:
+        await _save_interests(conn, req, weights, vectors)
     return profile.cold_start, version
+
+
+async def _save_interests(
+    conn: asyncpg.Connection,
+    req: ProfileRequest,
+    weights: dict[int, float],
+    vectors: dict[int, list[float]],
+) -> None:
+    """관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날을 저장한다(#440, 설계 #395).
+
+    책은 취향 벡터에 쓴 것과 같다(좋아한 책과 이력, 2점 이하 리뷰를 단 책은 뺌). 벡터가 없는 책은 지금처럼
+    쓰지 않는다. 챗봇이 쓰는 지금 칸(centroid, tag_weights)은 위에서 따로 저장했다.
+    """
+    rows = await conn.fetch(_BOOK_INFO_SQL, list(weights)) if weights else []
+    books = []
+    for row in rows:
+        vector = vectors.get(row["book_id"])
+        if vector is None:
+            continue
+        interest = interests.book_interest(
+            row["class_no"], row["category"], vector, labels.name_vector
+        )
+        if interest:
+            books.append((interest, float(weights[row["book_id"]]), vector))
+    book_scores, interest_vectors = interests.book_scores(books)
+
+    memories = req.used_memories()
+    table = interests.per_interest(
+        interests.onboarding_scores(req.onboarding.categories, req.onboarding.tags),
+        interests.memory_scores(memories),
+        book_scores,
+    )
+    isbns = [row["isbn13"] for row in rows if row["isbn13"]]
+    await conn.execute(
+        _SAVE_INTERESTS_SQL,
+        req.user_id,
+        json.dumps(table, ensure_ascii=False),
+        json.dumps(interest_vectors, ensure_ascii=False),
+        json.dumps(interests.conditions(memories), ensure_ascii=False),
+        json.dumps(await _first_seen(conn, req.user_id, isbns)),
+    )
+
+
+async def _first_seen(
+    conn: asyncpg.Connection, user_id: int, isbns: list[str]
+) -> dict[str, str]:
+    """이력의 책마다 AI 서버가 처음 본 날. 이미 본 책은 그날을 지키고, 처음 보는 책은 받은 날의 전날이다.
+
+    BE 는 하루치 활동을 밤에 모아 부르므로 받은 날의 전날이 그 책이 생긴 날에 가깝다(#395). 이력에서 빠진
+    책은 지운다. 오래된 취향을 약하게 할 때 쓴다(규칙은 나중에 정함).
+    """
+    stored = await conn.fetchval(_READ_FIRST_SEEN_SQL, user_id)
+    seen = json.loads(stored) if stored else {}
+    today = _now().astimezone(ZoneInfo(get_settings().tz)).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    return {isbn13: seen.get(isbn13, yesterday) for isbn13 in isbns}
 
 
 async def rebuild_locked_on(
