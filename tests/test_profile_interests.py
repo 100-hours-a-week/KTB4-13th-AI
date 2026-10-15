@@ -115,3 +115,51 @@ def test_관심사마다_따로_센다() -> None:
         "추리/스릴러": -2.0,
         "작가:김영하": 3.0,
     }
+
+
+# --- 조건 목록 ---
+
+
+def test_조건은_늘_지킨다고_말한_것만_저장한_때_순으로_한_번씩() -> None:
+    lines = [
+        Line("condition", 2, "2만 원 이하", day=3),
+        Line("condition", 2, "300쪽 이하", day=1),
+        Line("condition", 1, "2020년 이후", day=2),  # 부탁할 때만 붙인 것
+        Line("condition", 3, "300쪽 이하", day=4),
+        _topic(2, "SF"),
+    ]
+
+    assert interests.conditions(lines) == ["300쪽 이하", "2만 원 이하"]
+
+
+# --- 챗봇 벡터에 섞을 줄 ---
+
+
+def test_살아_있는_좋아함_줄만_고른다() -> None:
+    like_sf = _topic(2, "SF", day=0)
+    like_romance = _topic(2, "로맨스", day=0)
+    avoid_romance = _topic(-2, "로맨스", day=1)
+    title = _topic(2, keyword="『데미안』", day=0)
+    condition = Line("condition", 2, "300쪽 이하", day=0)
+    request_to_avoid = _topic(-1, "SF", day=2)
+
+    kept = interests.living_likes(
+        [like_sf, like_romance, avoid_romance, title, condition, request_to_avoid]
+    )
+
+    # 로맨스는 뒤에 싫다고 했다. 피함의 부탁(-1)은 싫다는 뜻이 아니라 SF 는 남는다
+    assert kept == [like_sf, title]
+
+
+def test_싫다고_한_뒤에_다시_좋아한_줄은_남는다() -> None:
+    avoid = _topic(-2, "로맨스", day=0)
+    like = _topic(2, "로맨스", day=1)
+
+    assert interests.living_likes([avoid, like]) == [like]
+
+
+def test_어디에_가운데_하나라도_뒤에_피했으면_섞지_않는다() -> None:
+    both = _topic(2, "추리/스릴러", "소설", day=0)
+    avoid = _topic(-2, "소설", day=1)
+
+    assert interests.living_likes([both, avoid]) == []
