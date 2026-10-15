@@ -183,9 +183,10 @@ async def _from_saved(
     books, version = saved.at(page.feed_version)
     if excluded is None:
         excluded = exclusion.replicated(req.user_id, page.issued_at)
-    items, has_more = await interest_page.fetch(conn, req, page, books, excluded)
+    items = await interest_page.books(conn, req, books, excluded)
+    shown, has_more = interest_page.page_of(items, req, page)
     return _outcome(
-        page, req, items, has_more, INTEREST, profile.version, None, version
+        page, req, shown, has_more, INTEREST, profile.version, None, version
     )
 
 

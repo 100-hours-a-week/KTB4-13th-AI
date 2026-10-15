@@ -480,36 +480,59 @@ async def _personalized_page(conn, req, page, centroid, tag_weights, excluded=No
     return [{"book_id": 9, "match_score": 84}], False
 
 
-def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조회_없이_그_목록을_읽는다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _saved_item(book_id: int, score: int = 80) -> dict:
+    return {
+        "book_id": book_id,
+        "isbn": None,
+        "title": "책",
+        "author": None,
+        "price": None,
+        "cover_url": None,
+        "in_stock": False,
+        "match_score": score,
+        "category": "에세이",
+        "pub_year": 2024,
+    }
+
+
+async def _no_vectors(*args, **kwargs):
+    raise AssertionError("저장된 목록을 읽을 때는 벡터를 조회하지 않는다")
+
+
+def _from_saved(monkeypatch, req, count: int, **fakes):
+    """플래그를 켜고, 거르고 남은 책이 count 권인 저장된 목록을 둔다."""
     monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
     monkeypatch.setattr(get_settings(), "interest_feed", True)
 
     async def _stored(conn, user_id):
         return _SAVED
 
-    async def _fetch(conn, req, page, books, excluded):
+    async def _books(conn, req, books, excluded):
         assert books == _SAVED.books
         # 가진 책이 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다
         assert excluded.template == exclusion.replicated(1, None).template
-        return [{"book_id": 7, "match_score": 80}], True
+        return [_saved_item(n) for n in range(count)]
 
-    async def _no_vectors(*args, **kwargs):
-        raise AssertionError("저장된 목록을 읽을 때는 벡터를 조회하지 않는다")
-
-    outcome = _run(
-        _surface("home"),
+    fakes.setdefault("personalized__fetch", _no_vectors)
+    return _run(
+        req,
         _PROFILE_ROW,
         monkeypatch,
         interest_page__stored=_stored,
-        interest_page__fetch=_fetch,
-        personalized__fetch=_no_vectors,
+        interest_page__books=_books,
+        **fakes,
     )
 
-    assert [item["book_id"] for item in outcome.items] == [7]
+
+def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조회_없이_그_목록을_읽는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _from_saved(monkeypatch, _surface("home", size="2"), count=3)
+
+    assert [item["book_id"] for item in outcome.items] == [0, 1]
+    assert "category" not in outcome.items[0]  # 응답 칸만 나간다
     assert (outcome.cold_start, outcome.degraded) == (False, None)
-    page = cursor.read(_surface("home", cursor=outcome.next_cursor))
+    page = cursor.read(_surface("home", size="2", cursor=outcome.next_cursor))
     assert (page.mode, page.feed_version) == (service.INTEREST, 4)
 
 
