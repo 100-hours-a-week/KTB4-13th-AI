@@ -11,6 +11,9 @@
 
 프로필 판 번호도 함께 싣지만 기록용이다. 프로필이나 인기 집계가 바뀌어도 끊지 않고 지금 값으로
 이어 붙인다(명세: 같은 순서의 재현을 보장하지 않는다).
+
+저장된 관심사별 목록을 읽을 때는 그 목록의 판 번호도 싣는다. 스크롤하는 중에 목록이 다시 뽑혔으면 이
+번호로 앞 판을 이어 읽는다(#454).
 """
 
 import hashlib
@@ -34,6 +37,8 @@ class Page:
     mode: str | None = None
     # 첫 페이지를 받은 시각. 첫 페이지면 지금 시각을 쓴다.
     issued_at: datetime | None = None
+    # 읽던 관심사별 목록의 판 번호. 첫 페이지이거나 그 목록을 읽지 않았으면 None.
+    feed_version: int | None = None
 
 
 def fingerprint(req: FeedRequest) -> str:
@@ -61,7 +66,12 @@ def read(req: FeedRequest, now: datetime | None = None) -> Page:
         raise CursorExpired from exc
     if issued_for != fingerprint(req) or not isinstance(offset, int) or offset < 0:
         raise CursorExpired
-    return Page(offset=offset, mode=mode, issued_at=issued_at)
+    feed_version = data.get("fv")
+    if feed_version is not None and not isinstance(feed_version, int):
+        raise CursorExpired
+    return Page(
+        offset=offset, mode=mode, issued_at=issued_at, feed_version=feed_version
+    )
 
 
 def check_mode(page: Page, mode: str) -> None:
@@ -71,15 +81,20 @@ def check_mode(page: Page, mode: str) -> None:
 
 
 def issue(
-    page: Page, req: FeedRequest, mode: str, profile_version: int | None
+    page: Page,
+    req: FeedRequest,
+    mode: str,
+    profile_version: int | None,
+    feed_version: int | None = None,
 ) -> str | None:
     """다음 페이지 커서. 더 볼 것이 없으면 None(명세: 끝은 next_cursor 가 null 인 것으로만 판정)."""
-    return cursor.encode(
-        {
-            "o": page.offset + req.size,
-            "f": fingerprint(req),
-            "m": mode,
-            "i": int(page.issued_at.timestamp()),
-            "v": profile_version,
-        }
-    )
+    data = {
+        "o": page.offset + req.size,
+        "f": fingerprint(req),
+        "m": mode,
+        "i": int(page.issued_at.timestamp()),
+        "v": profile_version,
+    }
+    if feed_version is not None:
+        data["fv"] = feed_version
+    return cursor.encode(data)
