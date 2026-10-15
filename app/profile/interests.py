@@ -11,6 +11,7 @@
 방향의 줄만 끝에서부터 더한다. 피함의 부탁(-1)은 건너뛴다. 그 대화에서의 부탁이라 싫다는 뜻이 아니다.
 """
 
+import math
 import operator
 from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
@@ -190,3 +191,53 @@ def book_interest(
             if category in match.core:
                 return name
     return nearest_subcategory(vector, name_vector)
+
+
+# 온보딩과 책(#438)
+
+_PARENT = {
+    name: category
+    for category, group in categories.SUBCATEGORIES.items()
+    if category
+    for name in group
+}
+
+
+def onboarding_scores(
+    picked_categories: Iterable[str], tags: Iterable[str]
+) -> dict[str, float]:
+    """온보딩에서 고른 것의 관심사 점수. 고른 세부 카테고리마다 1, 카테고리만 골랐으면 그 카테고리에 1.
+
+    카테고리와 그 밑의 세부 카테고리를 같이 골랐으면 세부 카테고리에만 준다. 좁혀 고른 것으로 본다(#395
+    의 (안)). 서버 목록에 없는 값은 건너뛴다. BE 가 보기를 바꿔도 400 이 아니다(명세 ⑥).
+    """
+    known = [tag for tag in dict.fromkeys(tags) if tag in categories.NAME_TEXTS]
+    scores = dict.fromkeys(known, 1.0)
+    narrowed = {_PARENT.get(tag) for tag in known}
+    for category in dict.fromkeys(picked_categories):
+        if category in categories.CATEGORIES and category not in narrowed:
+            scores[category] = 1.0
+    return scores
+
+
+def book_scores(
+    books: Iterable[tuple[str, float, Sequence[float]]],
+) -> tuple[dict[str, float], dict[str, list[float]]]:
+    """(관심사, 책의 무게, 책 벡터) 들 → 관심사마다 무게의 합과, 무게를 준 책 벡터 평균(길이 1).
+
+    벡터 평균은 그 관심사의 책을 찾는 검색어다. 같은 요리라도 그 사람이 산 결(베이킹인지 비건인지)이
+    남는다(#395).
+    """
+    scores: dict[str, float] = {}
+    sums: dict[str, list[float]] = {}
+    for interest, weight, vector in books:
+        scores[interest] = scores.get(interest, 0.0) + weight
+        acc = sums.setdefault(interest, [0.0] * len(vector))
+        for i, x in enumerate(vector):
+            acc[i] += weight * x
+    vectors = {}
+    for interest, acc in sums.items():
+        norm = math.sqrt(sum(x * x for x in acc))
+        if norm:
+            vectors[interest] = [x / norm for x in acc]
+    return scores, vectors

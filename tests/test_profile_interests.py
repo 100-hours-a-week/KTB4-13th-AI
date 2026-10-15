@@ -215,3 +215,39 @@ def test_가장_가까운_세부_카테고리는_이름_벡터가_있는_것_가
 
     assert interests.nearest_subcategory(vector, _NAMED.get) == "SF"
     assert interests.nearest_subcategory(vector, lambda _name: None) is None
+
+
+# --- 온보딩·책 점수와 재료 합치기 (#438) ---
+
+
+def test_온보딩은_고른_세부_카테고리마다_1이고_카테고리만_골랐으면_그_카테고리에_1이다() -> (
+    None
+):
+    scores = interests.onboarding_scores(["역사", "소설"], ["추리/스릴러", "SF"])
+
+    # 소설은 그 밑의 세부 카테고리를 골라 좁혔다. 역사는 카테고리만 골랐다
+    assert scores == {"추리/스릴러": 1.0, "SF": 1.0, "역사": 1.0}
+
+
+def test_온보딩의_모르는_값과_겹친_값은_건너뛴다() -> None:
+    scores = interests.onboarding_scores(["역사", "역사", "없는 카테고리"], ["힐링"])
+
+    assert scores == {"역사": 1.0}
+
+
+def test_어린이는_대응표에_없어도_카테고리다() -> None:
+    assert interests.onboarding_scores(["어린이"], []) == {"어린이": 1.0}
+
+
+def test_책은_관심사마다_무게를_더하고_무게를_준_벡터_평균을_낸다() -> None:
+    books = [
+        ("요리", 3.0, [1.0, 0.0]),  # 산 책
+        ("요리", 1.0, [0.0, 1.0]),  # 담은 책
+        ("SF", 2.0, [0.0, 1.0]),
+    ]
+
+    scores, vectors = interests.book_scores(books)
+
+    assert scores == {"요리": 4.0, "SF": 2.0}
+    assert vectors["요리"] == pytest.approx([3 / 10**0.5, 1 / 10**0.5])
+    assert vectors["SF"] == pytest.approx([0.0, 1.0])
