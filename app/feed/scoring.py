@@ -5,8 +5,11 @@
 숫자는 모두 임시값이다(#109). 시드 사용자로 결과를 보고 정하기 전까지 쓰는 값이고, 바꿀 때는
 여기만 고친다. 세 항을 각각 0–1 로 바꾼 뒤 비중대로 더하고 마지막에 100 을 곱한다.
 
-관심사별 목록(#395)도 같은 틀로 매긴다. 유사도를 펴는 구간은 검색어 종류마다 따로 둔다.
+관심사별 목록(#395)도 같은 틀로 매긴다. 유사도를 펴는 구간은 검색어 종류마다 따로 두고, 카테고리 항
+자리를 그 관심사의 몫이 대신한다.
 """
+
+from collections.abc import Mapping
 
 # 세 항의 비중. 합이 1 이다. 작가 항은 입력원이 없어(온보딩에 작가가 없고 기억은 자유 문장) V1 은 없다.
 SIMILARITY_WEIGHT = 0.6
@@ -101,4 +104,21 @@ def match_score(
     total += POPULARITY_WEIGHT * popularity_part(popularity, catalog_max)
     if with_similarity:
         total += SIMILARITY_WEIGHT * similarity_part(similarity)
+    return round(total * 100)
+
+
+def share_parts(seats: Mapping[str, int]) -> dict[str, float]:
+    """관심사마다 몫 항(0–1). 몫은 그 관심사가 받은 자리 수이고, 가장 많이 받은 관심사를 1 로 친다(#395)."""
+    most = max(seats.values(), default=0)
+    if most <= 0:
+        return {}
+    return {name: count / most for name, count in seats.items()}
+
+
+def interest_match_score(similarity_part: float, share_part: float) -> int:
+    """관심사별 목록의 매칭 점수(0–100). 유사도 항 60%, 그 관심사의 몫 항 25%.
+
+    인기도 항(15%)은 자리만 두고 아직 더하지 않아, 가장 높은 점수는 85 다(#395).
+    """
+    total = SIMILARITY_WEIGHT * similarity_part + CATEGORY_WEIGHT * share_part
     return round(total * 100)

@@ -91,3 +91,22 @@ def test_작가_관심사에서_저자가_맞으면_유사도와_상관없이_1�
 
     assert part(0.5, by_name=False, author_matched=True) == 1
     assert part(None, by_name=True, author_matched=True) == 1
+
+
+def test_몫은_가장_많이_받은_관심사를_1로_친다() -> None:
+    shares = scoring.share_parts({"요리": 120, "SF": 60, "역사": 20})
+
+    assert shares == pytest.approx({"요리": 1.0, "SF": 0.5, "역사": 1 / 6})
+
+
+def test_자리가_없으면_몫도_없다() -> None:
+    assert scoring.share_parts({}) == {}
+
+
+def test_관심사_목록의_매칭_점수는_유사도_60_몫_25다() -> None:
+    # 0.6*0.5 + 0.25*1.0 = 0.55
+    assert scoring.interest_match_score(0.5, 1.0) == 55
+
+
+def test_인기도_항은_자리만_두어_가장_높은_점수는_85다() -> None:
+    assert scoring.interest_match_score(1.0, 1.0) == 85
