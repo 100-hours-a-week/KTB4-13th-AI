@@ -60,3 +60,34 @@ def test_벡터를_쓸_수_없으면_유사도_항만_빼고_나머지_비중은
     score = scoring.match_score(0.95, 4, 8.0, 8.0, with_similarity=False)
 
     assert score == 40
+
+
+# --- 관심사별 목록 (#448) ---
+
+
+@pytest.mark.parametrize(
+    ("similarity", "by_name", "expected"),
+    [
+        (0.80, True, 0.0),  # 이름 벡터 구간의 아래 끝
+        (0.84, True, 0.5),
+        (0.88, True, 1.0),
+        (0.82, False, 0.0),  # 책 벡터 평균 구간의 아래 끝
+        (0.86, False, 0.5),
+        (0.90, False, 1.0),
+        (0.95, False, 1.0),  # 넘치면 자른다
+        (None, False, 0.0),  # 책 벡터가 없는 경우
+    ],
+)
+def test_관심사_목록의_유사도는_검색어_종류마다_다른_구간으로_편다(
+    similarity: float | None, by_name: bool, expected: float
+) -> None:
+    part = scoring.interest_similarity_part(similarity, by_name=by_name)
+
+    assert part == pytest.approx(expected)
+
+
+def test_작가_관심사에서_저자가_맞으면_유사도와_상관없이_1이다() -> None:
+    part = scoring.interest_similarity_part
+
+    assert part(0.5, by_name=False, author_matched=True) == 1
+    assert part(None, by_name=True, author_matched=True) == 1
