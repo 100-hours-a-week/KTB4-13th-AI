@@ -15,7 +15,7 @@ from typing import Any
 
 import asyncpg
 
-from app.core import categories
+from app.core import categories, editions
 from app.core.pgvector import to_vector_literal
 from app.feed import cold_start, scoring
 from app.feed.personalized import (
@@ -239,11 +239,6 @@ async def pick(
     ]
 
 
-def title_key(title: str | None) -> str:
-    """띄어쓰기와 문장부호만 다른 제목을 같은 것으로 본다. 같은 책의 판본을 가를 때 쓴다."""
-    return "".join(ch for ch in (title or "").casefold() if ch.isalnum())
-
-
 async def pick_author(
     conn: asyncpg.Connection,
     name: str,
@@ -267,7 +262,7 @@ async def pick_author(
     seen: set[str] = set()
     picks: list[Pick] = []
     for row in rows:
-        key = title_key(row["title"])
+        key = editions.title_key(row["title"])
         if key in seen:
             continue
         seen.add(key)
