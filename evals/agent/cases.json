@@ -4556,7 +4556,7 @@
     {
       "id": "short-01",
       "kind": "short",
-      "about": "이력 없이 번호만 말한다. 무슨 행동인지 모르니 되묻는다",
+      "about": "이력 없이 번호만 말한다. 책은 정해지지만 행동은 모르니 아무것도 바꾸지 않는다(가격이나 재고를 알려 주거나 무엇을 할지 묻는다)",
       "request": {
         "user_id": 9700008,
         "conversation_id": "eval_short-01",
@@ -4589,7 +4589,7 @@
         "cart": []
       },
       "expect": {
-        "outcome": "ask_back",
+        "outcome": "informed",
         "cart": {}
       }
     },
