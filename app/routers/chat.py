@@ -397,11 +397,19 @@ _AUTHOR_ROLE_SUFFIX = re.compile(r"\s+(지음|옮김|엮음|그림|글|저|역|�
 _NON_WORD = re.compile(r"[\W_]+")
 
 
+_AUTHOR_SEPARATOR = re.compile(r"[;,]")
+
+
+def _first_author(author: str | None) -> str:
+    """저자 칸에서 첫 저자의 이름만 꺼낸다. "지은이:" 같은 역할 말은 뗀다."""
+    first = _AUTHOR_SEPARATOR.split(author or "")[0].strip()
+    first = _AUTHOR_ROLE_PREFIX.sub("", first)
+    return _AUTHOR_ROLE_SUFFIX.sub("", first)
+
+
 def _edition_key(title: str | None, author: str | None) -> tuple[str, str] | None:
     """같은 책의 다른 판본을 한 키로 묶는다. 제목이나 저자가 비면 None — 다른 책일 수 있어 안 묶는다."""
-    first_author = re.split(r"[;,]", author or "")[0].strip()
-    first_author = _AUTHOR_ROLE_PREFIX.sub("", first_author)
-    first_author = _AUTHOR_ROLE_SUFFIX.sub("", first_author)
+    first_author = _first_author(author)
     title_key = _NON_WORD.sub("", (title or "").casefold())
     author_key = _NON_WORD.sub("", first_author.casefold())
     if not title_key or not author_key:
@@ -913,8 +921,13 @@ def _card_prompt_intro(spec: Spec) -> str:
 # 제목·저자만 보고 책 내용을 지어낸다(평가 32번: 소개글 없는 카드 14장 전부에 긴 이유가 채워짐).
 # 프롬프트로 막지 않는다. 목록에 "소개글 없음"을 적고 지어내지 말라고 하면 모델이 그런 책을 아예 안 골라
 # 카드가 0장이 된다(평가 33번 5회 중 4회, 2026-10-14). 그래서 그 책의 이유는 모델이 쓴 것을 쓰지 않고 규칙으로 쓴다.
-_NO_DESCRIPTION_REASON = "찾으신 {author}의 『{title}』이에요."
-_NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』이에요."
+#
+# 한 줄 이유는 명세 ③ 의 80자를 넘으면 안 된다. 저자 칸은 여럿이 쉼표로 이어지고 역할 말이 붙은 채로 오기도 해서
+# (#407 리뷰: 소개글 없는 책 146만 권 중 24%가 저자 여럿, 1.7%가 80자 초과) 첫 저자만 쓰고, 그래도 넘으면
+# 저자를 빼고, 제목만으로도 넘으면 제목을 줄인다.
+_NO_DESCRIPTION_REASON = "찾으신 {author}의 『{title}』{copula}."
+_NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』{copula}."
+MAX_REASON_SHORT_CHARS = 80
 
 
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
@@ -951,11 +964,47 @@ def _has_description(book: dict) -> bool:
     return bool((book.get("description") or "").strip())
 
 
+def _copula(word: str) -> str:
+    """끝 글자에 받침이 없으면 "예요", 있거나 한글이 아니면 "이에요"."""
+    last = word.rstrip()[-1:]
+    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 == 0:
+        return "예요"
+    return "이에요"
+
+
+def _display_author(author: str | None) -> str:
+    """한 줄 이유에 쓸 저자. 첫 저자만 쓰고 여럿이면 "외"를 붙인다. 없으면 빈 문자열."""
+    first = _first_author(author)
+    if (
+        first
+        and sum(1 for part in _AUTHOR_SEPARATOR.split(author or "") if part.strip()) > 1
+    ):
+        return f"{first} 외"
+    return first
+
+
 def _no_description_reason(book: dict) -> str:
-    """소개글이 없는 책의 한 줄 이유. 사용자가 찾은 책의 제목·저자만 쓴다 — 책 내용은 알 수 없다."""
-    if book.get("author"):
-        return _NO_DESCRIPTION_REASON.format(author=book["author"], title=book["title"])
-    return _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title=book["title"])
+    """소개글이 없는 책의 한 줄 이유. 사용자가 찾은 책의 제목·저자만 쓴다 — 책 내용은 알 수 없다.
+
+    80자 안에 들도록 저자 → 저자 없이 제목만 → 줄인 제목 순으로 물러난다.
+    """
+    title = book["title"]
+    author = _display_author(book.get("author"))
+    if author:
+        reason = _NO_DESCRIPTION_REASON.format(
+            author=author, title=title, copula=_copula(title)
+        )
+        if len(reason) <= MAX_REASON_SHORT_CHARS:
+            return reason
+    reason = _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title=title, copula=_copula(title))
+    if len(reason) <= MAX_REASON_SHORT_CHARS:
+        return reason
+    # 줄인 제목은 끝이 "…"라 받침을 알 수 없어 "이에요"를 쓴다. 틀의 길이(…와 어미 포함)를 빼고 남는 자리만큼 자른다
+    frame = _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title="…", copula="이에요")
+    room = MAX_REASON_SHORT_CHARS - len(frame)
+    return _NO_DESCRIPTION_REASON_NO_AUTHOR.format(
+        title=title[:room].rstrip() + "…", copula="이에요"
+    )
 
 
 def _parse_match_basis(raw: Any) -> list[dict]:
