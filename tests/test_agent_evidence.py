@@ -324,28 +324,24 @@ def _written_isbns(case: dict) -> set[str]:
 _EXECUTED = [c for c in _CASES.values() if c["expect"]["outcome"] == "executed"]
 _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 
-# 근거 검사가 아직 읽지 못하는 말(#416). 앞 대화에서 이야기한 책이 한 권뿐인데 이번 말이 그 책을 다시 말하지
-# 않는다("응 담아", "그럼 두 권 담아줘"). 고치면 strict 라서 통과하는 순간 실패하므로 여기서 빼면 된다(#418).
-# 가격이나 소개글로 모델이 해석한 책("제일 싼 거")은 근거로 보지 않고 짚어서 묻는 사례(ask_back)로 바꿨다.
-_EVIDENCE_GAPS = {"short-02", "multiturn-01", "short-05", "multiturn-04"}
+
+# 아직 근거로 못 읽는 말(#418). "좋네요 하나 주세요"의 "주세요"는 "알려 주세요"와 겹쳐 행동 낱말에 넣지 않았다.
+# 고치기 전에 쓴 heldout 이라 이 사례를 보고 규칙을 바꾸지 않는다. 막히면 모델이 그 책을 짚어 묻는다.
+# strict 라서 근거로 읽히게 되는 순간 실패하므로 그때 여기서 뺀다.
+_EVIDENCE_GAPS = {"multiturn-04"}
+_EXECUTED_PARAMS = [
+    pytest.param(
+        case,
+        id=case["id"],
+        marks=pytest.mark.xfail(strict=True, reason="#418 주세요는 행동 낱말이 아니다"),
+    )
+    if case["id"] in _EVIDENCE_GAPS
+    else pytest.param(case, id=case["id"])
+    for case in _EXECUTED
+]
 
 
-def _with_gaps(cases: list[dict]) -> list:
-    return [
-        pytest.param(
-            case,
-            id=case["id"],
-            marks=pytest.mark.xfail(
-                strict=True, reason="#416 근거 검사가 아직 못 읽는 말"
-            ),
-        )
-        if case["id"] in _EVIDENCE_GAPS
-        else pytest.param(case, id=case["id"])
-        for case in cases
-    ]
-
-
-@pytest.mark.parametrize("case", _with_gaps(_EXECUTED))
+@pytest.mark.parametrize("case", _EXECUTED_PARAMS)
 def test_정확히_말한_사례의_정답_행동은_근거가_있어_막히지_않는다(case: dict) -> None:
     ctx = _case_ctx(case)
 
@@ -827,3 +823,85 @@ def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_위�
 def test_위치_낱말이_조사나_띄어쓰기로_끝나면_여전히_맨_아래다(message: str) -> None:
     assert evidence.has_evidence(_ctx(message, cards=[PY, DB, K8S]), _card(3), K8S)
     assert evidence.has_evidence(_ctx(message, cart=[SW, DB, PY]), _cart(3), PY)
+
+
+# --- 대화에서 이야기한 책 (#418) ---
+
+TALK_PY = (
+    ("user", "1번 얼마야?"),
+    ("assistant", "《처음 만나는 파이썬》은 15,000원이에요."),
+    ("user", "초보도 봐?"),
+    ("assistant", "프로그래밍이 처음인 사람을 위한 입문서라 괜찮아요."),
+)
+
+
+@pytest.mark.parametrize(
+    "message", ["응 담아", "그럼 두 권 담아줘", "그거 담아줘", "오케이 넣어줘"]
+)
+def test_대화에서_한_권만_이야기했고_행동을_말하면_그_책이_근거다(message: str) -> None:
+    ctx = _history(_ctx(message, cards=[PY, DB, K8S]), *TALK_PY)
+
+    assert evidence.has_evidence(ctx, _card(1), PY)
+    assert not evidence.has_evidence(ctx, _card(2), DB)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "네",  # 행동을 말하지 않았다. 동의는 직전 제안이 있을 때만 근거다
+        "얼마였지?",
+        "다른 거 담아줘",
+        "딴 책 담아줘",
+        "그거 말고 담아줘",
+        "제일 싼 거 담아줘",  # 꾸며서 가리킨 책은 코드가 뜻을 확인할 수 없다
+        "예쁜 책 담아줘",
+    ],
+)
+def test_행동을_말하지_않거나_다른_책을_뜻하면_대화의_책은_근거가_아니다(
+    message: str,
+) -> None:
+    ctx = _history(_ctx(message, cards=[PY, DB, K8S]), *TALK_PY)
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+def test_대화에서_두_권을_이야기했으면_어느_쪽도_근거가_아니다() -> None:
+    ctx = _history(
+        _ctx("응 담아", cards=[PY, DB, K8S]),
+        ("user", "1번이랑 3번 가격 알려 줘"),
+        ("assistant", "15,000원과 28,000원이에요."),
+    )
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+    assert not evidence.has_evidence(ctx, _card(3), K8S)
+
+
+def test_제목_낱말로_다른_책을_이야기한_줄도_센다() -> None:
+    # 번호 없이 "쿠버네티스 책은?"으로 물었다. 이 줄을 못 알아보면 1번만 이야기한 것으로 잘못 본다
+    ctx = _history(
+        _ctx("응 담아", cards=[PY, DB, K8S]),
+        ("user", "1번 얼마야?"),
+        ("assistant", "15,000원이에요."),
+        ("user", "쿠버네티스 책은?"),
+        ("assistant", "28,000원이에요."),
+    )
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+    assert not evidence.has_evidence(ctx, _card(3), K8S)
+
+
+def test_카드_제목을_모르면_대화의_책을_정하지_않는다() -> None:
+    # 에이전트가 제목으로만 말한 줄을 알아볼 수 없어서 한 권뿐인지 모른다
+    ctx = _history(_ctx("응 담아", cards=[PY, DB, K8S], know_titles=False), *TALK_PY)
+
+    assert evidence.needs_card_titles(ctx)
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+def test_모델에게_보여_준_대화만_본다() -> None:
+    # 오래전에 3번을 이야기했어도 최근 대화(PROMPT_TURNS 줄)가 1번 한 권뿐이면 1번이다
+    old = (("user", "3번 얼마야?"), ("assistant", "28,000원이에요."))
+    ctx = _history(_ctx("응 담아", cards=[PY, DB, K8S]), *old, *TALK_PY, *TALK_PY[2:])
+
+    assert len(ctx.turns) > evidence.PROMPT_TURNS
+    assert evidence.has_evidence(ctx, _card(1), PY)
