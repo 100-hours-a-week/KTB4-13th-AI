@@ -303,7 +303,12 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
             "model": _model_line(),
             "summary": summary,
             "runs": [
-                {**asdict(s), "failures": list(s.failures), "values": list(s.values)}
+                {
+                    **asdict(s),
+                    "failures": list(s.failures),
+                    "values": list(s.values),
+                    "got": list(s.got),
+                }
                 for s in scores
             ],
         }

@@ -129,7 +129,7 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 - **핵심어**: 받아들이는 말 하나와 띄어쓰기·대소문자를 빼고 같아야 맞습니다. 그 말을 담은 문장을 그대로 적으면 맞지 않습니다
 - **어디에**: 고른 이름이 모두 받아들이는 이름 안에 있어야 맞습니다. 주제만 셉니다
 
-지금 서버는 이 칸을 내지 않아 0%로 나옵니다. [#426](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/426)에서 생깁니다.
+서버는 [#426](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/426)(프롬프트 v4)부터 이 칸을 냅니다. 그 전 프롬프트의 결과는 0%입니다.
 
 ## 고칠 때
 

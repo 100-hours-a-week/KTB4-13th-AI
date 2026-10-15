@@ -78,6 +78,8 @@ class Score:
     status: int
     seconds: float
     values: tuple[str, ...]  # 뽑은 문장(결과를 사람이 읽을 때 쓴다)
+    # 뽑은 취향의 종류·세기·어디에·핵심어. 세 칸이 왜 틀렸는지 사람이 볼 때 쓴다
+    got: tuple[dict[str, Any], ...]
 
 
 def _squash(text: str) -> str:
@@ -171,6 +173,7 @@ def score(case: dict[str, Any], outcome: Outcome) -> Score:
             "extra": 0,
             "needs_llm": False,
             "values": (),
+            "got": (),
         }
         filled.update(counts)
         return Score(
@@ -242,4 +245,11 @@ def score(case: dict[str, Any], outcome: Outcome) -> Score:
         extra=extra,
         needs_llm=bool(expect["must_not_extract"]) or (bool(wanted) and extra > 0),
         values=tuple(value for _type, value in got),
+        got=tuple(
+            {
+                key: item.get(key)
+                for key in ("type", "strength", "applies_to", "keyword")
+            }
+            for item in kept
+        ),
     )
