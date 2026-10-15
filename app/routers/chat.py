@@ -33,7 +33,7 @@ from app.gateway.llm import (
     parse_json_response,
 )
 from app.search import service
-from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
+from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -540,6 +540,108 @@ async def _settle_category(spec: Spec) -> Spec:
     if not (spec.semantic or spec.exact.title or spec.exact.author):
         return spec.model_copy(update={"semantic": category})
     return spec
+
+
+# 1단계가 조건만 뽑고 주제를 빠뜨렸을 때 메시지에서 주제를 되찾는 규칙(_recover_topic)이 쓰는 말이다.
+# 숫자 뒤에 단위가 붙은 낱말은 조건이다: 2020년, 2만원, 300쪽, 1만원대로. 단위 없는 숫자("1984", "3D프린터")는 주제일 수 있다.
+_CONDITION_WORD = re.compile(
+    r"^\d[\d,]*(만|천|백)?(원|년|쪽|페이지|p|권|살|세|개월|달|일|월|%|대)\S*$",
+    re.IGNORECASE,
+)
+# 요청하는 말의 끝: 보여줘, 알려주세요, 있어?, 있을까요 …("추천…"은 따로 거른다)
+_REQUEST_WORD = re.compile(
+    r"(줘|주세요|줄래|부탁해?요?|있어요?|있나요|있을까요?|싶어요?)[?!.~]*$"
+)
+_TRAILING_PARTICLE = re.compile(r"(에|로|으로|의|은|는|도|이|가|를|을|만)$")
+_PUNCTUATION = ".,!?~\"'()[]“”‘’"
+# 주제는 책을 가리키는 낱말 바로 앞에 붙은 말로만 본다(#408 리뷰). 목록에 없는 말을 전부 주제로 보면 "중에 뭐",
+# "만 원 거" 같은 잔말이 검색 문장이 되어, 원래 되묻던 문장이 엉뚱한 책을 찾는다. 이 낱말이 없는 문장은 되찾지
+# 않고 되묻는다 — 되찾지 못하는 쪽은 고치기 전과 같은 동작이라 안전하다.
+# - 책 말: 주제가 아니라 앞말이 가리키는 대상이다("인공지능 책"에서 "인공지능")
+# - 책 종류 말: 이 말 자체도 주제다("자바 입문서", "디스토피아 소설"). 앞말이 없어도 이 말만으로 주제가 된다
+_BOOK_WORDS = frozenset({"책", "책들", "도서"})
+_BOOK_KIND_WORDS = frozenset(
+    {"소설", "에세이", "시집", "만화", "동화", "입문서", "교재", "참고서", "자기계발서"}
+)
+# 빼 달라는 말에 나온 책 종류는 사용자가 원하는 주제가 아니다("소설 말고 다른 거")
+_EXCLUSION = re.compile(r"말고|빼고|제외|아닌")
+# 조건이나 요청을 말하는 낱말. 주제가 아니다.
+_NOT_TOPIC = frozenset(
+    {
+        "책", "책들", "이후", "이전", "이하", "이상", "이내", "나온", "나오는", "출간", "출간된", "출판된",
+        "신간", "최근", "요즘", "넘는", "넘지", "않는", "안", "좀", "정도", "가격", "분량", "쪽", "페이지",
+        "저렴한", "싼", "비싼", "얇은", "두꺼운", "살", "수", "있는", "좋은", "괜찮은", "그냥", "제일",
+        "읽을", "볼", "만한", "아무거나",
+    }
+)  # fmt: skip
+
+
+def _has_condition(filters: SearchFilters) -> bool:
+    """가격·출간연도 조건이 걸려 있는지. price_min 0은 조건이 아니다(LLM이 "저렴한"에 0을 넣는다)."""
+    return bool(filters.price_min) or any(
+        value is not None
+        for value in (filters.price_max, filters.pub_year_from, filters.pub_year_to)
+    )
+
+
+def _is_topic_word(word: str) -> bool:
+    if _CONDITION_WORD.match(word) or _REQUEST_WORD.search(word):
+        return False
+    if word.startswith("추천"):
+        return False
+    return word not in _NOT_TOPIC and _TRAILING_PARTICLE.sub("", word) not in _NOT_TOPIC
+
+
+def _recover_topic(spec: Spec, message: str) -> Spec:
+    """1단계가 조건만 뽑고 주제를 빠뜨렸으면 메시지에서 주제를 되찾는다(#359 원인 2).
+
+    "2020년 이후에 나온 인공지능 책 추천해줘"에서 1단계가 pub_year_from만 내고 semantic을 비우는 일이 있다
+    (평가 38번: 같은 프롬프트로 5회 중 1~2회). 검색 문장이 비면 후보를 찾지 않고 "어떤 분야가 좋으세요?"로
+    되물어 카드가 0장이 된다. 책을 가리키는 낱말("책", "소설", "입문서" …) 바로 앞에
+    주제 말이 붙어 있으면 그것을 검색 문장으로 쓴다. 그런 말이 없으면("2만원 이하 책 추천해줘", "만 원 이하로 볼
+    만한 거 있나요") 주제를 모르는 것이니 그대로 되묻는다. 빼 달라는 말("소설 말고")이 있으면 건드리지 않는다.
+
+    조건이 걸려 있을 때만 쓴다. 조건 없이 주제를 빠뜨린 경우("책 추천해줘")는 되묻는 것이 맞고, 이름이
+    아닌 말을 주제로 잘못 잡을 위험이 가장 큰 곳이기도 하다. 이미 찾을 말(semantic·제목·저자·출판사)이
+    있거나 exact 의도면 건드리지 않는다. 고친 spec은 응답에 실려 다음 턴으로 이어진다.
+    """
+    if (
+        spec.intent != "semantic"
+        or _query_text(spec)
+        or not _has_condition(spec.filters)
+    ):
+        return spec
+    if _EXCLUSION.search(message):
+        return spec
+    words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
+    topic = _topic_before_book_word(words)
+    if not topic:
+        return spec
+    return spec.model_copy(update={"semantic": topic[:MAX_QUERY_CHARS]})
+
+
+def _topic_before_book_word(words: list[str]) -> str:
+    """책을 가리키는 낱말 바로 앞에 붙은 주제 말을 돌려준다. 없으면 빈 문자열.
+
+    앞에서부터 처음 만나는 책 낱말부터 거꾸로 걸으며 주제 말을 모으고, 조건·요청 말을 만나면 멈춘다.
+    "300쪽 안 넘는 자바 입문서"는 "안 넘는"에서 멈춰 "자바 입문서"가 된다. 책 종류 말은 그 자체를 주제에 넣는다.
+    """
+    for index, word in enumerate(words):
+        bare = _TRAILING_PARTICLE.sub("", word)
+        is_kind = word in _BOOK_KIND_WORDS or bare in _BOOK_KIND_WORDS
+        if not (is_kind or word in _BOOK_WORDS or bare in _BOOK_WORDS):
+            continue
+        run: list[str] = []
+        for before in reversed(words[:index]):
+            if not _is_topic_word(before):
+                break
+            run.append(before)
+        run.reverse()
+        if is_kind:
+            run.append(word if word in _BOOK_KIND_WORDS else bare)
+        if run:
+            return " ".join(run)
+    return ""
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -1353,6 +1455,7 @@ async def chat(request: Request) -> JSONResponse:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
         # 후보 검색 실패와 같은 500이다.
         spec = await _settle_category(spec)
+        spec = _recover_topic(spec, req.message)
         shown = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
