@@ -71,7 +71,7 @@ async def to_extractions(
     """LLM 의 답을 걸러서 벡터를 붙이고, 명세 ⑤의 `extractions[]` 모양으로 만든다."""
     # 근거로 쓸 수 있는 것은 사용자가 한 말뿐이다. 챗봇의 말은 넘기지 않는다
     said = [turn.text for turn in req.used_conversation() if turn.role == "user"]
-    candidates = rules.screen(llm_output, req.existing_preferences, said)
+    candidates = rules.screen(llm_output, said)
     if not candidates:
         # 뽑은 것이 없는 대화가 흔하다. 그때는 임베딩 모델을 부르지 않는다
         return []

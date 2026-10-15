@@ -93,7 +93,6 @@ def test_대화_하나의_형식(case: dict) -> None:
     assert req.conversation_id == f"eval_{case['id']}"
     assert req.conversation[0].role == "user"
     assert {turn.role for turn in req.conversation} <= {"user", "assistant"}
-    assert all(p.type in TYPES for p in req.existing_preferences)
 
     expect = case["expect"]
     assert set(expect) == {

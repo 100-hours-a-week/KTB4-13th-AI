@@ -152,15 +152,24 @@ def test_필수_칸이_없으면_400이다(field: str) -> None:
     assert res.json() == {"message": "invalid_request", "data": None}
 
 
-@pytest.mark.parametrize("value", [None, []])
-def test_existing_preferences는_없거나_null이거나_비어도_된다(value: object) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        [],
+        [{"type": "mood"}],
+        {"type": "mood", "value": "잔잔한 에세이"},
+        "책\x00",
+    ],
+)
+def test_existing_preferences는_어떤_모양이어도_400이_아니고_쓰지_않는다(
+    value: object,
+) -> None:
+    # 명세 ⑤: 쓰지 않는다. 보내도 무시하며 400 이 아니다(#425)
     body = _request(existing_preferences=value)
 
     assert client.post(URL, json=body).status_code == 200
-    assert parse_request(body).existing_preferences == []
-
-    del body["existing_preferences"]
-    assert parse_request(body).existing_preferences == []
+    assert parse_request(body) is not None
 
 
 def test_메시지가_4000자면_통과하고_넘으면_400이다() -> None:
@@ -215,9 +224,6 @@ def test_대화가_비어_있으면_뽑을_것이_없다고_답한다(
         {"conversation_id": ""},
         {"conversation_id": 123},
         {"conversation_id": "가" * 201},
-        {"existing_preferences": [{"type": "mood"}]},
-        {"existing_preferences": [{"value": "잔잔한 에세이"}]},
-        {"existing_preferences": {"type": "mood", "value": "잔잔한 에세이"}},
     ],
 )
 def test_형식이_계약과_다르면_400이다(overrides: dict) -> None:
