@@ -33,7 +33,7 @@ from app.gateway.llm import (
     parse_json_response,
 )
 from app.search import service
-from app.search.schemas import MAX_QUERY_CHARS, SearchRequest
+from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -397,11 +397,19 @@ _AUTHOR_ROLE_SUFFIX = re.compile(r"\s+(지음|옮김|엮음|그림|글|저|역|�
 _NON_WORD = re.compile(r"[\W_]+")
 
 
+_AUTHOR_SEPARATOR = re.compile(r"[;,]")
+
+
+def _first_author(author: str | None) -> str:
+    """저자 칸에서 첫 저자의 이름만 꺼낸다. "지은이:" 같은 역할 말은 뗀다."""
+    first = _AUTHOR_SEPARATOR.split(author or "")[0].strip()
+    first = _AUTHOR_ROLE_PREFIX.sub("", first)
+    return _AUTHOR_ROLE_SUFFIX.sub("", first)
+
+
 def _edition_key(title: str | None, author: str | None) -> tuple[str, str] | None:
     """같은 책의 다른 판본을 한 키로 묶는다. 제목이나 저자가 비면 None — 다른 책일 수 있어 안 묶는다."""
-    first_author = re.split(r"[;,]", author or "")[0].strip()
-    first_author = _AUTHOR_ROLE_PREFIX.sub("", first_author)
-    first_author = _AUTHOR_ROLE_SUFFIX.sub("", first_author)
+    first_author = _first_author(author)
     title_key = _NON_WORD.sub("", (title or "").casefold())
     author_key = _NON_WORD.sub("", first_author.casefold())
     if not title_key or not author_key:
@@ -532,6 +540,108 @@ async def _settle_category(spec: Spec) -> Spec:
     if not (spec.semantic or spec.exact.title or spec.exact.author):
         return spec.model_copy(update={"semantic": category})
     return spec
+
+
+# 1단계가 조건만 뽑고 주제를 빠뜨렸을 때 메시지에서 주제를 되찾는 규칙(_recover_topic)이 쓰는 말이다.
+# 숫자 뒤에 단위가 붙은 낱말은 조건이다: 2020년, 2만원, 300쪽, 1만원대로. 단위 없는 숫자("1984", "3D프린터")는 주제일 수 있다.
+_CONDITION_WORD = re.compile(
+    r"^\d[\d,]*(만|천|백)?(원|년|쪽|페이지|p|권|살|세|개월|달|일|월|%|대)\S*$",
+    re.IGNORECASE,
+)
+# 요청하는 말의 끝: 보여줘, 알려주세요, 있어?, 있을까요 …("추천…"은 따로 거른다)
+_REQUEST_WORD = re.compile(
+    r"(줘|주세요|줄래|부탁해?요?|있어요?|있나요|있을까요?|싶어요?)[?!.~]*$"
+)
+_TRAILING_PARTICLE = re.compile(r"(에|로|으로|의|은|는|도|이|가|를|을|만)$")
+_PUNCTUATION = ".,!?~\"'()[]“”‘’"
+# 주제는 책을 가리키는 낱말 바로 앞에 붙은 말로만 본다(#408 리뷰). 목록에 없는 말을 전부 주제로 보면 "중에 뭐",
+# "만 원 거" 같은 잔말이 검색 문장이 되어, 원래 되묻던 문장이 엉뚱한 책을 찾는다. 이 낱말이 없는 문장은 되찾지
+# 않고 되묻는다 — 되찾지 못하는 쪽은 고치기 전과 같은 동작이라 안전하다.
+# - 책 말: 주제가 아니라 앞말이 가리키는 대상이다("인공지능 책"에서 "인공지능")
+# - 책 종류 말: 이 말 자체도 주제다("자바 입문서", "디스토피아 소설"). 앞말이 없어도 이 말만으로 주제가 된다
+_BOOK_WORDS = frozenset({"책", "책들", "도서"})
+_BOOK_KIND_WORDS = frozenset(
+    {"소설", "에세이", "시집", "만화", "동화", "입문서", "교재", "참고서", "자기계발서"}
+)
+# 빼 달라는 말에 나온 책 종류는 사용자가 원하는 주제가 아니다("소설 말고 다른 거")
+_EXCLUSION = re.compile(r"말고|빼고|제외|아닌")
+# 조건이나 요청을 말하는 낱말. 주제가 아니다.
+_NOT_TOPIC = frozenset(
+    {
+        "책", "책들", "이후", "이전", "이하", "이상", "이내", "나온", "나오는", "출간", "출간된", "출판된",
+        "신간", "최근", "요즘", "넘는", "넘지", "않는", "안", "좀", "정도", "가격", "분량", "쪽", "페이지",
+        "저렴한", "싼", "비싼", "얇은", "두꺼운", "살", "수", "있는", "좋은", "괜찮은", "그냥", "제일",
+        "읽을", "볼", "만한", "아무거나",
+    }
+)  # fmt: skip
+
+
+def _has_condition(filters: SearchFilters) -> bool:
+    """가격·출간연도 조건이 걸려 있는지. price_min 0은 조건이 아니다(LLM이 "저렴한"에 0을 넣는다)."""
+    return bool(filters.price_min) or any(
+        value is not None
+        for value in (filters.price_max, filters.pub_year_from, filters.pub_year_to)
+    )
+
+
+def _is_topic_word(word: str) -> bool:
+    if _CONDITION_WORD.match(word) or _REQUEST_WORD.search(word):
+        return False
+    if word.startswith("추천"):
+        return False
+    return word not in _NOT_TOPIC and _TRAILING_PARTICLE.sub("", word) not in _NOT_TOPIC
+
+
+def _recover_topic(spec: Spec, message: str) -> Spec:
+    """1단계가 조건만 뽑고 주제를 빠뜨렸으면 메시지에서 주제를 되찾는다(#359 원인 2).
+
+    "2020년 이후에 나온 인공지능 책 추천해줘"에서 1단계가 pub_year_from만 내고 semantic을 비우는 일이 있다
+    (평가 38번: 같은 프롬프트로 5회 중 1~2회). 검색 문장이 비면 후보를 찾지 않고 "어떤 분야가 좋으세요?"로
+    되물어 카드가 0장이 된다. 책을 가리키는 낱말("책", "소설", "입문서" …) 바로 앞에
+    주제 말이 붙어 있으면 그것을 검색 문장으로 쓴다. 그런 말이 없으면("2만원 이하 책 추천해줘", "만 원 이하로 볼
+    만한 거 있나요") 주제를 모르는 것이니 그대로 되묻는다. 빼 달라는 말("소설 말고")이 있으면 건드리지 않는다.
+
+    조건이 걸려 있을 때만 쓴다. 조건 없이 주제를 빠뜨린 경우("책 추천해줘")는 되묻는 것이 맞고, 이름이
+    아닌 말을 주제로 잘못 잡을 위험이 가장 큰 곳이기도 하다. 이미 찾을 말(semantic·제목·저자·출판사)이
+    있거나 exact 의도면 건드리지 않는다. 고친 spec은 응답에 실려 다음 턴으로 이어진다.
+    """
+    if (
+        spec.intent != "semantic"
+        or _query_text(spec)
+        or not _has_condition(spec.filters)
+    ):
+        return spec
+    if _EXCLUSION.search(message):
+        return spec
+    words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
+    topic = _topic_before_book_word(words)
+    if not topic:
+        return spec
+    return spec.model_copy(update={"semantic": topic[:MAX_QUERY_CHARS]})
+
+
+def _topic_before_book_word(words: list[str]) -> str:
+    """책을 가리키는 낱말 바로 앞에 붙은 주제 말을 돌려준다. 없으면 빈 문자열.
+
+    앞에서부터 처음 만나는 책 낱말부터 거꾸로 걸으며 주제 말을 모으고, 조건·요청 말을 만나면 멈춘다.
+    "300쪽 안 넘는 자바 입문서"는 "안 넘는"에서 멈춰 "자바 입문서"가 된다. 책 종류 말은 그 자체를 주제에 넣는다.
+    """
+    for index, word in enumerate(words):
+        bare = _TRAILING_PARTICLE.sub("", word)
+        is_kind = word in _BOOK_KIND_WORDS or bare in _BOOK_KIND_WORDS
+        if not (is_kind or word in _BOOK_WORDS or bare in _BOOK_WORDS):
+            continue
+        run: list[str] = []
+        for before in reversed(words[:index]):
+            if not _is_topic_word(before):
+                break
+            run.append(before)
+        run.reverse()
+        if is_kind:
+            run.append(word if word in _BOOK_KIND_WORDS else bare)
+        if run:
+            return " ".join(run)
+    return ""
 
 
 async def _fetch_history(user_id: int) -> history.History:
@@ -909,6 +1019,19 @@ def _card_prompt_intro(spec: Spec) -> str:
     return "아래는 사용자 조건에 맞는 책 후보 목록이다."
 
 
+# 소개글이 없는 책(#86). 카드 생성은 소개글만 근거로 이유를 쓰는데, 소개글 칸을 비운 채 넘기면 모델이
+# 제목·저자만 보고 책 내용을 지어낸다(평가 32번: 소개글 없는 카드 14장 전부에 긴 이유가 채워짐).
+# 프롬프트로 막지 않는다. 목록에 "소개글 없음"을 적고 지어내지 말라고 하면 모델이 그런 책을 아예 안 골라
+# 카드가 0장이 된다(평가 33번 5회 중 4회, 2026-10-14). 그래서 그 책의 이유는 모델이 쓴 것을 쓰지 않고 규칙으로 쓴다.
+#
+# 한 줄 이유는 명세 ③ 의 80자를 넘으면 안 된다. 저자 칸은 여럿이 쉼표로 이어지고 역할 말이 붙은 채로 오기도 해서
+# (#407 리뷰: 소개글 없는 책 146만 권 중 24%가 저자 여럿, 1.7%가 80자 초과) 첫 저자만 쓰고, 그래도 넘으면
+# 저자를 빼고, 제목만으로도 넘으면 제목을 줄인다.
+_NO_DESCRIPTION_REASON = "찾으신 {author}의 『{title}』{copula}."
+_NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』{copula}."
+MAX_REASON_SHORT_CHARS = 80
+
+
 # JSON 형식 예시의 값은 낱말이 아니라 설명으로 적는다. 예시에 `"detail": "잔잔함"`을 두었더니 모델이 사용자가 말하지
 # 않은 "잔잔한 분위기"를 답과 이유에 베꼈다(평가: LLM을 부른 턴의 32%, 설명으로 바꾸면 4%. #410).
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
@@ -937,6 +1060,54 @@ def _format_listing(candidates: list[dict]) -> str:
     return "\n".join(
         f"- book_id {c['book_id']}: {c['title']} - {c['author']} - {c['description']}"
         for c in candidates
+    )
+
+
+def _has_description(book: dict) -> bool:
+    """소개글이 있는 책인가. 공백뿐인 소개글은 없는 것으로 본다."""
+    return bool((book.get("description") or "").strip())
+
+
+def _copula(word: str) -> str:
+    """끝 글자에 받침이 없으면 "예요", 있거나 한글이 아니면 "이에요"."""
+    last = word.rstrip()[-1:]
+    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 == 0:
+        return "예요"
+    return "이에요"
+
+
+def _display_author(author: str | None) -> str:
+    """한 줄 이유에 쓸 저자. 첫 저자만 쓰고 여럿이면 "외"를 붙인다. 없으면 빈 문자열."""
+    first = _first_author(author)
+    if (
+        first
+        and sum(1 for part in _AUTHOR_SEPARATOR.split(author or "") if part.strip()) > 1
+    ):
+        return f"{first} 외"
+    return first
+
+
+def _no_description_reason(book: dict) -> str:
+    """소개글이 없는 책의 한 줄 이유. 사용자가 찾은 책의 제목·저자만 쓴다 — 책 내용은 알 수 없다.
+
+    80자 안에 들도록 저자 → 저자 없이 제목만 → 줄인 제목 순으로 물러난다.
+    """
+    title = book["title"]
+    author = _display_author(book.get("author"))
+    if author:
+        reason = _NO_DESCRIPTION_REASON.format(
+            author=author, title=title, copula=_copula(title)
+        )
+        if len(reason) <= MAX_REASON_SHORT_CHARS:
+            return reason
+    reason = _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title=title, copula=_copula(title))
+    if len(reason) <= MAX_REASON_SHORT_CHARS:
+        return reason
+    # 줄인 제목은 끝이 "…"라 받침을 알 수 없어 "이에요"를 쓴다. 틀의 길이(…와 어미 포함)를 빼고 남는 자리만큼 자른다
+    frame = _NO_DESCRIPTION_REASON_NO_AUTHOR.format(title="…", copula="이에요")
+    room = MAX_REASON_SHORT_CHARS - len(frame)
+    return _NO_DESCRIPTION_REASON_NO_AUTHOR.format(
+        title=title[:room].rstrip() + "…", copula="이에요"
     )
 
 
@@ -1016,8 +1187,19 @@ async def generate_cards(
             continue
         book_id = item.get("book_id")
         book = id_by_book.get(book_id)
-        reason_short = item.get("reason_short")
-        if book is None or not reason_short:
+        if book is None:
+            continue
+        if _has_description(book):
+            reason_short = item.get("reason_short")
+            reason_long = item.get("reason_long")
+            match_basis = _parse_match_basis(item.get("match_basis"))
+        else:
+            # 소개글이 없으면 근거로 쓸 글이 없다(#86). 모델이 뭘 썼든 쓰지 않고 규칙으로 쓴다:
+            # 한 줄 이유는 찾은 책의 제목·저자만, 긴 이유와 근거는 비운다(명세 ③).
+            reason_short = _no_description_reason(book)
+            reason_long = None
+            match_basis = []
+        if not reason_short:
             # 명세: 한 줄 이유를 못 만든 책은 카드에서 뺀다.
             continue
         cards.append(
@@ -1031,8 +1213,8 @@ async def generate_cards(
                 "price": book.get("price"),
                 "cover_url": book.get("cover_url"),
                 "reason_short": reason_short,
-                "reason_long": item.get("reason_long"),
-                "match_basis": _parse_match_basis(item.get("match_basis")),
+                "reason_long": reason_long,
+                "match_basis": match_basis,
             }
         )
     return cards, reply, False
@@ -1275,6 +1457,7 @@ async def chat(request: Request) -> JSONResponse:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
         # 후보 검색 실패와 같은 500이다.
         spec = await _settle_category(spec)
+        spec = _recover_topic(spec, req.message)
         shown = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
