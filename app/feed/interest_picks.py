@@ -17,7 +17,7 @@ import asyncpg
 
 from app.core import categories, editions
 from app.core.pgvector import to_vector_literal
-from app.feed import cold_start, scoring
+from app.feed import cold_start, interest_scoring
 from app.feed.personalized import (
     EXACT_LIMIT,
     FALLBACK_LIMIT,
@@ -131,7 +131,7 @@ ORDER BY p.seg, p.sales DESC, p.pub_year DESC NULLS LAST, p.book_id
 
 @dataclass(frozen=True)
 class Pick:
-    """관심사에서 뽑은 책 한 권. part 는 매칭 점수의 유사도 항(0–1)이다(scoring.py)."""
+    """관심사에서 뽑은 책 한 권. part 는 매칭 점수의 유사도 항(0–1)이다(interest_scoring.py)."""
 
     book_id: int
     isbn13: str | None
@@ -231,7 +231,7 @@ async def pick(
     return [
         _as_pick(
             row,
-            scoring.interest_similarity_part(
+            interest_scoring.similarity_part(
                 (1 - row["distance"]) * length, by_name=by_name
             ),
         )
@@ -265,7 +265,7 @@ async def pick_author(
     rows = await conn.fetch(
         _AUTHOR_SQL, author, limit * AUTHOR_READ_FACTOR, timeout=left()
     )
-    part = scoring.interest_similarity_part(None, by_name=False, author_matched=True)
+    part = interest_scoring.similarity_part(None, by_name=False, author_matched=True)
     seen: set[str] = set()
     picks: list[Pick] = []
     for row in rows:
@@ -304,7 +304,7 @@ async def pick_keyword(
         )
     return [
         _as_pick(
-            row, scoring.interest_similarity_part(1 - row["distance"], by_name=True)
+            row, interest_scoring.similarity_part(1 - row["distance"], by_name=True)
         )
         for row in sorted(rows, key=lambda row: not row["mentioned"])
     ]
@@ -341,7 +341,7 @@ async def pick_popular(
     return [
         _as_pick(
             row,
-            scoring.interest_similarity_part(
+            interest_scoring.similarity_part(
                 None if row["distance"] is None else (1 - row["distance"]) * length,
                 by_name=by_name,
             ),
