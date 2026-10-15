@@ -10,7 +10,8 @@ import asyncpg
 import pytest
 
 from app.core.pgvector import to_vector_literal
-from app.feed import interest_feed, interest_picks
+from app.feed import interest_feed, interest_fetch, interest_picks
+from app.feed.interest_list import Placed
 from app.feed.interest_picks import Pick
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
@@ -89,6 +90,47 @@ def test_음수인_관심사와_다른_책은_남긴다() -> None:
 
     # 요리 책이고, 이름의 일부만 같은 작가는 다른 사람이다
     assert keep(_pick(1, author="한강준"))
+
+
+# --- 한 번에 하나만, 저장하는 모양 (#453) ---
+
+
+def test_목록_뽑기는_서버_안에서_한_번에_하나만_한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running, peak = 0, 0
+
+    async def slow_fetch(conn, jobs, **kwargs):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return interest_fetch.Fetched({}, ())
+
+    monkeypatch.setattr(interest_fetch, "fetch", slow_fetch)
+    monkeypatch.setattr(interest_feed, "_BUILDING", asyncio.Lock())
+
+    async def three():
+        await asyncio.gather(
+            *(
+                interest_feed.build(None, {"요리": 1.0}, {}, {}, [], [])
+                for _ in range(3)
+            )
+        )
+
+    asyncio.run(three())
+
+    assert peak == 1
+
+
+def test_저장하는_모양은_책마다_관심사와_점수_그리고_대신한_관심사다() -> None:
+    feed = interest_feed.Feed([Placed(1, "요리", 80)], ("작가:한강",))
+
+    assert feed.stored() == {
+        "books": [{"book_id": 1, "interest": "요리", "match_score": 80}],
+        "substituted": ["작가:한강"],
+    }
 
 
 # --- 실제 DB ---

@@ -4,6 +4,7 @@
 그 판본, 음수인 관심사의 책을 거르고 조건을 지키는 책을 앞에 두어 목록을 조립한다(interest_list.py).
 """
 
+import asyncio
 import json
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,10 @@ from app.profile import interests, labels
 # 자리가 적은 관심사도 PICK_MIN 권은 뽑는다
 PICK_FACTOR = 2
 PICK_MIN = 20
+
+# 서버 안에서 목록 뽑기는 한 번에 하나만 한다. 운영에서 10명을 동시에 뽑으니 한 사람이 12초까지 늘었다(#399).
+# 서버는 프로세스 하나로 돈다(Dockerfile 의 uvicorn)
+_BUILDING = asyncio.Lock()
 
 # 세부 카테고리 → 속한 카테고리
 _PARENT = {
@@ -52,6 +57,20 @@ class Feed:
 
     books: list[Placed]
     substituted: tuple[str, ...]
+
+    def stored(self) -> dict[str, Any]:
+        """프로필에 저장하는 모양(taste_profile.feed). 대신했지만 채울 책이 없던 관심사도 남겨 밤에 다시 뽑는다."""
+        return {
+            "books": [
+                {
+                    "book_id": b.book_id,
+                    "interest": b.interest,
+                    "match_score": b.match_score,
+                }
+                for b in self.books
+            ],
+            "substituted": list(self.substituted),
+        }
 
 
 def jobs(
@@ -89,12 +108,35 @@ async def build(
     name_vector: Callable[[str], Sequence[float] | None] = labels.name_vector,
     total: int = interest_list.TOTAL_SEATS,
 ) -> Feed:
-    """관심사 점수로 홈 추천 목록을 뽑는다.
+    """관심사 점수로 홈 추천 목록을 뽑는다. 서버 안에서 한 번에 하나만 뽑고, 뒤에 온 것은 기다린다.
 
     scores 는 관심사마다 합친 점수, book_vectors 는 관심사마다 책 벡터 평균, keyword_vectors 는 키워드 관심사마다
     핵심어의 이름 벡터(그 취향 기억 줄의 벡터), conditions 는 프로필의 조건 목록이다. owned_book_ids 는 지금
     목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책. ⑥ 이 읽은 이력의 책).
     """
+    async with _BUILDING:
+        return await _build(
+            conn,
+            scores,
+            book_vectors,
+            keyword_vectors,
+            conditions,
+            owned_book_ids,
+            name_vector,
+            total,
+        )
+
+
+async def _build(
+    conn: asyncpg.Connection,
+    scores: Mapping[str, float],
+    book_vectors: Mapping[str, Sequence[float]],
+    keyword_vectors: Mapping[str, Sequence[float]],
+    conditions: Sequence[str],
+    owned_book_ids: Collection[int],
+    name_vector: Callable[[str], Sequence[float] | None],
+    total: int,
+) -> Feed:
     seats = interest_list.allocate(scores, total)
     fetched = await interest_fetch.fetch(
         conn, jobs(seats, book_vectors, keyword_vectors, name_vector)
