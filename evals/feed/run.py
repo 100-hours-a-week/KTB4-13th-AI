@@ -36,20 +36,14 @@ EVAL_DB_SUFFIX = "_eval"
 Target = Callable[[dict[str, Any]], Awaitable[Response]]
 Facts = Callable[[set[str]], Awaitable[dict[str, Book]]]
 
-# 받은 책의 정보를 한 번에 읽는다. 세부 분류·독자 대상·쪽수는 적재할 때 남은 원본 표(stg_cat_books)에만 있다.
-# 그 표가 비어 있으면 세 칸이 비고, 그 칸으로 가르는 관심사는 "알 수 없음"이 된다.
+# 받은 책의 정보를 한 번에 읽는다. 세부 분류·독자 대상·쪽수는 서버가 읽는 AI 책 분류 표(book_classes)에서
+# 읽어, 개편 전후를 같은 표로 견준다(#422). 표에 없는 책은 세 칸이 비고, 그 칸으로 가르는 관심사는 "알 수
+# 없음"이 된다. 평가 DB 에 표를 채우는 법은 README 에 있다.
 _FACTS_SQL = """
 SELECT b.isbn13, b.title, b.author, b.category, b.pub_year, b.price, b.description,
-       s.kdc, s.reader, s.pages
+       c.class_no AS kdc, c.reader_code AS reader, c.page_count AS pages
 FROM v_books b
-LEFT JOIN (
-    SELECT data->>'isbn13' AS isbn13,
-           nullif(data->>'d4l_class_no', '') AS kdc,
-           nullif(data->>'reader_code', '') AS reader,
-           nullif(data->>'page_count', '')::int AS pages
-    FROM stg_cat_books
-    WHERE data->>'isbn13' = ANY($1::text[])
-) s USING (isbn13)
+LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
 WHERE b.isbn13 = ANY($1::text[])
 """
 

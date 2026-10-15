@@ -202,7 +202,10 @@ createdb bookjeok_ai_eval
 for f in $(git ls-files db/migrations | sort); do psql -v ON_ERROR_STOP=1 -d bookjeok_ai_eval -f "$f"; done
 scripts/ingest_catalog.sh <책 파일 cat_books.jsonl> bookjeok_ai_eval      # 책 211만 권, 5분
 scripts/load_book_vectors.sh <벡터 파일> bookjeok_ai_eval                   # 벡터 59만 권과 색인, 4분
+psql -v ON_ERROR_STOP=1 -d bookjeok_ai_eval -f evals/feed/book_classes.sql  # AI 책 분류 표, 20초
 ```
+
+AI 책 분류 표(`book_classes`)는 세부 분류 번호·독자 대상·쪽수를 담은 서버의 표입니다. 실행기도 이 표로 책을 가릅니다. 평가 DB에서는 적재할 때 남은 원본 표(`stg_cat_books`)로 채웁니다(`evals/feed/book_classes.sql`). 표는 마이그레이션(`db/migrations/20261016_book_classes.sql`)이 만듭니다.
 
 벡터 파일이 없으면 `DATABASE_URL=… uv run python -m app.jobs.embed_books`로 서버와 같은 방법으로 만들 수 있습니다. CPU로 두 시간쯤 걸리고, 소개글이 있는 책 전부에 벡터가 붙어서 위의 조건과 권수가 달라집니다.
 
