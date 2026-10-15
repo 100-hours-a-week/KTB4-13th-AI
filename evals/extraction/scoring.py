@@ -24,8 +24,10 @@ from app.extraction.rules import (
     MAX_KEYWORD_CHARS,
     MAX_STRENGTH,
     MAX_VALUE_CHARS,
+    MIN_CONDITION_STRENGTH,
     PREFERENCE_TYPES,
     REQUEST_TO_AVOID,
+    condition_keyword,
     text_key,
 )
 
@@ -147,6 +149,14 @@ def _well_formed(item: Any, conversation_id: str) -> bool:
         and len(names) <= MAX_APPLIES_TO
         and all(name in categories.NAME_TEXTS for name in names)
         and (item["type"] == "topic" or not names)
+        # 조건은 정해진 꼴이고, 늘 지킨다고 말한 것만 나온다
+        and (
+            item["type"] != "condition"
+            or (
+                condition_keyword(keyword) == keyword
+                and strength >= MIN_CONDITION_STRENGTH
+            )
+        )
         and isinstance(vector, list)
         and len(vector) > 0
         and item["dim"] == len(vector)

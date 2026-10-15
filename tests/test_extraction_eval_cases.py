@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from app.core import categories
-from app.extraction.rules import MAX_EXTRACTIONS, MAX_VALUE_CHARS
+from app.extraction.rules import (
+    MAX_EXTRACTIONS,
+    MAX_VALUE_CHARS,
+    MIN_CONDITION_STRENGTH,
+    condition_keyword,
+)
 from app.extraction.rules import PREFERENCE_TYPES as TYPES
 from app.extraction.schemas import parse_request
 
@@ -158,3 +163,8 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
         # 제목만 말한 취향은 어디에도 넣지 않는다(#395).
         if any(k.startswith("『") for k in keywords):
             assert names == []
+
+    if item["type"] == "condition":
+        # 조건은 정해진 꼴로 적고, 늘 지킨다고 말한 것만 뽑는다(#427).
+        assert all(condition_keyword(k) == k for k in keywords)
+        assert strength >= MIN_CONDITION_STRENGTH
