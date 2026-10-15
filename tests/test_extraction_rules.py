@@ -11,6 +11,7 @@ from app.extraction.rules import (
     MAX_KEYWORD_CHARS,
     MAX_VALUE_CHARS,
     Candidate,
+    condition_keyword,
     drop_reason,
     screen,
     text_key,
@@ -50,9 +51,19 @@ def test_모양이_맞는_후보는_그대로_나온다() -> None:
     assert screen(_out(_item())) == [_c()]
 
 
-@pytest.mark.parametrize("type_", ["mood", "topic", "author", "condition"])
-def test_종류는_명세의_네_가지를_받는다(type_) -> None:
-    assert [c.type for c in screen(_out(_item(type_=type_)))] == [type_]
+@pytest.mark.parametrize(
+    ("type_", "keyword", "strength"),
+    [
+        ("mood", "잔잔한", 1),
+        ("topic", "잔잔한", 1),
+        ("author", "잔잔한", 1),
+        ("condition", "300쪽 이하", 2),
+    ],
+)
+def test_종류는_명세의_네_가지를_받는다(type_, keyword, strength) -> None:
+    item = _item(type_=type_, keyword=keyword, strength=strength)
+
+    assert [c.type for c in screen(_out(item))] == [type_]
 
 
 def test_모르는_칸이_더_있어도_후보는_받는다() -> None:
@@ -290,6 +301,78 @@ def test_괄호가_한쪽만_있으면_제목으로_보지_않는다() -> None:
     kept = screen(_out(_topic(["소설"], keyword="<데미안")))
 
     assert [(c.keyword, c.applies_to) for c in kept] == [("<데미안", ("소설",))]
+
+
+# --- 조건 (#427) ---
+
+
+@pytest.mark.parametrize(
+    ("keyword", "expected"),
+    [
+        ("300쪽 이하", "300쪽 이하"),
+        ("300 페이지 이상", "300쪽 이상"),
+        ("500쪽 미만", "500쪽 이하"),
+        ("1만원 이하", "1만 원 이하"),
+        ("1.5만 원 이하", "1만 5천 원 이하"),
+        ("15,000원 이하", "1만 5천 원 이하"),
+        ("9900원 이하", "9,900원 이하"),
+        ("2만 원 초과", "2만 원 이상"),
+        ("2024년부터", "2024년 이후"),
+        ("2019년 이전", "2019년 이전"),
+    ],
+)
+def test_조건의_핵심어는_정해진_꼴로_맞춘다(keyword, expected) -> None:
+    assert condition_keyword(keyword) == expected
+
+
+@pytest.mark.parametrize(
+    "keyword",
+    [
+        "오디오북",
+        "번역서 아님",
+        "얇은 책",
+        "300쪽",
+        "0쪽 이하",
+        "2만 원",
+        "1850년 이후",
+    ],
+)
+def test_쪽수_가격_출간연도의_꼴이_아닌_조건은_버린다(keyword) -> None:
+    # 번역서·전자책·오디오북처럼 책 정보로 가를 수 없는 조건이 여기서 걸린다
+    assert condition_keyword(keyword) is None
+    assert screen(_out(_item(type_="condition", keyword=keyword, strength=2))) == []
+
+
+def test_늘_지킨다고_직접_말한_조건만_남긴다() -> None:
+    kept = screen(
+        _out(
+            _item(
+                type_="condition",
+                value="500쪽 넘는 책은 안 읽음",
+                keyword="500쪽 이하",
+                strength=2,
+                basis="stated",
+            ),
+            # 부탁할 때만 붙인 조건은 프로필에 쓰지 않는다
+            _item(
+                type_="condition",
+                value="만 원 이하로 찾음",
+                keyword="1만 원 이하",
+                strength=1,
+                basis="requested",
+            ),
+            # 조건은 지키려는 쪽을 양수로 적는다
+            _item(
+                type_="condition",
+                value="2020년 이전 책은 안 읽음",
+                keyword="2020년 이전",
+                strength=-2,
+                basis="stated",
+            ),
+        )
+    )
+
+    assert [(c.keyword, c.strength) for c in kept] == [("500쪽 이하", 2)]
 
 
 # --- 한 대화 안의 중복 ---
