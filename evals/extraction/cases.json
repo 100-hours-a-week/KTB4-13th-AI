@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "kinds": {
     "request": {"group": "typical", "about": "주제나 분위기를 들어 추천을 부탁한다"},
     "stated": {"group": "typical", "about": "좋아하는 것, 싫어하는 것, 늘 지키는 조건을 직접 말한다"},
@@ -10,6 +10,7 @@
     "none": {"group": "typical", "about": "추천과 상관없는 말을 한다"},
     "others": {"group": "typical", "about": "남에게 줄 책을 찾는다"},
     "onetime": {"group": "typical", "about": "이번만이라고 밝힌 조건을 말한다"},
+    "condition": {"group": "typical", "about": "쪽수·가격·출간연도 조건을 말한다"},
     "overlap": {"group": "guard", "about": "이미 저장된 취향과 겹쳐도 다시 뽑는다"},
     "sensitive": {"group": "guard", "about": "민감한 개인사가 섞여 있다"},
     "assistant": {"group": "guard", "about": "조수의 말만 취향처럼 보인다"},
@@ -529,7 +530,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "condition", "value": "분량이 짧은 책을 고르고 500쪽이 넘는 책은 읽지 않음", "keywords": ["500쪽", "얇", "짧", "분량"], "stated": true}
+          {"type": "condition", "value": "500쪽이 넘는 책은 읽지 않음", "keywords": ["500쪽", "얇", "짧", "분량"], "stated": true, "strength": 3, "keyword": ["500쪽 이하"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -614,7 +615,7 @@
     {
       "id": "stated-08",
       "kind": "stated",
-      "about": "늘 지키는 조건을 말한다(번역서)",
+      "about": "책 정보로 가를 수 없는 조건(번역서)은 뽑지 않는다",
       "request": {
         "user_id": 9100901,
         "consented": true,
@@ -629,10 +630,10 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "condition", "value": "번역서보다 한국 작가가 쓴 책을 골라 읽음", "keywords": ["번역", "한국", "국내"], "stated": true}
+          {"type": "topic", "value": "경제 입문서를 찾음", "keywords": ["경제"], "stated": false, "strength": 1, "applies_to": ["경제", "경제경영"], "keyword": ["경제 입문서", "경제 입문", "경제"]}
         ],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["번역"]
       }
     },
     {
@@ -1094,7 +1095,7 @@
     {
       "id": "filter-03",
       "kind": "filter",
-      "about": "책을 잘 안 읽는다며 쉬운 책을 찾는다",
+      "about": "부탁할 때만 붙인 분량은 조건으로 뽑지 않는다",
       "request": {
         "user_id": 9100901,
         "consented": true,
@@ -1108,10 +1109,10 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "condition", "value": "얇고 쉽게 읽히는 책을 찾음", "keywords": ["얇", "술술", "쉽", "짧"], "stated": false}
+          {"type": "mood", "value": "술술 읽히는 책을 찾음", "keywords": ["술술", "쉽게", "쉬운", "가볍", "가벼"], "stated": false, "strength": 1, "keyword": ["술술 읽히는", "쉽게 읽히는", "쉬운", "가벼운", "가볍게 읽히는"]}
         ],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["300쪽", "얇은 책"]
       }
     },
     {
@@ -1631,6 +1632,120 @@
       }
     },
     {
+      "id": "condition-01",
+      "kind": "condition",
+      "about": "늘 지키는 가격 조건을 말한다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_condition-01",
+        "conversation": [
+          {"role": "user", "text": "나는 책값이 2만 원 넘으면 안 사. 그 안에서 소설 하나 추천해줘"},
+          {"role": "assistant", "text": "2만 원 이하인 소설을 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "condition", "value": "2만 원이 넘는 책은 사지 않음", "keywords": ["2만"], "stated": true, "strength": 2, "keyword": ["2만 원 이하"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "condition-02",
+      "kind": "condition",
+      "about": "늘 지키는 출간연도 조건을 말한다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_condition-02",
+        "conversation": [
+          {"role": "user", "text": "나는 늘 2020년 이후에 나온 책만 읽어. 오래된 책은 손이 안 가더라"},
+          {"role": "assistant", "text": "최근에 나온 책 위주로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "condition", "value": "2020년 이후에 나온 책만 읽음", "keywords": ["2020"], "stated": true, "strength": 2, "keyword": ["2020년 이후"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "condition-03",
+      "kind": "condition",
+      "about": "분량의 아래 끝을 말한다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_condition-03",
+        "conversation": [
+          {"role": "user", "text": "300쪽은 넘어야 읽은 기분이 들어. 얇은 책은 늘 아쉽더라"},
+          {"role": "assistant", "text": "읽을거리가 넉넉한 책으로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "condition", "value": "300쪽이 넘는 책을 고름", "keywords": ["300쪽"], "stated": true, "strength": 2, "keyword": ["300쪽 이상"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "condition-04",
+      "kind": "condition",
+      "about": "책 정보로 가를 수 없는 조건(오디오북)은 뽑지 않는다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_condition-04",
+        "conversation": [
+          {"role": "user", "text": "나는 오디오북으로만 들어. 출퇴근길에 들을 만한 에세이 있어?"},
+          {"role": "assistant", "text": "오디오북이 있는 에세이를 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "에세이를 찾음", "keywords": ["에세이"], "stated": false, "strength": 1, "applies_to": ["에세이", "일상 에세이"], "keyword": ["에세이"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": ["오디오북"]
+      }
+    },
+    {
+      "id": "condition-05",
+      "kind": "condition",
+      "about": "이번만 붙인 분량 조건은 뽑지 않는다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_condition-05",
+        "conversation": [
+          {"role": "user", "text": "이번 주는 바빠서 200쪽 안쪽으로만 보여줘"},
+          {"role": "assistant", "text": "200쪽 이하인 책을 골라 봤어요."},
+          {"role": "user", "text": "고마워"}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": true,
+        "extractions": [],
+        "must_not_extract": [],
+        "forbidden": ["200쪽"]
+      }
+    },
+    {
       "id": "overlap-01",
       "kind": "overlap",
       "about": "저장된 취향을 그대로 다시 말한다",
@@ -1725,11 +1840,10 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "condition", "value": "두꺼운 책은 읽지 않음", "keywords": ["두꺼", "분량", "얇"], "stated": true},
-          {"type": "condition", "value": "전자책으로만 읽고 종이책은 사지 않음", "keywords": ["전자책"], "stated": true}
+          {"type": "condition", "value": "두꺼운 책은 읽지 않음", "keywords": ["두꺼", "분량", "얇", "300쪽"], "stated": true, "strength": 2, "keyword": ["300쪽 이하"]}
         ],
         "must_not_extract": [],
-        "forbidden": []
+        "forbidden": ["전자책"]
       }
     },
     {

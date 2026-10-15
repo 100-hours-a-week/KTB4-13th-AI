@@ -27,12 +27,9 @@ _KINDS = _DATA["kinds"]
 _CASES = _DATA["cases"]
 _IDS = [case["id"] for case in _CASES]
 
-# 세기·어디에·핵심어를 적은 기대 취향(#424). 조건은 #427 에서 적는다.
+# 세기·어디에·핵심어를 적은 기대 취향(#424). 조건도 #427 부터 적는다.
 _LABELED = [
-    (case["id"], item)
-    for case in _CASES
-    for item in case["expect"]["extractions"]
-    if item["type"] != "condition"
+    (case["id"], item) for case in _CASES for item in case["expect"]["extractions"]
 ]
 # 명세 ⑤의 핵심어 최대 길이
 _MAX_KEYWORD_CHARS = 100
@@ -108,10 +105,8 @@ def test_대화_하나의_형식(case: dict) -> None:
     assert len(expect["extractions"]) <= MAX_EXTRACTIONS
 
     for item in expect["extractions"]:
-        # 세기·핵심어는 조건 말고 모두, 어디에는 주제에만 있다(명세 ⑤). 조건은 #427 에서 적는다.
-        labels = set()
-        if item["type"] != "condition":
-            labels = {"strength", "keyword"}
+        # 세기·핵심어는 모두, 어디에는 주제에만 있다(명세 ⑤).
+        labels = {"strength", "keyword"}
         if item["type"] == "topic":
             labels.add("applies_to")
         assert set(item) == {"type", "value", "keywords", "stated", *labels}
