@@ -330,6 +330,15 @@ def test_결과를_파일로_남긴다(tmp_path, capsys) -> None:
     assert saved["bundle_version"] == run.load_bundle()["version"]
     assert saved["runs"][0]["case_id"] == "request-01"
     assert saved["runs"][0]["values"] == ["쿠버네티스 입문서를 찾음"]
+    # 세 칸이 왜 틀렸는지 볼 수 있게 뽑은 값도 남긴다
+    assert saved["runs"][0]["got"] == [
+        {
+            "type": "topic",
+            "strength": 1,
+            "applies_to": ["프로그래밍"],
+            "keyword": "쿠버네티스",
+        }
+    ]
 
 
 def test_없는_종류를_주면_부르지_않고_끝난다(capsys) -> None:
