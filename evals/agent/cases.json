@@ -4705,7 +4705,7 @@
       "id": "short-04",
       "kind": "short",
       "split": "heldout",
-      "about": "재고를 물은 뒤 수량만 말한다. 담으라는 말이 없으니 짐작하지 않고 되묻는다",
+      "about": "재고를 물은 뒤 수량만 말한다. 책은 대화로 정해지지만 담으라는 말이 없으니 담지 않고 묻는다(short-01과 같은 이유로 informed, #418)",
       "history": [
         {
           "role": "user",
@@ -4748,7 +4748,7 @@
         "cart": []
       },
       "expect": {
-        "outcome": "ask_back",
+        "outcome": "informed",
         "cart": {}
       }
     },
