@@ -546,6 +546,17 @@ _REQUEST_WORD = re.compile(
 )
 _TRAILING_PARTICLE = re.compile(r"(에|로|으로|의|은|는|도|이|가|를|을|만)$")
 _PUNCTUATION = ".,!?~\"'()[]“”‘’"
+# 주제는 책을 가리키는 낱말 바로 앞에 붙은 말로만 본다(#408 리뷰). 목록에 없는 말을 전부 주제로 보면 "중에 뭐",
+# "만 원 거" 같은 잔말이 검색 문장이 되어, 원래 되묻던 문장이 엉뚱한 책을 찾는다. 이 낱말이 없는 문장은 되찾지
+# 않고 되묻는다 — 되찾지 못하는 쪽은 고치기 전과 같은 동작이라 안전하다.
+# - 책 말: 주제가 아니라 앞말이 가리키는 대상이다("인공지능 책"에서 "인공지능")
+# - 책 종류 말: 이 말 자체도 주제다("자바 입문서", "디스토피아 소설"). 앞말이 없어도 이 말만으로 주제가 된다
+_BOOK_WORDS = frozenset({"책", "책들", "도서"})
+_BOOK_KIND_WORDS = frozenset(
+    {"소설", "에세이", "시집", "만화", "동화", "입문서", "교재", "참고서", "자기계발서"}
+)
+# 빼 달라는 말에 나온 책 종류는 사용자가 원하는 주제가 아니다("소설 말고 다른 거")
+_EXCLUSION = re.compile(r"말고|빼고|제외|아닌")
 # 조건이나 요청을 말하는 낱말. 주제가 아니다.
 _NOT_TOPIC = frozenset(
     {
@@ -578,8 +589,9 @@ def _recover_topic(spec: Spec, message: str) -> Spec:
 
     "2020년 이후에 나온 인공지능 책 추천해줘"에서 1단계가 pub_year_from만 내고 semantic을 비우는 일이 있다
     (평가 38번: 같은 프롬프트로 5회 중 1~2회). 검색 문장이 비면 후보를 찾지 않고 "어떤 분야가 좋으세요?"로
-    되물어 카드가 0장이 된다. 이번 메시지에서 조건·요청 말을 뺀 나머지 낱말이 있으면 그것을 검색 문장으로 쓴다.
-    나머지가 없으면("2만원 이하 책 추천해줘") 주제를 모르는 것이니 그대로 되묻는다.
+    되물어 카드가 0장이 된다. 책을 가리키는 낱말("책", "소설", "입문서" …) 바로 앞에
+    주제 말이 붙어 있으면 그것을 검색 문장으로 쓴다. 그런 말이 없으면("2만원 이하 책 추천해줘", "만 원 이하로 볼
+    만한 거 있나요") 주제를 모르는 것이니 그대로 되묻는다. 빼 달라는 말("소설 말고")이 있으면 건드리지 않는다.
 
     조건이 걸려 있을 때만 쓴다. 조건 없이 주제를 빠뜨린 경우("책 추천해줘")는 되묻는 것이 맞고, 이름이
     아닌 말을 주제로 잘못 잡을 위험이 가장 큰 곳이기도 하다. 이미 찾을 말(semantic·제목·저자·출판사)이
@@ -591,11 +603,37 @@ def _recover_topic(spec: Spec, message: str) -> Spec:
         or not _has_condition(spec.filters)
     ):
         return spec
+    if _EXCLUSION.search(message):
+        return spec
     words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
-    topic = " ".join(w for w in words if _is_topic_word(w))
+    topic = _topic_before_book_word(words)
     if not topic:
         return spec
     return spec.model_copy(update={"semantic": topic[:MAX_QUERY_CHARS]})
+
+
+def _topic_before_book_word(words: list[str]) -> str:
+    """책을 가리키는 낱말 바로 앞에 붙은 주제 말을 돌려준다. 없으면 빈 문자열.
+
+    앞에서부터 처음 만나는 책 낱말부터 거꾸로 걸으며 주제 말을 모으고, 조건·요청 말을 만나면 멈춘다.
+    "300쪽 안 넘는 자바 입문서"는 "안 넘는"에서 멈춰 "자바 입문서"가 된다. 책 종류 말은 그 자체를 주제에 넣는다.
+    """
+    for index, word in enumerate(words):
+        bare = _TRAILING_PARTICLE.sub("", word)
+        is_kind = word in _BOOK_KIND_WORDS or bare in _BOOK_KIND_WORDS
+        if not (is_kind or word in _BOOK_WORDS or bare in _BOOK_WORDS):
+            continue
+        run: list[str] = []
+        for before in reversed(words[:index]):
+            if not _is_topic_word(before):
+                break
+            run.append(before)
+        run.reverse()
+        if is_kind:
+            run.append(word if word in _BOOK_KIND_WORDS else bare)
+        if run:
+            return " ".join(run)
+    return ""
 
 
 async def _fetch_history(user_id: int) -> history.History:
