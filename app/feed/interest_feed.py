@@ -43,7 +43,7 @@ _WITH_VECTORS = {
     "join": "LEFT JOIN book_embeddings e ON e.book_id = b.book_id",
 }
 _WITHOUT_VECTORS = {"vector": "NULL::text", "join": ""}
-_OWNED_SQL = "SELECT title, author FROM v_books WHERE isbn13 = ANY($1::text[])"
+_OWNED_SQL = "SELECT title, author FROM v_books WHERE book_id = ANY($1::int[])"
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ async def build(
     book_vectors: Mapping[str, Sequence[float]],
     keyword_vectors: Mapping[str, Sequence[float]],
     conditions: Sequence[str],
-    owned_isbns: Collection[str],
+    owned_book_ids: Collection[int],
     *,
     name_vector: Callable[[str], Sequence[float] | None] = labels.name_vector,
     total: int = interest_list.TOTAL_SEATS,
@@ -92,8 +92,8 @@ async def build(
     """관심사 점수로 홈 추천 목록을 뽑는다.
 
     scores 는 관심사마다 합친 점수, book_vectors 는 관심사마다 책 벡터 평균, keyword_vectors 는 키워드 관심사마다
-    핵심어의 이름 벡터(그 취향 기억 줄의 벡터), conditions 는 프로필의 조건 목록이다. owned_isbns 는 지금
-    목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책).
+    핵심어의 이름 벡터(그 취향 기억 줄의 벡터), conditions 는 프로필의 조건 목록이다. owned_book_ids 는 지금
+    목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책. ⑥ 이 읽은 이력의 책).
     """
     seats = interest_list.allocate(scores, total)
     fetched = await interest_fetch.fetch(
@@ -102,12 +102,12 @@ async def build(
     negatives = {name for name, score in scores.items() if score < 0}
     picked = sorted({pick.book_id for got in fetched.picks.values() for pick in got})
     facts = await _facts(conn, picked, with_vectors=bool(negatives))
-    owned = await _owned_editions(conn, owned_isbns)
+    owned = await _owned_editions(conn, owned_book_ids)
     conds = [c for c in map(interest_list.parse_condition, conditions) if c]
     books = interest_list.assemble(
         fetched.picks,
         seats,
-        keep=_keeper(set(owned_isbns), owned, negatives, facts, name_vector),
+        keep=_keeper(set(owned_book_ids), owned, negatives, facts, name_vector),
         meets=lambda pick: interest_list.meets_all(conds, facts.get(pick.book_id, {})),
         total=total,
     )
@@ -135,18 +135,18 @@ async def _facts(
 
 
 async def _owned_editions(
-    conn: asyncpg.Connection, isbns: Collection[str]
+    conn: asyncpg.Connection, book_ids: Collection[int]
 ) -> set[tuple[str, str]]:
     """가진 책들의 판본 키. 그 책의 다른 판본도 목록에서 뺀다."""
-    if not isbns:
+    if not book_ids:
         return set()
-    rows = await conn.fetch(_OWNED_SQL, sorted(isbns))
+    rows = await conn.fetch(_OWNED_SQL, sorted(book_ids))
     keys = (editions.edition_key(row["title"], row["author"]) for row in rows)
     return {key for key in keys if key}
 
 
 def _keeper(
-    owned_isbns: set[str],
+    owned_book_ids: set[int],
     owned_editions: set[tuple[str, str]],
     negatives: set[str],
     facts: Mapping[int, Mapping[str, Any]],
@@ -171,7 +171,7 @@ def _keeper(
     ]
 
     def keep(pick: Pick) -> bool:
-        if pick.isbn13 in owned_isbns:
+        if pick.book_id in owned_book_ids:
             return False
         if editions.edition_key(pick.title, pick.author) in owned_editions:
             return False

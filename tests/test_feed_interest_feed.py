@@ -40,19 +40,14 @@ def test_자리를_많이_받은_관심사부터_종류에_맞는_검색어로_�
 
 
 def _pick(
-    book_id: int,
-    *,
-    isbn: str | None = None,
-    title: str = "책",
-    author: str = "저자",
-    category: str = "생활과학",
+    book_id: int, *, title: str = "책", author: str = "저자", category: str = "생활과학"
 ) -> Pick:
-    return Pick(book_id, isbn, title, author, category, 0.5)
+    return Pick(book_id, None, title, author, category, 0.5)
 
 
 def _keep(negatives: set[str], facts: dict | None = None, **owned) -> object:
     return interest_feed._keeper(
-        owned.get("isbns", set()),
+        owned.get("book_ids", set()),
         owned.get("editions", set()),
         negatives,
         facts or {},
@@ -61,9 +56,9 @@ def _keep(negatives: set[str], facts: dict | None = None, **owned) -> object:
 
 
 def test_가진_책과_그_다른_판본은_뺀다() -> None:
-    keep = _keep(set(), isbns={"9780000000001"}, editions={("해리포터", "jk롤링")})
+    keep = _keep(set(), book_ids={1}, editions={("해리포터", "jk롤링")})
 
-    assert not keep(_pick(1, isbn="9780000000001"))
+    assert not keep(_pick(1))
     assert not keep(_pick(2, title="해리 포터", author="J.K. 롤링 지음"))
     assert keep(_pick(3, title="해리 포터", author="다른 사람"))
 
@@ -170,7 +165,7 @@ def test_가진_책과_싫다고_한_관심사의_책을_빼고_조건을_지키
                 {},
                 {},
                 ["2024년 이후"],
-                {_isbn(9100401), _isbn(9100406)},
+                {9100401, 9100406},
                 name_vector=lambda name: _near(1.0) if name == "요리" else None,
                 total=2,
             )
