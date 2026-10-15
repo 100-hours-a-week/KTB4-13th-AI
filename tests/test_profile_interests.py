@@ -251,3 +251,33 @@ def test_책은_관심사마다_무게를_더하고_무게를_준_벡터_평균�
     assert scores == {"요리": 4.0, "SF": 2.0}
     assert vectors["요리"] == pytest.approx([3 / 10**0.5, 1 / 10**0.5])
     assert vectors["SF"] == pytest.approx([0.0, 1.0])
+
+
+def test_재료별_점수를_관심사마다_한_칸으로_모은다() -> None:
+    table = interests.per_interest(
+        {"역사": 1.0}, {"역사": -2.0, "SF": 2.0}, {"SF": 3.0}
+    )
+
+    assert table == {
+        "역사": {"onboarding": 1.0, "memory": -2.0},
+        "SF": {"memory": 2.0, "books": 3.0},
+    }
+
+
+def test_가입_하나_책_세_권_말함_한_번이면_5대3대2다() -> None:
+    # #395 의 예. 무게는 설계 때 잰 값이다
+    table = interests.per_interest({"역사": 1.0}, {"추리/스릴러": 2.0}, {"재테크": 9.0})
+
+    final = interests.combined(table)
+
+    assert final == pytest.approx({"역사": 0.5, "재테크": 0.3, "추리/스릴러": 0.2})
+
+
+def test_취향_기억의_마지막_방향이_피함이면_다른_재료가_있어도_음수다() -> None:
+    table = interests.per_interest({"로맨스": 1.0}, {"로맨스": -2.0}, {"로맨스": 3.0})
+
+    assert interests.combined(table)["로맨스"] < 0
+
+
+def test_재료가_없으면_점수도_없다() -> None:
+    assert interests.combined({}) == {}
