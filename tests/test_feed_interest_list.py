@@ -3,6 +3,7 @@
 import pytest
 
 from app.feed import interest_list as il
+from app.feed.interest_picks import Pick
 
 # --- 자리 나누기 ---
 
@@ -130,3 +131,69 @@ def test_책이_조건을_모두_지키는지_본다() -> None:
     assert not il.meets_all(conditions, {"pages": None, "year": 2025})
     # 조건이 없으면 앞으로 옮길 책도 없다
     assert not il.meets_all([], {"pages": 280})
+
+
+# --- 조립 (#452) ---
+
+
+def _pick(
+    book_id: int, part: float = 0.5, title: str | None = None, author: str | None = None
+) -> Pick:
+    return Pick(
+        book_id, None, title or f"책{book_id}", author or f"저자{book_id}", None, part
+    )
+
+
+def test_거른_책을_빼고_자리_비율대로_번갈아_놓는다() -> None:
+    picks = {"가": [_pick(1), _pick(2), _pick(3)], "나": [_pick(4), _pick(5)]}
+
+    placed = il.assemble(
+        picks, {"가": 2, "나": 1}, keep=lambda pick: pick.book_id != 2, total=3
+    )
+
+    assert [(p.book_id, p.interest) for p in placed] == [
+        (1, "가"),
+        (4, "나"),
+        (3, "가"),
+    ]
+
+
+def test_같은_책의_판본은_처음_놓인_자리에만_두고_유사도_항은_높은_쪽을_쓴다() -> None:
+    picks = {
+        "가": [_pick(1, part=0.2, title="해리 포터", author="J.K. 롤링, 강동혁")],
+        "나": [_pick(2, part=0.9, title="해리포터", author="J.K. 롤링 지음"), _pick(3)],
+    }
+
+    placed = il.assemble(picks, {"가": 1, "나": 1}, total=2)
+
+    assert [p.book_id for p in placed] == [1, 3]
+    # 유사도 항은 두 관심사 가운데 높은 0.9, 몫 항은 1 → 0.6*0.9 + 0.25 = 0.79
+    assert placed[0].match_score == 79
+
+
+def test_조건을_지키는_책을_관심사_안에서_순서를_지킨_채_앞으로_옮긴다() -> None:
+    picks = {"가": [_pick(1), _pick(2), _pick(3), _pick(4)]}
+
+    placed = il.assemble(picks, {"가": 4}, meets=lambda pick: pick.book_id > 2)
+
+    assert [p.book_id for p in placed] == [3, 4, 1, 2]
+
+
+def test_몫_항은_놓인_관심사가_받은_자리로_매긴다() -> None:
+    picks = {"가": [_pick(1, part=1.0)], "나": [_pick(2, part=1.0)]}
+
+    placed = il.assemble(picks, {"가": 4, "나": 1}, total=2)
+
+    # 가는 자리를 가장 많이 받아 몫 항 1(85점), 나는 1/4 → 0.6 + 0.25*0.25 = 0.6625
+    assert {p.book_id: p.match_score for p in placed} == {1: 85, 2: 66}
+
+
+def test_한_작가의_책은_20권마다_5권까지_두고_넘는_책은_뒤로_미룬다() -> None:
+    by_one = [_pick(n, author="김영하") for n in range(1, 8)]
+    others = [_pick(n) for n in range(8, 25)]
+
+    placed = il.assemble({"가": by_one + others}, {"가": 24}, total=24)
+
+    first_block = [p.book_id for p in placed[: il.AUTHOR_BLOCK]]
+    assert sum(book_id <= 7 for book_id in first_block) == il.AUTHOR_PER_BLOCK
+    assert len(placed) == 24
