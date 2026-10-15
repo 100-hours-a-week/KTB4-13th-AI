@@ -4,7 +4,10 @@ LLM 의 답은 믿을 수 있는 입력이 아니다. 종류를 지어내거나,
 내거나, 수십 개를 낼 수 있다. 응답에 나가는 것은 여기를 통과한 후보뿐이게 해서, 프롬프트가 바뀌어도
 명세 ⑤의 모양이 지켜지게 한다. 틀린 항목은 그 항목만 버린다.
 
-한 대화에서 글자가 사실상 같은 취향은 하나로 합친다. 이미 저장된 취향과는 견주지 않는다. 같은 취향을
+세기·어디에·핵심어(#426)도 여기서 본다. 범위 밖의 세기는 버리고, 피함의 부탁(-1)은 응답에서 뺀다.
+어디에는 서버 안 목록(app/core/categories.py)에 있는 이름만 남긴다.
+
+한 대화에서 종류와 핵심어가 같은 취향은 하나로 합친다. 이미 저장된 취향과는 견주지 않는다. 같은 취향을
 다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425).
 """
 
@@ -13,6 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from app.core import categories
 from app.core.validation import sanitize_string
 
 # 명세 ⑤ 의 extractions[].type
@@ -20,8 +24,16 @@ PREFERENCE_TYPES = frozenset({"mood", "topic", "author", "condition"})
 # 명세 ⑤: value 는 200자 이하(#299). 넘으면 자르지 않고 버린다 — 잘린 문장이 취향 카드로 보이면
 # 뜻이 달라진다.
 MAX_VALUE_CHARS = 200
-# 명세 ⑤: 신뢰도가 이보다 낮으면 버린다.
-MIN_CONFIDENCE = 0.5
+# 명세 ⑤: 세기는 -3 이상 3 이하이고 0 은 없다. 크기는 부탁만 했으면 1, 직접 말했으면 2, 강하게 말했으면 3
+MAX_STRENGTH = 3
+# 싫은 쪽을 부탁하기만 한 것("이번엔 ○○ 말고")의 세기. 응답에서 뺀다. 추천을 바꾸지 않는 줄이 마이페이지에
+# 보이면 헷갈린다(#395)
+REQUEST_TO_AVOID = -1
+# 명세 ⑤: 어디에는 3개 이하, 핵심어는 1자 이상 100자 이하
+MAX_APPLIES_TO = 3
+MAX_KEYWORD_CHARS = 100
+# 핵심어를 감싼 제목 괄호. 『』가 아니면 『』로 바꾼다. 제목만 말한 취향은 핵심어를 『』로 감싼다(명세 ⑤)
+_TITLE_BRACKETS = {"「": "」", "《": "》", "〈": "〉", "<": ">"}
 # LLM 이 취향마다 같이 적는 세 칸(#378). 프롬프트로 "하지 마라"고만 하면 지키지 않아서, LLM 에게는
 # 가려서 적게만 하고 버리는 것은 코드가 한다.
 OWNER_USER = "user"  # owner: 사용자 본인의 취향이다. 남의 취향("other")은 버린다
@@ -46,7 +58,9 @@ class Candidate:
 
     type: str
     value: str
-    confidence: float
+    strength: int
+    applies_to: tuple[str, ...]
+    keyword: str
 
 
 def text_key(value: str) -> str:
@@ -60,6 +74,10 @@ def text_key(value: str) -> str:
 def _letters(text: str) -> str:
     """글자와 숫자만 남긴다. 띄어쓰기, 문장부호, 대소문자를 보지 않고 견주려는 것이다."""
     return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+# 어디에로 받는 이름. 띄어쓰기와 문장부호가 조금 달라도("추리 / 스릴러") 목록의 이름으로 바꾼다
+_NAMES = {_letters(name): name for name in categories.NAME_TEXTS}
 
 
 def _quoted_from(evidence: Any, user_turns: Sequence[str]) -> bool:
@@ -112,14 +130,54 @@ def _value(raw: Any) -> str | None:
         return None
 
 
-def _confidence(raw: Any) -> float | None:
-    # bool 은 int 의 하위 타입이라 따로 거른다. 80 처럼 백분율로 온 값은 짐작해서 고치지 않는다.
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
+def _strength(raw: Any, basis: Any) -> int | None:
+    """세기. 정수가 아니거나 범위 밖이거나 0 이면 None.
+
+    크기는 직접 말했는지(basis)에 맞춘다. 부탁만 했으면 1, 직접 말했으면 2 이상이다. LLM 이 둘을 어긋나게
+    적어도 같은 말에 같은 크기가 나오게 하려는 것이다.
+    """
+    # bool 은 int 의 하위 타입이라 따로 거른다. 2.0 같은 소수는 짐작해서 고치지 않는다
+    if isinstance(raw, bool) or not isinstance(raw, int):
         return None
-    # NaN 과 무한대도 이 범위 비교에서 걸린다(NaN 은 어떤 비교든 거짓이다)
-    if not MIN_CONFIDENCE <= raw <= 1:
+    if raw == 0 or abs(raw) > MAX_STRENGTH:
         return None
-    return float(raw)
+    sign = 1 if raw > 0 else -1
+    if basis == BASIS_REQUESTED:
+        return sign
+    if basis == BASIS_STATED:
+        return sign * max(2, abs(raw))
+    return raw
+
+
+def _keyword(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    keyword = " ".join(raw.split())
+    closing = _TITLE_BRACKETS.get(keyword[:1])
+    if closing and len(keyword) > 2 and keyword.endswith(closing):
+        keyword = f"『{keyword[1:-1].strip()}』"
+    if not keyword or len(keyword) > MAX_KEYWORD_CHARS:
+        return None
+    try:
+        return sanitize_string(keyword)
+    except ValueError:
+        return None
+
+
+def _is_title(keyword: str) -> bool:
+    """책 제목만 말한 취향의 핵심어인가."""
+    return keyword.startswith("『") and keyword.endswith("』")
+
+
+def _applies_to(raw: Any, type_: str, keyword: str) -> tuple[str, ...]:
+    """어디에. 주제가 아니거나 제목만 말했으면 비운다. 목록에 없는 이름은 빼고 앞의 3개만 남긴다.
+
+    이름이 틀려도 취향 자체는 맞을 수 있어 항목은 버리지 않는다. 비면 그 취향은 핵심어로 찾는다(#395).
+    """
+    if type_ != "topic" or _is_title(keyword) or not isinstance(raw, list):
+        return ()
+    names = [_NAMES.get(_letters(name)) for name in raw if isinstance(name, str)]
+    return tuple(dict.fromkeys(name for name in names if name))[:MAX_APPLIES_TO]
 
 
 def _candidate(item: Any) -> Candidate | None:
@@ -129,17 +187,19 @@ def _candidate(item: Any) -> Candidate | None:
     if not isinstance(type_, str) or type_ not in PREFERENCE_TYPES:
         return None
     value = _value(item.get("value"))
-    confidence = _confidence(item.get("confidence"))
-    if value is None or confidence is None:
+    strength = _strength(item.get("strength"), item.get("basis"))
+    keyword = _keyword(item.get("keyword"))
+    if value is None or strength is None or keyword is None:
         return None
-    return Candidate(type_, value, confidence)
+    applies_to = _applies_to(item.get("applies_to"), type_, keyword)
+    return Candidate(type_, value, strength, applies_to, keyword)
 
 
 def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Candidate]:
-    """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 신뢰도가 높은 순으로 돌려준다.
+    """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 세기의 크기가 큰 순으로 돌려준다.
 
-    한 대화에서 같은 취향이 두 번 나오면 하나로 합친다. 표기는 먼저 나온 것, 신뢰도는 높은 값이다.
-    개수 상한은 합친 뒤에 센다.
+    피함의 부탁(세기 -1)은 뺀다. 한 대화에서 종류와 핵심어가 같은 취향이 두 번 나오면 하나로 합친다.
+    문장은 먼저 나온 것, 세기는 크기가 큰 쪽이다. 개수 상한은 합친 뒤에 센다.
     사용자가 한 말(user_turns)을 주면 근거·주인·직접 말했는지도 본다(drop_reason).
     """
     items = llm_output.get("extractions") if isinstance(llm_output, dict) else None
@@ -149,17 +209,17 @@ def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Can
     merged: dict[tuple[str, str], Candidate] = {}
     for item in items:
         candidate = _candidate(item)
-        if candidate is None:
+        if candidate is None or candidate.strength == REQUEST_TO_AVOID:
             continue
         if user_turns is not None and drop_reason(item, user_turns) is not None:
             continue
-        key = (candidate.type, text_key(candidate.value))
+        key = (candidate.type, text_key(candidate.keyword))
         seen = merged.get(key)
         if seen is None:
             merged[key] = candidate
-        elif candidate.confidence > seen.confidence:
-            merged[key] = replace(seen, confidence=candidate.confidence)
+        elif abs(candidate.strength) > abs(seen.strength):
+            merged[key] = replace(seen, strength=candidate.strength)
 
-    # sorted 는 순서를 지키는 정렬이라 신뢰도가 같으면 LLM 이 낸 순서가 남는다
-    ranked = sorted(merged.values(), key=lambda c: c.confidence, reverse=True)
+    # sorted 는 순서를 지키는 정렬이라 세기의 크기가 같으면 LLM 이 낸 순서가 남는다
+    ranked = sorted(merged.values(), key=lambda c: abs(c.strength), reverse=True)
     return ranked[:MAX_EXTRACTIONS]

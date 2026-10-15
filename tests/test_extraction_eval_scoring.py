@@ -34,13 +34,13 @@ def _case(extractions=(), *, must_not_extract=(), forbidden=(), kind="request") 
     }
 
 
-def _got(
-    type_="topic", value="쿠버네티스 입문서를 찾음", confidence=0.7, **over
-) -> dict:
+def _got(type_="topic", value="쿠버네티스 입문서를 찾음", **over) -> dict:
     item = {
         "type": type_,
         "value": value,
-        "confidence": confidence,
+        "strength": 1,
+        "applies_to": [],
+        "keyword": "쿠버네티스",
         "vector": [0.1, 0.2],
         "dim": 2,
         "source_conversation_id": _CID,
@@ -189,8 +189,15 @@ def test_200이_아니면_본문에_무엇이_있든_실패다() -> None:
         pytest.param(_got(type_="genre"), id="모르는_종류"),
         pytest.param(_got(value=""), id="빈_문장"),
         pytest.param(_got(value="쿠버네티스 " + "가" * 200), id="200자_초과"),
-        pytest.param(_got(confidence=0.4), id="신뢰도_0.5_미만"),
-        pytest.param(_got(confidence=1.2), id="신뢰도_1_초과"),
+        pytest.param(_got(strength=0), id="세기_0"),
+        pytest.param(_got(strength=-1), id="피함의_부탁"),
+        pytest.param(_got(strength=4), id="세기_범위_밖"),
+        pytest.param(_got(strength=1.0), id="세기가_소수"),
+        pytest.param(_got(keyword=""), id="빈_핵심어"),
+        pytest.param(_got(applies_to=["없는 이름"]), id="목록에_없는_이름"),
+        pytest.param(
+            _got(type_="mood", applies_to=["소설"]), id="주제가_아닌데_어디에"
+        ),
         pytest.param(_got(dim=3), id="벡터_길이와_dim이_다름"),
         pytest.param(_got(vector=[]), id="빈_벡터"),
         pytest.param(_got(source_conversation_id="다른 대화"), id="출처가_요청과_다름"),
@@ -214,7 +221,7 @@ def test_nothing_found가_목록과_어긋나면_모양_실패다() -> None:
 def test_실패가_여럿이면_모두_적는다() -> None:
     case = _case([_KUBE], forbidden=["우울증"])
 
-    result = score(case, _ok(_got(value="우울증에 좋은 책을 찾음", confidence=0.1)))
+    result = score(case, _ok(_got(value="우울증에 좋은 책을 찾음", strength=0)))
 
     assert set(result.failures) == {"format", "missed", "forbidden"}
 
@@ -313,9 +320,10 @@ def test_세_칸을_적지_않은_기대_취향과_못_찾은_취향은_세지_�
     assert score(_labeled(), _ok(_got(value="파이썬 입문서를 찾음"))).labeled == 0
 
 
-def test_세_칸이_없는_응답은_찾았어도_맞지_않은_것으로_세고_통과는_그대로다() -> None:
-    # 지금 서버는 세 칸을 내지 않는다(#426 에서 생긴다). 세 칸은 통과에 쓰지 않는다
-    result = score(_labeled(), _ok(_got()))
+def test_세_칸이_틀려도_통과는_그대로다() -> None:
+    got = _got(strength=-2, keyword="엉뚱함", applies_to=["요리"])
+
+    result = score(_labeled(), _ok(got))
 
     assert result.passed
     assert _counts(result) == (1, 0, 0, 0, 1, 0)

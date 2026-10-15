@@ -4,14 +4,12 @@
 틀린 항목 하나 때문에 맞는 항목까지 버려지지 않는다.
 """
 
-import math
-
 import pytest
 
 from app.extraction.rules import (
     MAX_EXTRACTIONS,
+    MAX_KEYWORD_CHARS,
     MAX_VALUE_CHARS,
-    MIN_CONFIDENCE,
     Candidate,
     drop_reason,
     screen,
@@ -19,19 +17,37 @@ from app.extraction.rules import (
 )
 
 
-def _item(type_="mood", value="잔잔한 소설을 찾음", confidence=0.8, **extra) -> dict:
-    return {"type": type_, "value": value, "confidence": confidence, **extra}
+def _item(
+    type_="mood", value="잔잔한 소설을 찾음", strength=1, keyword="잔잔한", **extra
+) -> dict:
+    return {
+        "type": type_,
+        "value": value,
+        "strength": strength,
+        "keyword": keyword,
+        **extra,
+    }
 
 
 def _out(*items) -> dict:
     return {"extractions": list(items)}
 
 
+def _c(
+    type_="mood",
+    value="잔잔한 소설을 찾음",
+    strength=1,
+    applies_to=(),
+    keyword="잔잔한",
+) -> Candidate:
+    return Candidate(type_, value, strength, applies_to, keyword)
+
+
 # --- 통과 ---
 
 
 def test_모양이_맞는_후보는_그대로_나온다() -> None:
-    assert screen(_out(_item())) == [Candidate("mood", "잔잔한 소설을 찾음", 0.8)]
+    assert screen(_out(_item())) == [_c()]
 
 
 @pytest.mark.parametrize("type_", ["mood", "topic", "author", "condition"])
@@ -39,24 +55,22 @@ def test_종류는_명세의_네_가지를_받는다(type_) -> None:
     assert [c.type for c in screen(_out(_item(type_=type_)))] == [type_]
 
 
-def test_정수_신뢰도_1도_받는다() -> None:
-    assert screen(_out(_item(confidence=1))) == [
-        Candidate("mood", "잔잔한 소설을 찾음", 1.0)
-    ]
-
-
 def test_모르는_칸이_더_있어도_후보는_받는다() -> None:
-    # LLM 이 근거 문장 같은 칸을 덧붙여도 세 칸만 쓴다
+    # LLM 이 근거 문장 같은 칸을 덧붙여도 쓰는 칸만 쓴다
     kept = screen(_out(_item(reason="사용자가 두 번 말함")))
 
-    assert kept == [Candidate("mood", "잔잔한 소설을 찾음", 0.8)]
+    assert kept == [_c()]
 
 
-def test_문장의_앞뒤_공백과_줄바꿈은_정리한다() -> None:
+def test_문장과_핵심어의_앞뒤_공백과_줄바꿈은_정리한다() -> None:
     # 취향 카드에 그대로 보이는 글이라 한 줄로 만든다
-    kept = screen(_out(_item(value="  잔잔한\n소설을   찾음 ")))
+    kept = screen(
+        _out(_item(value="  잔잔한\n소설을   찾음 ", keyword=" 잔잔한\n 소설 "))
+    )
 
-    assert [c.value for c in kept] == ["잔잔한 소설을 찾음"]
+    assert [(c.value, c.keyword) for c in kept] == [
+        ("잔잔한 소설을 찾음", "잔잔한 소설")
+    ]
 
 
 # --- LLM 의 답 전체가 깨진 경우 ---
@@ -81,39 +95,57 @@ def test_답의_모양이_아니면_뽑은_것이_없다(llm_output) -> None:
 # --- 항목 하나가 깨진 경우 ---
 
 
+def _without(key: str) -> dict:
+    item = _item()
+    del item[key]
+    return item
+
+
 @pytest.mark.parametrize(
     "bad",
     [
         pytest.param("잔잔한 소설", id="항목이_글자"),
         pytest.param(None, id="항목이_null"),
-        pytest.param({"value": "잔잔한 소설", "confidence": 0.8}, id="종류_없음"),
+        pytest.param(_without("type"), id="종류_없음"),
         pytest.param(_item(type_="genre"), id="모르는_종류"),
         pytest.param(_item(type_="Mood"), id="대문자_종류"),
         pytest.param(_item(type_=1), id="숫자_종류"),
-        pytest.param({"type": "mood", "confidence": 0.8}, id="문장_없음"),
+        pytest.param(_without("value"), id="문장_없음"),
         pytest.param(_item(value=""), id="빈_문장"),
         pytest.param(_item(value="  \n "), id="공백뿐인_문장"),
         pytest.param(_item(value=["잔잔한 소설"]), id="문장이_목록"),
         pytest.param(_item(value="가" * (MAX_VALUE_CHARS + 1)), id="문장이_너무_김"),
         pytest.param(_item(value="잔잔한\x00소설"), id="문장에_NUL"),
         pytest.param(_item(value="잔잔한 \ud800"), id="문장에_깨진_글자"),
-        pytest.param({"type": "mood", "value": "잔잔한 소설"}, id="신뢰도_없음"),
-        pytest.param(_item(confidence="0.8"), id="신뢰도가_글자"),
-        pytest.param(_item(confidence=True), id="신뢰도가_참거짓"),
-        pytest.param(_item(confidence=None), id="신뢰도가_null"),
-        pytest.param(_item(confidence=math.nan), id="신뢰도가_NaN"),
-        pytest.param(_item(confidence=math.inf), id="신뢰도가_무한"),
-        pytest.param(_item(confidence=1.01), id="신뢰도가_1_초과"),
-        pytest.param(_item(confidence=80), id="신뢰도가_백분율"),
-        pytest.param(_item(confidence=-0.1), id="신뢰도가_음수"),
+        pytest.param(_without("strength"), id="세기_없음"),
+        pytest.param(_item(strength="1"), id="세기가_글자"),
+        pytest.param(_item(strength=True), id="세기가_참거짓"),
+        pytest.param(_item(strength=None), id="세기가_null"),
+        pytest.param(_item(strength=1.0), id="세기가_소수"),
+        pytest.param(_item(strength=0), id="세기가_0"),
+        pytest.param(_item(strength=4), id="세기가_3_초과"),
+        pytest.param(_item(strength=-4), id="세기가_-3_미만"),
+        pytest.param(_without("keyword"), id="핵심어_없음"),
+        pytest.param(_item(keyword=""), id="빈_핵심어"),
+        pytest.param(_item(keyword="  "), id="공백뿐인_핵심어"),
+        pytest.param(_item(keyword=["잔잔한"]), id="핵심어가_목록"),
+        pytest.param(
+            _item(keyword="가" * (MAX_KEYWORD_CHARS + 1)), id="핵심어가_너무_김"
+        ),
+        pytest.param(_item(keyword="잔잔\x00"), id="핵심어에_NUL"),
     ],
 )
 def test_깨진_항목만_버리고_나머지는_살린다(bad) -> None:
-    good = _item(type_="topic", value="기후 위기를 다룬 책을 찾음", confidence=0.9)
+    good = _item(
+        type_="topic",
+        value="기후 위기를 다룬 책을 찾음",
+        strength=2,
+        keyword="기후 위기",
+    )
 
     kept = screen(_out(bad, good))
 
-    assert kept == [Candidate("topic", "기후 위기를 다룬 책을 찾음", 0.9)]
+    assert kept == [_c("topic", "기후 위기를 다룬 책을 찾음", 2, (), "기후 위기")]
 
 
 def test_문장은_딱_200자까지_받는다() -> None:
@@ -127,70 +159,157 @@ def test_긴_문장은_잘라서_받지_않는다() -> None:
     assert screen(_out(_item(value="가" * (MAX_VALUE_CHARS + 1)))) == []
 
 
-# --- 신뢰도 ---
+def test_핵심어는_딱_100자까지_받는다() -> None:
+    keyword = "가" * MAX_KEYWORD_CHARS
+
+    assert [c.keyword for c in screen(_out(_item(keyword=keyword)))] == [keyword]
 
 
-def test_신뢰도_기준은_명세의_0_5다() -> None:
-    assert MIN_CONFIDENCE == 0.5
+# --- 세기 (#426) ---
 
 
-def test_신뢰도가_기준과_같으면_받고_낮으면_버린다() -> None:
+@pytest.mark.parametrize("strength", [-3, -2, 1, 2, 3])
+def test_세기는_명세의_범위에서_0을_뺀_정수를_받는다(strength) -> None:
+    assert [c.strength for c in screen(_out(_item(strength=strength)))] == [strength]
+
+
+def test_피함의_부탁_세기_마이너스_1은_응답에서_뺀다() -> None:
+    # "이번엔 ○○ 말고"는 싫다는 말이 아니다. 추천을 바꾸지 않는 줄이 화면에 보이면 헷갈린다(#395)
     kept = screen(
         _out(
-            _item(value="딱 기준", confidence=MIN_CONFIDENCE),
-            _item(value="기준 아래", confidence=MIN_CONFIDENCE - 0.01),
+            _item(
+                type_="topic", value="로맨스는 빼고 찾음", strength=-1, keyword="로맨스"
+            ),
+            _item(),
         )
     )
 
-    assert [c.value for c in kept] == ["딱 기준"]
+    assert kept == [_c()]
+
+
+@pytest.mark.parametrize(
+    ("strength", "basis", "expected"),
+    [
+        (3, "requested", 1),  # 부탁만 했으면 1
+        (-2, "requested", None),  # 싫은 쪽을 부탁만 했으면 -1 이라 뺀다
+        (1, "stated", 2),  # 직접 말했으면 2 이상
+        (-1, "stated", -2),
+        (3, "stated", 3),
+        (2, None, 2),  # 말한 방식을 모르면 LLM 이 적은 그대로
+    ],
+)
+def test_세기의_크기는_직접_말했는지에_맞춘다(strength, basis, expected) -> None:
+    kept = screen(_out(_item(strength=strength, basis=basis)))
+
+    assert [c.strength for c in kept] == ([] if expected is None else [expected])
+
+
+# --- 어디에 (#426) ---
+
+
+def _topic(applies_to, keyword="추리 소설") -> dict:
+    return _item(
+        type_="topic",
+        value="추리 소설을 찾음",
+        keyword=keyword,
+        applies_to=applies_to,
+    )
+
+
+def test_어디에는_목록의_이름만_남기고_앞의_세_개까지다() -> None:
+    names = ["추리/스릴러", "없는 이름", "추리/스릴러", "소설", "SF", "판타지"]
+
+    kept = screen(_out(_topic(names)))
+
+    assert [c.applies_to for c in kept] == [("추리/스릴러", "소설", "SF")]
+
+
+def test_어디에는_띄어쓰기와_문장부호가_조금_달라도_목록의_이름으로_바꾼다() -> None:
+    kept = screen(_out(_topic(["추리 / 스릴러", "sf", "만화, 라이트노벨"])))
+
+    assert [c.applies_to for c in kept] == [("추리/스릴러", "SF", "만화·라이트노벨")]
+
+
+@pytest.mark.parametrize(
+    "applies_to",
+    [
+        pytest.param("소설", id="목록이_아님"),
+        pytest.param(None, id="null"),
+        pytest.param([1, None], id="이름이_글자가_아님"),
+        pytest.param(["없는 이름"], id="모두_목록_밖"),
+    ],
+)
+def test_어디에가_틀려도_취향은_남기고_어디에만_비운다(applies_to) -> None:
+    # 이름이 틀려도 취향 자체는 맞을 수 있다. 비면 핵심어로 찾는다(#395)
+    assert [c.applies_to for c in screen(_out(_topic(applies_to)))] == [()]
+
+
+def test_주제가_아니면_어디에를_비운다() -> None:
+    kept = screen(_out(_item(applies_to=["소설"])))
+
+    assert [c.applies_to for c in kept] == [()]
+
+
+def test_제목만_말한_취향은_어디에를_비운다() -> None:
+    # 제목만으로 장르를 짐작하지 않는다(명세 ⑤)
+    kept = screen(_out(_topic(["소설"], keyword="『데미안』")))
+
+    assert [c.applies_to for c in kept] == [()]
+
+
+# --- 핵심어 (#426) ---
+
+
+@pytest.mark.parametrize(
+    "keyword", ["「데미안」", "《데미안》", "〈데미안〉", "<데미안>"]
+)
+def test_다른_괄호로_감싼_제목은_겹낫표로_바꾸고_어디에를_비운다(keyword) -> None:
+    kept = screen(_out(_topic(["소설"], keyword=keyword)))
+
+    assert [(c.keyword, c.applies_to) for c in kept] == [("『데미안』", ())]
+
+
+def test_괄호가_한쪽만_있으면_제목으로_보지_않는다() -> None:
+    kept = screen(_out(_topic(["소설"], keyword="<데미안")))
+
+    assert [(c.keyword, c.applies_to) for c in kept] == [("<데미안", ("소설",))]
 
 
 # --- 한 대화 안의 중복 ---
 
 
-def test_같은_종류_같은_문장은_하나로_합치고_높은_신뢰도를_남긴다() -> None:
+def test_종류와_핵심어가_같으면_하나로_합치고_세기는_크기가_큰_쪽을_남긴다() -> None:
     kept = screen(
         _out(
-            _item(value="잔잔한 소설을 찾음", confidence=0.6),
-            _item(value="잔잔한 소설을 찾음", confidence=0.9),
+            _item(value="잔잔한 소설을 찾음", strength=1),
+            _item(value="잔잔한 소설을 좋아함", strength=2),
         )
     )
 
-    assert kept == [Candidate("mood", "잔잔한 소설을 찾음", 0.9)]
+    # 문장은 먼저 나온 것을 남긴다
+    assert kept == [_c(strength=2)]
 
 
-def test_공백과_대소문자만_다른_문장도_같은_것으로_본다() -> None:
+def test_핵심어의_대소문자와_띄어쓰기만_달라도_같은_것으로_본다() -> None:
     kept = screen(
         _out(
-            _item(type_="topic", value="SF 소설을 좋아함", confidence=0.9),
-            _item(type_="topic", value="sf  소설을 좋아함", confidence=0.7),
+            _item(type_="topic", value="SF 소설을 찾음", keyword="SF 소설"),
+            _item(type_="topic", value="sf 소설을 또 찾음", keyword="sf소설"),
         )
     )
 
-    # 먼저 나온 표기를 남긴다
-    assert kept == [Candidate("topic", "SF 소설을 좋아함", 0.9)]
+    assert [(c.value, c.keyword) for c in kept] == [("SF 소설을 찾음", "SF 소설")]
 
 
-def test_합칠_때_표기는_먼저_나온_것을_쓰고_신뢰도만_높은_값으로_한다() -> None:
+def test_핵심어가_같아도_종류가_다르면_따로_둔다() -> None:
     kept = screen(
         _out(
-            _item(type_="topic", value="SF 소설을 좋아함", confidence=0.6),
-            _item(type_="topic", value="sf 소설을 좋아함", confidence=0.9),
+            _item(type_="topic", value="김초엽", keyword="김초엽"),
+            _item(type_="author", value="김초엽", keyword="김초엽"),
         )
     )
 
-    assert kept == [Candidate("topic", "SF 소설을 좋아함", 0.9)]
-
-
-def test_문장이_같아도_종류가_다르면_따로_둔다() -> None:
-    kept = screen(
-        _out(
-            _item(type_="topic", value="김초엽", confidence=0.7),
-            _item(type_="author", value="김초엽", confidence=0.9),
-        )
-    )
-
-    assert {(c.type, c.value) for c in kept} == {
+    assert {(c.type, c.keyword) for c in kept} == {
         ("topic", "김초엽"),
         ("author", "김초엽"),
     }
@@ -199,56 +318,58 @@ def test_문장이_같아도_종류가_다르면_따로_둔다() -> None:
 # --- 개수 상한과 순서 ---
 
 
-def test_신뢰도가_높은_순으로_나온다() -> None:
+def test_세기의_크기가_큰_순으로_나온다() -> None:
     kept = screen(
         _out(
-            _item(value="가", confidence=0.6),
-            _item(value="나", confidence=0.9),
-            _item(value="다", confidence=0.7),
+            _item(keyword="가", strength=1),
+            _item(keyword="나", strength=-3),
+            _item(keyword="다", strength=2),
         )
     )
 
-    assert [c.value for c in kept] == ["나", "다", "가"]
+    assert [c.keyword for c in kept] == ["나", "다", "가"]
 
 
-def test_신뢰도가_같으면_LLM이_낸_순서를_지킨다() -> None:
-    kept = screen(_out(*[_item(value=v, confidence=0.8) for v in "가나다"]))
+def test_세기의_크기가_같으면_LLM이_낸_순서를_지킨다() -> None:
+    kept = screen(_out(*[_item(keyword=k, strength=2) for k in "가나다"]))
 
-    assert [c.value for c in kept] == ["가", "나", "다"]
+    assert [c.keyword for c in kept] == ["가", "나", "다"]
 
 
-def test_상한을_넘으면_신뢰도가_높은_것만_남긴다() -> None:
+def test_상한을_넘으면_세기의_크기가_큰_것만_남긴다() -> None:
     items = [
-        _item(value=f"취향 {n}", confidence=0.5 + n / 100)
+        _item(keyword=f"취향 {n}", strength=3 if n >= MAX_EXTRACTIONS else 1)
         for n in range(MAX_EXTRACTIONS + 3)
     ]
 
     kept = screen(_out(*items))
 
     assert len(kept) == MAX_EXTRACTIONS
-    assert min(c.confidence for c in kept) > 0.5 + 2 / 100
+    assert [c.strength for c in kept[:3]] == [3, 3, 3]
 
 
 def test_버려진_항목은_상한_자리를_차지하지_않는다() -> None:
-    # 신뢰도가 낮거나 깨진 항목이 앞에 많아도, 맞는 항목이 상한 때문에 밀리지 않는다
-    junk = [_item(value=f"낮음 {n}", confidence=0.1) for n in range(MAX_EXTRACTIONS)]
-    good = [_item(value=f"맞음 {n}", confidence=0.8) for n in range(MAX_EXTRACTIONS)]
+    # 세기가 틀렸거나 피함의 부탁이라 빠진 항목이 앞에 많아도, 맞는 항목이 상한 때문에 밀리지 않는다
+    junk = [_item(keyword=f"빠짐 {n}", strength=-1) for n in range(MAX_EXTRACTIONS)]
+    good = [_item(keyword=f"맞음 {n}") for n in range(MAX_EXTRACTIONS)]
 
     kept = screen(_out(*junk, *good))
 
-    assert [c.value for c in kept] == [f"맞음 {n}" for n in range(MAX_EXTRACTIONS)]
+    assert [c.keyword for c in kept] == [f"맞음 {n}" for n in range(MAX_EXTRACTIONS)]
 
 
 def test_중복은_합친_뒤에_상한을_센다() -> None:
-    same = [_item(value="잔잔한 소설을 찾음", confidence=0.9)] * MAX_EXTRACTIONS
-    other = _item(type_="topic", value="기후 위기를 다룬 책을 찾음", confidence=0.6)
+    same = [_item(strength=2)] * MAX_EXTRACTIONS
+    other = _item(
+        type_="topic", value="기후 위기를 다룬 책을 찾음", keyword="기후 위기"
+    )
 
     kept = screen(_out(*same, other))
 
     assert [c.type for c in kept] == ["mood", "topic"]
 
 
-# --- 글자가 사실상 같은 문장 (#369) ---
+# --- 글자가 사실상 같은 말 (#369) ---
 
 
 @pytest.mark.parametrize(
@@ -275,19 +396,19 @@ def test_대소문자_띄어쓰기_끝의_문장부호만_다르면_같은_글�
     ],
 )
 def test_글자가_다르면_뜻이_가까워도_다른_글자다(a, b) -> None:
-    # 뜻이 같은지는 여기서 보지 않는다. 문장 벡터로도 가를 수 없어 LLM 에게 맡긴다(#369)
+    # 뜻이 같은지는 여기서 보지 않는다(#369)
     assert text_key(a) != text_key(b)
 
 
 def test_한_대화_안의_중복도_띄어쓰기와_끝의_문장부호를_무시하고_합친다() -> None:
     kept = screen(
         _out(
-            _item(value="잔잔한 소설을 찾음", confidence=0.6),
-            _item(value="잔잔한소설을 찾음.", confidence=0.9),
+            _item(keyword="잔잔한 소설", strength=1),
+            _item(keyword="잔잔한소설.", strength=2),
         )
     )
 
-    assert kept == [Candidate("mood", "잔잔한 소설을 찾음", 0.9)]
+    assert [(c.keyword, c.strength) for c in kept] == [("잔잔한 소설", 2)]
 
 
 # --- 근거, 누구의 취향인지, 직접 말했는지 (#378) ---
@@ -301,7 +422,8 @@ def _claim(**over) -> dict:
     item = {
         "type": "mood",
         "value": "잔잔한 소설을 찾음",
-        "confidence": 0.7,
+        "strength": 1,
+        "keyword": "잔잔한",
         "evidence": "잔잔한 소설 추천해줘",
         "owner": "user",
         "basis": "requested",

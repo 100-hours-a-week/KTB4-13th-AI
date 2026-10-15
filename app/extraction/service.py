@@ -88,7 +88,9 @@ async def to_extractions(
         {
             "type": candidate.type,
             "value": candidate.value,
-            "confidence": candidate.confidence,
+            "strength": candidate.strength,
+            "applies_to": list(candidate.applies_to),
+            "keyword": candidate.keyword,
             "vector": vector,
             # 설정값이 아니라 실제로 만든 벡터의 길이다. BE 가 자기 색인의 차원과 대조한다
             "dim": dim,

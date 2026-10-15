@@ -18,14 +18,27 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from app.core import categories
 from app.extraction.rules import (
+    MAX_APPLIES_TO,
+    MAX_KEYWORD_CHARS,
+    MAX_STRENGTH,
     MAX_VALUE_CHARS,
-    MIN_CONFIDENCE,
     PREFERENCE_TYPES,
+    REQUEST_TO_AVOID,
     text_key,
 )
 
-_ITEM_KEYS = {"type", "value", "confidence", "vector", "dim", "source_conversation_id"}
+_ITEM_KEYS = {
+    "type",
+    "value",
+    "strength",
+    "applies_to",
+    "keyword",
+    "vector",
+    "dim",
+    "source_conversation_id",
+}
 
 # 실패 이유. 결과 표와 파일에 이 글자 그대로 남는다.
 ERROR = "error"  # 200 이 아니다(LLM 장애, 시간 초과, 서버 오류)
@@ -115,14 +128,23 @@ def _count_labels(want: dict[str, Any], found: list[dict], counts: Counter) -> N
 def _well_formed(item: Any, conversation_id: str) -> bool:
     if not isinstance(item, dict) or set(item) != _ITEM_KEYS:
         return False
-    value, confidence, vector = item["value"], item["confidence"], item["vector"]
+    value, strength, keyword = item["value"], item["strength"], item["keyword"]
+    names, vector = item["applies_to"], item["vector"]
     return (
         item["type"] in PREFERENCE_TYPES
         and isinstance(value, str)
         and 0 < len(value) <= MAX_VALUE_CHARS
-        and isinstance(confidence, int | float)
-        and not isinstance(confidence, bool)
-        and MIN_CONFIDENCE <= confidence <= 1
+        # 0 과 피함의 부탁(-1)은 응답에 나오지 않는다
+        and bool(_sign(strength))
+        and abs(strength) <= MAX_STRENGTH
+        and strength != REQUEST_TO_AVOID
+        and isinstance(keyword, str)
+        and 0 < len(keyword) <= MAX_KEYWORD_CHARS
+        # 어디에는 주제에만 있고, 서버 안 목록의 이름 3개 이하다
+        and isinstance(names, list)
+        and len(names) <= MAX_APPLIES_TO
+        and all(name in categories.NAME_TEXTS for name in names)
+        and (item["type"] == "topic" or not names)
         and isinstance(vector, list)
         and len(vector) > 0
         and item["dim"] == len(vector)
