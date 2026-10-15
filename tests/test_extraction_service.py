@@ -84,7 +84,7 @@ def test_후보마다_명세의_여덟_칸으로_나온다(embed_calls) -> None:
             "strength": 2,
             "applies_to": [],
             "keyword": "잔잔한",
-            "vector": _vector("잔잔한 소설을 찾음"),
+            "vector": _vector("잔잔한"),
             "dim": _DIM,
             "source_conversation_id": "cv_1",
         }
@@ -118,12 +118,10 @@ def test_벡터는_책_벡터와_견주는_쪽의_용도로_한_번에_만든다
     )
 
     # 용도가 틀리면 임베딩 쪽은 오류 없이 문서용 벡터를 만든다. 그래서 여기서 값을 고정한다
-    assert embed_calls == [
-        (["기후 위기를 다룬 책을 찾음", "잔잔한 소설을 찾음"], "query")
-    ]
+    assert embed_calls == [(["기후 위기", "잔잔한"], "query")]
 
 
-def test_벡터는_자기_문장에_붙는다(embed_calls) -> None:
+def test_벡터는_자기_핵심어로_만들어_자기_취향에_붙는다(embed_calls) -> None:
     result = _run(
         {
             "extractions": [
@@ -149,7 +147,7 @@ def test_벡터는_자기_문장에_붙는다(embed_calls) -> None:
         "김초엽 작가를 좋아함",
         "잔잔한 소설을 찾음",
     ]
-    assert all(item["vector"] == _vector(item["value"]) for item in result)
+    assert all(item["vector"] == _vector(item["keyword"]) for item in result)
 
 
 def test_벡터_길이는_임베딩이_돌려준_값을_쓴다(embed_calls) -> None:
@@ -161,7 +159,7 @@ def test_규칙에_걸린_후보는_벡터를_만들지_않는다(embed_calls) -
     result = _run({"extractions": [_item(), _item(type_="genre", value="버려질 것")]})
 
     assert [item["value"] for item in result] == ["잔잔한 소설을 찾음"]
-    assert embed_calls == [(["잔잔한 소설을 찾음"], "query")]
+    assert embed_calls == [(["잔잔한"], "query")]
 
 
 def test_이미_저장된_취향과_글자가_같아도_다시_낸다(embed_calls) -> None:
@@ -239,7 +237,7 @@ def test_LLM이_뽑은_취향이_벡터와_함께_나온다(monkeypatch, embed_c
             "strength": 2,
             "applies_to": [],
             "keyword": "잔잔한",
-            "vector": _vector("잔잔한 소설을 찾음"),
+            "vector": _vector("잔잔한"),
             "dim": _DIM,
             "source_conversation_id": "cv_1",
         }
@@ -432,3 +430,27 @@ def test_답을_JSON으로_고정하는_설정은_건드리지_않는다(
 ) -> None:
     # json_mode 를 끄면 모델이 JSON 이 아닌 글로 답할 수 있다. ⑤는 기본값(켬)을 쓴다
     assert "json_mode" not in _model_asked(monkeypatch)
+
+
+def test_좋아함과_싫어함은_핵심어가_같으면_벡터도_같고_세기의_부호로_가른다(
+    embed_calls,
+) -> None:
+    # 문장으로 벡터를 만들면 "좋아함"과 "읽지 않음"이 거의 같은 벡터가 되어 가를 수 없다(#399 근거 6)
+    result = _run(
+        {
+            "extractions": [
+                _item(type_="topic", value="추리 소설을 좋아함", keyword="추리 소설"),
+                _item(
+                    type_="mood",
+                    value="추리 소설은 읽지 않음",
+                    strength=-2,
+                    keyword="추리 소설",
+                ),
+            ]
+        }
+    )
+
+    assert [(item["strength"], item["vector"]) for item in result] == [
+        (2, _vector("추리 소설")),
+        (-2, _vector("추리 소설")),
+    ]
