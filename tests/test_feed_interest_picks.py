@@ -233,6 +233,35 @@ def test_작가_이름이_비면_조회하지_않는다() -> None:
     assert conn.sqls == []
 
 
+# --- 키워드 관심사 (#450) ---
+
+
+def _keyword_row(book_id: int, distance: float, mentioned: bool) -> dict:
+    return {**_row(book_id, distance), "mentioned": mentioned}
+
+
+def test_키워드_관심사는_그_말이_든_책을_앞에_두고_나머지는_가까운_순이다() -> None:
+    rows = [
+        _keyword_row(1, 0.10, False),
+        _keyword_row(2, 0.12, True),
+        _keyword_row(3, 0.13, False),
+        _keyword_row(4, 0.16, True),
+    ]
+    conn = _FakeConn(rows=rows)
+
+    picks = asyncio.run(
+        interest_picks.pick_keyword(
+            conn, "키워드:Cat", [1.0, 0.0], limit=4, left=lambda: 1.0
+        )
+    )
+
+    assert [p.book_id for p in picks] == [2, 4, 1, 3]
+    # 핵심어의 이름 벡터라 이름 벡터의 구간으로 편다. 코사인 0.84 는 가운데다
+    assert picks[1].part == pytest.approx(0.5)
+    # 영어는 대소문자를 가리지 않게 소문자로 견준다
+    assert conn.args[0][2] == "cat"
+
+
 # --- 실제 DB ---
 
 
@@ -253,6 +282,7 @@ class _Book:
     title: str = "책"
     author: str = "저자"
     pub_year: int = 2024
+    description: str = "소개"
 
 
 async def _with_books(books: list[_Book], check):
@@ -268,12 +298,13 @@ async def _with_books(books: list[_Book], check):
             await conn.execute(
                 "INSERT INTO v_books (book_id, title, author, publisher, price,"
                 " in_stock, cover_url, category, pub_year, description, isbn13)"
-                " VALUES ($1, $2, $3, '출판사', 10000, true, NULL, $4, $5, '소개', $6)",
+                " VALUES ($1, $2, $3, '출판사', 10000, true, NULL, $4, $5, $6, $7)",
                 book.book_id,
                 book.title,
                 book.author,
                 book.category,
                 book.pub_year,
+                book.description,
                 isbn,
             )
             await conn.execute(
@@ -345,3 +376,26 @@ def test_저자_칸에_이름이_낱말로_든_책만_새_책부터_뽑는다() 
     picks = asyncio.run(_with_books(books, check))
 
     assert [p.book_id for p in picks] == [9100312, 9100313, 9100311]
+
+
+@_needs_db
+def test_키워드는_가까운_책_가운데_제목이나_소개글에_그_말이_든_책을_앞에_둔다() -> (
+    None
+):
+    books = [
+        _Book(9100321, cosine=1.0),
+        _Book(9100322, cosine=0.95, title="쀍뷁 이야기"),
+        _Book(9100323, cosine=0.9, description="쀍뷁이 나오는 소설"),
+    ]
+
+    async def check(conn):
+        # 벡터 색인은 어림이라 실제 책과 동떨어진 테스트 벡터를 놓칠 때가 있다. 조회 글을 보려는 테스트라
+        # 색인을 끄고 거리를 전부 계산한다
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        return await interest_picks.pick_keyword(
+            conn, "키워드:쀍뷁", _unit_like(1.0), limit=3, left=lambda: 5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    assert [p.book_id for p in picks] == [9100322, 9100323, 9100321]

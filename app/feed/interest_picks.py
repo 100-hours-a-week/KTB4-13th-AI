@@ -2,14 +2,16 @@
 
 검색어는 그 관심사의 책 벡터 평균이고, 책이 없으면 이름 벡터다. 뽑은 책 가운데 세부 분류 번호가 이 관심사로
 이어지는 책(AI 책 분류 표)을 앞에 둔다. 말한 "요리"도 594 책부터 나온다.
-작가 관심사는 저자 칸으로 뽑는다(#450). 시간 예산과 대체 자리는 #451 이 맡는다.
+작가 관심사는 저자 칸으로, 키워드 관심사는 핵심어의 이름 벡터로 뽑는다(#450). 시간 예산과 대체 자리는
+#451 이 맡는다.
 """
 
 import json
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 
@@ -81,6 +83,23 @@ LIMIT $2
 # 제목이 30개)
 AUTHOR_READ_FACTOR = 5
 
+# 자리 번호: 핵심어의 이름 벡터($1) → 뽑을 권수($2) → 소문자로 바꾼 핵심어($3). 가까운 책을 뽑은 뒤 제목이나
+# 소개글에 그 말이 있는지 붙인다
+_KEYWORD_SQL = """
+WITH nearest AS (
+    SELECT e.book_id, e.embedding <=> $1::vector AS distance
+    FROM book_embeddings e
+    ORDER BY distance
+    LIMIT $2
+)
+SELECT n.book_id, b.isbn13, b.title, b.author, b.category, n.distance,
+       strpos(lower(b.title), $3) > 0
+           OR strpos(lower(coalesce(b.description, '')), $3) > 0 AS mentioned
+FROM nearest n
+JOIN v_books b USING (book_id)
+ORDER BY n.distance, n.book_id
+"""
+
 
 @dataclass(frozen=True)
 class Pick:
@@ -92,6 +111,17 @@ class Pick:
     author: str | None
     category: str | None
     part: float
+
+
+def _as_pick(row: Mapping[str, Any], part: float) -> Pick:
+    return Pick(
+        book_id=row["book_id"],
+        isbn13=row["isbn13"],
+        title=row["title"],
+        author=row["author"],
+        category=row["category"],
+        part=part,
+    )
 
 
 def classes_of(name: str) -> tuple[str, ...] | None:
@@ -171,13 +201,9 @@ async def pick(
     # 책 벡터가 길이 1 이라 코사인에 검색어의 길이를 곱하면 내적이다. 책 벡터 평균이면 그 책들과의 유사도 평균
     length = math.sqrt(sum(x * x for x in vector))
     return [
-        Pick(
-            book_id=row["book_id"],
-            isbn13=row["isbn13"],
-            title=row["title"],
-            author=row["author"],
-            category=row["category"],
-            part=scoring.interest_similarity_part(
+        _as_pick(
+            row,
+            scoring.interest_similarity_part(
                 (1 - row["distance"]) * length, by_name=by_name
             ),
         )
@@ -217,14 +243,38 @@ async def pick_author(
         if key in seen:
             continue
         seen.add(key)
-        picks.append(
-            Pick(
-                book_id=row["book_id"],
-                isbn13=row["isbn13"],
-                title=row["title"],
-                author=row["author"],
-                category=row["category"],
-                part=part,
-            )
-        )
+        picks.append(_as_pick(row, part))
     return picks[:limit]
+
+
+async def pick_keyword(
+    conn: asyncpg.Connection,
+    name: str,
+    vector: Sequence[float],
+    *,
+    limit: int,
+    left: Callable[[], float],
+) -> list[Pick]:
+    """키워드 관심사(키워드:고양이)의 책 limit 권. 핵심어의 이름 벡터와 가까운 책을 뽑고, 제목이나 소개글에
+    그 말이 든 책을 앞에 둔다.
+
+    #395 의 (안)은 그 말이 든 책을 카탈로그 전체에서도 찾는 것이었다. 소개글에는 색인이 없어 그러면 관심사
+    하나에 1초 넘게 걸려(평가 DB 210만 권), 가까운 책 안에서만 가린다. 한 낱말 키워드는 가까운 200권의
+    90% 넘게 그 말이 들어 있었다(#450). 질의는 left() 초만 기다린다.
+    """
+    keyword = name.removeprefix(interests.KEYWORD).strip().lower()
+    async with conn.transaction():
+        await conn.execute(f"SET LOCAL hnsw.ef_search = {EF_SEARCH}")
+        rows = await conn.fetch(
+            _KEYWORD_SQL,
+            to_vector_literal(list(vector)),
+            limit,
+            keyword,
+            timeout=left(),
+        )
+    return [
+        _as_pick(
+            row, scoring.interest_similarity_part(1 - row["distance"], by_name=True)
+        )
+        for row in sorted(rows, key=lambda row: not row["mentioned"])
+    ]
