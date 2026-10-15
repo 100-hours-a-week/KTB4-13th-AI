@@ -2,11 +2,12 @@
 
 검색어는 그 관심사의 책 벡터 평균이고, 책이 없으면 이름 벡터다. 뽑은 책 가운데 세부 분류 번호가 이 관심사로
 이어지는 책(AI 책 분류 표)을 앞에 둔다. 말한 "요리"도 594 책부터 나온다.
-작가·키워드 관심사는 #450, 시간 예산과 대체 자리는 #451 이 맡는다.
+작가 관심사는 저자 칸으로 뽑는다(#450). 시간 예산과 대체 자리는 #451 이 맡는다.
 """
 
 import json
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -21,6 +22,7 @@ from app.feed.personalized import (
     FILTERED_MAX_SCAN_TUPLES,
     FILTERED_SCAN_MEM_MULTIPLIER,
 )
+from app.profile import interests
 from app.search.vector import EF_SEARCH
 
 # 세부 카테고리 → 속한 카테고리. 어느 카테고리에도 속하지 않는 세부 카테고리는 None 이다
@@ -53,6 +55,31 @@ _EXACT_DISTANCE = "(e.embedding <=> $1::vector) + 0"
 _ESTIMATE_SQL = (
     "EXPLAIN (FORMAT JSON) SELECT 1 FROM v_books b WHERE b.category = ANY($1::text[])"
 )
+
+
+# 저자 칸을 이름 낱말로 가르는 구분. 표기가 "지은이: 한강", "한강 (지은이)", "J.K. 롤링 지음 ;강동혁 옮김"처럼
+# 들쭉날쭉해서(app/routers/chat.py 의 판본 묶기와 같은 사정) 쉼표·쌍반점·콜론·괄호와 공백으로 가른다
+_AUTHOR_SEPARATORS = r"[\s,;:()]+"
+# 자리 번호: 작가 이름($1) → 읽을 권수($2). 글자 조각 색인(<%)으로 후보를 먼저 다 모은 뒤, 이름이 저자 칸의
+# 낱말로 통째로 있는 책만 남긴다. 조각만 보면 "한강"에 한강준·한강수가, "김훈"에 김훈민이 섞인다. 후보를 먼저
+# 모으지 않으면 PostgreSQL 이 출간연도 색인을 따라 한 권씩 견줘, 흔한 조각이 든 이름이 느렸다
+# (평가 DB에서 J.K. 롤링 0.55초 → 0.015초)
+_AUTHOR_SQL = f"""
+WITH candidates AS MATERIALIZED (
+    SELECT b.book_id, b.isbn13, b.title, b.author, b.category, b.pub_year
+    FROM v_books b
+    WHERE $1 <% b.author
+)
+SELECT book_id, isbn13, title, author, category
+FROM candidates
+WHERE strpos(' ' || regexp_replace(author, '{_AUTHOR_SEPARATORS}', ' ', 'g') || ' ',
+             ' ' || $1 || ' ') > 0
+ORDER BY pub_year DESC NULLS LAST, book_id
+LIMIT $2
+"""
+# 판본을 거르기 전에 읽는 배수. 시리즈는 권마다 제목이 같아 판본으로 묶인다(평가 DB에서 J.K. 롤링 259권의
+# 제목이 30개)
+AUTHOR_READ_FACTOR = 5
 
 
 @dataclass(frozen=True)
@@ -156,3 +183,48 @@ async def pick(
         )
         for row in numbered_first(name, rows, lambda row: row["class_no"])
     ]
+
+
+def title_key(title: str | None) -> str:
+    """띄어쓰기와 문장부호만 다른 제목을 같은 것으로 본다. 같은 책의 판본을 가를 때 쓴다."""
+    return "".join(ch for ch in (title or "").casefold() if ch.isalnum())
+
+
+async def pick_author(
+    conn: asyncpg.Connection,
+    name: str,
+    *,
+    limit: int,
+    left: Callable[[], float],
+) -> list[Pick]:
+    """작가 관심사(작가:김영하)의 책 limit 권. 저자 칸에 그 이름이 통째로 든 책을 새 책부터 뽑는다.
+
+    같은 제목의 판본은 하나만 둔다. 유사도 항은 모두 1 이다(작가 이름의 벡터는 책과 맞을 이유가 없음,
+    #395). 질의는 left() 초만 기다린다.
+    """
+    author = " ".join(re.split(_AUTHOR_SEPARATORS, name.removeprefix(interests.AUTHOR)))
+    author = author.strip()
+    if not author:
+        return []
+    rows = await conn.fetch(
+        _AUTHOR_SQL, author, limit * AUTHOR_READ_FACTOR, timeout=left()
+    )
+    part = scoring.interest_similarity_part(None, by_name=False, author_matched=True)
+    seen: set[str] = set()
+    picks: list[Pick] = []
+    for row in rows:
+        key = title_key(row["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        picks.append(
+            Pick(
+                book_id=row["book_id"],
+                isbn13=row["isbn13"],
+                title=row["title"],
+                author=row["author"],
+                category=row["category"],
+                part=part,
+            )
+        )
+    return picks[:limit]
