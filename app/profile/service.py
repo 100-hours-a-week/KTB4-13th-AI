@@ -22,7 +22,7 @@ from app.profile.schemas import USED_LIKED_BOOKS, Memory, Onboarding, ProfileReq
 # 사용자별 잠금. pg_advisory_xact_lock(앞, 뒤) 두 숫자 형태의 앞 숫자로, 다른 곳의 잠금과
 # 번호가 겹치지 않게 API 번호(⑥)를 쓴다. 행 잠금이 아니라 숫자에 거는 잠금이라 첫 호출(프로필 행이
 # 아직 없음)에도 걸리고, 트랜잭션이 끝나면 저절로 풀린다.
-_LOCK_SPACE = 6
+LOCK_SPACE = 6
 
 _EMBEDDINGS_SQL = """
 SELECT book_id, embedding::text AS embedding
@@ -272,7 +272,7 @@ async def rebuild_locked_on(
     """
     async with conn.transaction():
         await conn.execute(
-            "SELECT pg_advisory_xact_lock($1, $2)", _LOCK_SPACE, req.user_id
+            "SELECT pg_advisory_xact_lock($1, $2)", LOCK_SPACE, req.user_id
         )
         cold_start, version = await rebuild_on(conn, req)
     return {
