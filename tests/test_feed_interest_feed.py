@@ -124,6 +124,21 @@ def test_목록_뽑기는_서버_안에서_한_번에_하나만_한다(
     assert peak == 1
 
 
+def test_목록_뽑기의_시간_예산을_넘겨받는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+
+    async def fetch(conn, jobs, *, seconds):
+        seen.append(seconds)
+        return interest_fetch.Fetched({}, ())
+
+    monkeypatch.setattr(interest_fetch, "fetch", fetch)
+
+    asyncio.run(interest_feed.build(None, {"요리": 1.0}, {}, {}, [], [], seconds=9.0))
+    asyncio.run(interest_feed.build(None, {"요리": 1.0}, {}, {}, [], []))
+
+    assert seen == [9.0, interest_fetch.BUDGET_SECONDS]
+
+
 def test_저장하는_모양은_책마다_관심사와_점수_그리고_대신한_관심사다() -> None:
     feed = interest_feed.Feed([Placed(1, "요리", 80)], ("작가:한강",))
 

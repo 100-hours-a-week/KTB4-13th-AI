@@ -107,12 +107,14 @@ async def build(
     *,
     name_vector: Callable[[str], Sequence[float] | None] = labels.name_vector,
     total: int = interest_list.TOTAL_SEATS,
+    seconds: float = interest_fetch.BUDGET_SECONDS,
 ) -> Feed:
     """관심사 점수로 홈 추천 목록을 뽑는다. 서버 안에서 한 번에 하나만 뽑고, 뒤에 온 것은 기다린다.
 
     scores 는 관심사마다 합친 점수, book_vectors 는 관심사마다 책 벡터 평균, keyword_vectors 는 키워드 관심사마다
     핵심어의 이름 벡터(그 취향 기억 줄의 벡터), conditions 는 프로필의 조건 목록이다. owned_book_ids 는 지금
-    목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책. ⑥ 이 읽은 이력의 책).
+    목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책. ⑥ 이 읽은 이력의 책). seconds 는
+    관심사를 뽑는 시간 예산이다(⑥ 3초, 밤에 다시 뽑는 ⑨ 는 더 길게).
     """
     async with _BUILDING:
         return await _build(
@@ -124,6 +126,7 @@ async def build(
             owned_book_ids,
             name_vector,
             total,
+            seconds,
         )
 
 
@@ -136,10 +139,11 @@ async def _build(
     owned_book_ids: Collection[int],
     name_vector: Callable[[str], Sequence[float] | None],
     total: int,
+    seconds: float,
 ) -> Feed:
     seats = interest_list.allocate(scores, total)
     fetched = await interest_fetch.fetch(
-        conn, jobs(seats, book_vectors, keyword_vectors, name_vector)
+        conn, jobs(seats, book_vectors, keyword_vectors, name_vector), seconds=seconds
     )
     negatives = {name for name, score in scores.items() if score < 0}
     picked = sorted({pick.book_id for got in fetched.picks.values() for pick in got})
