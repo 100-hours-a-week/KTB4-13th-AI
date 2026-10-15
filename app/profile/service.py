@@ -207,11 +207,12 @@ async def _save_interests(
         book_scores,
     )
     conditions = interests.conditions(memories)
+    keyword_vectors = _keyword_vectors(memories)
     feed = await interest_feed.build(
         conn,
         interests.combined(table),
         interest_vectors,
-        _keyword_vectors(memories),
+        keyword_vectors,
         conditions,
         owned,
     )
@@ -220,7 +221,8 @@ async def _save_interests(
         _SAVE_INTERESTS_SQL,
         req.user_id,
         json.dumps(table, ensure_ascii=False),
-        json.dumps(interest_vectors, ensure_ascii=False),
+        # 키워드 관심사의 핵심어 벡터도 남긴다. 밤에 목록을 다시 뽑는 ⑨ 는 요청 없이 저장된 것만 쓴다(#456)
+        json.dumps({**interest_vectors, **keyword_vectors}, ensure_ascii=False),
         json.dumps(conditions, ensure_ascii=False),
         json.dumps(await _first_seen(conn, req.user_id, isbns)),
         json.dumps(feed.stored(), ensure_ascii=False),

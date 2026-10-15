@@ -613,7 +613,11 @@ def test_기능_플래그가_켜지면_관심사_점수와_조건과_처음_본_
         # 좋아한 책(무게 2)은 세부 분류 번호 594 로 요리다
         "요리": {"books": 2.0},
     }
-    assert row["interest_vectors"] == {"요리": pytest.approx(_unit(0))}
+    # 책이 있는 관심사는 책 벡터 평균, 키워드 관심사는 핵심어 벡터(밤에 다시 뽑을 때 쓴다, #456)
+    assert row["interest_vectors"] == {
+        "요리": pytest.approx(_unit(0)),
+        "키워드:무협": pytest.approx(_unit(7)),
+    }
     assert row["conditions"] == ["300쪽 이하"]
     # 받은 날(한국 시간 10/12)의 전날
     assert row["book_first_seen"] == {_isbn(9100201): "2026-10-11"}
