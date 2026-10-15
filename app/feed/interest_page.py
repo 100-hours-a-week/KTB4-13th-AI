@@ -18,7 +18,7 @@ from app.feed.cursor import Page
 from app.feed.schemas import FeedRequest
 
 _STORED_SQL = """
-SELECT feed::text AS feed, feed_version, feed_prev::text AS feed_prev
+SELECT feed::text AS feed, feed_version, feed_prev::text AS feed_prev, profile_version
 FROM taste_profile
 WHERE user_id = $1
 """
@@ -53,11 +53,15 @@ _OWNED_SQL = "SELECT title, author FROM v_books WHERE isbn13 = ANY($1::text[])"
 
 @dataclass(frozen=True)
 class Stored:
-    """저장된 목록. books 는 지금 판, prev 는 바로 앞 판이다(책마다 book_id·interest·match_score)."""
+    """저장된 목록. books 는 지금 판, prev 는 바로 앞 판이다(책마다 book_id·interest·match_score).
+
+    profile_version 은 커서에 기록용으로 싣는 프로필 판 번호다.
+    """
 
     books: list[dict[str, Any]]
     version: int
     prev: list[dict[str, Any]] | None
+    profile_version: int | None = None
 
     def at(self, version: int | None) -> tuple[list[dict[str, Any]], int]:
         """커서가 읽던 판. 그새 한 번 다시 뽑혔으면 앞 판이다.
@@ -84,6 +88,7 @@ async def stored(conn: asyncpg.Connection, user_id: int) -> Stored | None:
         books=json.loads(row["feed"])["books"],
         version=row["feed_version"],
         prev=prev["books"] if prev else None,
+        profile_version=row["profile_version"],
     )
 
 

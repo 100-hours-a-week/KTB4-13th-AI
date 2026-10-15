@@ -201,5 +201,6 @@ def test_저장된_목록과_앞_판을_읽고_없으면_None이다() -> None:
 
     saved, missing = asyncio.run(_with_books(check))
 
-    assert saved == interest_page.Stored(_NEW, 3, _OLD)
+    # 커서에 기록용으로 실을 프로필 판 번호도 읽는다(#473)
+    assert saved == interest_page.Stored(_NEW, 3, _OLD, profile_version=1)
     assert missing is None

@@ -120,6 +120,16 @@ async def feed(req: FeedRequest) -> FeedOutcome:
 
     async with db.get_pool().acquire() as conn:
         excluded = await _excluded(conn, req)
+        # 저장된 관심사별 목록은 취향 벡터가 없는 프로필(어린이 분야만 고름 등)에도 있을 수 있어, 개인화를
+        # 끌지 정하기 전에 본다(#473). 지금 방식으로 시작한 스크롤은 지금 방식으로 잇는다. 도중에 목록이
+        # 생겨도 끊지 않는다
+        if get_settings().interest_feed and page.mode in (None, INTEREST):
+            saved = await interest_page.stored(conn, req.user_id)
+            if saved is not None:
+                outcome = await _from_saved(conn, req, page, excluded, saved)
+                if outcome is not None:
+                    return outcome
+
         profile = await _profile(conn, req.user_id)
         if profile is None:
             cursor.check_mode(page, COLD_START)
@@ -129,14 +139,6 @@ async def feed(req: FeedRequest) -> FeedOutcome:
                 return FeedOutcome(items=[])
             items, has_more = await cold_start.fetch(conn, req, page, excluded)
             return _outcome(page, req, items, has_more, COLD_START, None)
-
-        # 지금 방식으로 시작한 스크롤은 지금 방식으로 잇는다. 도중에 목록이 생겨도 끊지 않는다
-        if get_settings().interest_feed and page.mode in (None, INTEREST):
-            saved = await interest_page.stored(conn, req.user_id)
-            if saved is not None:
-                outcome = await _from_saved(conn, req, page, excluded, saved, profile)
-                if outcome is not None:
-                    return outcome
 
         tag_weights = await _tag_weights(conn, req, page, profile)
 
@@ -176,15 +178,16 @@ async def _from_saved(
     page: cursor.Page,
     excluded: exclusion.Exclusion | None,
     saved: interest_page.Stored,
-    profile: _Profile,
 ) -> FeedOutcome | None:
     """저장된 관심사별 목록에서 읽는다(#454, #455). 요청 때 벡터를 조회하지 않는다.
 
     가진 책이 요청에 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다. 더 보기에서 거르고 남은 책이 첫 쪽도
     못 채우면 None 이고, 지금 방식으로 그 자리에서 조회한다(#395 의 (안)). 지금 방식은 벡터 조회에 2초를
-    두고, 넘으면 규칙 점수 목록으로 답한다.
+    두고, 넘으면 규칙 점수 목록으로 답한다. 목록이 비었으면(관심사가 하나도 없음) 첫 쪽에서 None 이다.
     """
     books, version = saved.at(page.feed_version)
+    if not books and page.mode is None:
+        return None
     if excluded is None:
         excluded = exclusion.replicated(req.user_id, page.issued_at)
     items = await interest_page.books(conn, req, books, excluded)
@@ -192,7 +195,7 @@ async def _from_saved(
         return None
     shown, has_more = interest_page.page_of(items, req, page)
     return _outcome(
-        page, req, shown, has_more, INTEREST, profile.version, None, version
+        page, req, shown, has_more, INTEREST, saved.profile_version, None, version
     )
 
 
