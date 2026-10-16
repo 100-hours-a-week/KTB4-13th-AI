@@ -2,13 +2,16 @@
 
 검색어는 그 관심사의 책 벡터 평균이고, 책이 없으면 이름 벡터다. 뽑은 책 가운데 세부 분류 번호가 이 관심사로
 이어지는 책(AI 책 분류 표)을 앞에 둔다. 말한 "요리"도 594 책부터 나온다.
-작가·키워드 관심사는 #450, 시간 예산과 대체 자리는 #451 이 맡는다.
+작가 관심사는 저자 칸으로, 키워드 관심사는 핵심어의 이름 벡터로 뽑는다(#450). 시간 예산과 대체 자리는
+#451 이 맡는다.
 """
 
 import json
 import math
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 
@@ -21,6 +24,7 @@ from app.feed.personalized import (
     FILTERED_MAX_SCAN_TUPLES,
     FILTERED_SCAN_MEM_MULTIPLIER,
 )
+from app.profile import interests
 
 # 관심사 하나를 뽑을 때 벡터 색인을 얼마나 넓게 훑는지. 지금 홈 추천과 ① 검색은 1000 이지만, 목록 하나의
 # 3초 예산은 운영에서 200 으로 잰 시간에 맞춰 정했다(#399). 운영에서 1000 이면 큰 분류 하나가 2.7–7초라 첫
@@ -59,6 +63,61 @@ _ESTIMATE_SQL = (
 )
 
 
+# 저자 칸을 이름 낱말로 가르는 구분. 표기가 "지은이: 한강", "한강 (지은이)", "J.K. 롤링 지음 ;강동혁 옮김"처럼
+# 들쭉날쭉해서(app/routers/chat.py 의 판본 묶기와 같은 사정) 쉼표·쌍반점·콜론·괄호와 공백으로 가른다
+_AUTHOR_SEPARATORS = r"[\s,;:()]+"
+# 자리 번호: 작가 이름($1) → 읽을 권수($2). 글자 조각 색인(<%)으로 후보를 먼저 다 모은 뒤, 이름이 저자 칸의
+# 낱말로 통째로 있는 책만 남긴다. 조각만 보면 "한강"에 한강준·한강수가, "김훈"에 김훈민이 섞인다. 후보를 먼저
+# 모으지 않으면 PostgreSQL 이 출간연도 색인을 따라 한 권씩 견줘, 흔한 조각이 든 이름이 느렸다
+# (평가 DB에서 J.K. 롤링 0.55초 → 0.015초)
+_AUTHOR_SQL = f"""
+WITH candidates AS MATERIALIZED (
+    SELECT b.book_id, b.isbn13, b.title, b.author, b.category, b.pub_year
+    FROM v_books b
+    WHERE $1 <% b.author
+)
+SELECT book_id, isbn13, title, author, category
+FROM candidates
+WHERE strpos(' ' || regexp_replace(author, '{_AUTHOR_SEPARATORS}', ' ', 'g') || ' ',
+             ' ' || $1 || ' ') > 0
+ORDER BY pub_year DESC NULLS LAST, book_id
+LIMIT $2
+"""
+# 판본을 거르기 전에 읽는 배수. 시리즈는 권마다 제목이 같아 판본으로 묶인다(평가 DB에서 J.K. 롤링 259권의
+# 제목이 30개)
+AUTHOR_READ_FACTOR = 5
+
+# 자리 번호: 핵심어의 이름 벡터($1) → 뽑을 권수($2) → 소문자로 바꾼 핵심어($3). 가까운 책을 뽑은 뒤 제목이나
+# 소개글에 그 말이 있는지 붙인다
+_KEYWORD_SQL = """
+WITH nearest AS (
+    SELECT e.book_id, e.embedding <=> $1::vector AS distance
+    FROM book_embeddings e
+    ORDER BY distance
+    LIMIT $2
+)
+SELECT n.book_id, b.isbn13, b.title, b.author, b.category, n.distance,
+       strpos(lower(b.title), $3) > 0
+           OR strpos(lower(coalesce(b.description, '')), $3) > 0 AS mentioned
+FROM nearest n
+JOIN v_books b USING (book_id)
+ORDER BY n.distance, n.book_id
+"""
+
+# 자리 번호: 핵심어의 이름 벡터($1) → 소문자로 바꾼 핵심어($2) → 뽑을 권수($3). 제목에 그 말이 든 책을 글자
+# 조각 색인(<%)으로 찾아 가까운 순으로 뽑는다. 거리 식을 바꿔(+ 0) 벡터 색인을 못 쓰게 한다. 벡터 색인을 따라가며
+# 제목으로 거르면 거의 다 걸러져 몇 권 남지 않는다
+_TITLE_SQL = """
+SELECT e.book_id, b.isbn13, b.title, b.author, b.category,
+       (e.embedding <=> $1::vector) + 0 AS distance
+FROM v_books b
+JOIN book_embeddings e USING (book_id)
+WHERE $2 <% b.title AND strpos(lower(b.title), $2) > 0
+ORDER BY distance, e.book_id
+LIMIT $3
+"""
+
+
 @dataclass(frozen=True)
 class Pick:
     """관심사에서 뽑은 책 한 권. part 는 매칭 점수의 유사도 항(0–1)이다(scoring.py)."""
@@ -69,6 +128,17 @@ class Pick:
     author: str | None
     category: str | None
     part: float
+
+
+def _as_pick(row: Mapping[str, Any], part: float) -> Pick:
+    return Pick(
+        book_id=row["book_id"],
+        isbn13=row["isbn13"],
+        title=row["title"],
+        author=row["author"],
+        category=row["category"],
+        part=part,
+    )
 
 
 def classes_of(name: str) -> tuple[str, ...] | None:
@@ -149,15 +219,104 @@ async def pick(
     # 책 벡터가 길이 1 이라 코사인에 검색어의 길이를 곱하면 내적이다. 책 벡터 평균이면 그 책들과의 유사도 평균
     length = math.sqrt(sum(x * x for x in vector))
     return [
-        Pick(
-            book_id=row["book_id"],
-            isbn13=row["isbn13"],
-            title=row["title"],
-            author=row["author"],
-            category=row["category"],
-            part=scoring.interest_similarity_part(
+        _as_pick(
+            row,
+            scoring.interest_similarity_part(
                 (1 - row["distance"]) * length, by_name=by_name
             ),
         )
         for row in numbered_first(name, rows, lambda row: row["class_no"])
     ]
+
+
+def title_key(title: str | None) -> str:
+    """띄어쓰기와 문장부호만 다른 제목을 같은 것으로 본다. 같은 책의 판본을 가를 때 쓴다."""
+    return "".join(ch for ch in (title or "").casefold() if ch.isalnum())
+
+
+async def pick_author(
+    conn: asyncpg.Connection,
+    name: str,
+    *,
+    limit: int,
+    left: Callable[[], float],
+) -> list[Pick]:
+    """작가 관심사(작가:김영하)의 책 limit 권. 저자 칸에 그 이름이 통째로 든 책을 새 책부터 뽑는다.
+
+    같은 제목의 판본은 하나만 둔다. 유사도 항은 모두 1 이다(작가 이름의 벡터는 책과 맞을 이유가 없음,
+    #395). 질의는 left() 초만 기다린다.
+    """
+    author = " ".join(re.split(_AUTHOR_SEPARATORS, name.removeprefix(interests.AUTHOR)))
+    author = author.strip()
+    if not author:
+        return []
+    rows = await conn.fetch(
+        _AUTHOR_SQL, author, limit * AUTHOR_READ_FACTOR, timeout=left()
+    )
+    part = scoring.interest_similarity_part(None, by_name=False, author_matched=True)
+    seen: set[str] = set()
+    picks: list[Pick] = []
+    for row in rows:
+        key = title_key(row["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        picks.append(_as_pick(row, part))
+    return picks[:limit]
+
+
+async def pick_keyword(
+    conn: asyncpg.Connection,
+    name: str,
+    vector: Sequence[float],
+    *,
+    limit: int,
+    left: Callable[[], float],
+) -> list[Pick]:
+    """키워드 관심사(키워드:고양이)의 책 limit 권. 핵심어의 이름 벡터와 가까운 책을 뽑고, 제목이나 소개글에
+    그 말이 든 책을 앞에 둔다.
+
+    #395 의 (안)은 그 말이 든 책을 카탈로그 전체에서도 찾는 것이었다. 소개글에는 색인이 없어 운영에서 전체를
+    훑으면 40초가 넘어, 가까운 책 안에서만 가린다. 다만 드문 말(체스, 셜록 홈즈)은 가까운 책에 그 말이 든 책이
+    적어서, 그 말이 든 책이 limit 권보다 적으면 제목 색인으로 더 찾는다(#480). 흔한 말은 가까운 책이 이미 모두
+    그 말을 담고 있고, 제목 색인 조회가 오히려 비싸서 찾지 않는다. 질의는 left() 초만 기다린다.
+    """
+    keyword = name.removeprefix(interests.KEYWORD).strip().lower()
+    literal = to_vector_literal(list(vector))
+    async with conn.transaction():
+        # 이 조회는 반복해 훑지 않아 훑는 폭보다 많은 책을 돌려주지 못한다. 뽑을 권수만큼은 훑는다
+        await conn.execute(f"SET LOCAL hnsw.ef_search = {max(PICK_EF_SEARCH, limit)}")
+        rows = await conn.fetch(_KEYWORD_SQL, literal, limit, keyword, timeout=left())
+    mentioned = [row for row in rows if row["mentioned"]]
+    others = [row for row in rows if not row["mentioned"]]
+    if len(mentioned) < limit:
+        seen = {row["book_id"] for row in mentioned}
+        titled = await _titled(conn, literal, keyword, limit, left)
+        mentioned = sorted(
+            [*mentioned, *(row for row in titled if row["book_id"] not in seen)],
+            key=lambda row: (row["distance"], row["book_id"]),
+        )
+    return [
+        _as_pick(
+            row, scoring.interest_similarity_part(1 - row["distance"], by_name=True)
+        )
+        for row in [*mentioned, *others][:limit]
+    ]
+
+
+async def _titled(
+    conn: asyncpg.Connection,
+    literal: str,
+    keyword: str,
+    limit: int,
+    left: Callable[[], float],
+) -> list[asyncpg.Record]:
+    """제목에 그 말이 든 책(가까운 순). 시간 예산을 넘기면 빈 목록이고, 그때는 가까운 책만 쓴다.
+
+    저장점으로 감싸, 시간을 넘긴 조회가 관심사를 뽑는 트랜잭션을 깨지 않게 한다.
+    """
+    try:
+        async with conn.transaction():
+            return await conn.fetch(_TITLE_SQL, literal, keyword, limit, timeout=left())
+    except TimeoutError:
+        return []

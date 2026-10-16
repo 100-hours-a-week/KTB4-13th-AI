@@ -1,12 +1,13 @@
-"""④ 관심사마다 분류 안에서 책 뽑기(app/feed/interest_picks.py) 테스트(#449).
+"""④ 관심사마다 책 뽑기(app/feed/interest_picks.py) 테스트(#449, #450).
 
-마지막 테스트만 실제 PostgreSQL 이 필요하다(SEARCH_TEST_DATABASE_URL).
+"실제 DB" 절의 테스트만 PostgreSQL 이 필요하다(SEARCH_TEST_DATABASE_URL).
 """
 
 import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import asyncpg
 import pytest
@@ -65,20 +66,26 @@ def _row(book_id: int, distance: float, class_no: str | None = None) -> dict:
 
 
 class _FakeConn:
-    """분류 안의 책 수(count)와, 거리를 전부 계산할 때(rows)·벡터 색인으로 뽑을 때(index_rows) 돌려줄 줄."""
+    """분류 안의 책 수(count)와, 거리를 전부 계산할 때(rows)·벡터 색인으로 뽑을 때(index_rows)·제목 색인으로
+    찾을 때(title_rows) 돌려줄 줄. title_timeout 이면 제목 색인 조회가 시간을 넘긴다."""
 
     def __init__(
         self,
         count: int = 0,
         rows: list[dict] | None = None,
         index_rows: list[dict] | None = None,
+        title_rows: list[dict] | None = None,
+        title_timeout: bool = False,
     ) -> None:
         self.count = count
         self.rows = rows or []
         self.index_rows = self.rows if index_rows is None else index_rows
+        self.title_rows = title_rows or []
+        self.title_timeout = title_timeout
         self.estimated = False
         self.ran: list[str] = []
         self.sqls: list[str] = []
+        self.args: list[tuple] = []
         self.settings: list[str] = []
 
     @asynccontextmanager
@@ -95,6 +102,12 @@ class _FakeConn:
 
     async def fetch(self, sql: str, *args, timeout: float):
         self.sqls.append(sql)
+        self.args.append(args)
+        if "<% b.title" in sql:
+            self.ran.append("title")
+            if self.title_timeout:
+                raise TimeoutError
+            return self.title_rows
         if "+ 0" in sql:
             self.ran.append("exact")
             return self.rows
@@ -193,6 +206,141 @@ def test_시간을_다_쓰면_질의를_보내지_않고_실패한다() -> None:
     assert conn.ran == []
 
 
+# --- 작가 관심사 (#450) ---
+
+
+def _author_row(book_id: int, title: str) -> dict:
+    return {
+        "book_id": book_id,
+        "isbn13": None,
+        "title": title,
+        "author": "한강",
+        "category": "한국소설",
+    }
+
+
+def _pick_author(conn: _FakeConn, name: str, limit: int = 3) -> list:
+    return asyncio.run(
+        interest_picks.pick_author(conn, name, limit=limit, left=lambda: 1.0)
+    )
+
+
+def test_작가_관심사는_같은_제목의_판본을_하나만_두고_유사도_항은_1이다() -> None:
+    rows = [
+        _author_row(1, "해리 포터"),
+        _author_row(2, "해리포터"),  # 띄어쓰기만 다른 판본
+        _author_row(3, "다른 책"),
+    ]
+
+    picks = _pick_author(_FakeConn(rows=rows), "작가:한강")
+
+    assert [p.book_id for p in picks] == [1, 3]
+    assert [p.part for p in picks] == [1.0, 1.0]
+
+
+def test_작가_이름으로_찾고_판본을_걸러도_모자라지_않게_넉넉히_읽는다() -> None:
+    conn = _FakeConn()
+
+    _pick_author(conn, "작가:J.K.  롤링", limit=10)
+
+    assert conn.args == [("J.K. 롤링", 10 * interest_picks.AUTHOR_READ_FACTOR)]
+
+
+def test_작가_이름이_비면_조회하지_않는다() -> None:
+    conn = _FakeConn()
+
+    assert _pick_author(conn, "작가: ") == []
+    assert conn.sqls == []
+
+
+# --- 키워드 관심사 (#450) ---
+
+
+def _keyword_row(book_id: int, distance: float, mentioned: bool) -> dict:
+    return {**_row(book_id, distance), "mentioned": mentioned}
+
+
+def test_키워드_관심사는_그_말이_든_책을_앞에_두고_나머지는_가까운_순이다() -> None:
+    rows = [
+        _keyword_row(1, 0.10, False),
+        _keyword_row(2, 0.12, True),
+        _keyword_row(3, 0.13, False),
+        _keyword_row(4, 0.16, True),
+    ]
+    conn = _FakeConn(rows=rows)
+
+    picks = asyncio.run(
+        interest_picks.pick_keyword(
+            conn, "키워드:Cat", [1.0, 0.0], limit=4, left=lambda: 1.0
+        )
+    )
+
+    assert [p.book_id for p in picks] == [2, 4, 1, 3]
+    # 핵심어의 이름 벡터라 이름 벡터의 구간으로 편다. 코사인 0.84 는 가운데다
+    assert picks[1].part == pytest.approx(0.5)
+    # 영어는 대소문자를 가리지 않게 소문자로 견준다
+    assert conn.args[0][2] == "cat"
+
+
+@pytest.mark.parametrize(("limit", "ef"), [(80, 200), (400, 400)])
+def test_키워드는_뽑을_권수만큼은_벡터_색인을_훑는다(limit: int, ef: int) -> None:
+    # 반복해 훑지 않는 조회라 훑는 폭보다 많은 책을 돌려주지 못한다(#478)
+    conn = _FakeConn()
+
+    asyncio.run(
+        interest_picks.pick_keyword(
+            conn, "키워드:고양이", [1.0, 0.0], limit=limit, left=lambda: 1.0
+        )
+    )
+
+    assert conn.settings == [f"SET LOCAL hnsw.ef_search = {ef}"]
+
+
+def _pick_keyword(conn: _FakeConn, limit: int) -> list[interest_picks.Pick]:
+    return asyncio.run(
+        interest_picks.pick_keyword(
+            conn, "키워드:체스", [1.0, 0.0], limit=limit, left=lambda: 1.0
+        )
+    )
+
+
+def test_가까운_책이_모두_그_말을_담고_있으면_제목에서_더_찾지_않는다() -> None:
+    # 흔한 말은 제목 색인 조회가 오히려 비싸다(운영에서 고양이 1.04초, #480)
+    conn = _FakeConn(rows=[_keyword_row(1, 0.10, True), _keyword_row(2, 0.12, True)])
+
+    picks = _pick_keyword(conn, limit=2)
+
+    assert [p.book_id for p in picks] == [1, 2]
+    assert conn.ran == ["index"]
+
+
+def test_그_말이_든_책이_모자라면_제목에서_더_찾아_가까운_순으로_앞에_둔다() -> None:
+    rows = [
+        _keyword_row(1, 0.10, False),
+        _keyword_row(2, 0.12, True),
+        _keyword_row(3, 0.13, False),
+    ]
+    # 제목에서 찾은 책: 2는 이미 뽑았고, 7은 가까운 책 밖에 있었다
+    title_rows = [_row(2, 0.12), _row(7, 0.20)]
+    conn = _FakeConn(rows=rows, title_rows=title_rows)
+
+    picks = _pick_keyword(conn, limit=3)
+
+    assert [p.book_id for p in picks] == [2, 7, 1]
+    assert conn.ran == ["index", "title"]
+    # 핵심어와 소문자로 바꾼 말로, 뽑을 권수만큼 찾는다
+    assert conn.args[1][1:] == ("체스", 3)
+
+
+def test_제목_색인_조회가_시간을_넘기면_가까운_책만_쓴다() -> None:
+    rows = [_keyword_row(1, 0.10, False), _keyword_row(2, 0.12, True)]
+    conn = _FakeConn(rows=rows, title_timeout=True)
+
+    picks = _pick_keyword(conn, limit=2)
+
+    assert [p.book_id for p in picks] == [2, 1]
+
+
 # --- 실제 DB ---
 
 
@@ -204,16 +352,19 @@ def _unit_like(cosine: float) -> list[float]:
     return vector
 
 
-# book_id → (도서관 분류, 세부 분류 번호, 0번 축과의 코사인)
-_BOOKS = {
-    9100301: ("생활과학", "598", 1.0),  # 가장 가깝지만 육아 번호
-    9100302: ("생활과학", "594.5", 0.95),  # 요리 번호
-    9100303: ("오락·스포츠", None, 0.84),  # 번호를 모른다
-    9100304: ("에세이", "594", 1.0),  # 요리 번호지만 요리의 분류가 아니다
-}
+@dataclass(frozen=True)
+class _Book:
+    book_id: int
+    category: str = "생활과학"
+    class_no: str | None = None
+    cosine: float = 0.5  # 0번 축과의 코사인
+    title: str = "책"
+    author: str = "저자"
+    pub_year: int = 2024
+    description: str = "소개"
 
 
-async def _with_books(check):
+async def _with_books(books: list[_Book], check):
     conn = await asyncpg.connect(_DB_URL)
     tx = conn.transaction()
     await tx.start()
@@ -221,25 +372,29 @@ async def _with_books(check):
         await conn.execute(
             "CREATE TEMP TABLE book_classes (isbn13 text PRIMARY KEY, class_no text)"
         )
-        for book_id, (category, class_no, cosine) in _BOOKS.items():
-            isbn = str(9780000000000 + book_id)
+        for book in books:
+            isbn = str(9780000000000 + book.book_id)
             await conn.execute(
                 "INSERT INTO v_books (book_id, title, author, publisher, price,"
                 " in_stock, cover_url, category, pub_year, description, isbn13)"
-                " VALUES ($1, '책', '저자', '출판사', 10000, true, NULL, $2, 2024, '소개', $3)",
-                book_id,
-                category,
+                " VALUES ($1, $2, $3, '출판사', 10000, true, NULL, $4, $5, $6, $7)",
+                book.book_id,
+                book.title,
+                book.author,
+                book.category,
+                book.pub_year,
+                book.description,
                 isbn,
             )
             await conn.execute(
                 "INSERT INTO book_embeddings VALUES ($1, $2::vector, $3, 'test')",
-                book_id,
-                to_vector_literal(_unit_like(cosine)),
+                book.book_id,
+                to_vector_literal(_unit_like(book.cosine)),
                 DIM,
             )
-            if class_no:
+            if book.class_no:
                 await conn.execute(
-                    "INSERT INTO book_classes VALUES ($1, $2)", isbn, class_no
+                    "INSERT INTO book_classes VALUES ($1, $2)", isbn, book.class_no
                 )
         return await check(conn)
     finally:
@@ -247,11 +402,22 @@ async def _with_books(check):
         await conn.close()
 
 
-@pytest.mark.skipif(
+_needs_db = pytest.mark.skipif(
     not _DB_URL,
     reason="실제 PostgreSQL 이 필요하다. SEARCH_TEST_DATABASE_URL 에 주소를 준다",
 )
+
+
+@_needs_db
 def test_분류_안에서_가까운_책을_뽑고_번호가_이어지는_책을_앞에_둔다() -> None:
+    books = [
+        _Book(9100301, class_no="598", cosine=1.0),  # 가장 가깝지만 육아 번호
+        _Book(9100302, class_no="594.5", cosine=0.95),  # 요리 번호
+        _Book(9100303, category="오락·스포츠", cosine=0.84),  # 번호를 모른다
+        # 요리 번호지만 요리의 분류가 아니다
+        _Book(9100304, category="에세이", class_no="594", cosine=1.0),
+    ]
+
     async def check(conn):
         return await interest_picks.pick(
             conn,
@@ -262,9 +428,74 @@ def test_분류_안에서_가까운_책을_뽑고_번호가_이어지는_책을_
             left=lambda: 5.0,
         )
 
-    picks = asyncio.run(_with_books(check))
+    picks = asyncio.run(_with_books(books, check))
 
     # 에세이 책은 더 가까워도 요리의 분류가 아니라 뽑지 않는다
     assert [p.book_id for p in picks] == [9100302, 9100301, 9100303]
     assert [p.part for p in picks] == pytest.approx([1.0, 1.0, 0.5])
     assert picks[0].category == "생활과학"
+
+
+@_needs_db
+def test_저자_칸에_이름이_낱말로_든_책만_새_책부터_뽑는다() -> None:
+    # 실제 카탈로그에 없을 이름을 쓴다
+    books = [
+        _Book(9100311, author="쀍뷁", title="첫 책", pub_year=2020),
+        _Book(9100312, author="지은이: 쀍뷁", title="둘째 책", pub_year=2023),
+        _Book(9100313, author="홍길동, 쀍뷁 (옮긴이)", title="셋째 책", pub_year=2022),
+        _Book(9100314, author="쀍뷁꿻", title="다른 작가", pub_year=2024),
+        _Book(9100315, author="쀍뷁", title="둘째  책!", pub_year=2021),  # 판본
+    ]
+
+    async def check(conn):
+        return await interest_picks.pick_author(
+            conn, "작가:쀍뷁", limit=10, left=lambda: 5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    assert [p.book_id for p in picks] == [9100312, 9100313, 9100311]
+
+
+@_needs_db
+def test_키워드는_가까운_책_가운데_제목이나_소개글에_그_말이_든_책을_앞에_둔다() -> (
+    None
+):
+    books = [
+        _Book(9100321, cosine=1.0),
+        _Book(9100322, cosine=0.95, title="쀍뷁 이야기"),
+        _Book(9100323, cosine=0.9, description="쀍뷁이 나오는 소설"),
+    ]
+
+    async def check(conn):
+        # 벡터 색인은 어림이라 실제 책과 동떨어진 테스트 벡터를 놓칠 때가 있다. 조회 글을 보려는 테스트라
+        # 색인을 끄고 거리를 전부 계산한다
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        return await interest_picks.pick_keyword(
+            conn, "키워드:쀍뷁", _unit_like(1.0), limit=3, left=lambda: 5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    assert [p.book_id for p in picks] == [9100322, 9100323, 9100321]
+
+
+@_needs_db
+def test_키워드는_그_말이_든_책이_모자라면_가까운_책_밖에서도_제목으로_찾는다() -> None:
+    books = [
+        _Book(9100341, cosine=1.0),
+        _Book(9100342, cosine=0.95),
+        # 가까운 두 권 밖이지만 제목에 그 말이 있다
+        _Book(9100343, cosine=0.2, title="쀍뷁 입문"),
+    ]
+
+    async def check(conn):
+        # 위 테스트와 같은 까닭으로 색인을 끄고 거리를 전부 계산한다
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        return await interest_picks.pick_keyword(
+            conn, "키워드:쀍뷁", _unit_like(1.0), limit=2, left=lambda: 5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    assert [p.book_id for p in picks] == [9100343, 9100341]
