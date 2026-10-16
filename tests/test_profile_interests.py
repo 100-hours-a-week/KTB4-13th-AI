@@ -249,7 +249,8 @@ def test_책은_관심사마다_무게를_더하고_무게를_준_벡터_평균�
     scores, vectors = interests.book_scores(books)
 
     assert scores == {"요리": 4.0, "SF": 2.0}
-    assert vectors["요리"] == pytest.approx([3 / 10**0.5, 1 / 10**0.5])
+    # 길이를 1 로 줄이지 않는다. 그래야 책 벡터와의 내적이 그 관심사 책들과의 유사도 평균이다(#448)
+    assert vectors["요리"] == pytest.approx([0.75, 0.25])
     assert vectors["SF"] == pytest.approx([0.0, 1.0])
 
 

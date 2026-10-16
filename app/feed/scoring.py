@@ -4,7 +4,12 @@
 
 숫자는 모두 임시값이다(#109). 시드 사용자로 결과를 보고 정하기 전까지 쓰는 값이고, 바꿀 때는
 여기만 고친다. 세 항을 각각 0–1 로 바꾼 뒤 비중대로 더하고 마지막에 100 을 곱한다.
+
+관심사별 목록(#395)도 같은 틀로 매긴다. 유사도를 펴는 구간은 검색어 종류마다 따로 두고, 카테고리 항
+자리를 그 관심사의 몫이 대신한다.
 """
+
+from collections.abc import Mapping
 
 # 세 항의 비중. 합이 1 이다. 작가 항은 입력원이 없어(온보딩에 작가가 없고 기억은 자유 문장) V1 은 없다.
 SIMILARITY_WEIGHT = 0.6
@@ -17,6 +22,16 @@ POPULARITY_WEIGHT = 0.15
 SIMILARITY_FLOOR = 0.85
 SIMILARITY_CEILING = 0.95
 
+# 관심사별 목록에서 유사도를 펴는 구간. 검색어 종류마다 책과의 유사도가 달라 따로 둔다. 측정은 #448.
+# 관심사 이름의 벡터는 짧은 검색어라 책끼리보다 낮게 나온다(아무 책과 0.78, 뽑힌 위 200권의 가운데 0.86).
+NAME_SIMILARITY_FLOOR = 0.80
+NAME_SIMILARITY_CEILING = 0.88
+# 관심사 책들의 벡터 평균은 평균과의 코사인 대신 그 책들과의 유사도 평균을 편다. 평균과의 코사인은 평균 낸
+# 권수가 많을수록 아무 책과도 높아져(1권 0.81, 10권 0.87) 구간 하나로 펼 수 없다. 유사도 평균은 권수와
+# 상관없이 아무 책과 0.81 이다.
+BOOKS_SIMILARITY_FLOOR = 0.82
+BOOKS_SIMILARITY_CEILING = 0.90
+
 # 카테고리 원점수를 0–1 로 바꿀 때 나누는 값. 온보딩에서 고른 분류(+2)만 있으면 0.5, 거기에 한 권을
 # 사면(+3) 1 이 된다. 원점수는 ⑥ 이 저장한다(#92).
 CATEGORY_SATURATION = 4
@@ -26,12 +41,36 @@ def _clamp(value: float) -> float:
     return min(1.0, max(0.0, value))
 
 
+def _spread(similarity: float, floor: float, ceiling: float) -> float:
+    return _clamp((similarity - floor) / (ceiling - floor))
+
+
 def similarity_part(similarity: float | None) -> float:
     """취향 벡터와 책 벡터의 코사인 유사도를 0–1 로. 벡터가 없으면 0."""
     if similarity is None:
         return 0.0
-    span = SIMILARITY_CEILING - SIMILARITY_FLOOR
-    return _clamp((similarity - SIMILARITY_FLOOR) / span)
+    return _spread(similarity, SIMILARITY_FLOOR, SIMILARITY_CEILING)
+
+
+def interest_similarity_part(
+    similarity: float | None, *, by_name: bool, author_matched: bool = False
+) -> float:
+    """관심사별 목록에서 뽑은 책의 유사도 항(0–1). 책 벡터가 없으면 0.
+
+    similarity 는 그 관심사의 검색어 벡터와 책 벡터의 내적이다. 책 벡터가 길이 1 이라, 검색어가 관심사
+    이름의 벡터(by_name)면 코사인 유사도이고 그 관심사 책들의 벡터 평균이면 그 책들과의 유사도 평균이다
+    (평균은 길이를 줄이지 않고 저장한다, app/profile/interests.py). 한 책이 두 관심사에서 뽑혔으면 이
+    항이 높은 쪽을 쓴다(#395).
+
+    작가 관심사에서 저자 칸이 그 이름과 맞는 책은 1 이다. 작가 이름의 벡터는 책과 맞을 이유가 없어서다.
+    """
+    if author_matched:
+        return 1.0
+    if similarity is None:
+        return 0.0
+    if by_name:
+        return _spread(similarity, NAME_SIMILARITY_FLOOR, NAME_SIMILARITY_CEILING)
+    return _spread(similarity, BOOKS_SIMILARITY_FLOOR, BOOKS_SIMILARITY_CEILING)
 
 
 def category_part(raw_score: float | None) -> float:
@@ -65,4 +104,21 @@ def match_score(
     total += POPULARITY_WEIGHT * popularity_part(popularity, catalog_max)
     if with_similarity:
         total += SIMILARITY_WEIGHT * similarity_part(similarity)
+    return round(total * 100)
+
+
+def share_parts(seats: Mapping[str, int]) -> dict[str, float]:
+    """관심사마다 몫 항(0–1). 몫은 그 관심사가 받은 자리 수이고, 가장 많이 받은 관심사를 1 로 친다(#395)."""
+    most = max(seats.values(), default=0)
+    if most <= 0:
+        return {}
+    return {name: count / most for name, count in seats.items()}
+
+
+def interest_match_score(similarity_part: float, share_part: float) -> int:
+    """관심사별 목록의 매칭 점수(0–100). 유사도 항 60%, 그 관심사의 몫 항 25%.
+
+    인기도 항(15%)은 자리만 두고 아직 더하지 않아, 가장 높은 점수는 85 다(#395).
+    """
+    total = SIMILARITY_WEIGHT * similarity_part + CATEGORY_WEIGHT * share_part
     return round(total * 100)

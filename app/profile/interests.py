@@ -13,7 +13,6 @@
 방향의 줄만 끝에서부터 더한다. 피함의 부탁(-1)은 건너뛴다. 그 대화에서의 부탁이라 싫다는 뜻이 아니다.
 """
 
-import math
 import operator
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -237,10 +236,11 @@ def onboarding_scores(
 def book_scores(
     books: Iterable[tuple[str, float, Sequence[float]]],
 ) -> tuple[dict[str, float], dict[str, list[float]]]:
-    """(관심사, 책의 무게, 책 벡터) 들 → 관심사마다 무게의 합과, 무게를 준 책 벡터 평균(길이 1).
+    """(관심사, 책의 무게, 책 벡터) 들 → 관심사마다 무게의 합과, 무게를 준 책 벡터 평균.
 
     벡터 평균은 그 관심사의 책을 찾는 검색어다. 같은 요리라도 그 사람이 산 결(베이킹인지 비건인지)이
-    남는다(#395).
+    남는다(#395). 평균은 길이 1 로 줄이지 않는다. 책 벡터가 길이 1 이라 평균과 책 벡터의 내적이 그
+    관심사 책들과의 유사도 평균이 되고, 매칭 점수가 이 값을 편다(#448). 책이 흩어져 있을수록 짧다.
     """
     scores: dict[str, float] = {}
     sums: dict[str, list[float]] = {}
@@ -249,11 +249,11 @@ def book_scores(
         acc = sums.setdefault(interest, [0.0] * len(vector))
         for i, x in enumerate(vector):
             acc[i] += weight * x
-    vectors = {}
-    for interest, acc in sums.items():
-        norm = math.sqrt(sum(x * x for x in acc))
-        if norm:
-            vectors[interest] = [x / norm for x in acc]
+    vectors = {
+        interest: [x / scores[interest] for x in acc]
+        for interest, acc in sums.items()
+        if scores[interest] > 0
+    }
     return scores, vectors
 
 
