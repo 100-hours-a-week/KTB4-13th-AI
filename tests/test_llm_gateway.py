@@ -252,6 +252,18 @@ def test_기본값이면_JSON_응답_고정이_실린다(monkeypatch) -> None:
     assert kwargs["model_kwargs"] == {"response_format": {"type": "json_object"}}
 
 
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param({}, None, id="안_주면_보내지_않아_모델_기본값"),
+        pytest.param({"temperature": 0.0}, 0.0, id="⑤처럼_주면_그_값"),
+    ],
+)
+def test_온도는_준_호출부만_정한다(monkeypatch, call: dict, expected) -> None:
+    # ③⑦은 온도를 주지 않는다. ⑤만 낮춘다(#433)
+    assert _chat_openai_kwargs(monkeypatch, **call)["temperature"] == expected
+
+
 def test_json_mode를_끄면_response_format이_안_실린다(monkeypatch) -> None:
     kwargs = _chat_openai_kwargs(monkeypatch, json_mode=False)
 
