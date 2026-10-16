@@ -12,7 +12,7 @@ import asyncpg
 
 from app.core import db, history, isbn
 from app.core.pgvector import to_vector_literal
-from app.profile import compute, labels
+from app.profile import compute, interests, labels
 from app.profile.compute import Profile
 from app.profile.schemas import USED_LIKED_BOOKS, Onboarding, ProfileRequest
 
@@ -124,7 +124,10 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     vectors = await book_vectors(conn, list(weights))
 
     parts = [(vectors[b], w) for b, w in weights.items() if b in vectors]
-    parts += [(m.vector, compute.MEMORY_WEIGHT) for m in req.used_memories()]
+    # 취향 기억은 살아 있는 좋아함 줄만 섞는다. 핵심어 벡터에는 좋고 싫음이 담기지 않아, 싫다고 한 것을
+    # 섞으면 그쪽으로 끌려간다(명세 ⑥, #436)
+    likes = interests.living_likes(req.used_memories())
+    parts += [(m.vector, compute.MEMORY_WEIGHT) for m in likes]
     parts += compute.label_parts(await _label_vectors(req.onboarding))
 
     centroid = compute.centroid(parts)

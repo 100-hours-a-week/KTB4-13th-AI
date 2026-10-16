@@ -5,6 +5,7 @@
 """
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,7 +38,16 @@ DIM = 384
 
 
 def _memory(**overrides) -> dict:
-    memory = {"type": "mood", "value": "잔잔한 소설", "vector": [0.0] * DIM, "dim": DIM}
+    memory = {
+        "type": "mood",
+        "value": "잔잔한 소설을 좋아함",
+        "strength": 2,
+        "applies_to": [],
+        "keyword": "잔잔한",
+        "created_at": "2026-09-04T00:12:30.123456",
+        "vector": [0.0] * DIM,
+        "dim": DIM,
+    }
     memory.update(overrides)
     return memory
 
@@ -373,7 +383,9 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
     vector = ", ".join(["0.0"] * (DIM - 1) + [bad])
     body = (
         '{"user_id": 1, "idempotency_key": "k", "onboarding": {},'
-        f' "memories": [{{"type": "mood", "value": "v", "vector": [{vector}], "dim": {DIM}}}]}}'
+        f' "memories": [{{"type": "mood", "value": "v", "strength": 2, "applies_to": [],'
+        f' "keyword": "v", "created_at": "2026-09-04T00:12:30", "vector": [{vector}],'
+        f' "dim": {DIM}}}]}}'
     )
 
     res = client.post(
@@ -450,3 +462,89 @@ def test_본문이_상한을_넘으면_413이다() -> None:
 
     assert res.status_code == 413
     assert res.json() == {"message": "payload_too_large", "data": None}
+
+
+# ---------------------------------------------------------------------------
+# 취향 기억의 세기·어디에·핵심어·저장한 때(#436, 명세 ⑥)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"strength": 0},
+        {"strength": 4},
+        {"strength": -4},
+        {"strength": "2"},
+        {"strength": True},
+        {"applies_to": ["소설", "SF", "판타지", "무협"]},
+        {"keyword": ""},
+        {"keyword": "   "},
+        {"keyword": "가" * 101},
+        {"created_at": "2026-09-04"},  # 날짜만
+        {"created_at": "어제"},
+        {"created_at": 20260904},
+        {"created_at": None},
+    ],
+)
+def test_취향_기억의_새_칸을_어기면_400이다(overrides: dict) -> None:
+    body = _request(memories=[_memory(**overrides)])
+
+    assert client.post("/preferences/profile", json=body).status_code == 400
+
+
+def test_취향_기억의_새_칸이_빠지면_400이다() -> None:
+    memory = _memory()
+    del memory["created_at"]
+
+    body = _request(memories=[memory])
+
+    assert client.post("/preferences/profile", json=body).status_code == 400
+
+
+def test_어디에의_모르는_이름은_그_이름만_건너뛴다() -> None:
+    body = _request(memories=[_memory(applies_to=["추리/스릴러", "없는 이름"])])
+
+    assert client.post("/preferences/profile", json=body).status_code == 200
+    assert profile.parse_request(body).memories[0].applies_to == ["추리/스릴러"]
+
+
+@pytest.mark.parametrize(
+    ("created_at", "expected"),
+    [
+        ("2026-09-04T00:12:30.123456", "2026-09-04T00:12:30.123456+09:00"),
+        (
+            "2026-09-04T00:12:30",
+            "2026-09-04T00:12:30+09:00",
+        ),  # 소수점 아래는 없어도 된다
+        ("2026-09-03T15:12:30+00:00", "2026-09-03T15:12:30+00:00"),
+    ],
+)
+def test_저장한_때는_시간대가_없으면_한국_시간으로_본다(
+    created_at: str, expected: str
+) -> None:
+    body = _request(memories=[_memory(created_at=created_at)])
+
+    parsed = profile.parse_request(body).memories[0].created_at
+
+    assert parsed.isoformat() == expected
+
+
+def test_어디에가_null이면_빈_목록이다() -> None:
+    body = _request(memories=[_memory(applies_to=None)])
+
+    assert profile.parse_request(body).memories[0].applies_to == []
+
+
+def test_기억이_상한을_넘으면_저장한_때가_최근인_것만_저장한_때_순으로_쓴다() -> None:
+    start = datetime(2026, 9, 1)  # noqa: DTZ001 — BE 처럼 시간대 표시 없이 보낸다
+    memories = [
+        _memory(keyword=f"{n}", created_at=(start + timedelta(seconds=n)).isoformat())
+        for n in reversed(range(USED_MEMORIES + 2))
+    ]
+
+    used = profile.parse_request(_request(memories=memories)).used_memories()
+
+    assert len(used) == USED_MEMORIES
+    assert [m.keyword for m in used[:2]] == ["2", "3"]
+    assert used[-1].keyword == f"{USED_MEMORIES + 1}"
