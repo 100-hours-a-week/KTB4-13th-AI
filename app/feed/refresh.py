@@ -4,6 +4,9 @@
 바뀐 것이 없는 사용자에게는 ⑥ 이 다시 불리지 않아 그 자리가 남는다. 그래서 표시된 목록을 저장해 둔 프로필로
 다시 뽑는다. BE 가 목록 하나를 기다리는 것이 아니라 ⑥ 보다 넉넉한 예산을 준다. 한 밤에 한 목록은 한 번만
 시도하고, 또 넘기면 표시를 남겨 다음 밤에 다시 한다. LLM 과 임베딩을 부르지 않는다.
+
+목록 전체를 다시 뽑지만, 대신 채운 관심사가 줄었을 때만 바꾼다(#482). 밤에 DB 가 느려 ⑥ 때 잘 뽑힌 관심사가
+이번에 시간을 넘기면, 다시 뽑은 목록이 오히려 나빠지기 때문이다.
 """
 
 import json
@@ -46,7 +49,8 @@ SELECT count(*) FROM taste_profile
 WHERE feed_partial AND coalesce(feed->>'retried_on', '') <> $1
 """
 _PROFILE_SQL = """
-SELECT interest_scores::text, interest_vectors::text, conditions::text
+SELECT interest_scores::text, interest_vectors::text, conditions::text,
+       (feed->'substituted')::text AS substituted
 FROM taste_profile WHERE user_id = $1
 """
 # ⑥ 과 같이 판 번호를 올리고 바로 앞 판을 남긴다
@@ -71,7 +75,8 @@ async def refresh(
 ) -> dict[str, int]:
     """대체 자리가 표시된 목록을 CALL_SECONDS 안에서 다시 뽑는다.
 
-    다시 뽑은 목록 수와, 오늘 밤 아직 시도하지 않은 목록 수를 돌려준다(명세 ⑨ refreshed·remaining).
+    다시 뽑아 본 목록 수(나아지지 않아 바꾸지 않은 것도 센다)와, 오늘 밤 아직 시도하지 않은 목록 수를
+    돌려준다(명세 ⑨ refreshed·remaining).
     """
     night = night_of(now or datetime.now(UTC))
     deadline = clock() + CALL_SECONDS
@@ -87,7 +92,12 @@ async def refresh(
 
 
 async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> None:
-    """저장된 프로필로 목록을 다시 뽑아 저장한다. 가진 책은 복제 표의 이력으로 뺀다(요청이 없어서)."""
+    """저장된 프로필로 목록을 다시 뽑아, 대신 채운 관심사가 줄었으면 저장한다.
+
+    대신 채운 관심사가 저장된 목록의 것의 일부일 때만 바꾼다. ⑥ 때 잘 뽑힌 관심사가 이번에 시간을 넘기면 바꾸지
+    않아, 저장된 목록의 잘 뽑힌 자리를 잃지 않는다(#482). 바꾸지 않으면 오늘 밤 시도한 표시만 남아 다음 밤에 다시
+    한다. 가진 책은 복제 표의 이력으로 뺀다(요청이 없어서).
+    """
     async with conn.transaction():
         # ⑥ 과 같은 사용자별 잠금이라 같은 사용자의 ⑥ 과 겹치지 않는다
         await conn.execute(
@@ -105,6 +115,9 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
             set(hist.weights) | hist.disliked_book_ids,
             seconds=LIST_BUDGET_SECONDS,
         )
+        before = set(json.loads(row["substituted"] or "[]"))
+        if not set(feed.substituted) < before:
+            return
         await conn.execute(
             _SAVE_SQL,
             user_id,
