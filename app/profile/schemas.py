@@ -1,9 +1,12 @@
 """⑥ /preferences/profile 의 요청 모양과 검사 규칙."""
 
+from datetime import datetime
 from typing import Annotated, Self
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core import categories
 from app.core.config import get_settings
 from app.core.isbn import Isbn13
 from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
@@ -13,10 +16,13 @@ MAX_READING_TIMES = 5
 MAX_CRITERIA = 3
 MAX_CATEGORIES = 3
 MAX_TAGS = 9
-# 명세 ⑥: 넘어도 400 이 아니라 잘라 쓰는 개수. 좋아한 책은 앞에서부터, 기억은 최근 것부터.
-# 요청에 항목별 시각이 없어 배열 순서로 가린다. 기억은 배열 뒤쪽을 최근으로 본다(이슈 #90).
+# 명세 ⑥: 넘어도 400 이 아니라 잘라 쓰는 개수. 좋아한 책은 앞에서부터, 기억은 저장한 때가 최근인 것부터.
 USED_LIKED_BOOKS = 50
 USED_MEMORIES = 500
+# 명세 ⑥ memories[]: 세기는 -3 이상 3 이하이고 0 이 아니다. 어디에는 3개 이하, 핵심어는 1자 이상 100자 이하
+MAX_STRENGTH = 3
+MAX_APPLIES_TO = 3
+MAX_KEYWORD_CHARS = 100
 # 별점의 위쪽 끝. 가중치는 4.0 이상을 "좋음"으로 친다(app/core/history.py). BE 코드는 10.0 까지
 # 받아서(#307 남은 결정), 10점 만점으로 오면 거의 모든 리뷰가 좋음이 되고 에러가 나지 않는다.
 MAX_RATING = 5.0
@@ -66,8 +72,50 @@ class Onboarding(_Strict):
 class Memory(_Strict):
     type: str
     value: str
+    strength: int = Field(ge=-MAX_STRENGTH, le=MAX_STRENGTH)
+    applies_to: list[str] = Field(max_length=MAX_APPLIES_TO)
+    keyword: str = Field(min_length=1, max_length=MAX_KEYWORD_CHARS)
+    # BE 취향 기억 표의 created_at 그대로(#436). 좋아함과 피함이 겹칠 때 어느 쪽이 나중인지 가린다
+    created_at: datetime
     vector: list[float]
     dim: int
+
+    @field_validator("applies_to", mode="before")
+    @classmethod
+    def _null_is_empty(cls, value: object) -> object:
+        return _null_as_empty(value)
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _seoul_time(cls, value: object) -> object:
+        # 엄격 모드라 글자를 날짜로 바꿔 주지 않아 여기서 읽는다. 날짜·시각 꼴만 받는다(명세 ⑥:
+        # 날짜만 오면 400). BE 는 한국 시간을 시간대 표시 없이 보낸다
+        if not isinstance(value, str) or "T" not in value:
+            raise ValueError("created_at 은 날짜·시각 글자여야 한다")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(get_settings().tz))
+        return parsed
+
+    @field_validator("strength", mode="after")
+    @classmethod
+    def _not_zero(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("strength 는 0 이 아니다")
+        return value
+
+    @field_validator("keyword", mode="after")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("keyword 가 비었다")
+        return value
+
+    @field_validator("applies_to", mode="after")
+    @classmethod
+    def _known_names(cls, value: list[str]) -> list[str]:
+        # 서버가 모르는 이름은 그 이름만 건너뛴다. ⑤의 목록이 바뀌는 사이에 400 을 내지 않으려는 것이다(명세 ⑥)
+        return [name for name in value if name in categories.NAME_TEXTS]
 
     @model_validator(mode="after")
     def _matches_index(self) -> Self:
@@ -125,4 +173,5 @@ class ProfileRequest(_Strict):
         return self.onboarding.liked_isbns[:USED_LIKED_BOOKS]
 
     def used_memories(self) -> list[Memory]:
-        return self.memories[-USED_MEMORIES:]
+        """쓰는 취향 기억. 넘으면 저장한 때가 최근인 것만 쓴다. 저장한 때 순으로 돌려준다(명세 ⑥)."""
+        return sorted(self.memories, key=lambda m: m.created_at)[-USED_MEMORIES:]

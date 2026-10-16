@@ -223,6 +223,36 @@ def test_라벨은_모두_합쳐_기억_한_문장만큼_끌어당긴다(
     assert json.loads(row["tag_weights"])["경제학"] == 1
 
 
+def _memory(keyword: str, strength: int, vector: list[float], day: int) -> dict:
+    return {
+        "type": "topic",
+        "value": f"{keyword}을 다룬 책",
+        "strength": strength,
+        "applies_to": [],
+        "keyword": keyword,
+        "created_at": f"2026-09-{day:02d}T09:00:00",
+        "vector": vector,
+        "dim": DIM,
+    }
+
+
+def test_취향_기억은_살아_있는_좋아함_줄만_취향_벡터에_섞는다() -> None:
+    async def check(conn):
+        memories = [
+            _memory("무협", 2, _unit(7), day=1),
+            _memory("로맨스", 2, _unit(8), day=1),
+            _memory("로맨스", -2, _unit(8), day=2),  # 뒤에 싫다고 했다
+        ]
+        await service.rebuild_on(conn, _request(memories=memories))
+        return await _row(conn)
+
+    centroid = json.loads(_run(check)["centroid"])
+
+    # 핵심어 벡터에는 좋고 싫음이 없어, 싫다고 한 로맨스를 섞으면 그쪽으로 끌려간다(#436)
+    assert centroid[7] > 0
+    assert centroid[8] == 0
+
+
 def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_오른다() -> None:
     async def check(conn):
         first = await service.rebuild_on(conn, _request())
