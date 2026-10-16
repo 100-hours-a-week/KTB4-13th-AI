@@ -107,11 +107,19 @@ class _FakeBuild:
         self.calls: list[dict] = []
 
     async def __call__(
-        self, conn, scores, book_vectors, keyword_vectors, *rest, seconds
+        self,
+        conn,
+        scores,
+        book_vectors,
+        keyword_vectors,
+        *rest,
+        seconds,
+        book_anchors=None,
     ):
         self.calls.append(
             {"book_vectors": book_vectors, "keyword_vectors": keyword_vectors}
         )
+        self.anchors = book_anchors
         return self.feeds.pop(0)
 
 
@@ -242,3 +250,63 @@ def test_다시_뽑을_목록이_없으면_둘_다_0이다(monkeypatch: pytest.M
     result, _ = _run_refresh(monkeypatch, _FakeBuild(), {})
 
     assert result == {"refreshed": 0, "remaining": 0}
+
+
+@_needs_db
+def test_매칭_점수에_쓸_내_책은_저장된_처음_본_날의_책을_다시_갈라_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 요리 번호(594.5)인 책 둘. 9100022 는 그 뒤 2점 이하 리뷰를 달아 뺀다(#483)
+    books = {9_100_021: "9780009100021", 9_100_022: "9780009100022"}
+    build = _FakeBuild(Feed([], ()))
+    monkeypatch.setattr(interest_feed, "build", build)
+
+    async def disliked(conn, user_id, until=None):
+        return history.History(disliked_book_ids={9_100_022})
+
+    monkeypatch.setattr(history, "read", disliked)
+
+    async def go():
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(_MIGRATION.read_text(encoding="utf-8"))
+            await conn.execute(
+                "CREATE TEMP TABLE book_classes (isbn13 text PRIMARY KEY, class_no text)"
+            )
+            for book_id, isbn13 in books.items():
+                await conn.execute(
+                    "INSERT INTO v_books (book_id, title, author, publisher, price,"
+                    " in_stock, cover_url, category, pub_year, description, isbn13)"
+                    " VALUES ($1, '책', '저자', '출판사', 10000, true, NULL, '생활과학',"
+                    " 2024, '소개', $2)",
+                    book_id,
+                    isbn13,
+                )
+                await conn.execute(
+                    "INSERT INTO book_embeddings VALUES ($1, $2::vector, 384, 'test')",
+                    book_id,
+                    "[" + ",".join(["1"] + ["0"] * 383) + "]",
+                )
+                await conn.execute(
+                    "INSERT INTO book_classes VALUES ($1, '594.5')", isbn13
+                )
+            await conn.execute(
+                "INSERT INTO taste_profile (user_id, cold_start, profile_version,"
+                " interest_scores, interest_vectors, conditions, book_first_seen, feed,"
+                " feed_version, feed_partial) VALUES ($1, false, 1, $2::jsonb,"
+                " '{}', '[]', $3::jsonb, $4::jsonb, 1, true)",
+                _A,
+                json.dumps({"요리": {"books": 3.0}}),
+                json.dumps({isbn13: "2026-10-01" for isbn13 in books.values()}),
+                _feed(),
+            )
+            await refresh.refresh(conn, now=_NOW)
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    asyncio.run(go())
+
+    assert build.anchors == {"요리": (9_100_021,)}
