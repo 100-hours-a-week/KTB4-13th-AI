@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.feed import service
+from app.core.config import get_settings
+from app.feed import cursor, exclusion, interest_page, service
 from app.feed.schemas import parse_query
 
 
@@ -460,3 +461,87 @@ def test_벡터를_못_써서_규칙_점수로_갈_때도_같은_조건을_넘�
     )
 
     assert seen[0].params == ([10],)
+
+
+# ---------------------------------------------------------------------------
+# 저장된 관심사별 목록(#454). 기능 플래그가 켜져 있고 목록이 있으면 홈은 그것을 읽는다.
+# ---------------------------------------------------------------------------
+
+_SAVED = interest_page.Stored(
+    [{"book_id": 7, "interest": "요리", "match_score": 80}], 4, None
+)
+
+
+def _surface(surface: str, **params):
+    return parse_query([("user_id", "1"), ("surface", surface), *params.items()])
+
+
+async def _personalized_page(conn, req, page, centroid, tag_weights, excluded=None):
+    return [{"book_id": 9, "match_score": 84}], False
+
+
+def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조회_없이_그_목록을_읽는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
+    monkeypatch.setattr(get_settings(), "interest_feed", True)
+
+    async def _stored(conn, user_id):
+        return _SAVED
+
+    async def _fetch(conn, req, page, books, excluded):
+        assert books == _SAVED.books
+        # 가진 책이 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다
+        assert excluded.template == exclusion.replicated(1, None).template
+        return [{"book_id": 7, "match_score": 80}], True
+
+    async def _no_vectors(*args, **kwargs):
+        raise AssertionError("저장된 목록을 읽을 때는 벡터를 조회하지 않는다")
+
+    outcome = _run(
+        _surface("home"),
+        _PROFILE_ROW,
+        monkeypatch,
+        interest_page__stored=_stored,
+        interest_page__fetch=_fetch,
+        personalized__fetch=_no_vectors,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [7]
+    assert (outcome.cold_start, outcome.degraded) == (False, None)
+    page = cursor.read(_surface("home", cursor=outcome.next_cursor))
+    assert (page.mode, page.feed_version) == (service.INTEREST, 4)
+
+
+@pytest.mark.parametrize(
+    ("surface", "flag", "saved"),
+    [
+        ("recommend_more", True, _SAVED),  # 더 보기는 아직 지금 방식(#455)
+        ("home", False, _SAVED),  # 플래그가 꺼져 있으면 새 칸을 읽지 않는다
+        ("home", True, None),  # 목록을 아직 뽑지 않은 사람
+    ],
+)
+def test_그_밖에는_지금처럼_채점한_목록을_준다(
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+    flag: bool,
+    saved: interest_page.Stored | None,
+) -> None:
+    monkeypatch.setattr(get_settings(), "interest_feed", flag)
+    asked = []
+
+    async def _stored(conn, user_id):
+        asked.append(user_id)
+        return saved
+
+    outcome = _run(
+        _surface(surface),
+        _PROFILE_ROW,
+        monkeypatch,
+        interest_page__stored=_stored,
+        personalized__fetch=_personalized_page,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [9]
+    if not flag:
+        assert asked == []

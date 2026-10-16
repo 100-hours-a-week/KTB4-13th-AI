@@ -14,7 +14,15 @@ from typing import Any
 import asyncpg
 
 from app.core import db, history, isbn
-from app.feed import cold_start, cursor, exclusion, personalized, rule_only
+from app.core.config import get_settings
+from app.feed import (
+    cold_start,
+    cursor,
+    exclusion,
+    interest_page,
+    personalized,
+    rule_only,
+)
 from app.feed.schemas import FeedRequest
 from app.search import vector
 
@@ -24,6 +32,8 @@ logger = logging.getLogger(__name__)
 PERSONALIZED = "personalized"
 COLD_START = "cold-start"
 RULE_ONLY = "rule-only"
+# 저장된 관심사별 목록(#454). 기능 플래그(interest_feed)가 켜져 있고 목록이 있을 때 홈이 읽는다.
+INTEREST = "interest"
 
 _PROFILE_SQL = """
 SELECT centroid::text AS centroid, tag_weights::text AS tag_weights,
@@ -120,6 +130,11 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await cold_start.fetch(conn, req, page, excluded)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
+        if req.surface == "home" and get_settings().interest_feed:
+            saved = await interest_page.stored(conn, req.user_id)
+            if saved is not None:
+                return await _from_saved(conn, req, page, excluded, saved, profile)
+
         tag_weights = await _tag_weights(conn, req, page, profile)
 
         # 앞 페이지와 모드가 같은지는 목록을 만든 뒤에 본다(① 검색과 같은 순서). 먼저 보면
@@ -152,6 +167,28 @@ async def feed(req: FeedRequest) -> FeedOutcome:
     return _outcome(page, req, items, has_more, PERSONALIZED, profile.version)
 
 
+async def _from_saved(
+    conn: asyncpg.Connection,
+    req: FeedRequest,
+    page: cursor.Page,
+    excluded: exclusion.Exclusion | None,
+    saved: interest_page.Stored,
+    profile: _Profile,
+) -> FeedOutcome:
+    """저장된 관심사별 목록에서 읽는다(#454). 요청 때 벡터를 조회하지 않는다.
+
+    가진 책이 요청에 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다.
+    """
+    cursor.check_mode(page, INTEREST)
+    books, version = saved.at(page.feed_version)
+    if excluded is None:
+        excluded = exclusion.replicated(req.user_id, page.issued_at)
+    items, has_more = await interest_page.fetch(conn, req, page, books, excluded)
+    return _outcome(
+        page, req, items, has_more, INTEREST, profile.version, None, version
+    )
+
+
 def _outcome(
     page: cursor.Page,
     req: FeedRequest,
@@ -160,8 +197,13 @@ def _outcome(
     mode: str,
     profile_version: int | None,
     degraded: str | None = None,
+    feed_version: int | None = None,
 ) -> FeedOutcome:
-    next_cursor = cursor.issue(page, req, mode, profile_version) if has_more else None
+    next_cursor = (
+        cursor.issue(page, req, mode, profile_version, feed_version)
+        if has_more
+        else None
+    )
     return FeedOutcome(
         items=items,
         next_cursor=next_cursor,
