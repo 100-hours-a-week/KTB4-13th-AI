@@ -5,12 +5,13 @@
 표시해 두면 밤에 그 목록을 다시 뽑고, 대신한 관심사가 줄었을 때만 바꾼다(⑨, #456, #482).
 """
 
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import asyncpg
 
-from app.feed import interest_picks, personalized
+from app.feed import interest_picks
 from app.feed.interest_picks import Pick
 from app.profile import interests
 
@@ -18,6 +19,22 @@ from app.profile import interests
 BUDGET_SECONDS = 3.0
 # 대신할 책을 읽는 조회 하나에 기다리는 시간. 예산을 다 쓴 뒤에 돌아 예산 밖이다. 색인 앞부분만 읽어 몇 ms 다
 FALLBACK_SECONDS = 0.5
+
+
+def _budget(seconds: float) -> Callable[[], float]:
+    """남은 시간을 돌려주는 함수. 다 썼으면 TimeoutError 로, 조회가 시간을 넘긴 것과 같게 끝낸다.
+
+    지금 홈 추천의 것(personalized.py)과 같다. 챗봇이 그 파일을 쓰므로 고치지 않고 여기 둔다(#420).
+    """
+    deadline = time.monotonic() + seconds
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("관심사를 뽑는 시간이 다 됐다")
+        return remaining
+
+    return left
 
 
 @dataclass(frozen=True)
@@ -54,7 +71,7 @@ async def fetch(
     대신한다. 관심사마다 트랜잭션(바깥이 있으면 저장점)으로 감싸, 시간을 넘긴 조회가 바깥 트랜잭션을 깨지
     않게 한다.
     """
-    left = personalized.budget(seconds)
+    left = _budget(seconds)
     picks: dict[str, list[Pick]] = {}
     substituted: list[str] = []
     for job in jobs:

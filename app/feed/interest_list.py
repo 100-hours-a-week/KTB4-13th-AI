@@ -10,7 +10,7 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 
 from app.core import editions
-from app.feed import scoring
+from app.feed import interest_scoring
 from app.feed.interest_picks import Pick
 from app.profile import interests
 
@@ -211,12 +211,12 @@ def assemble(
         interleave(lists, seats, total),
         lambda item: editions.author_key(chosen[item].author) or None,
     )
-    shares = scoring.share_parts(seats)
+    shares = interest_scoring.share_parts(seats)
     return [
         Placed(
             book_id=chosen[(name, key)].book_id,
             interest=name,
-            match_score=scoring.interest_match_score(best[key], shares[name]),
+            match_score=interest_scoring.match_score(best[key], shares[name]),
         )
         for name, key in placed
     ]
