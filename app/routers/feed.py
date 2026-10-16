@@ -1,4 +1,4 @@
-"""④ 개인화 추천 목록: GET /recommendations/feed
+"""④ 개인화 추천 목록: GET /recommendations/feed, ⑨ 대체 자리 다시 뽑기: POST /recommendations/feed/refresh
 
 명세: docs/wiki/ai/1-model-api/spec.md ④ GET /recommendations/feed
 LLM을 쓰지 않는다. ⑦ agent.act의 "골라 담기"가 이 엔드포인트와 같은 취향
@@ -11,8 +11,9 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.core import categories, responses
-from app.feed import cursor, service
+from app.core import categories, db, responses
+from app.core.config import get_settings
+from app.feed import cursor, refresh, service
 from app.feed.schemas import parse_query
 
 logger = logging.getLogger(__name__)
@@ -54,3 +55,21 @@ async def feed(request: Request) -> JSONResponse:
         },
         headers=headers,
     )
+
+
+@router.post("/feed/refresh")
+async def refresh_feed() -> JSONResponse:
+    """⑨ 대체 자리 다시 뽑기(명세 ⑨, #456). 요청 본문은 없다({} 도 받는다).
+
+    기능 플래그(interest_feed)가 꺼져 있으면 저장된 목록이 없으니 다시 뽑을 것도 없다. 새 칸을 읽지 않는다.
+    """
+    if not get_settings().interest_feed:
+        return responses.success("refresh_success", {"refreshed": 0, "remaining": 0})
+    try:
+        async with db.get_pool().acquire() as conn:
+            data = await refresh.refresh(conn)
+    except Exception:
+        # 명세: 500 이면 BE 는 그날 밤 멈추고 다음 밤에 다시 부른다
+        logger.exception("대체 자리 다시 뽑기 실패")
+        return responses.error(500, "internal_server_error")
+    return responses.success("refresh_success", data)
