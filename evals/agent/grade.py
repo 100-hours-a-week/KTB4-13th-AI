@@ -134,6 +134,9 @@ def _check_reply(case: dict, record: dict) -> list[str]:
     for text in expect.get("forbidden_text", []):
         if text in reply:
             problems.append(f"답에 있으면 안 되는 말: {text}")
+    for text in expect.get("required_text", []):
+        if text not in reply:
+            problems.append(f"답에 있어야 하는 말이 없음: {text}")
     buttons = _data(record).get("buttons", [])
     for wanted in expect.get("buttons_include", []):
         if not any(all(b.get(k) == v for k, v in wanted.items()) for b in buttons):

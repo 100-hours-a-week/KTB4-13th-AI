@@ -952,6 +952,7 @@ def test_같은_네라도_최근_대화가_없으면_담지_않는다(monkeypatc
     assert data["tool_calls"][0]["result"] == {
         "ok": False,
         "error": "REFERENCE_NOT_STATED",
+        "book": "카드 1번",
     }
     assert data["resolved_reference"] is None
     assert fake.cart_state(UID) == {}

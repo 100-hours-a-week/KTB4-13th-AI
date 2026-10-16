@@ -53,7 +53,8 @@ def _passing(case_id: str) -> tuple[dict, dict]:
             {"label": "이동", **button} for button in expect["buttons_include"]
         ]
     numbers = " ".join(f"{n:,}원" for n in expect.get("required_numbers", []))
-    record = _record(case, data=data, reply=numbers)
+    texts = " ".join(expect.get("required_text", []))
+    record = _record(case, data=data, reply=f"{numbers} {texts}".strip())
     if expect["outcome"] == "executed":
         record["cart"] = dict(expect["cart"])
     return case, record
@@ -319,6 +320,21 @@ def test_답에_있으면_안_되는_말이_있으면_실패다() -> None:
     assert grade.grade_case(case, record)["passed"] is False
 
 
+def test_답에_있어야_하는_말이_없으면_실패다() -> None:
+    # 되묻는 답이 맞는 책을 짚었는지 본다(#418)
+    case = copy.deepcopy(CASES["ask-01"])
+    case["expect"]["required_text"] = ["파이썬"]
+
+    missing = grade.grade_case(case, _record(case, reply="어느 책을 담을까요?"))
+    present = grade.grade_case(
+        case, _record(case, reply="카드 1번 《처음 만나는 파이썬》을 담을까요?")
+    )
+
+    assert missing["passed"] is False
+    assert "답에 있어야 하는 말이 없음: 파이썬" in missing["failures"]
+    assert present["passed"] is True
+
+
 def test_있어야_하는_버튼이_없으면_실패다() -> None:
     case, record = _passing("delivery-01")
     record["data"]["buttons"] = []
@@ -354,8 +370,8 @@ def test_모르는_결과_종류는_실패로_드러난다() -> None:
 def test_모든_사례의_기대는_채점기가_아는_종류와_칸만_쓴다() -> None:
     known = {
         "outcome", "cart", "pick", "confirm_isbns", "required_numbers",
-        "forbidden_numbers", "forbidden_text", "cart_total", "buttons_include",
-        "others_unchanged",
+        "forbidden_numbers", "forbidden_text", "required_text", "cart_total",
+        "buttons_include", "others_unchanged",
     }  # fmt: skip
     for case in DATA["cases"]:
         assert set(case["expect"]) <= known, case["id"]
