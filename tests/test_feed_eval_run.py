@@ -326,5 +326,12 @@ def test_기준선은_지금_묶음으로_잰_것이다() -> None:
     assert {kind: row["users"] for kind, row in kinds.items()} == dict(
         Counter(case["kind"] for case in CASES)
     )
-    # 재지 못한 사용자가 있는 기준선은 견줄 기준이 못 된다.
-    assert all(row["measured"] == row["users"] for row in kinds.values())
+    # 재지 못한 사용자가 있는 기준선은 견줄 기준이 못 된다. 개편 뒤의 기대로 고쳐 지금 구조로는 잴 수 없는
+    # 사용자만 이유와 함께 적어 둔다(#422)
+    by_id = {case["id"]: case for case in CASES}
+    unmeasured = Counter(by_id[case_id]["kind"] for case_id in baseline["unmeasured"])
+    assert {
+        kind: row["users"] - row["measured"]
+        for kind, row in kinds.items()
+        if row["users"] != row["measured"]
+    } == dict(unmeasured)

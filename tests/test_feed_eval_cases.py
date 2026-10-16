@@ -154,11 +154,22 @@ def test_사용자는_서버가_받는_요청으로_만들_수_있다(case: dict
     assert len(_books(case)) == len(set(_books(case)))
 
     for memory in user["memories"]:
-        assert set(memory) == {"type", "value"}
-        # 취향 기억은 ⑤가 뽑은 것이다. ⑤가 낼 수 있는 종류와 길이여야 한다.
+        # 취향 기억은 ⑤가 뽑은 것이다. ⑤가 낼 수 있는 종류와 길이여야 한다. 세기·어디에·핵심어·저장한
+        # 때의 범위는 아래 서버의 요청 검사가 본다(#422).
+        assert set(memory) == {
+            "type",
+            "value",
+            "strength",
+            "applies_to",
+            "keyword",
+            "created_at",
+        }
         assert memory["type"] in MEMORY_TYPES
         assert 0 < len(memory["value"]) <= MAX_VALUE_CHARS
         assert memory["value"] == memory["value"].strip()
+    # 묶음의 순서가 말한 순서다. 마지막 말을 따르는 규칙을 잴 때 순서가 어긋나면 다른 것을 잰다.
+    saved = [memory["created_at"] for memory in user["memories"]]
+    assert saved == sorted(saved) and len(saved) == len(set(saved))
 
     # 서버의 요청 검사를 그대로 통과해야 한다. 벡터는 실행기가 붙이므로 여기서는 자리만 채운다.
     dim = get_settings().embedding_dim

@@ -18,7 +18,6 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -36,20 +35,14 @@ EVAL_DB_SUFFIX = "_eval"
 Target = Callable[[dict[str, Any]], Awaitable[Response]]
 Facts = Callable[[set[str]], Awaitable[dict[str, Book]]]
 
-# 받은 책의 정보를 한 번에 읽는다. 세부 분류·독자 대상·쪽수는 적재할 때 남은 원본 표(stg_cat_books)에만 있다.
-# 그 표가 비어 있으면 세 칸이 비고, 그 칸으로 가르는 관심사는 "알 수 없음"이 된다.
+# 받은 책의 정보를 한 번에 읽는다. 세부 분류·독자 대상·쪽수는 서버가 읽는 AI 책 분류 표(book_classes)에서
+# 읽어, 개편 전후를 같은 표로 견준다(#422). 표에 없는 책은 세 칸이 비고, 그 칸으로 가르는 관심사는 "알 수
+# 없음"이 된다. 평가 DB 에 표를 채우는 법은 README 에 있다.
 _FACTS_SQL = """
 SELECT b.isbn13, b.title, b.author, b.category, b.pub_year, b.price, b.description,
-       s.kdc, s.reader, s.pages
+       c.class_no AS kdc, c.reader_code AS reader, c.page_count AS pages
 FROM v_books b
-LEFT JOIN (
-    SELECT data->>'isbn13' AS isbn13,
-           nullif(data->>'d4l_class_no', '') AS kdc,
-           nullif(data->>'reader_code', '') AS reader,
-           nullif(data->>'page_count', '')::int AS pages
-    FROM stg_cat_books
-    WHERE data->>'isbn13' = ANY($1::text[])
-) s USING (isbn13)
+LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
 WHERE b.isbn13 = ANY($1::text[])
 """
 
@@ -146,34 +139,17 @@ async def run(
 
 
 # 묶음의 취향 기억에 붙이는 저장한 때의 시작. BE 처럼 시간대 표시 없이 보낸다
-_MEMORY_START = datetime(2026, 9, 1)  # noqa: DTZ001
-
-
 def memory_request(
     memories: Sequence[Mapping[str, Any]], vectors: Sequence[list[float]], dim: int
 ) -> list[dict[str, Any]]:
-    """묶음의 취향 기억(종류와 문장)을 ⑥ 요청의 모양으로 만든다(#436).
+    """묶음의 취향 기억을 ⑥ 요청의 모양으로 만든다. 세기·어디에·핵심어·저장한 때는 묶음에 적혀 있다(#422).
 
-    묶음에는 아직 세기·어디에·핵심어·저장한 때가 없다(#422 에서 적는다). 그때까지 문장 끝으로 세기를
-    정하고("…않음"은 -2, "…찾음"은 1, 나머지는 2), 어디에는 비우고, 핵심어는 문장을 그대로 쓴다.
-    저장한 때는 묶음의 순서대로 1초씩 늘린다. 벡터는 핵심어(=문장)의 벡터다.
+    벡터는 핵심어의 벡터다. ⑤ 가 핵심어로 벡터를 만든다(#426).
     """
-    out = []
-    for n, (memory, vector) in enumerate(zip(memories, vectors, strict=True)):
-        value = memory["value"]
-        strength = -2 if value.endswith("않음") else 1 if value.endswith("찾음") else 2
-        out.append(
-            {
-                **memory,
-                "strength": strength,
-                "applies_to": [],
-                "keyword": value,
-                "created_at": (_MEMORY_START + timedelta(seconds=n)).isoformat(),
-                "vector": vector,
-                "dim": dim,
-            }
-        )
-    return out
+    return [
+        {**memory, "vector": vector, "dim": dim}
+        for memory, vector in zip(memories, vectors, strict=True)
+    ]
 
 
 def database_name(url: str) -> str:
@@ -328,9 +304,9 @@ async def measure(
                 user = case["user"]
                 memories = []
                 if user["memories"]:
-                    # 취향 기억의 벡터는 ⑤가 붙이는 것과 같은 방법으로 만든다.
+                    # 취향 기억의 벡터는 ⑤가 붙이는 것과 같은 방법으로 만든다(핵심어, #426).
                     vectors, dim, _model = await embedding.embed(
-                        [m["value"] for m in user["memories"]], MEMORY_VECTOR_PURPOSE
+                        [m["keyword"] for m in user["memories"]], MEMORY_VECTOR_PURPOSE
                     )
                     memories = memory_request(user["memories"], vectors, dim)
                 profile = await client.post(
