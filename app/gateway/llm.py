@@ -40,7 +40,10 @@ def last_known_status() -> Literal["ok", "unavailable"]:
 
 
 def get_chat_model(
-    *, json_mode: bool = True, model_id: str | None = None
+    *,
+    json_mode: bool = True,
+    model_id: str | None = None,
+    temperature: float | None = None,
 ) -> BaseChatModel:
     """체인(`프롬프트 | 모델 | 파서`)에 끼울 채팅 모델을 만든다.
 
@@ -53,6 +56,8 @@ def get_chat_model(
         네트워크 호출 전에 ValueError로 거부한다(#345, langchain-openai 1.6.2).
     model_id: 이 호출부만 다른 모델을 쓴다. 없으면 LLM_MODEL_ID. 환경변수를 바꾸면
         ③ 평가의 기준 모델까지 같이 움직이므로 호출부 단위로 고르게 한다.
+    temperature: 이 호출부만 온도를 정한다. 없으면 보내지 않아 모델의 기본값이다(⑤만
+        낮춘다, #433).
     """
     settings = get_settings()
 
@@ -88,6 +93,7 @@ def get_chat_model(
         # timeout 값만으로는 상한을 보장 못 한다. 재시도는 끄고 timeout 하나로
         # 상한을 정확히 맞춘다.
         max_retries=0,
+        temperature=temperature,
         model_kwargs={"response_format": {"type": "json_object"}} if json_mode else {},
         extra_body=extra_body,
     )
