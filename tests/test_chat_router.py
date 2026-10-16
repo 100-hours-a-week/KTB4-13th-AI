@@ -331,7 +331,11 @@ def test_카드_프롬프트에_match_basis_지시문과_예시가_실린다(
     assert res.status_code == 200
     prompt = sent[0]
     assert "match_basis는 reason_short" in prompt
-    assert '"match_basis": [{"label": "분위기", "detail": "잔잔함"}]' in prompt
+    # 형식 예시는 낱말이 아니라 자리 표시다. 낱말을 넣으면 모델이 그대로 베낀다(#410).
+    assert (
+        '"match_basis": [{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}]'
+        in prompt
+    )
 
 
 def test_LLM이_준_match_basis가_카드에_그대로_담긴다(
