@@ -4,8 +4,15 @@ LLM 의 답은 믿을 수 있는 입력이 아니다. 종류를 지어내거나,
 내거나, 수십 개를 낼 수 있다. 응답에 나가는 것은 여기를 통과한 후보뿐이게 해서, 프롬프트가 바뀌어도
 명세 ⑤의 모양이 지켜지게 한다. 틀린 항목은 그 항목만 버린다.
 
-이미 저장된 취향과 겹치는지는 글자가 사실상 같은 것만 여기서 뺀다. 뜻이 같은지는 문장 벡터로
-가를 수 없어서(같은 취향 0.91–0.97, 다른 취향 0.88–0.95 로 범위가 겹친다) LLM 에게 맡긴다(#369).
+세기·어디에·핵심어(#426)도 여기서 본다. 범위 밖의 세기는 버리고, 피함의 부탁(-1)은 응답에서 뺀다.
+어디에는 서버 안 목록(app/core/categories.py)에 있는 이름만 남긴다.
+
+조건(#427)은 쪽수·가격·출간연도만 받는다. 핵심어를 정해진 꼴로 읽어 맞추고, 읽히지 않으면 버린다.
+번역서·전자책·오디오북처럼 책 정보로 가를 수 없는 조건이 여기서 걸린다. 늘 지킨다고 직접 말한 것(세기
+2 이상)만 남긴다. 부탁할 때만 붙인 조건("만 원 이하로 보여줘")은 프로필에 쓰지 않아서다.
+
+한 대화에서 종류와 핵심어가 같은 취향은 하나로 합친다. 이미 저장된 취향과는 견주지 않는다. 같은 취향을
+다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425).
 """
 
 import re
@@ -13,16 +20,41 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from app.core import categories
 from app.core.validation import sanitize_string
-from app.extraction.schemas import ExistingPreference
 
 # 명세 ⑤ 의 extractions[].type
 PREFERENCE_TYPES = frozenset({"mood", "topic", "author", "condition"})
 # 명세 ⑤: value 는 200자 이하(#299). 넘으면 자르지 않고 버린다 — 잘린 문장이 취향 카드로 보이면
 # 뜻이 달라진다.
 MAX_VALUE_CHARS = 200
-# 명세 ⑤: 신뢰도가 이보다 낮으면 버린다.
-MIN_CONFIDENCE = 0.5
+# 명세 ⑤: 세기는 -3 이상 3 이하이고 0 은 없다. 크기는 부탁만 했으면 1, 직접 말했으면 2, 강하게 말했으면 3
+MAX_STRENGTH = 3
+# 싫은 쪽을 부탁하기만 한 것("이번엔 ○○ 말고")의 세기. 응답에서 뺀다. 추천을 바꾸지 않는 줄이 마이페이지에
+# 보이면 헷갈린다(#395)
+REQUEST_TO_AVOID = -1
+# 명세 ⑤: 어디에는 3개 이하, 핵심어는 1자 이상 100자 이하
+MAX_APPLIES_TO = 3
+MAX_KEYWORD_CHARS = 100
+# 핵심어를 감싼 제목 괄호. 『』가 아니면 『』로 바꾼다. 제목만 말한 취향은 핵심어를 『』로 감싼다(명세 ⑤)
+_TITLE_BRACKETS = {"「": "」", "《": "》", "〈": "〉", "<": ">"}
+# 조건은 늘 지킨다고 직접 말한 것(세기 2 이상)만 남긴다(#427)
+MIN_CONDITION_STRENGTH = 2
+# 이번만 쓰는 부탁이라고 밝힌 말. 조건을 말한 사용자의 그 말에 있으면 조건을 뺀다(#427). 지시문으로만
+# 막으면 "이번 주는 200쪽 안쪽으로만"을 조건으로 뽑는 일이 잦았다
+_ONE_TIME = re.compile(r"이번|오늘|당분간")
+# 조건의 핵심어. 쪽수("300쪽 이하"), 가격("1만 원 이하", "15,000원 이하"), 출간연도("2024년 이후")
+_PAGES = re.compile(
+    r"(\d{1,5})\s*(?:쪽|페이지|p)\s*(이하|이상|미만|초과)", re.IGNORECASE
+)
+_PRICE_MAN = re.compile(
+    r"(\d{1,3}(?:\.\d)?)\s*만\s*(?:(\d)\s*천\s*)?원\s*(이하|이상|미만|초과)"
+)
+_PRICE_WON = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{3,7})\s*원\s*(이하|이상|미만|초과)")
+_YEAR = re.compile(r"((?:19|20)\d{2})\s*년\s*(?:도\s*)?(이후|이전|부터|까지)")
+# "미만"·"초과"도 받아 "이하"·"이상"으로 적는다. 쪽수·가격에서 하나 차이는 가를 일이 없다
+_BOUND = {"이하": "이하", "미만": "이하", "이상": "이상", "초과": "이상"}
+_SINCE = {"이후": "이후", "부터": "이후", "이전": "이전", "까지": "이전"}
 # LLM 이 취향마다 같이 적는 세 칸(#378). 프롬프트로 "하지 마라"고만 하면 지키지 않아서, LLM 에게는
 # 가려서 적게만 하고 버리는 것은 코드가 한다.
 OWNER_USER = "user"  # owner: 사용자 본인의 취향이다. 남의 취향("other")은 버린다
@@ -33,6 +65,11 @@ BASIS_REQUESTED = "requested"  # basis: 찾거나 추천을 부탁하기만 했�
 MIN_EVIDENCE_CHARS = 4
 # 좋아한다고 쓴 문장. "기분이 좋아지는"은 해당하지 않는다.
 _SAYS_LIKE = re.compile(r"좋아(함|하|해)")
+# 세기를 높이는 말. 직접 말한 취향의 근거에 있으면 세기의 크기가 3 이다(평가 묶음의 기준과 같다).
+# LLM 이 2 로 적는 일이 잦아 코드가 본다. "팬데믹"의 "팬"은 해당하지 않는다.
+_INTENSIFIER = re.compile(
+    r"진짜|정말|완전|너무|절대|무조건|광팬|(?<![가-힣])팬(?:이|$|\s)"
+)
 
 # 문장 끝에서 무시하는 문장부호. 글자 속의 기호는 건드리지 않는다 — "C#"과 "C", "3.5"와 "35"는 다르다.
 _TRAILING_PUNCTUATION = ".!?~…。"
@@ -47,7 +84,9 @@ class Candidate:
 
     type: str
     value: str
-    confidence: float
+    strength: int
+    applies_to: tuple[str, ...]
+    keyword: str
 
 
 def text_key(value: str) -> str:
@@ -58,39 +97,30 @@ def text_key(value: str) -> str:
     return "".join(value.casefold().split()).rstrip(_TRAILING_PUNCTUATION)
 
 
-def same_as_existing(
-    candidate: Candidate, existing: Sequence[ExistingPreference]
-) -> int | None:
-    """종류와 글자가 같은 이미 저장된 취향의 위치(0부터). 없으면 None.
-
-    지금은 빼는 데만 쓴다. 위치를 돌려주는 것은, 같은 취향이 다시 나왔다는 것을 나중에 BE 에 알려
-    그 취향을 무겁게 세는 데 쓰려는 것이다(#365).
-    """
-    key = text_key(candidate.value)
-    for index, saved in enumerate(existing):
-        if saved.type == candidate.type and text_key(saved.value) == key:
-            return index
-    return None
-
-
 def _letters(text: str) -> str:
     """글자와 숫자만 남긴다. 띄어쓰기, 문장부호, 대소문자를 보지 않고 견주려는 것이다."""
     return "".join(ch for ch in text.casefold() if ch.isalnum())
 
 
-def _quoted_from(evidence: Any, user_turns: Sequence[str]) -> bool:
-    """근거로 든 말이 사용자가 한 말 하나에서 옮긴 것인가.
+# 어디에로 받는 이름. 띄어쓰기와 문장부호가 조금 달라도("추리 / 스릴러") 목록의 이름으로 바꾼다
+_NAMES = {_letters(name): name for name in categories.NAME_TEXTS}
+
+
+def _quoted_turn(evidence: Any, user_turns: Sequence[str]) -> str | None:
+    """근거로 든 말을 옮겨 온 사용자의 말. 옮긴 것이 아니면 None.
 
     글자 그대로일 필요는 없다. 모델은 가운데를 줄여서 옮기므로, 근거의 낱말이 사용자의 말 하나에
     모두 들어 있으면 된다. 챗봇의 말이나 지어낸 말은 낱말이 맞지 않아 걸린다.
     """
     if not isinstance(evidence, str):
-        return False
+        return None
     words = [word for word in map(_letters, evidence.split()) if word]
     if sum(len(word) for word in words) < MIN_EVIDENCE_CHARS:
-        return False
-    said = [_letters(turn) for turn in user_turns]
-    return any(all(word in turn for word in words) for turn in said)
+        return None
+    return next(
+        (turn for turn in user_turns if all(w in _letters(turn) for w in words)),
+        None,
+    )
 
 
 def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
@@ -100,17 +130,21 @@ def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
     - basis: 직접 말했는지 부탁했는지를 적지 않았다
     - evidence: 근거로 든 말이 사용자가 한 말에서 옮긴 것이 아니다(챗봇이 한 말이거나 지어낸 말이다)
     - unsaid_like: 찾기만 했는데 좋아한다고 썼다
+    - one_time: 조건을 말한 사용자의 말이 이번만 쓰는 부탁이라고 밝혔다
     """
     if item.get("owner") != OWNER_USER:
         return "owner"
     basis = item.get("basis")
     if basis not in (BASIS_STATED, BASIS_REQUESTED):
         return "basis"
-    if not _quoted_from(item.get("evidence"), user_turns):
+    turn = _quoted_turn(item.get("evidence"), user_turns)
+    if turn is None:
         return "evidence"
     value = item.get("value")
     if basis == BASIS_REQUESTED and isinstance(value, str) and _SAYS_LIKE.search(value):
         return "unsaid_like"
+    if item.get("type") == "condition" and _ONE_TIME.search(turn):
+        return "one_time"
     return None
 
 
@@ -128,14 +162,80 @@ def _value(raw: Any) -> str | None:
         return None
 
 
-def _confidence(raw: Any) -> float | None:
-    # bool 은 int 의 하위 타입이라 따로 거른다. 80 처럼 백분율로 온 값은 짐작해서 고치지 않는다.
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
+def _strength(raw: Any, basis: Any, evidence: Any) -> int | None:
+    """세기. 정수가 아니거나 범위 밖이거나 0 이면 None.
+
+    크기는 직접 말했는지(basis)에 맞춘다. 부탁만 했으면 1, 직접 말했으면 2, 직접 말하면서 근거에 세기를
+    높이는 말이 있으면 3 이다. LLM 이 어긋나게 적어도 같은 말에 같은 크기가 나오게 하려는 것이다.
+    """
+    # bool 은 int 의 하위 타입이라 따로 거른다. 2.0 같은 소수는 짐작해서 고치지 않는다
+    if isinstance(raw, bool) or not isinstance(raw, int):
         return None
-    # NaN 과 무한대도 이 범위 비교에서 걸린다(NaN 은 어떤 비교든 거짓이다)
-    if not MIN_CONFIDENCE <= raw <= 1:
+    if raw == 0 or abs(raw) > MAX_STRENGTH:
         return None
-    return float(raw)
+    sign = 1 if raw > 0 else -1
+    if basis == BASIS_REQUESTED:
+        return sign
+    if basis == BASIS_STATED:
+        strong = isinstance(evidence, str) and _INTENSIFIER.search(evidence)
+        return sign * (3 if strong else max(2, abs(raw)))
+    return raw
+
+
+def _keyword(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    keyword = " ".join(raw.split())
+    closing = _TITLE_BRACKETS.get(keyword[:1])
+    if closing and len(keyword) > 2 and keyword.endswith(closing):
+        keyword = f"『{keyword[1:-1].strip()}』"
+    if not keyword or len(keyword) > MAX_KEYWORD_CHARS:
+        return None
+    try:
+        return sanitize_string(keyword)
+    except ValueError:
+        return None
+
+
+def _won(amount: int) -> str:
+    """가격을 읽기 좋게 적는다. 15000 → 1만 5천 원, 9900 → 9,900원."""
+    if amount >= 10000 and amount % 1000 == 0:
+        man, rest = divmod(amount, 10000)
+        return f"{man}만 원" if rest == 0 else f"{man}만 {rest // 1000}천 원"
+    return f"{amount:,}원"
+
+
+def condition_keyword(raw: str) -> str | None:
+    """조건의 핵심어를 정해진 꼴로 맞춘다. 쪽수·가격·출간연도의 꼴이 아니면 None."""
+    text = " ".join(raw.split())
+    if match := _PAGES.fullmatch(text):
+        pages = int(match[1])
+        return f"{pages}쪽 {_BOUND[match[2]]}" if pages else None
+    if match := _PRICE_MAN.fullmatch(text):
+        amount = round(float(match[1]) * 10000) + int(match[2] or 0) * 1000
+        return f"{_won(amount)} {_BOUND[match[3]]}" if amount else None
+    if match := _PRICE_WON.fullmatch(text):
+        amount = int(match[1].replace(",", ""))
+        return f"{_won(amount)} {_BOUND[match[2]]}" if amount else None
+    if match := _YEAR.fullmatch(text):
+        return f"{match[1]}년 {_SINCE[match[2]]}"
+    return None
+
+
+def _is_title(keyword: str) -> bool:
+    """책 제목만 말한 취향의 핵심어인가."""
+    return keyword.startswith("『") and keyword.endswith("』")
+
+
+def _applies_to(raw: Any, type_: str, keyword: str) -> tuple[str, ...]:
+    """어디에. 주제가 아니거나 제목만 말했으면 비운다. 목록에 없는 이름은 빼고 앞의 3개만 남긴다.
+
+    이름이 틀려도 취향 자체는 맞을 수 있어 항목은 버리지 않는다. 비면 그 취향은 핵심어로 찾는다(#395).
+    """
+    if type_ != "topic" or _is_title(keyword) or not isinstance(raw, list):
+        return ()
+    names = [_NAMES.get(_letters(name)) for name in raw if isinstance(name, str)]
+    return tuple(dict.fromkeys(name for name in names if name))[:MAX_APPLIES_TO]
 
 
 def _candidate(item: Any) -> Candidate | None:
@@ -145,21 +245,22 @@ def _candidate(item: Any) -> Candidate | None:
     if not isinstance(type_, str) or type_ not in PREFERENCE_TYPES:
         return None
     value = _value(item.get("value"))
-    confidence = _confidence(item.get("confidence"))
-    if value is None or confidence is None:
+    strength = _strength(item.get("strength"), item.get("basis"), item.get("evidence"))
+    keyword = _keyword(item.get("keyword"))
+    if keyword is not None and type_ == "condition":
+        keyword = condition_keyword(keyword)
+    if value is None or strength is None or keyword is None:
         return None
-    return Candidate(type_, value, confidence)
+    applies_to = _applies_to(item.get("applies_to"), type_, keyword)
+    return Candidate(type_, value, strength, applies_to, keyword)
 
 
-def screen(
-    llm_output: Any,
-    existing: Sequence[ExistingPreference] = (),
-    user_turns: Sequence[str] | None = None,
-) -> list[Candidate]:
-    """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 신뢰도가 높은 순으로 돌려준다.
+def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Candidate]:
+    """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 세기의 크기가 큰 순으로 돌려준다.
 
-    한 대화에서 같은 취향이 두 번 나오면 하나로 합친다. 표기는 먼저 나온 것, 신뢰도는 높은 값이다.
-    이미 저장된 취향(existing)과 종류·글자가 같은 후보는 뺀다. 개수 상한은 그 뒤에 센다.
+    피함의 부탁(세기 -1)과 부탁할 때만 붙인 조건은 뺀다. 한 대화에서 종류와 핵심어가 같은 취향이 두 번
+    나오면 하나로 합친다.
+    문장은 먼저 나온 것, 세기는 크기가 큰 쪽이다. 개수 상한은 합친 뒤에 센다.
     사용자가 한 말(user_turns)을 주면 근거·주인·직접 말했는지도 본다(drop_reason).
     """
     items = llm_output.get("extractions") if isinstance(llm_output, dict) else None
@@ -169,19 +270,22 @@ def screen(
     merged: dict[tuple[str, str], Candidate] = {}
     for item in items:
         candidate = _candidate(item)
-        if candidate is None:
+        if candidate is None or candidate.strength == REQUEST_TO_AVOID:
+            continue
+        if (
+            candidate.type == "condition"
+            and candidate.strength < MIN_CONDITION_STRENGTH
+        ):
             continue
         if user_turns is not None and drop_reason(item, user_turns) is not None:
             continue
-        if same_as_existing(candidate, existing) is not None:
-            continue
-        key = (candidate.type, text_key(candidate.value))
+        key = (candidate.type, text_key(candidate.keyword))
         seen = merged.get(key)
         if seen is None:
             merged[key] = candidate
-        elif candidate.confidence > seen.confidence:
-            merged[key] = replace(seen, confidence=candidate.confidence)
+        elif abs(candidate.strength) > abs(seen.strength):
+            merged[key] = replace(seen, strength=candidate.strength)
 
-    # sorted 는 순서를 지키는 정렬이라 신뢰도가 같으면 LLM 이 낸 순서가 남는다
-    ranked = sorted(merged.values(), key=lambda c: c.confidence, reverse=True)
+    # sorted 는 순서를 지키는 정렬이라 세기의 크기가 같으면 LLM 이 낸 순서가 남는다
+    ranked = sorted(merged.values(), key=lambda c: abs(c.strength), reverse=True)
     return ranked[:MAX_EXTRACTIONS]

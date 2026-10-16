@@ -8,6 +8,8 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 import openai
 from fastapi import APIRouter, Request
@@ -17,7 +19,7 @@ from app.agent import guard, replay
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
-from app.agent.schemas import parse_request
+from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
 from app.core.config import get_settings
 from app.gateway.commerce_provider import (
@@ -68,6 +70,23 @@ def _unavailable() -> JSONResponse:
     )
 
 
+@dataclass(frozen=True)
+class ShopTurn:
+    """⑦ 한 턴의 결과. 오류면 `error`(보낼 응답)이고, 아니면 봉투의 `message`와 `data`다.
+
+    `/agent/act`와 챗봇 입구의 문지기(#413)가 같은 처리를 쓰도록 나눴다. 문지기는 `not_shopping`을 보고
+    ③으로 되돌릴지 정한다.
+    """
+
+    error: JSONResponse | None = None
+    message: str = ""
+    data: dict[str, Any] | None = None
+
+    @property
+    def not_shopping(self) -> bool:
+        return self.data is not None and self.data.get("not_shopping") is True
+
+
 @router.post("/act")
 async def act(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
@@ -84,16 +103,24 @@ async def act(request: Request) -> JSONResponse:
     if req is None:
         return responses.error(400, "invalid_request")
 
+    turn = await shop_turn(req, payload)
+    if turn.error is not None:
+        return turn.error
+    return responses.success(turn.message, turn.data)
+
+
+async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
+    """검사를 마친 요청 하나를 처리한다. `payload`는 멱등 키의 본문 비교에 쓴다."""
     # 같은 요청의 재시도는 다시 처리하지 않고 처음 응답을 돌려준다. 같은 키에 다른 본문이면 409
     key = replay.key_of(req.idempotency_key)
     digest = idempotency.body_hash(payload)
     try:
         stored = await replay.find(key, digest)
     except replay.IdempotencyConflict:
-        return responses.error(409, "idempotency_conflict")
+        return ShopTurn(error=responses.error(409, "idempotency_conflict"))
     if stored is not None:
         logger.info("⑦ 같은 키의 재시도라 저장한 응답을 돌려준다")
-        return responses.success(stored["message"], stored["data"])
+        return ShopTurn(message=stored["message"], data=stored["data"])
 
     try:
         gateway = get_commerce(req.user_id)
@@ -109,23 +136,23 @@ async def act(request: Request) -> JSONResponse:
     except TimeoutError:
         # 끊기 전에 쓰기가 성공했을 수 있다. 같은 키로 다시 오면 "이미 담겨 있어요"로 사실대로 답한다
         logger.warning("⑦ 턴 시간 제한을 넘었다")
-        return responses.error(504, "generation_timeout")
+        return ShopTurn(error=responses.error(504, "generation_timeout"))
     except CommerceNotConfigured:
         # 진짜 BE 장바구니는 11단계에서 연결한다. 그 전에 가짜로 답하지 않는다
         logger.warning("⑦ 장바구니가 연결되지 않았다(COMMERCE_MOCK 꺼짐)")
-        return _unavailable()
+        return ShopTurn(error=_unavailable())
     except GroundingFailed as e:
         logger.warning("⑦ 답변 검사로 답이 남지 않았다 removed=%s", e.removed)
-        return responses.error(422, "grounding_failed")
+        return ShopTurn(error=responses.error(422, "grounding_failed"))
     except LLMUnavailableError as e:
         if _is_timeout(e):
-            return responses.error(504, "generation_timeout")
-        return _unavailable()
+            return ShopTurn(error=responses.error(504, "generation_timeout"))
+        return ShopTurn(error=_unavailable())
     except Exception as e:  # noqa: BLE001 - 예외 메시지에 대화 원문이 들어갈 수 있어 종류만 남긴다
         # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다. 예외 메시지에
         # 검증 실패한 입력(대화 원문)이 들어갈 수 있어서 종류만 남긴다.
         logger.error("⑦ 처리 실패(%s)", type(e).__name__)
-        return responses.error(500, "internal_server_error")
+        return ShopTurn(error=responses.error(500, "internal_server_error"))
 
     logger.info(
         "⑦ 완료 llm_calls=%d iterations=%d hit_cap=%s tool_calls=%d removed=%s ms=%.0f",
@@ -149,9 +176,9 @@ async def act(request: Request) -> JSONResponse:
         try:
             earlier = await replay.save(key, digest, envelope)
         except replay.IdempotencyConflict:
-            return responses.error(409, "idempotency_conflict")
+            return ShopTurn(error=responses.error(409, "idempotency_conflict"))
         if earlier is not None:
             # 같은 요청이 동시에 처리되어 먼저 끝난 쪽의 응답이 있다. 사용자에게는 그것이 처음 응답이다
             logger.info("⑦ 같은 키가 먼저 처리되어 그 응답을 돌려준다")
-            return responses.success(earlier["message"], earlier["data"])
-    return responses.success(envelope["message"], envelope["data"])
+            return ShopTurn(message=earlier["message"], data=earlier["data"])
+    return ShopTurn(message=envelope["message"], data=envelope["data"])
