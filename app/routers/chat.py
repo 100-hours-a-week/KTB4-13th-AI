@@ -24,6 +24,8 @@ from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
 from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
 from app.feed import personalized, scoring
+from app.gate import rules as gate_rules
+from app.gate import shopping
 from app.gateway import embedding
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -32,6 +34,7 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
 )
+from app.routers import agent
 from app.search import service
 from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
@@ -1435,21 +1438,51 @@ async def chat(request: Request) -> JSONResponse:
         status, message = req
         return responses.error(status, message)
 
+    # 쇼핑 칸(idempotency_key)을 보낸 요청이면 문지기가 ③과 ⑦ 중 어디로 보낼지 정한다(#413).
+    # 칸이 없으면 이 변경 전과 똑같이 ③만 하고 응답에 route 도 없다.
+    lane = None
+    if shopping.enabled(payload):
+        lane = "recommend"
+        if gate_rules.route(req.message or "", shopping.cards_shown(payload)) == "shop":
+            shop_req = shopping.to_agent_request(payload)
+            if shop_req is None:
+                return responses.error(400, "invalid_request")
+            turn = await agent.shop_turn(shop_req, shopping.agent_payload(payload))
+            if turn.error is not None:
+                # ⑦ 이 실패한 것을 ③ 의 추천으로 덮지 않는다. 장바구니 요청에 추천 답을 하는 쪽이 더 나쁘다
+                return turn.error
+            if not turn.not_shopping:
+                logger.info("문지기: 쇼핑으로 처리했다")
+                return responses.success(turn.message, {**turn.data, "route": "shop"})
+            logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
+    return await _recommend(req, lane)
+
+
+def _with_lane(data: dict, lane: str | None) -> dict:
+    """문지기를 켠 요청에만 갈래(route)를 담는다. 안 켠 요청의 응답 모양은 그대로다."""
+    return data if lane is None else {**data, "route": lane}
+
+
+async def _recommend(req: ChatRequest, lane: str | None) -> JSONResponse:
+    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성."""
     unanswerable = _unanswerable_request(req.message, req.spec, req.recent_turns)
     if unanswerable:
         # LLM도 검색도 부르지 않는다. spec은 요청에 실린 그대로 돌려준다(6키 계약 유지).
         reply, followup = unanswerable
         return responses.success(
             "recommend_success",
-            {
-                "reply": reply,
-                "spec": req.spec.model_dump(),
-                "recognition": None,
-                "cards": [],
-                "followup": followup,
-                "buttons": [],
-                "degraded": False,
-            },
+            _with_lane(
+                {
+                    "reply": reply,
+                    "spec": req.spec.model_dump(),
+                    "recognition": None,
+                    "cards": [],
+                    "followup": followup,
+                    "buttons": [],
+                    "degraded": False,
+                },
+                lane,
+            ),
         )
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
@@ -1504,13 +1537,16 @@ async def chat(request: Request) -> JSONResponse:
 
     return responses.success(
         "recommend_success",
-        {
-            "reply": reply,
-            "spec": spec.model_dump(),
-            "recognition": None,
-            "cards": cards,
-            "followup": followup,
-            "buttons": [],
-            "degraded": degraded,
-        },
+        _with_lane(
+            {
+                "reply": reply,
+                "spec": spec.model_dump(),
+                "recognition": None,
+                "cards": cards,
+                "followup": followup,
+                "buttons": [],
+                "degraded": degraded,
+            },
+            lane,
+        ),
     )
