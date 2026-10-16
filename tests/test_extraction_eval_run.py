@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import copy
 import json
 import logging
 
@@ -21,13 +22,15 @@ _BY_ID = {case["id"]: case for case in _CASES}
 
 
 def _ideal(request: dict) -> Outcome:
-    """기대값 그대로 답하는 가짜 API."""
+    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다."""
     case = next(c for c in _CASES if c["request"] == request)
     items = [
         {
             "type": want["type"],
             "value": want["value"],
-            "confidence": 0.8,
+            "strength": want["strength"],
+            "applies_to": want.get("applies_to", [])[:1],
+            "keyword": want["keyword"][0],
             "vector": [0.1, 0.2],
             "dim": 2,
             "source_conversation_id": request["conversation_id"],
@@ -57,12 +60,27 @@ def _run(cases, answer=_ideal, runs=1):
 
 
 def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
-    # 기대 문장이 자기 핵심어를 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
+    # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
-    assert len(calls) == len(_CASES) == 80
-    assert summary["total"] == {"cases": 80, "runs": 80, "passed": 80, "pass_rate": 1.0}
+    assert len(calls) == len(_CASES) == 85
+    assert summary["total"] == {"cases": 85, "runs": 85, "passed": 85, "pass_rate": 1.0}
     assert summary["failures"] == {}
+
+
+def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -> None:
+    # 받아들이는 말과 이름을 하나씩 골라 답한다. 기대값끼리 어긋나면(어디에를 비워야 하는데 이름을
+    # 적었거나, 핵심어가 비었거나) 여기서 드러난다
+    summary, _calls = _run(_CASES)
+
+    assert summary["labels"] == {
+        "labeled": 67,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 1.0,
+        "where_labeled": 38,
+        "where": 1.0,
+    }
 
 
 def test_아무것도_안_뽑으면_뽑을_것이_없는_대화만_통과한다() -> None:
@@ -73,7 +91,7 @@ def test_아무것도_안_뽑으면_뽑을_것이_없는_대화만_통과한다(
 
     expect_nothing = sum(c["expect"]["nothing_found"] for c in _CASES)
     assert summary["total"]["passed"] == expect_nothing
-    assert summary["failures"] == {"missed": 80 - expect_nothing}
+    assert summary["failures"] == {"missed": len(_CASES) - expect_nothing}
 
 
 # --- 고르기 ---
@@ -160,7 +178,9 @@ def test_실패_이유를_종류별로도_센다() -> None:
         item = {
             "type": "mood",
             "value": "힐링 소설을 즐겨 읽음",
-            "confidence": 0.7,
+            "strength": 2,
+            "applies_to": [],
+            "keyword": "힐링",
             "vector": [0.1],
             "dim": 1,
             "source_conversation_id": request["conversation_id"],
@@ -203,6 +223,42 @@ def test_걸린_시간의_중앙값과_가장_긴_값을_낸다() -> None:
     summary, _calls = _run(run.select(_CASES, kinds=["onetime"]), timed)
 
     assert summary["seconds"] == {"median": 2.0, "max": 9.0}
+
+
+def test_세_칸의_맞은_비율은_찾은_취향을_분모로_내고_표_아래에_적는다() -> None:
+    case = copy.deepcopy(_BY_ID["request-01"])
+    case["expect"]["extractions"][0].update(
+        strength=1, keyword=["쿠버네티스"], applies_to=["프로그래밍", "IT"]
+    )
+
+    def answer(request: dict) -> Outcome:
+        ideal = _ideal(request)
+        ideal.data["extractions"][0].update(
+            strength=1, keyword="쿠버네티스 입문서", applies_to=["프로그래밍"]
+        )
+        return ideal
+
+    summary, _calls = _run([case], answer, runs=2)
+
+    assert summary["labels"] == {
+        "labeled": 2,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 0.0,
+        "where_labeled": 2,
+        "where": 1.0,
+    }
+    assert (
+        "세기 부호 100%, 크기까지 100%, 핵심어 0%, 어디에 100%(주제 2개)"
+        in run.render(summary)
+    )
+
+
+def test_세_칸을_적은_취향을_못_찾았으면_비율_줄을_내지_않는다() -> None:
+    summary, _calls = _run(run.select(_CASES, kinds=["none"]))
+
+    assert summary["labels"]["labeled"] == 0
+    assert "세기 부호" not in run.render(summary)
 
 
 # --- 돈이 드는 호출을 허락 없이 하지 않는다 ---
@@ -271,6 +327,15 @@ def test_결과를_파일로_남긴다(tmp_path, capsys) -> None:
     assert saved["bundle_version"] == run.load_bundle()["version"]
     assert saved["runs"][0]["case_id"] == "request-01"
     assert saved["runs"][0]["values"] == ["쿠버네티스 입문서를 찾음"]
+    # 세 칸이 왜 틀렸는지 볼 수 있게 뽑은 값도 남긴다
+    assert saved["runs"][0]["got"] == [
+        {
+            "type": "topic",
+            "strength": 1,
+            "applies_to": ["프로그래밍"],
+            "keyword": "쿠버네티스",
+        }
+    ]
 
 
 def test_없는_종류를_주면_부르지_않고_끝난다(capsys) -> None:
@@ -290,7 +355,9 @@ def test_API를_그대로_거쳐_응답과_시간을_받는다(monkeypatch) -> N
                 {
                     "type": "topic",
                     "value": "쿠버네티스 입문서를 찾음",
-                    "confidence": 0.7,
+                    "strength": 1,
+                    "applies_to": ["프로그래밍"],
+                    "keyword": "쿠버네티스",
                     "evidence": "쿠버네티스 처음 배우는데 입문서 추천해줘",
                     "owner": "user",
                     "basis": "requested",
