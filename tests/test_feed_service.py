@@ -499,13 +499,13 @@ async def _no_vectors(*args, **kwargs):
     raise AssertionError("저장된 목록을 읽을 때는 벡터를 조회하지 않는다")
 
 
-def _from_saved(monkeypatch, req, count: int, **fakes):
+def _from_saved(monkeypatch, req, count: int, profile_row=None, saved=_SAVED, **fakes):
     """플래그를 켜고, 거르고 남은 책이 count 권인 저장된 목록을 둔다."""
     monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
     monkeypatch.setattr(get_settings(), "interest_feed", True)
 
     async def _stored(conn, user_id):
-        return _SAVED
+        return saved
 
     async def _books(conn, req, books, excluded):
         assert books == _SAVED.books
@@ -516,7 +516,7 @@ def _from_saved(monkeypatch, req, count: int, **fakes):
     fakes.setdefault("personalized__fetch", _no_vectors)
     return _run(
         req,
-        _PROFILE_ROW,
+        profile_row or _PROFILE_ROW,
         monkeypatch,
         interest_page__stored=_stored,
         interest_page__books=_books,
@@ -534,6 +534,46 @@ def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조�
     assert (outcome.cold_start, outcome.degraded) == (False, None)
     page = cursor.read(_surface("home", size="2", cursor=outcome.next_cursor))
     assert (page.mode, page.feed_version) == (service.INTEREST, 4)
+
+
+_COLD_ROW = {
+    "centroid": None,
+    "tag_weights": "{}",
+    "cold_start": True,
+    "profile_version": 0,
+    "computed_at": None,
+}
+
+
+def test_취향_벡터가_없는_프로필도_저장된_목록이_있으면_그_목록을_읽는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 어린이 분야만 고른 사용자다. 취향 벡터는 없지만 관심사 점수로 뽑은 목록이 있다(#473)
+    outcome = _from_saved(
+        monkeypatch, _surface("home", size="2"), count=3, profile_row=_COLD_ROW
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [0, 1]
+    assert outcome.cold_start is False
+
+
+def test_저장된_목록이_비었으면_지금처럼_개인화하지_않은_목록이다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _cold(conn, req, page, excluded=None):
+        return [{"book_id": 5, "match_score": 0}], False
+
+    outcome = _from_saved(
+        monkeypatch,
+        _surface("home"),
+        count=0,
+        profile_row=_COLD_ROW,
+        saved=interest_page.Stored([], 1, None),
+        cold_start__fetch=_cold,
+    )
+
+    assert [item["book_id"] for item in outcome.items] == [5]
+    assert outcome.cold_start is True
 
 
 def test_더_보기도_거르고_남은_책이_첫_쪽을_채우면_저장된_목록을_읽는다(
