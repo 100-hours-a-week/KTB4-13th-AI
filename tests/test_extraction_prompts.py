@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core import categories
 from app.extraction import prompts
 from app.extraction.rules import PREFERENCE_TYPES, screen
 from app.extraction.schemas import (
@@ -43,19 +44,14 @@ def _messages(req: ExtractionRequest):
 
 
 def test_지시문과_자료는_다른_메시지에_실린다() -> None:
-    # 대화와 저장된 취향은 자료다. 지시문(system)에 섞이면 그 안의 글이 지시처럼 읽힐 수 있다
+    # 대화는 자료다. 지시문(system)에 섞이면 그 안의 글이 지시처럼 읽힐 수 있다
     system, human = _messages(
-        _request(
-            [{"role": "user", "text": "쓸쓸한 겨울 이야기 찾아줘"}],
-            existing=[("topic", "건축을 다룬 책을 좋아함")],
-        )
+        _request([{"role": "user", "text": "쓸쓸한 겨울 이야기 찾아줘"}])
     )
 
     assert (system.type, human.type) == ("system", "human")
     assert "쓸쓸한 겨울 이야기" in human.content
-    assert "건축을 다룬 책을 좋아함" in human.content
     assert "쓸쓸한 겨울 이야기" not in system.content
-    assert "건축을 다룬 책을 좋아함" not in system.content
 
 
 def test_대화는_역할과_글을_담은_JSON으로_넘어간다() -> None:
@@ -83,27 +79,14 @@ def test_대화가_길면_최근_것만_넘어간다() -> None:
     assert given[-1]["text"] == f"{MAX_CONVERSATION_TURNS + 4}번째 말"
 
 
-def test_저장된_취향은_종류와_문장으로_넘어간다() -> None:
+def test_이미_저장된_취향은_보내도_프롬프트에_넣지_않는다() -> None:
+    # 같은 취향을 다른 날 또 말하면 또 뽑아야 한다. 목록을 보여 주면 LLM 이 겹치는 것을 뺀다(#425)
     req = _request(existing=[("topic", "건축을 다룬 책을 좋아함")])
 
-    given = json.loads(prompts.inputs(req)["existing"])
+    system, human = _messages(req)
 
-    assert given == [{"type": "topic", "value": "건축을 다룬 책을 좋아함"}]
-
-
-def test_저장된_취향이_없으면_빈_목록이_넘어간다() -> None:
-    assert json.loads(prompts.inputs(_request())["existing"]) == []
-
-
-def test_저장된_취향이_많으면_뒤의_것만_넘어간다() -> None:
-    # 프롬프트가 한없이 길어지지 않게 한다. BE 는 저장한 순서대로 보내므로 뒤가 최근 것이다
-    many = [("topic", f"취향 {n}") for n in range(prompts.MAX_EXISTING_IN_PROMPT + 3)]
-
-    given = json.loads(prompts.inputs(_request(existing=many))["existing"])
-
-    assert len(given) == prompts.MAX_EXISTING_IN_PROMPT
-    assert given[0]["value"] == "취향 3"
-    assert given[-1]["value"] == f"취향 {prompts.MAX_EXISTING_IN_PROMPT + 2}"
+    assert set(prompts.inputs(req)) == {"conversation"}
+    assert "건축을 다룬 책을 좋아함" not in system.content + human.content
 
 
 @pytest.mark.parametrize(
@@ -118,9 +101,7 @@ def test_저장된_취향이_많으면_뒤의_것만_넘어간다() -> None:
 def test_대화에_어떤_글자가_와도_프롬프트가_만들어지고_그_글이_그대로_실린다(
     text,
 ) -> None:
-    req = _request(
-        [{"role": "user", "text": text}], existing=[("topic", f"취향 {text}")]
-    )
+    req = _request([{"role": "user", "text": text}])
 
     _system, human = _messages(req)
 
@@ -151,7 +132,16 @@ def test_지시문이_보여_주는_답의_모양을_서버가_그대로_읽을_
     assert empty == {"extractions": []}
     assert set(filled) == {"extractions"}
     assert [set(item) for item in filled["extractions"]] == [
-        {"type", "value", "confidence", "evidence", "owner", "basis"}
+        {
+            "type",
+            "value",
+            "strength",
+            "applies_to",
+            "keyword",
+            "evidence",
+            "owner",
+            "basis",
+        }
     ]
     # 예시의 근거가 사용자의 말에서 옮긴 것이라면 서버가 버리지 않는다
     said = [filled["extractions"][0]["evidence"]]
@@ -171,3 +161,11 @@ def test_지시문의_예시_낱말은_평가_묶음에_없다() -> None:
     assert len(examples) >= 4, "종류마다 든 예시를 찾지 못했다"
     for phrase in examples:
         assert phrase not in cases, f"{phrase}: 평가 묶음에 있는 말이다"
+
+
+def test_지시문에_어디에로_고를_이름이_모두_있다() -> None:
+    # 목록에 없는 이름은 코드가 뺀다. 지시문에서 빠진 이름은 LLM 이 고를 수 없다(#423)
+    system, _human = _messages(_request())
+
+    names = system.content[system.content.index("카테고리: ") :]
+    assert all(name in names for name in categories.NAME_TEXTS)
