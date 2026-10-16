@@ -102,3 +102,16 @@ def test_응답_모드가_바뀌면_끊는다() -> None:
 
     with pytest.raises(cursor.CursorExpired):
         cursor.check_mode(page, "cold-start")
+
+
+def test_관심사별_목록의_판_번호를_실어_다음_페이지에서_돌려준다() -> None:
+    req = _req()
+    page = cursor.Page(offset=0, mode="interest", issued_at=_NOW)
+
+    nxt = cursor.read(_req(cursor.issue(page, req, "interest", 3, feed_version=7)))
+
+    assert nxt.feed_version == 7
+
+
+def test_판_번호가_없는_커서는_그대로_읽는다() -> None:
+    assert cursor.read(_req(_next_cursor(_req()))).feed_version is None
