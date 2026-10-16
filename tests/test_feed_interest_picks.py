@@ -287,6 +287,20 @@ def test_키워드_관심사는_그_말이_든_책을_앞에_두고_나머지는
     assert conn.args[0][2] == "cat"
 
 
+@pytest.mark.parametrize(("limit", "ef"), [(80, 200), (400, 400)])
+def test_키워드는_뽑을_권수만큼은_벡터_색인을_훑는다(limit: int, ef: int) -> None:
+    # 반복해 훑지 않는 조회라 훑는 폭보다 많은 책을 돌려주지 못한다(#478)
+    conn = _FakeConn()
+
+    asyncio.run(
+        interest_picks.pick_keyword(
+            conn, "키워드:고양이", [1.0, 0.0], limit=limit, left=lambda: 1.0
+        )
+    )
+
+    assert conn.settings == [f"SET LOCAL hnsw.ef_search = {ef}"]
+
+
 # --- 예산을 넘긴 관심사의 대신할 책 (#451) ---
 
 
