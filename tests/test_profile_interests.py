@@ -163,3 +163,55 @@ def test_어디에_가운데_하나라도_뒤에_피했으면_섞지_않는다()
     avoid = _topic(-2, "소설", day=1)
 
     assert interests.living_likes([both, avoid]) == []
+
+
+# --- 책을 관심사로 가르기 (#437) ---
+
+
+def _axis(i: int) -> list[float]:
+    vector = [0.0] * 4
+    vector[i] = 1.0
+    return vector
+
+
+# 세부 카테고리 넷만 이름 벡터가 있다고 친다. 책 벡터가 가리키는 축의 세부 카테고리가 가장 가깝다
+_NAMED = {"추리/스릴러": _axis(0), "SF": _axis(1), "로맨스": _axis(2), "요리": _axis(3)}
+
+
+def _book(class_no, category, vector=None) -> str | None:
+    return interests.book_interest(class_no, category, vector, _NAMED.get)
+
+
+def test_세부_분류_번호가_표에_있으면_그_관심사다() -> None:
+    assert _book("594.5", "생활과학", _axis(0)) == "요리"
+    assert _book("004.5", "총류") == "IT"
+
+
+def test_표에_없는_문학_번호는_이름_벡터가_가장_가까운_세부_카테고리다() -> None:
+    assert _book("813.7", "한국문학", _axis(1)) == "SF"
+
+
+def test_번호가_없는_문학_책도_이름_벡터로_가른다() -> None:
+    assert _book(None, "한국소설", _axis(2)) == "로맨스"
+
+
+def test_번호가_없는_그_밖의_책은_도서관_분류가_속한_카테고리다() -> None:
+    assert _book(None, "경제학", _axis(0)) == "경제경영"
+    # 표에 없는 번호도 같다(분류로 본다)
+    assert _book("210", "지리", _axis(0)) == "여행"
+
+
+def test_어느_카테고리에도_안_들면_이름_벡터로_가른다() -> None:
+    assert _book(None, "종교", _axis(3)) == "요리"
+
+
+def test_이름_벡터가_필요한데_책_벡터가_없으면_가르지_않는다() -> None:
+    assert _book("813.7", "한국문학", None) is None
+    assert _book(None, "종교", None) is None
+
+
+def test_가장_가까운_세부_카테고리는_이름_벡터가_있는_것_가운데서_고른다() -> None:
+    vector = [0.6, 0.8, 0.0, 0.0]
+
+    assert interests.nearest_subcategory(vector, _NAMED.get) == "SF"
+    assert interests.nearest_subcategory(vector, lambda _name: None) is None

@@ -11,9 +11,12 @@
 방향의 줄만 끝에서부터 더한다. 피함의 부탁(-1)은 건너뛴다. 그 대화에서의 부탁이라 싫다는 뜻이 아니다.
 """
 
-from collections.abc import Iterable, Sequence
+import operator
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from typing import Protocol
+
+from app.core import categories
 
 # 관심사 이름의 앞머리. 카테고리와 세부 카테고리는 앞머리 없이 이름 그대로 쓴다
 AUTHOR = "작가:"
@@ -126,3 +129,64 @@ def living_likes[T: MemoryLine](lines: Sequence[T]) -> list[T]:
             for name in interests_of(line)
         )
     ]
+
+
+# 책을 가를 때 쓰는 것(#437)
+# 문학 분류(카탈로그). 번호가 없는 책이 이 분류면 소설로 보고 이름 벡터로 장르를 고른다
+_LITERATURE = frozenset(
+    {
+        *categories.ONBOARDING_TO_CATALOG["소설"].core,
+        *categories.ONBOARDING_TO_CATALOG["소설"].partial,
+    }
+)
+_SUBCATEGORIES = tuple(
+    name for group in categories.SUBCATEGORIES.values() for name in group
+)
+
+
+def nearest_subcategory(
+    vector: Sequence[float] | None,
+    name_vector: Callable[[str], Sequence[float] | None],
+) -> str | None:
+    """책 벡터와 이름 벡터가 가장 가까운 세부 카테고리. 책 벡터나 이름 벡터가 없으면 None.
+
+    벡터는 모두 길이 1이라 내적이 코사인 유사도다.
+    """
+    if not vector:
+        return None
+    best, best_score = None, float("-inf")
+    for name in _SUBCATEGORIES:
+        named = name_vector(name)
+        if named is None:
+            continue
+        score = sum(map(operator.mul, vector, named))
+        if score > best_score:
+            best, best_score = name, score
+    return best
+
+
+def book_interest(
+    class_no: str | None,
+    category: str | None,
+    vector: Sequence[float] | None,
+    name_vector: Callable[[str], Sequence[float] | None],
+) -> str | None:
+    """책 한 권이 점수를 주는 관심사 하나(#395 "3. 산 책과 나의 도서관 책").
+
+    1. 세부 분류 번호가 표에 있으면 그 관심사(categories.CLASS_INTERESTS)
+    2. 표에 없는 문학 번호(813 등)와, 번호가 없는 문학 책은 책 벡터와 가장 가까운 세부 카테고리
+    3. 그 밖의 책은 도서관 분류가 속한 카테고리
+    4. 그래도 없으면 2와 같이 가장 가까운 세부 카테고리
+    벡터가 필요한데 없으면 None 이다. 소개글이 없어 벡터가 없는 책은 지금처럼 쓰지 않는다.
+    """
+    by_class = categories.class_interest(class_no)
+    if by_class:
+        return by_class
+    head = (class_no or "").strip()[:3]
+    numbered = len(head) == 3 and head.isdigit()
+    literature = head.startswith("8") if numbered else category in _LITERATURE
+    if not literature:
+        for name, match in categories.ONBOARDING_TO_CATALOG.items():
+            if category in match.core:
+                return name
+    return nearest_subcategory(vector, name_vector)
