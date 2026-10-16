@@ -1,4 +1,6 @@
-"""⑥ 관심사 점수 — 취향 기억을 관심사별 점수와 조건 목록으로 바꾼다(#435, 설계 #395). DB·모델 없이 돈다.
+"""⑥ 관심사 점수 — 재료(온보딩, 취향 기억, 책)를 관심사별 점수로 바꾸고 합친다(설계 #395). DB·모델 없이 돈다.
+
+취향 기억은 #435, 책을 관심사로 가르기는 #437, 온보딩·책의 점수와 재료끼리 합치기는 #438 이다.
 
 관심사는 카테고리와 세부 카테고리(이름 그대로), 작가("작가:김영하"), 키워드("키워드:고양이"),
 분위기("분위기:잔잔한")다. 취향 기억 한 줄이 어느 관심사에 점수를 주는지는 종류와 어디에로 정한다.
@@ -11,8 +13,9 @@
 방향의 줄만 끝에서부터 더한다. 피함의 부탁(-1)은 건너뛴다. 그 대화에서의 부탁이라 싫다는 뜻이 아니다.
 """
 
+import math
 import operator
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -190,3 +193,113 @@ def book_interest(
             if category in match.core:
                 return name
     return nearest_subcategory(vector, name_vector)
+
+
+# 온보딩과 책, 재료끼리 합치기(#438)
+# 재료 이름. 프로필에 저장하는 점수표의 칸이다: {"추리/스릴러": {"memory": 2, "books": 3}}
+ONBOARDING = "onboarding"
+MEMORY = "memory"
+BOOKS = "books"
+# 재료끼리의 무게(#395 "재료끼리의 무게"). 설계 때 잰 값이다(#399). 온보딩은 통틀어 1, 산 책은 한 권(무게
+# 3)마다 0.2, 직접 말한 취향은 한 줄(세기 2)마다 0.4. 가입 때 하나 고르고 세 권 사고 한 번 말하면 5 : 3 : 2
+# 가 된다. 처음에는 온보딩이 크고 책과 취향 기억이 쌓일수록 그쪽이 커진다. 실제 사용자를 보며 정한다(#362).
+ONBOARDING_SHARE = 1.0
+SHARE_PER_PURCHASE = 0.2
+SHARE_PER_SAID = 0.4
+_PURCHASE_WEIGHT = 3.0  # 산 책 한 권의 무게(app/core/history.py)
+_SAID_STRENGTH = 2.0  # 직접 말한 취향 한 줄의 세기
+
+_PARENT = {
+    name: category
+    for category, group in categories.SUBCATEGORIES.items()
+    if category
+    for name in group
+}
+
+
+def onboarding_scores(
+    picked_categories: Iterable[str], tags: Iterable[str]
+) -> dict[str, float]:
+    """온보딩에서 고른 것의 관심사 점수. 고른 세부 카테고리마다 1, 카테고리만 골랐으면 그 카테고리에 1.
+
+    카테고리와 그 밑의 세부 카테고리를 같이 골랐으면 세부 카테고리에만 준다. 좁혀 고른 것으로 본다(#395
+    의 (안)). 서버 목록에 없는 값은 건너뛴다. BE 가 보기를 바꿔도 400 이 아니다(명세 ⑥).
+    """
+    known = [tag for tag in dict.fromkeys(tags) if tag in categories.NAME_TEXTS]
+    scores = dict.fromkeys(known, 1.0)
+    narrowed = {_PARENT.get(tag) for tag in known}
+    for category in dict.fromkeys(picked_categories):
+        if category in categories.CATEGORIES and category not in narrowed:
+            scores[category] = 1.0
+    return scores
+
+
+def book_scores(
+    books: Iterable[tuple[str, float, Sequence[float]]],
+) -> tuple[dict[str, float], dict[str, list[float]]]:
+    """(관심사, 책의 무게, 책 벡터) 들 → 관심사마다 무게의 합과, 무게를 준 책 벡터 평균(길이 1).
+
+    벡터 평균은 그 관심사의 책을 찾는 검색어다. 같은 요리라도 그 사람이 산 결(베이킹인지 비건인지)이
+    남는다(#395).
+    """
+    scores: dict[str, float] = {}
+    sums: dict[str, list[float]] = {}
+    for interest, weight, vector in books:
+        scores[interest] = scores.get(interest, 0.0) + weight
+        acc = sums.setdefault(interest, [0.0] * len(vector))
+        for i, x in enumerate(vector):
+            acc[i] += weight * x
+    vectors = {}
+    for interest, acc in sums.items():
+        norm = math.sqrt(sum(x * x for x in acc))
+        if norm:
+            vectors[interest] = [x / norm for x in acc]
+    return scores, vectors
+
+
+def per_interest(
+    onboarding: Mapping[str, float],
+    memory: Mapping[str, float],
+    books: Mapping[str, float],
+) -> dict[str, dict[str, float]]:
+    """재료별 점수를 관심사마다 한 칸으로 모은다. 프로필에 이 모양으로 저장한다."""
+    out: dict[str, dict[str, float]] = {}
+    for source, scores in ((ONBOARDING, onboarding), (MEMORY, memory), (BOOKS, books)):
+        for interest, value in scores.items():
+            if value:
+                out.setdefault(interest, {})[source] = value
+    return out
+
+
+def combined(per_source: Mapping[str, Mapping[str, float]]) -> dict[str, float]:
+    """관심사마다 점수 하나. 양수인 관심사는 자리를 받고 음수인 관심사는 뺀다(#395).
+
+    재료마다 자기 몫을 자기 관심사들에 점수 비율대로 나눠 주고 더한다. 취향 기억의 마지막 방향이 피함인
+    관심사는 온보딩에서 골랐거나 그 관심사의 책을 샀어도 음수다. 싫다고 했는데 또 나오는 것은 한 번만
+    겪어도 믿음이 깨진다.
+    """
+    totals = dict.fromkeys((ONBOARDING, MEMORY, BOOKS), 0.0)
+    for scores in per_source.values():
+        for source, value in scores.items():
+            if source in totals:
+                totals[source] += abs(value)
+    shares = {
+        ONBOARDING: ONBOARDING_SHARE if totals[ONBOARDING] else 0.0,
+        MEMORY: SHARE_PER_SAID * totals[MEMORY] / _SAID_STRENGTH,
+        BOOKS: SHARE_PER_PURCHASE * totals[BOOKS] / _PURCHASE_WEIGHT,
+    }
+    whole = sum(shares.values())
+    if not whole:
+        return {}
+    out = {}
+    for interest, scores in per_source.items():
+        parts = {
+            source: shares[source] / whole * value / totals[source]
+            for source, value in scores.items()
+            if totals.get(source)
+        }
+        if parts.get(MEMORY, 0.0) < 0:
+            out[interest] = parts[MEMORY]
+        else:
+            out[interest] = sum(parts.values())
+    return out

@@ -215,3 +215,69 @@ def test_가장_가까운_세부_카테고리는_이름_벡터가_있는_것_가
 
     assert interests.nearest_subcategory(vector, _NAMED.get) == "SF"
     assert interests.nearest_subcategory(vector, lambda _name: None) is None
+
+
+# --- 온보딩·책 점수와 재료 합치기 (#438) ---
+
+
+def test_온보딩은_고른_세부_카테고리마다_1이고_카테고리만_골랐으면_그_카테고리에_1이다() -> (
+    None
+):
+    scores = interests.onboarding_scores(["역사", "소설"], ["추리/스릴러", "SF"])
+
+    # 소설은 그 밑의 세부 카테고리를 골라 좁혔다. 역사는 카테고리만 골랐다
+    assert scores == {"추리/스릴러": 1.0, "SF": 1.0, "역사": 1.0}
+
+
+def test_온보딩의_모르는_값과_겹친_값은_건너뛴다() -> None:
+    scores = interests.onboarding_scores(["역사", "역사", "없는 카테고리"], ["힐링"])
+
+    assert scores == {"역사": 1.0}
+
+
+def test_어린이는_대응표에_없어도_카테고리다() -> None:
+    assert interests.onboarding_scores(["어린이"], []) == {"어린이": 1.0}
+
+
+def test_책은_관심사마다_무게를_더하고_무게를_준_벡터_평균을_낸다() -> None:
+    books = [
+        ("요리", 3.0, [1.0, 0.0]),  # 산 책
+        ("요리", 1.0, [0.0, 1.0]),  # 담은 책
+        ("SF", 2.0, [0.0, 1.0]),
+    ]
+
+    scores, vectors = interests.book_scores(books)
+
+    assert scores == {"요리": 4.0, "SF": 2.0}
+    assert vectors["요리"] == pytest.approx([3 / 10**0.5, 1 / 10**0.5])
+    assert vectors["SF"] == pytest.approx([0.0, 1.0])
+
+
+def test_재료별_점수를_관심사마다_한_칸으로_모은다() -> None:
+    table = interests.per_interest(
+        {"역사": 1.0}, {"역사": -2.0, "SF": 2.0}, {"SF": 3.0}
+    )
+
+    assert table == {
+        "역사": {"onboarding": 1.0, "memory": -2.0},
+        "SF": {"memory": 2.0, "books": 3.0},
+    }
+
+
+def test_가입_하나_책_세_권_말함_한_번이면_5대3대2다() -> None:
+    # #395 의 예. 무게는 설계 때 잰 값이다
+    table = interests.per_interest({"역사": 1.0}, {"추리/스릴러": 2.0}, {"재테크": 9.0})
+
+    final = interests.combined(table)
+
+    assert final == pytest.approx({"역사": 0.5, "재테크": 0.3, "추리/스릴러": 0.2})
+
+
+def test_취향_기억의_마지막_방향이_피함이면_다른_재료가_있어도_음수다() -> None:
+    table = interests.per_interest({"로맨스": 1.0}, {"로맨스": -2.0}, {"로맨스": 3.0})
+
+    assert interests.combined(table)["로맨스"] < 0
+
+
+def test_재료가_없으면_점수도_없다() -> None:
+    assert interests.combined({}) == {}
