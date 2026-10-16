@@ -14,9 +14,10 @@ import asyncpg
 from app.core import db, history, isbn
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
+from app.feed import interest_feed
 from app.profile import compute, interests, labels
 from app.profile.compute import Profile
-from app.profile.schemas import USED_LIKED_BOOKS, Onboarding, ProfileRequest
+from app.profile.schemas import USED_LIKED_BOOKS, Memory, Onboarding, ProfileRequest
 
 # 사용자별 잠금. pg_advisory_xact_lock(앞, 뒤) 두 숫자 형태의 앞 숫자로, 다른 곳의 잠금과
 # 번호가 겹치지 않게 API 번호(⑥)를 쓴다. 행 잠금이 아니라 숫자에 거는 잠금이라 첫 호출(프로필 행이
@@ -60,10 +61,13 @@ _READ_FIRST_SEEN_SQL = """
 SELECT book_first_seen::text FROM taste_profile WHERE user_id = $1
 """
 
+# 추천 목록은 뽑을 때마다 판 번호를 올리고 바로 앞 판을 남긴다(#453). 오른쪽의 feed 는 바꾸기 전 값이다
 _SAVE_INTERESTS_SQL = """
 UPDATE taste_profile
 SET interest_scores = $2::jsonb, interest_vectors = $3::jsonb,
-    conditions = $4::jsonb, book_first_seen = $5::jsonb
+    conditions = $4::jsonb, book_first_seen = $5::jsonb,
+    feed_prev = feed, feed = $6::jsonb, feed_version = feed_version + 1,
+    feed_partial = $7
 WHERE user_id = $1
 """
 
@@ -165,7 +169,8 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     version = compute.next_version(await _stored(conn, req.user_id), profile)
     await _save(conn, req.user_id, profile, version, hist.computed_at)
     if get_settings().interest_feed:
-        await _save_interests(conn, req, weights, vectors)
+        owned = set(hist.weights) | hist.disliked_book_ids
+        await _save_interests(conn, req, weights, vectors, owned)
     return profile.cold_start, version
 
 
@@ -174,11 +179,13 @@ async def _save_interests(
     req: ProfileRequest,
     weights: dict[int, float],
     vectors: dict[int, list[float]],
+    owned: set[int],
 ) -> None:
-    """관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날을 저장한다(#440, 설계 #395).
+    """관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날과 추천 목록을 저장한다(#440, #453).
 
     책은 취향 벡터에 쓴 것과 같다(좋아한 책과 이력, 2점 이하 리뷰를 단 책은 뺌). 벡터가 없는 책은 지금처럼
-    쓰지 않는다. 챗봇이 쓰는 지금 칸(centroid, tag_weights)은 위에서 따로 저장했다.
+    쓰지 않는다. 챗봇이 쓰는 지금 칸(centroid, tag_weights)은 위에서 따로 저장했다. 추천 목록에서는 가진
+    책(owned: 이력의 책)을 뺀다.
     """
     rows = await conn.fetch(_BOOK_INFO_SQL, list(weights)) if weights else []
     books = []
@@ -199,15 +206,39 @@ async def _save_interests(
         interests.memory_scores(memories),
         book_scores,
     )
+    conditions = interests.conditions(memories)
+    feed = await interest_feed.build(
+        conn,
+        interests.combined(table),
+        interest_vectors,
+        _keyword_vectors(memories),
+        conditions,
+        owned,
+    )
     isbns = [row["isbn13"] for row in rows if row["isbn13"]]
     await conn.execute(
         _SAVE_INTERESTS_SQL,
         req.user_id,
         json.dumps(table, ensure_ascii=False),
         json.dumps(interest_vectors, ensure_ascii=False),
-        json.dumps(interests.conditions(memories), ensure_ascii=False),
+        json.dumps(conditions, ensure_ascii=False),
         json.dumps(await _first_seen(conn, req.user_id, isbns)),
+        json.dumps(feed.stored(), ensure_ascii=False),
+        bool(feed.substituted),
     )
+
+
+def _keyword_vectors(memories: list[Memory]) -> dict[str, list[float]]:
+    """키워드 관심사마다 핵심어의 이름 벡터. 그 키워드를 말한 줄 가운데 가장 나중 줄의 벡터다.
+
+    취향 기억의 벡터는 ⑤ 가 핵심어로 만든 것이라 핵심어의 이름 벡터와 같다(용도도 같은 query).
+    """
+    vectors: dict[str, list[float]] = {}
+    for line in memories:
+        for name in interests.interests_of(line):
+            if name.startswith(interests.KEYWORD):
+                vectors[name] = line.vector
+    return vectors
 
 
 async def _first_seen(

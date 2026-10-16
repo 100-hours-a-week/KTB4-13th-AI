@@ -14,6 +14,8 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
+from app.feed.interest_feed import Feed
+from app.feed.interest_list import Placed
 from app.profile import labels, service
 from app.profile.schemas import ProfileRequest
 
@@ -545,11 +547,38 @@ async def _interest_row(conn: asyncpg.Connection) -> dict:
     return {key: json.loads(value) for key, value in dict(row).items()}
 
 
+class _FakeBuild:
+    """추천 목록 뽑기를 가짜로 바꾼다(뽑기는 tests/test_feed_interest_feed.py 에서 본다).
+
+    받은 값을 남기고, feeds 에 넣어 둔 목록을 차례로 돌려준다. 없으면 빈 목록이다.
+    """
+
+    def __init__(self) -> None:
+        self.feeds: list[Feed] = []
+        self.calls: list[dict] = []
+
+    async def __call__(
+        self, conn, scores, book_vectors, keyword_vectors, conditions, owned
+    ):
+        self.calls.append(
+            {
+                "scores": scores,
+                "keyword_vectors": keyword_vectors,
+                "conditions": conditions,
+                "owned": owned,
+            }
+        )
+        return self.feeds.pop(0) if self.feeds else Feed([], ())
+
+
 @pytest.fixture
-def interest_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+def interest_feed(monkeypatch: pytest.MonkeyPatch) -> _FakeBuild:
     monkeypatch.setattr(get_settings(), "interest_feed", True)
     # 소설의 장르를 가를 이름 벡터는 없다고 친다. 다른 테스트가 만들어 둔 것을 쓰지 않는다
     monkeypatch.setattr(labels, "_name_vectors", {})
+    build = _FakeBuild()
+    monkeypatch.setattr(service.interest_feed, "build", build)
+    return build
 
 
 def _memories() -> list[dict]:
@@ -607,16 +636,88 @@ def test_처음_본_날은_다시_불려도_지키고_이력에서_빠진_책은
     assert row["book_first_seen"] == {_isbn(9100201): "2026-10-11"}
 
 
+async def _feed_row(conn: asyncpg.Connection) -> dict:
+    row = await conn.fetchrow(
+        "SELECT feed::text, feed_version, feed_prev::text, feed_partial"
+        " FROM taste_profile WHERE user_id = $1",
+        _USER,
+    )
+    return {
+        "feed": row["feed"] and json.loads(row["feed"]),
+        "feed_version": row["feed_version"],
+        "feed_prev": row["feed_prev"] and json.loads(row["feed_prev"]),
+        "feed_partial": row["feed_partial"],
+    }
+
+
+def test_기능_플래그가_켜지면_추천_목록을_뽑아_판_번호를_올리고_앞_판을_남긴다(
+    interest_feed,
+) -> None:
+    first = Feed([Placed(9100201, "요리", 80)], ())
+    second = Feed([Placed(9100202, "SF", 70)], ("작가:한강",))
+    interest_feed.feeds = [first, second]
+
+    async def check(conn):
+        await service.rebuild_on(conn, _request(history={}))
+        once = await _feed_row(conn)
+        await service.rebuild_on(conn, _request(history={}))
+        return once, await _feed_row(conn)
+
+    once, twice = _run_with_interest_tables(check)
+
+    assert once == {
+        "feed": first.stored(),
+        "feed_version": 1,
+        "feed_prev": None,
+        "feed_partial": False,
+    }
+    # 시간 예산을 넘겨 대신한 관심사가 있으면 표시해 밤에 다시 뽑는다
+    assert twice == {
+        "feed": second.stored(),
+        "feed_version": 2,
+        "feed_prev": first.stored(),
+        "feed_partial": True,
+    }
+
+
+def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가진_책을_넘긴다(
+    interest_feed,
+) -> None:
+    async def check(conn):
+        req = _request(
+            onboarding={"categories": ["역사"], "liked_book_ids": [9100201]},
+            memories=_memories(),
+            history={"purchased_isbns": [_isbn(9100202)]},
+        )
+        await service.rebuild_on(conn, req)
+
+    _run_with_interest_tables(check)
+
+    [call] = interest_feed.calls
+    assert {"역사", "키워드:무협", "요리"} <= set(call["scores"])
+    # 키워드 관심사의 검색어는 그 취향 기억 줄의 벡터다
+    assert call["keyword_vectors"] == {"키워드:무협": _unit(7)}
+    assert call["conditions"] == ["300쪽 이하"]
+    # 산 책은 빼고, 좋아한다고만 한 책(9100201)은 빼지 않는다
+    assert call["owned"] == {9100202}
+
+
 def test_기능_플래그가_꺼져_있으면_새_칸을_쓰지_않는다() -> None:
     async def check(conn):
         await service.rebuild_on(conn, _request(memories=_memories(), history={}))
-        return await _interest_row(conn)
+        return await _interest_row(conn), await _feed_row(conn)
 
-    row = _run_with_interest_tables(check)
+    row, feed = _run_with_interest_tables(check)
 
     assert row == {
         "interest_scores": {},
         "interest_vectors": {},
         "conditions": [],
         "book_first_seen": {},
+    }
+    assert feed == {
+        "feed": None,
+        "feed_version": 0,
+        "feed_prev": None,
+        "feed_partial": False,
     }

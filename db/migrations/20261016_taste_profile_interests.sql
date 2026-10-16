@@ -18,7 +18,8 @@ ALTER TABLE taste_profile
     ADD COLUMN IF NOT EXISTS conditions       jsonb   NOT NULL DEFAULT '[]'::jsonb,
     -- 이력의 책마다 AI 서버가 처음 본 날. {"9788937462788": "2026-10-15"}. 오래된 취향을 약하게 할 때 쓴다
     ADD COLUMN IF NOT EXISTS book_first_seen  jsonb   NOT NULL DEFAULT '{}'::jsonb,
-    -- 추천 목록 200권. 놓을 순서대로 [{"isbn": "…", "interest": "추리/스릴러", "match_score": 72}]
+    -- 추천 목록 200권. 놓을 순서대로 {"books": [{"book_id": 123, "interest": "추리/스릴러", "match_score": 72}],
+    -- "substituted": ["요리"]}. substituted 는 시간 예산을 넘겨 대신한 관심사로, 밤에 다시 뽑는다
     ADD COLUMN IF NOT EXISTS feed             jsonb,
     -- 추천 목록의 판 번호. 새로 뽑을 때마다 1씩 올린다. 커서에 실어 스크롤하는 중에 바뀌었는지 가린다
     ADD COLUMN IF NOT EXISTS feed_version     integer NOT NULL DEFAULT 0,
