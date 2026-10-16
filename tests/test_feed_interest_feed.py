@@ -37,6 +37,17 @@ def test_자리를_많이_받은_관심사부터_종류에_맞는_검색어로_�
     assert [j.limit for j in jobs] == [200, 100, 60, interest_feed.PICK_MIN]
 
 
+def test_책_벡터_평균으로_뽑는_관심사만_내_책_번호를_넘긴다() -> None:
+    seats = {"요리": 30, "SF": 3}
+
+    jobs = interest_feed.jobs(
+        seats, {"요리": [0.5]}, {}, lambda _: [0.9], {"요리": [11, 12], "SF": [13]}
+    )
+
+    # 이름 벡터로 뽑는 관심사는 내 책이 없다(#483)
+    assert [(j.name, j.anchors) for j in jobs] == [("요리", (11, 12)), ("SF", ())]
+
+
 # --- 목록에 둘 책 ---
 
 

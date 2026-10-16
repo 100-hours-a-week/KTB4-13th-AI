@@ -36,18 +36,20 @@ _PARENT = {
     name: parent for parent, group in categories.SUBCATEGORIES.items() for name in group
 }
 
-# 자리 번호: 검색어($1) → 뽑을 권수($2) → 도서관 분류($3, 좁힐 때만). 가까운 순으로 뽑은 뒤 책 정보와
-# 세부 분류 번호를 붙인다. 벡터 색인은 가까운 순서를 대강만 지키므로(relaxed_order) 다시 줄 세운다.
+# 자리 번호: 검색어($1) → 뽑을 권수($2) → 도서관 분류($3, 좁힐 때만) → 내 책 번호(그다음, 줄 때만). 가까운
+# 순으로 뽑은 뒤 책 정보와 세부 분류 번호를 붙인다. 벡터 색인은 가까운 순서를 대강만 지키므로(relaxed_order) 다시
+# 줄 세운다. 내 책을 주면 뽑은 책마다 그 가운데 가장 비슷한 책과의 유사도를 붙인다(#483)
 _SQL = """
 WITH nearest AS (
-    SELECT e.book_id, {distance} AS distance
+    SELECT e.book_id, e.embedding, {distance} AS distance
     FROM book_embeddings e
     JOIN v_books b USING (book_id)
     {where}
     ORDER BY distance
     LIMIT $2
-)
-SELECT n.book_id, b.isbn13, b.title, b.author, b.category, c.class_no, n.distance
+){own}
+SELECT n.book_id, b.isbn13, b.title, b.author, b.category, c.class_no, n.distance,
+       {nearest_own} AS nearest_own
 FROM nearest n
 JOIN v_books b USING (book_id)
 LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
@@ -117,8 +119,9 @@ ORDER BY distance, e.book_id
 LIMIT $3
 """
 
-# 자리 번호: 검색어($1) → 도서관 분류($2) → 뽑을 권수($3). 분류마다 개인화를 끈 목록과 같은 순서(판매 수 →
-# 신간 → 번호)로 색인 앞부분만 읽어 모은 뒤, 책 벡터를 책 번호로 읽어 검색어와의 거리를 붙인다
+# 자리 번호: 검색어($1) → 도서관 분류($2) → 뽑을 권수($3) → 내 책 번호($4, 줄 때만). 분류마다 개인화를 끈
+# 목록과 같은 순서(판매 수 → 신간 → 번호)로 색인 앞부분만 읽어 모은 뒤, 책 벡터를 책 번호로 읽어 검색어와의
+# 거리(내 책을 주면 가장 비슷한 내 책과의 유사도도)를 붙인다
 _POPULAR_IN_CLASS = cold_start.popular_first_sql(
     "",
     "true",
@@ -136,14 +139,43 @@ WITH popular AS (
     ) c
     ORDER BY c.seg, c.sales DESC, c.pub_year DESC NULLS LAST, c.book_id
     LIMIT $3
-)
+){{own}}
 SELECT p.book_id, b.isbn13, b.title, b.author, b.category,
-       e.embedding <=> $1::vector AS distance
+       e.embedding <=> $1::vector AS distance,
+       {{nearest_own}} AS nearest_own
 FROM popular p
 JOIN v_books b USING (book_id)
 LEFT JOIN book_embeddings e USING (book_id)
 ORDER BY p.seg, p.sales DESC, p.pub_year DESC NULLS LAST, p.book_id
 """
+
+
+def _own(anchors: Sequence[int], param: int, candidate: str) -> tuple[str, str]:
+    """내 책 벡터를 한 번만 읽는 CTE 와, 뽑은 책(candidate 의 벡터)마다 그 가운데 가장 비슷한 책과의 유사도 식.
+
+    내 책을 주지 않으면 CTE 는 없고 그 칸은 NULL 이다(#483).
+    """
+    if not anchors:
+        return "", "NULL::float8"
+    cte = (
+        ",\nown AS MATERIALIZED (\n"
+        f"    SELECT embedding FROM book_embeddings WHERE book_id = ANY(${param}::int[])\n)"
+    )
+    return cte, f"(SELECT max(1 - ({candidate} <=> o.embedding)) FROM own o)"
+
+
+def _similarity(row: Mapping[str, Any], length: float) -> float | None:
+    """유사도 항으로 펼 값. 가장 비슷한 내 책과의 유사도가 있으면 그것이고, 없으면 검색어와의 내적이다.
+
+    책 벡터가 길이 1 이라 코사인에 검색어의 길이를 곱하면 내적이고, 검색어가 책 벡터 평균이면 그 책들과의
+    유사도 평균이다. 책 벡터가 없으면 None 이다.
+    """
+    nearest_own = row.get("nearest_own")
+    if nearest_own is not None:
+        return nearest_own
+    if row["distance"] is None:
+        return None
+    return (1 - row["distance"]) * length
 
 
 @dataclass(frozen=True)
@@ -201,12 +233,14 @@ async def pick(
     by_name: bool,
     limit: int,
     left: Callable[[], float],
+    anchors: Sequence[int] = (),
 ) -> list[Pick]:
     """관심사 하나에서 검색어와 가까운 책 limit 권. 번호가 이 관심사로 이어지는 책을 앞에 둔다.
 
     vector 는 그 관심사의 책 벡터 평균(길이를 줄이지 않은 것)이거나 이름 벡터(by_name)다. 분류 안의 책이
     적으면 거리를 전부 계산하고, 많으면 벡터 색인으로 뽑는다. 고르는 기준은 지금 홈 추천과 같고
-    (personalized.py), 색인을 훑는 폭만 PICK_EF_SEARCH 로 좁다. 질의마다 left() 초만 기다리고, 시간을 다
+    (personalized.py), 색인을 훑는 폭만 PICK_EF_SEARCH 로 좁다. anchors 는 그 관심사의 내 책 번호이고, 주면
+    유사도 항을 그 가운데 가장 비슷한 책과의 유사도로 편다(#483). 질의마다 left() 초만 기다리고, 시간을 다
     쓰면 TimeoutError 다.
     """
     classes = classes_of(name)
@@ -229,11 +263,21 @@ async def pick(
                 await conn.execute(
                     f"SET LOCAL hnsw.max_scan_tuples = {FILTERED_MAX_SCAN_TUPLES}"
                 )
-            return await conn.fetch(
-                _SQL.format(distance=distance, where=_IN_CLASSES if classes else ""),
+            params = [
                 to_vector_literal(list(vector)),
                 limit,
                 *([list(classes)] if classes else []),
+            ]
+            own, nearest_own = _own(anchors, len(params) + 1, "n.embedding")
+            return await conn.fetch(
+                _SQL.format(
+                    distance=distance,
+                    where=_IN_CLASSES if classes else "",
+                    own=own,
+                    nearest_own=nearest_own,
+                ),
+                *params,
+                *([list(anchors)] if anchors else []),
                 timeout=left(),
             )
 
@@ -244,14 +288,11 @@ async def pick(
         if classes and len(rows) < limit and count <= FALLBACK_LIMIT:
             rows = await run(_EXACT_DISTANCE)
 
-    # 책 벡터가 길이 1 이라 코사인에 검색어의 길이를 곱하면 내적이다. 책 벡터 평균이면 그 책들과의 유사도 평균
     length = math.sqrt(sum(x * x for x in vector))
     return [
         _as_pick(
             row,
-            interest_scoring.similarity_part(
-                (1 - row["distance"]) * length, by_name=by_name
-            ),
+            interest_scoring.similarity_part(_similarity(row, length), by_name=by_name),
         )
         for row in numbered_first(name, rows, lambda row: row["class_no"])
     ]
@@ -360,33 +401,33 @@ async def pick_popular(
     by_name: bool,
     limit: int,
     timeout: float,
+    anchors: Sequence[int] = (),
 ) -> list[Pick]:
     """시간 예산을 넘긴 관심사의 대신할 책 limit 권. 그 관심사의 도서관 분류에서 인기 있는 책을 뽑는다.
 
-    지금 장애 때 쓰는 규칙 점수 목록과 같은 색인이라 몇 ms 다(#395). 인기도가 비어 있는 동안은 신간순이다.
-    유사도 항은 책 벡터를 책 번호로 읽어 pick 과 같은 식으로 매기고, 벡터가 없는 책은 0 이다. 검색어가
-    없으면(이름 벡터를 못 읽음) 모두 0 이다. 분류로 좁힐 수 없는 관심사는 빈 목록이고, 그 자리는 다른
-    관심사가 채운다.
+    지금 장애 때 쓰는 규칙 점수 목록과 같은 색인이라 몇 ms 다(#395, 운영 6–55ms). 인기도가 비어 있는 동안은
+    신간순이다. 유사도 항은 책 벡터를 책 번호로 읽어 pick 과 같은 식으로 매기고(anchors 도 같음), 벡터가 없는
+    책은 0 이다. 검색어가 없으면(이름 벡터를 못 읽음) 모두 0 이다. 분류로 좁힐 수 없는 관심사는 빈 목록이고,
+    그 자리는 다른 관심사가 채운다.
     """
     classes = classes_of(name)
     if not classes:
         return []
+    own, nearest_own = _own(anchors, 4, "e.embedding")
     rows = await cold_start.run_ordered(
         conn,
-        _POPULAR_SQL,
+        _POPULAR_SQL.format(own=own, nearest_own=nearest_own),
         None if vector is None else to_vector_literal(list(vector)),
         list(classes),
         limit,
+        *([list(anchors)] if anchors else []),
         timeout=timeout,
     )
     length = math.sqrt(sum(x * x for x in vector or ()))
     return [
         _as_pick(
             row,
-            interest_scoring.similarity_part(
-                None if row["distance"] is None else (1 - row["distance"]) * length,
-                by_name=by_name,
-            ),
+            interest_scoring.similarity_part(_similarity(row, length), by_name=by_name),
         )
         for row in rows
     ]
