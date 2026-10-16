@@ -103,6 +103,24 @@ def _rate(scores: Sequence[Score]) -> dict[str, Any]:
     }
 
 
+def _labels(scores: Sequence[Score]) -> dict[str, Any]:
+    """세기·어디에·핵심어가 맞은 비율(#424). 찾은 기대 취향 가운데 그 칸을 적어 둔 것이 분모다."""
+    labeled = sum(s.labeled for s in scores)
+    where = sum(s.where_labeled for s in scores)
+
+    def rate(count: int, total: int) -> float | None:
+        return round(count / total, 3) if total else None
+
+    return {
+        "labeled": labeled,
+        "sign": rate(sum(s.sign_matched for s in scores), labeled),
+        "strength": rate(sum(s.strength_matched for s in scores), labeled),
+        "keyword": rate(sum(s.keyword_matched for s in scores), labeled),
+        "where_labeled": where,
+        "where": rate(sum(s.where_matched for s in scores), where),
+    }
+
+
 def summarize(scores: Sequence[Score], runs: int) -> dict[str, Any]:
     """종류별·묶음별 통과율과, 돌릴 때마다 결과가 달라진 대화를 낸다."""
     groups = {case["kind"]: case["group"] for case in load_cases()}
@@ -128,6 +146,7 @@ def summarize(scores: Sequence[Score], runs: int) -> dict[str, Any]:
             for kind, items in by_kind.items()
         },
         "failures": _failures(scores),
+        "labels": _labels(scores),
         # 같은 대화인데 통과와 실패가 섞였거나, 뽑은 개수가 달랐던 대화
         "unstable": [
             case_id
@@ -170,6 +189,18 @@ def render(summary: dict[str, Any]) -> str:
         f"- 돌릴 때마다 결과가 달라진 대화: {', '.join(summary['unstable']) or '없음'}",
         f"- 코드로 다 볼 수 없어 LLM 채점이 필요한 호출: {summary['needs_llm']}번",
     ]
+    labels = summary["labels"]
+    if labels["labeled"]:
+
+        def pct(rate: float | None) -> str:
+            return "-" if rate is None else f"{rate:.0%}"
+
+        lines.append(
+            f"- 찾은 취향 {labels['labeled']}개의 세기·핵심어·어디에: "
+            f"세기 부호 {pct(labels['sign'])}, 크기까지 {pct(labels['strength'])}, "
+            f"핵심어 {pct(labels['keyword'])}, "
+            f"어디에 {pct(labels['where'])}(주제 {labels['where_labeled']}개)"
+        )
     if summary["seconds"]:
         lines.append(
             f"- 대화 하나에 걸린 시간: 중앙값 {summary['seconds']['median']}초, "
