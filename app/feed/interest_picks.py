@@ -25,7 +25,6 @@ from app.feed.personalized import (
     FILTERED_SCAN_MEM_MULTIPLIER,
 )
 from app.profile import interests
-from app.search.vector import EF_SEARCH
 
 # 관심사 하나를 뽑을 때 벡터 색인을 얼마나 넓게 훑는지. 지금 홈 추천과 ① 검색은 1000 이지만, 목록 하나의
 # 3초 예산은 운영에서 200 으로 잰 시간에 맞춰 정했다(#399). 운영에서 1000 이면 큰 분류 하나가 2.7–7초라 첫
@@ -270,7 +269,8 @@ async def pick_keyword(
     """
     keyword = name.removeprefix(interests.KEYWORD).strip().lower()
     async with conn.transaction():
-        await conn.execute(f"SET LOCAL hnsw.ef_search = {EF_SEARCH}")
+        # 이 조회는 반복해 훑지 않아 훑는 폭보다 많은 책을 돌려주지 못한다. 뽑을 권수만큼은 훑는다
+        await conn.execute(f"SET LOCAL hnsw.ef_search = {max(PICK_EF_SEARCH, limit)}")
         rows = await conn.fetch(
             _KEYWORD_SQL,
             to_vector_literal(list(vector)),
