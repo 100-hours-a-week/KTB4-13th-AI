@@ -1,12 +1,17 @@
-"""④ 관심사별 홈 추천 목록 — 자리 나누기, 번갈아 놓기, 한 작가 상한(#447, 설계 #395). DB 없이 돈다.
+"""④ 관심사별 홈 추천 목록 — 자리 나누기, 번갈아 놓기, 한 작가 상한(#447), 조립(#452, 설계 #395). DB 없이 돈다.
 
 ⑥이 프로필을 계산할 때 200자리 목록을 미리 뽑아 두고, 홈과 더 보기는 그 목록을 읽기만 한다(#395).
-관심사마다 책을 뽑는 것과 목록을 조립하는 것은 #449–#452 다.
+관심사마다 책을 뽑는 것은 app/feed/interest_picks.py 다.
 """
 
+import re
 from collections import Counter, deque
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass
 
+from app.core import editions
+from app.feed import scoring
+from app.feed.interest_picks import Pick
 from app.profile import interests
 
 # 목록의 자리 수. 홈의 20권은 이 줄의 앞 20권이다. ⑥ 시간 때문에 200으로 둔다(#395)
@@ -16,6 +21,47 @@ MAX_INTERESTS = 5
 # 한 작가는 이만큼마다 이만큼까지 둔다. 작가를 말한 사람의 홈이 그 작가 책으로만 차지 않게 한다(#395 의 (안))
 AUTHOR_BLOCK = 20
 AUTHOR_PER_BLOCK = 5
+
+# ⑤ 가 조건을 적는 꼴(app/extraction/rules.py): "300쪽 이하", "1만 원 이하", "1만 5천 원 이하", "9,900원 이하",
+# "2024년 이후". 꼴이 바뀌면 여기도 같이 고친다
+_PAGES = re.compile(r"(\d+)쪽 (이하|이상)")
+_PRICE = re.compile(r"(?:(\d+)만 (?:(\d)천 )?원|([\d,]+)원) (이하|이상)")
+_YEAR = re.compile(r"(\d{4})년 (이후|이전)")
+
+
+@dataclass(frozen=True)
+class Condition:
+    """책 정보로 가르는 조건 하나. field 는 pages·price·year 이고, upper 면 limit 이하(이전)다."""
+
+    field: str
+    limit: int
+    upper: bool
+
+    def met_by(self, value: int | None) -> bool:
+        """책의 값이 조건을 지키는지. 값을 모르면 지키지 않는 것으로 본다."""
+        if value is None:
+            return False
+        return value <= self.limit if self.upper else value >= self.limit
+
+
+def parse_condition(text: str) -> Condition | None:
+    """⑤ 가 적은 조건을 읽는다. 쪽수·가격·출간연도의 꼴이 아니면 None 이다."""
+    if match := _PAGES.fullmatch(text):
+        return Condition("pages", int(match[1]), match[2] == "이하")
+    if match := _PRICE.fullmatch(text):
+        if match[1]:
+            amount = int(match[1]) * 10000 + int(match[2] or 0) * 1000
+        else:
+            amount = int(match[3].replace(",", ""))
+        return Condition("price", amount, match[4] == "이하")
+    if match := _YEAR.fullmatch(text):
+        return Condition("year", int(match[1]), match[2] == "이전")
+    return None
+
+
+def meets_all(conditions: Sequence[Condition], facts: Mapping[str, int | None]) -> bool:
+    """책 정보(pages·price·year)가 조건을 모두 지키는지. 조건이 없으면 거짓이라 순서를 바꾸지 않는다."""
+    return bool(conditions) and all(c.met_by(facts.get(c.field)) for c in conditions)
 
 
 def allocate(
@@ -114,3 +160,63 @@ def cap_authors[T](
         out.extend(placed)
         pending.extendleft(reversed(deferred))
     return out
+
+
+@dataclass(frozen=True)
+class Placed:
+    """목록의 한 자리. 어느 관심사에서 왔는지와 매칭 점수(0–100)."""
+
+    book_id: int
+    interest: str
+    match_score: int
+
+
+def _edition(pick: Pick) -> tuple[str, str]:
+    """같은 책의 판본을 묶는 키. 제목이나 저자를 모르면 그 책만의 키다(저자 칸이 빈 키와 겹치지 않음)."""
+    return editions.edition_key(pick.title, pick.author) or (str(pick.book_id), "")
+
+
+def assemble(
+    picks: Mapping[str, Sequence[Pick]],
+    seats: Mapping[str, int],
+    *,
+    keep: Callable[[Pick], bool] = lambda _pick: True,
+    meets: Callable[[Pick], bool] = lambda _pick: False,
+    total: int = TOTAL_SEATS,
+) -> list[Placed]:
+    """관심사마다 뽑은 책으로 목록을 만든다. seats 는 allocate 가 나눈 자리다.
+
+    관심사마다 keep 이 거르는 책(가진 책과 그 판본, 음수인 관심사의 책)을 빼고, 같은 책의 판본은 처음 것만
+    남기고, 조건을 모두 지키는 책(meets)을 순서를 지킨 채 앞으로 옮긴다. 그다음 자리 비율대로 번갈아 놓고
+    (같은 책의 판본은 처음 놓인 자리에만), 한 작가 상한을 건다.
+
+    매칭 점수의 유사도 항은 그 책을 뽑은 관심사들 가운데 높은 쪽이고(#395), 몫 항은 놓인 관심사의 것이다.
+    """
+    best: dict[tuple[str, str], float] = {}
+    chosen: dict[tuple[str, tuple[str, str]], Pick] = {}
+    lists: dict[str, list[tuple[str, str]]] = {}
+    for name, got in picks.items():
+        keys: list[tuple[str, str]] = []
+        for pick in got:
+            if not keep(pick):
+                continue
+            key = _edition(pick)
+            best[key] = max(best.get(key, 0.0), pick.part)
+            if (name, key) not in chosen:
+                chosen[(name, key)] = pick
+                keys.append(key)
+        lists[name] = sorted(keys, key=lambda key: not meets(chosen[(name, key)]))
+
+    placed = cap_authors(
+        interleave(lists, seats, total),
+        lambda item: editions.author_key(chosen[item].author) or None,
+    )
+    shares = scoring.share_parts(seats)
+    return [
+        Placed(
+            book_id=chosen[(name, key)].book_id,
+            interest=name,
+            match_score=scoring.interest_match_score(best[key], shares[name]),
+        )
+        for name, key in placed
+    ]
