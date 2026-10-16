@@ -12,7 +12,8 @@
 ALTER TABLE taste_profile
     -- 관심사마다 재료(온보딩, 취향 기억, 책)별 점수. {"추리/스릴러": {"memory": 2, "books": 3}}
     ADD COLUMN IF NOT EXISTS interest_scores  jsonb   NOT NULL DEFAULT '{}'::jsonb,
-    -- 관심사마다 그 관심사에 점수를 더한 책들의 벡터 평균(실수 384개). 책이 있는 관심사만
+    -- 관심사마다 목록을 뽑는 검색어 벡터(실수 384개). 책이 있는 관심사는 그 책들의 벡터 평균, 키워드 관심사는
+    -- 핵심어 벡터. 둘 다 없는 관심사는 이름 벡터를 쓰므로 남기지 않는다
     ADD COLUMN IF NOT EXISTS interest_vectors jsonb   NOT NULL DEFAULT '{}'::jsonb,
     -- 조건 목록. ["300쪽 이하", "2만 원 이하"]
     ADD COLUMN IF NOT EXISTS conditions       jsonb   NOT NULL DEFAULT '[]'::jsonb,
