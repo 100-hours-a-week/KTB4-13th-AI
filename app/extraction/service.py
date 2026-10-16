@@ -22,7 +22,7 @@ from app.gateway.llm import (
 
 logger = logging.getLogger(__name__)
 
-# 명세 ⑤ 각주: 취향 문장의 벡터는 ②의 purpose: query 와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이라서다.
+# 명세 ⑤ 각주: 핵심어의 벡터는 ②의 purpose: query 와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이라서다.
 # 임베딩은 모르는 용도를 오류 없이 문서용으로 처리하므로, 값이 틀려도 조용히 다른 벡터가 나온다.
 MEMORY_VECTOR_PURPOSE = "query"
 
@@ -77,8 +77,10 @@ async def to_extractions(
         return []
 
     try:
+        # 문장이 아니라 핵심어로 만든다. 문장으로 만들면 "좋아함"과 "읽지 않음"이 거의 같은 벡터가 되고
+        # (유사도 0.95, #399 근거 6), 방향은 세기의 부호가 따로 나타낸다(#426)
         vectors, dim, _model = await embedding.embed(
-            [candidate.value for candidate in candidates], MEMORY_VECTOR_PURPOSE
+            [candidate.keyword for candidate in candidates], MEMORY_VECTOR_PURPOSE
         )
     except Exception as exc:
         # 임베딩은 실패를 한 가지 예외로 모아 주지 않는다(②의 라우터도 Exception 으로 받는다).
@@ -88,7 +90,9 @@ async def to_extractions(
         {
             "type": candidate.type,
             "value": candidate.value,
-            "confidence": candidate.confidence,
+            "strength": candidate.strength,
+            "applies_to": list(candidate.applies_to),
+            "keyword": candidate.keyword,
             "vector": vector,
             # 설정값이 아니라 실제로 만든 벡터의 길이다. BE 가 자기 색인의 차원과 대조한다
             "dim": dim,

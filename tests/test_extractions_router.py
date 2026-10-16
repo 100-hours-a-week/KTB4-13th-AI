@@ -93,7 +93,9 @@ def test_뽑은_것이_있으면_extractions에_싣고_nothing_found는_false다
     found = {
         "type": "mood",
         "value": "이별 후 위로되는 잔잔한 소설을 찾음",
-        "confidence": 0.82,
+        "strength": 1,
+        "applies_to": [],
+        "keyword": "위로되는",
         "vector": [0.01, -0.04],
         "dim": 2,
         "source_conversation_id": "cv_20260903_a1",
@@ -331,7 +333,9 @@ def test_LLM이_뽑은_취향이_명세의_모양으로_나간다(fake_llm) -> N
                 {
                     "type": "mood",
                     "value": "이별 후 위로되는 소설을 찾음",
-                    "confidence": 0.7,
+                    "strength": 1,
+                    "applies_to": [],
+                    "keyword": "위로되는",
                     "evidence": "이별 후에 위로가 될 만한 걸로",
                     "owner": "user",
                     "basis": "requested",
@@ -351,7 +355,9 @@ def test_LLM이_뽑은_취향이_명세의_모양으로_나간다(fake_llm) -> N
                 {
                     "type": "mood",
                     "value": "이별 후 위로되는 소설을 찾음",
-                    "confidence": 0.7,
+                    "strength": 1,
+                    "applies_to": [],
+                    "keyword": "위로되는",
                     "vector": [0.1, 0.2],
                     "dim": 2,
                     "source_conversation_id": "cv_20260903_a1",
@@ -409,7 +415,8 @@ def test_임베딩이_실패하면_503이다(
                 {
                     "type": "mood",
                     "value": "위로되는 소설을 찾음",
-                    "confidence": 0.7,
+                    "strength": 1,
+                    "keyword": "위로되는",
                     "evidence": "이별 후에 위로가 될 만한 걸로",
                     "owner": "user",
                     "basis": "requested",

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core import categories
 from app.extraction import prompts
 from app.extraction.rules import PREFERENCE_TYPES, screen
 from app.extraction.schemas import (
@@ -131,7 +132,16 @@ def test_지시문이_보여_주는_답의_모양을_서버가_그대로_읽을_
     assert empty == {"extractions": []}
     assert set(filled) == {"extractions"}
     assert [set(item) for item in filled["extractions"]] == [
-        {"type", "value", "confidence", "evidence", "owner", "basis"}
+        {
+            "type",
+            "value",
+            "strength",
+            "applies_to",
+            "keyword",
+            "evidence",
+            "owner",
+            "basis",
+        }
     ]
     # 예시의 근거가 사용자의 말에서 옮긴 것이라면 서버가 버리지 않는다
     said = [filled["extractions"][0]["evidence"]]
@@ -151,3 +161,11 @@ def test_지시문의_예시_낱말은_평가_묶음에_없다() -> None:
     assert len(examples) >= 4, "종류마다 든 예시를 찾지 못했다"
     for phrase in examples:
         assert phrase not in cases, f"{phrase}: 평가 묶음에 있는 말이다"
+
+
+def test_지시문에_어디에로_고를_이름이_모두_있다() -> None:
+    # 목록에 없는 이름은 코드가 뺀다. 지시문에서 빠진 이름은 LLM 이 고를 수 없다(#423)
+    system, _human = _messages(_request())
+
+    names = system.content[system.content.index("카테고리: ") :]
+    assert all(name in names for name in categories.NAME_TEXTS)

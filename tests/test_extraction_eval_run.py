@@ -22,13 +22,18 @@ _BY_ID = {case["id"]: case for case in _CASES}
 
 
 def _ideal(request: dict) -> Outcome:
-    """기대값 그대로 답하는 가짜 API."""
+    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다.
+
+    세 칸을 적지 않은 조건(#427)은 직접 말했는지에 맞는 세기와 찾는 말을 핵심어로 쓴다.
+    """
     case = next(c for c in _CASES if c["request"] == request)
     items = [
         {
             "type": want["type"],
             "value": want["value"],
-            "confidence": 0.8,
+            "strength": want.get("strength", 2 if want["stated"] else 1),
+            "applies_to": want.get("applies_to", [])[:1],
+            "keyword": want.get("keyword", want["keywords"])[0],
             "vector": [0.1, 0.2],
             "dim": 2,
             "source_conversation_id": request["conversation_id"],
@@ -69,21 +74,7 @@ def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
 def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -> None:
     # 받아들이는 말과 이름을 하나씩 골라 답한다. 기대값끼리 어긋나면(어디에를 비워야 하는데 이름을
     # 적었거나, 핵심어가 비었거나) 여기서 드러난다
-    def labeled(request: dict) -> Outcome:
-        ideal = _ideal(request)
-        wanted = next(c for c in _CASES if c["request"] == request)["expect"]
-        for item, want in zip(
-            ideal.data["extractions"], wanted["extractions"], strict=True
-        ):
-            if "strength" in want:
-                item.update(
-                    strength=want["strength"],
-                    keyword=want["keyword"][0],
-                    applies_to=want.get("applies_to", [])[:1],
-                )
-        return ideal
-
-    summary, _calls = _run(_CASES, labeled)
+    summary, _calls = _run(_CASES)
 
     assert summary["labels"] == {
         "labeled": 59,
@@ -190,7 +181,9 @@ def test_실패_이유를_종류별로도_센다() -> None:
         item = {
             "type": "mood",
             "value": "힐링 소설을 즐겨 읽음",
-            "confidence": 0.7,
+            "strength": 2,
+            "applies_to": [],
+            "keyword": "힐링",
             "vector": [0.1],
             "dim": 1,
             "source_conversation_id": request["conversation_id"],
@@ -337,6 +330,15 @@ def test_결과를_파일로_남긴다(tmp_path, capsys) -> None:
     assert saved["bundle_version"] == run.load_bundle()["version"]
     assert saved["runs"][0]["case_id"] == "request-01"
     assert saved["runs"][0]["values"] == ["쿠버네티스 입문서를 찾음"]
+    # 세 칸이 왜 틀렸는지 볼 수 있게 뽑은 값도 남긴다
+    assert saved["runs"][0]["got"] == [
+        {
+            "type": "topic",
+            "strength": 1,
+            "applies_to": ["프로그래밍"],
+            "keyword": "쿠버네티스",
+        }
+    ]
 
 
 def test_없는_종류를_주면_부르지_않고_끝난다(capsys) -> None:
@@ -356,7 +358,9 @@ def test_API를_그대로_거쳐_응답과_시간을_받는다(monkeypatch) -> N
                 {
                     "type": "topic",
                     "value": "쿠버네티스 입문서를 찾음",
-                    "confidence": 0.7,
+                    "strength": 1,
+                    "applies_to": ["프로그래밍"],
+                    "keyword": "쿠버네티스",
                     "evidence": "쿠버네티스 처음 배우는데 입문서 추천해줘",
                     "owner": "user",
                     "basis": "requested",
