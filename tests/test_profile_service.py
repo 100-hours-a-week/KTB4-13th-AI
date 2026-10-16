@@ -6,11 +6,13 @@ SEARCH_TEST_DATABASE_URL 에 DB 주소를 주면 돈다. 넣은 데이터는 트
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import asyncpg
 import pytest
 
+from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.profile import labels, service
 from app.profile.schemas import ProfileRequest
@@ -504,3 +506,117 @@ def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_
                 await conn.close()
 
     assert asyncio.run(go()) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 관심사 점수 저장(#440). 기능 플래그가 켜져 있을 때만 새 표·칸을 읽고 쓴다.
+# ---------------------------------------------------------------------------
+
+_MIGRATION = (
+    Path(__file__).parent.parent
+    / "db"
+    / "migrations"
+    / "20261016_taste_profile_interests.sql"
+)
+
+
+def _run_with_interest_tables(check):
+    """새 칸 마이그레이션(#439)과 AI 책 분류 표(#421)가 있는 DB 에서 돈다. 둘 다 되돌린다."""
+
+    async def with_tables(conn):
+        await conn.execute(_MIGRATION.read_text(encoding="utf-8"))
+        await conn.execute(
+            "CREATE TEMP TABLE book_classes (isbn13 text PRIMARY KEY, class_no text)"
+        )
+        await conn.execute(
+            "INSERT INTO book_classes VALUES ($1, '594.5')", _isbn(9100201)
+        )
+        return await check(conn)
+
+    return _run(with_tables)
+
+
+async def _interest_row(conn: asyncpg.Connection) -> dict:
+    row = await conn.fetchrow(
+        "SELECT interest_scores::text, interest_vectors::text, conditions::text,"
+        " book_first_seen::text FROM taste_profile WHERE user_id = $1",
+        _USER,
+    )
+    return {key: json.loads(value) for key, value in dict(row).items()}
+
+
+@pytest.fixture
+def interest_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "interest_feed", True)
+    # 소설의 장르를 가를 이름 벡터는 없다고 친다. 다른 테스트가 만들어 둔 것을 쓰지 않는다
+    monkeypatch.setattr(labels, "_name_vectors", {})
+
+
+def _memories() -> list[dict]:
+    return [
+        _memory("무협", 2, _unit(7), day=1),
+        {**_memory("300쪽 이하", 2, _unit(9), day=2), "type": "condition"},
+    ]
+
+
+def test_기능_플래그가_켜지면_관심사_점수와_조건과_처음_본_날을_저장한다(
+    interest_feed, at_now
+) -> None:
+    async def check(conn):
+        req = _request(
+            onboarding={
+                "categories": ["역사"],
+                "tags": ["재테크"],
+                "liked_book_ids": [9100201],
+            },
+            memories=_memories(),
+            history={},
+        )
+        await service.rebuild_on(conn, req)
+        return await _interest_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert row["interest_scores"] == {
+        "역사": {"onboarding": 1.0},
+        "재테크": {"onboarding": 1.0},
+        "키워드:무협": {"memory": 2.0},
+        # 좋아한 책(무게 2)은 세부 분류 번호 594 로 요리다
+        "요리": {"books": 2.0},
+    }
+    assert row["interest_vectors"] == {"요리": pytest.approx(_unit(0))}
+    assert row["conditions"] == ["300쪽 이하"]
+    # 받은 날(한국 시간 10/12)의 전날
+    assert row["book_first_seen"] == {_isbn(9100201): "2026-10-11"}
+
+
+def test_처음_본_날은_다시_불려도_지키고_이력에서_빠진_책은_지운다(
+    interest_feed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def check(conn):
+        monkeypatch.setattr(service, "_now", lambda: _NOW)
+        both = {"liked_book_ids": [9100201, 9100202]}
+        await service.rebuild_on(conn, _request(onboarding=both, history={}))
+        monkeypatch.setattr(service, "_now", lambda: _NOW + timedelta(days=8))
+        one = {"liked_book_ids": [9100201]}
+        await service.rebuild_on(conn, _request(onboarding=one, history={}))
+        return await _interest_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert row["book_first_seen"] == {_isbn(9100201): "2026-10-11"}
+
+
+def test_기능_플래그가_꺼져_있으면_새_칸을_쓰지_않는다() -> None:
+    async def check(conn):
+        await service.rebuild_on(conn, _request(memories=_memories(), history={}))
+        return await _interest_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert row == {
+        "interest_scores": {},
+        "interest_vectors": {},
+        "conditions": [],
+        "book_first_seen": {},
+    }
