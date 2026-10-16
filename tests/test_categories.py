@@ -130,3 +130,32 @@ def test_이름_벡터를_만들_글도_겹치지_않는다() -> None:
     # 글이 같으면 벡터가 같아 두 관심사를 가를 수 없다.
     texts = list(categories.NAME_TEXTS.values())
     assert len(texts) == len(set(texts))
+
+
+@pytest.mark.parametrize(
+    ("class_no", "expected"),
+    [
+        ("005.133", "프로그래밍"),
+        ("004.5", "IT"),  # 카테고리까지만 알 수 있는 번호
+        ("325.2", "경영 일반"),  # 긴 앞자리가 먼저 걸린다(32 경제보다)
+        ("321", "경제"),
+        ("181.7", "심리학"),
+        ("100", "철학"),  # 1 로 걸린다
+        ("911.05", "한국사"),
+        ("913", "세계사"),
+        ("811.6", "시"),
+        ("844", "일상 에세이"),
+        (" 594.5 ", "요리"),
+        ("813.7", None),  # 소설은 장르가 섞여 있어 표에 없다
+        ("2", None),
+        ("", None),
+        ("가나다", None),
+        (None, None),
+    ],
+)
+def test_세부_분류_번호의_긴_앞자리부터_관심사를_찾는다(class_no, expected) -> None:
+    assert categories.class_interest(class_no) == expected
+
+
+def test_번호_표의_관심사는_모두_서버_안_이름이다() -> None:
+    assert set(categories.CLASS_INTERESTS.values()) <= set(categories.NAME_TEXTS)

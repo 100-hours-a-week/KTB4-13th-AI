@@ -17,6 +17,7 @@ from app.extraction.rules import MAX_VALUE_CHARS
 from app.extraction.rules import PREFERENCE_TYPES as MEMORY_TYPES
 from app.feed.schemas import MAX_SIZE, FeedRequest
 from app.profile.schemas import USED_LIKED_BOOKS, ProfileRequest
+from evals.feed.run import memory_request
 
 _PATH = Path(__file__).resolve().parents[1] / "evals" / "feed" / "cases.json"
 
@@ -166,10 +167,9 @@ def test_사용자는_서버가_받는_요청으로_만들_수_있다(case: dict
             "user_id": case["user_id"],
             "idempotency_key": f"eval_{case['id']}",
             "onboarding": user["onboarding"],
-            "memories": [
-                {**memory, "vector": [0.0] * dim, "dim": dim}
-                for memory in user["memories"]
-            ],
+            "memories": memory_request(
+                user["memories"], [[0.0] * dim] * len(user["memories"]), dim
+            ),
             "history": user["history"],
         },
         strict=False,
