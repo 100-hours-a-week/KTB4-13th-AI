@@ -413,7 +413,11 @@ def test_EXTRACTION_LLM_MODEL_ID를_정하면_그_모델로_부른다(
     # 챗봇과 같은 모델을 쓰면 운영(gpt-4o)에서는 평가에 쓴 모델과 다른 모델로 돈다. ⑤만 따로 고른다
     monkeypatch.setenv("EXTRACTION_LLM_MODEL_ID", "openai/gpt-4o-mini")
 
-    assert _model_asked(monkeypatch) == {"model_id": "openai/gpt-4o-mini"}
+    # 온도는 ⑤만 0 으로 낮춘다(#433)
+    assert _model_asked(monkeypatch) == {
+        "model_id": "openai/gpt-4o-mini",
+        "temperature": service.EXTRACTION_TEMPERATURE,
+    }
 
 
 def test_EXTRACTION_LLM_MODEL_ID가_비어_있으면_공용_모델을_쓴다(
@@ -422,7 +426,10 @@ def test_EXTRACTION_LLM_MODEL_ID가_비어_있으면_공용_모델을_쓴다(
     monkeypatch.setenv("EXTRACTION_LLM_MODEL_ID", "")
 
     # None 이면 게이트웨이가 LLM_MODEL_ID 를 쓴다
-    assert _model_asked(monkeypatch) == {"model_id": None}
+    assert _model_asked(monkeypatch) == {
+        "model_id": None,
+        "temperature": service.EXTRACTION_TEMPERATURE,
+    }
 
 
 def test_답을_JSON으로_고정하는_설정은_건드리지_않는다(

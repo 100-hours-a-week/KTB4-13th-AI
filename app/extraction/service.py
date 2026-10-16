@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 # 명세 ⑤ 각주: 핵심어의 벡터는 ②의 purpose: query 와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이라서다.
 # 임베딩은 모르는 용도를 오류 없이 문서용으로 처리하므로, 값이 틀려도 조용히 다른 벡터가 나온다.
 MEMORY_VECTOR_PURPOSE = "query"
+# ⑤ LLM 의 온도. 0 이면 같은 대화에 같은 답이 나오기 쉬워 평가로 지시문을 견줄 수 있다(#433)
+EXTRACTION_TEMPERATURE = 0.0
 
 
 class EmbeddingUnavailableError(Exception):
@@ -42,8 +44,12 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     """
     chain = (
         prompts.EXTRACTION_PROMPT
-        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다
-        | get_chat_model(model_id=get_settings().extraction_llm_model_id or None)
+        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
+        # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
+        | get_chat_model(
+            model_id=get_settings().extraction_llm_model_id or None,
+            temperature=EXTRACTION_TEMPERATURE,
+        )
         | message_text
         | parse_json_response
     )
