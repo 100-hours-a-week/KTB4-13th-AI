@@ -18,6 +18,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -142,6 +143,37 @@ async def run(
             )
         )
     return scores
+
+
+# 묶음의 취향 기억에 붙이는 저장한 때의 시작. BE 처럼 시간대 표시 없이 보낸다
+_MEMORY_START = datetime(2026, 9, 1)  # noqa: DTZ001
+
+
+def memory_request(
+    memories: Sequence[Mapping[str, Any]], vectors: Sequence[list[float]], dim: int
+) -> list[dict[str, Any]]:
+    """묶음의 취향 기억(종류와 문장)을 ⑥ 요청의 모양으로 만든다(#436).
+
+    묶음에는 아직 세기·어디에·핵심어·저장한 때가 없다(#422 에서 적는다). 그때까지 문장 끝으로 세기를
+    정하고("…않음"은 -2, "…찾음"은 1, 나머지는 2), 어디에는 비우고, 핵심어는 문장을 그대로 쓴다.
+    저장한 때는 묶음의 순서대로 1초씩 늘린다. 벡터는 핵심어(=문장)의 벡터다.
+    """
+    out = []
+    for n, (memory, vector) in enumerate(zip(memories, vectors, strict=True)):
+        value = memory["value"]
+        strength = -2 if value.endswith("않음") else 1 if value.endswith("찾음") else 2
+        out.append(
+            {
+                **memory,
+                "strength": strength,
+                "applies_to": [],
+                "keyword": value,
+                "created_at": (_MEMORY_START + timedelta(seconds=n)).isoformat(),
+                "vector": vector,
+                "dim": dim,
+            }
+        )
+    return out
 
 
 def database_name(url: str) -> str:
@@ -300,12 +332,7 @@ async def measure(
                     vectors, dim, _model = await embedding.embed(
                         [m["value"] for m in user["memories"]], MEMORY_VECTOR_PURPOSE
                     )
-                    memories = [
-                        {**memory, "vector": vector, "dim": dim}
-                        for memory, vector in zip(
-                            user["memories"], vectors, strict=True
-                        )
-                    ]
+                    memories = memory_request(user["memories"], vectors, dim)
                 profile = await client.post(
                     PROFILE_URL,
                     json={
