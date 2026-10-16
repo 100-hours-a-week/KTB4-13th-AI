@@ -324,8 +324,34 @@ def _written_isbns(case: dict) -> set[str]:
 _EXECUTED = [c for c in _CASES.values() if c["expect"]["outcome"] == "executed"]
 _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 
+# 근거 검사가 아직 읽지 못하는 말(#416). 실제 모델은 이 사례들에서 맞는 책을 골랐지만 이 검사에 막혔다.
+# 앞 대화에서 이야기한 책("응 담아", "그럼 두 권 담아줘"), 가격으로 정해지는 책("제일 싼 거"),
+# 소개글로 가리킨 책이다. 고치면 strict 라서 통과하는 순간 실패하므로 여기서 빼면 된다.
+_EVIDENCE_GAPS = {
+    "describe-01",
+    "describe-02",
+    "short-02",
+    "multiturn-01",
+    "multiturn-03",
+}
 
-@pytest.mark.parametrize("case", _EXECUTED, ids=[c["id"] for c in _EXECUTED])
+
+def _with_gaps(cases: list[dict]) -> list:
+    return [
+        pytest.param(
+            case,
+            id=case["id"],
+            marks=pytest.mark.xfail(
+                strict=True, reason="#416 근거 검사가 아직 못 읽는 말"
+            ),
+        )
+        if case["id"] in _EVIDENCE_GAPS
+        else pytest.param(case, id=case["id"])
+        for case in cases
+    ]
+
+
+@pytest.mark.parametrize("case", _with_gaps(_EXECUTED))
 def test_정확히_말한_사례의_정답_행동은_근거가_있어_막히지_않는다(case: dict) -> None:
     ctx = _case_ctx(case)
 

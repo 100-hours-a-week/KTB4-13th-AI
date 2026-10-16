@@ -53,12 +53,15 @@ def _request(existing=()) -> ExtractionRequest:
     return req
 
 
-def _item(type_="mood", value="잔잔한 소설을 찾음", confidence=0.8, **over) -> dict:
+def _item(
+    type_="mood", value="잔잔한 소설을 찾음", strength=2, keyword="잔잔한", **over
+) -> dict:
     """LLM 이 낸 후보 하나. 근거는 _request() 의 사용자 말에서 옮긴 것으로 채운다."""
     item = {
         "type": type_,
         "value": value,
-        "confidence": confidence,
+        "strength": strength,
+        "keyword": keyword,
         "evidence": "잔잔한 소설 추천해줘",
         "owner": "user",
         "basis": "stated",
@@ -71,15 +74,17 @@ def _run(llm_output, req=None) -> list[dict]:
     return asyncio.run(service.to_extractions(req or _request(), llm_output))
 
 
-def test_후보마다_명세의_여섯_칸으로_나온다(embed_calls) -> None:
+def test_후보마다_명세의_여덟_칸으로_나온다(embed_calls) -> None:
     result = _run({"extractions": [_item()]})
 
     assert result == [
         {
             "type": "mood",
             "value": "잔잔한 소설을 찾음",
-            "confidence": 0.8,
-            "vector": _vector("잔잔한 소설을 찾음"),
+            "strength": 2,
+            "applies_to": [],
+            "keyword": "잔잔한",
+            "vector": _vector("잔잔한"),
             "dim": _DIM,
             "source_conversation_id": "cv_1",
         }
@@ -88,7 +93,9 @@ def test_후보마다_명세의_여섯_칸으로_나온다(embed_calls) -> None:
     assert list(result[0]) == [
         "type",
         "value",
-        "confidence",
+        "strength",
+        "applies_to",
+        "keyword",
         "vector",
         "dim",
         "source_conversation_id",
@@ -99,29 +106,38 @@ def test_벡터는_책_벡터와_견주는_쪽의_용도로_한_번에_만든다
     _run(
         {
             "extractions": [
-                _item(value="잔잔한 소설을 찾음", confidence=0.6),
+                _item(value="잔잔한 소설을 찾음"),
                 _item(
-                    type_="topic", value="기후 위기를 다룬 책을 찾음", confidence=0.9
+                    type_="topic",
+                    value="기후 위기를 다룬 책을 찾음",
+                    strength=3,
+                    keyword="기후 위기",
                 ),
             ]
         }
     )
 
     # 용도가 틀리면 임베딩 쪽은 오류 없이 문서용 벡터를 만든다. 그래서 여기서 값을 고정한다
-    assert embed_calls == [
-        (["기후 위기를 다룬 책을 찾음", "잔잔한 소설을 찾음"], "query")
-    ]
+    assert embed_calls == [(["기후 위기", "잔잔한"], "query")]
 
 
-def test_벡터는_자기_문장에_붙는다(embed_calls) -> None:
+def test_벡터는_자기_핵심어로_만들어_자기_취향에_붙는다(embed_calls) -> None:
     result = _run(
         {
             "extractions": [
-                _item(value="잔잔한 소설을 찾음", confidence=0.6),
+                _item(value="잔잔한 소설을 찾음"),
                 _item(
-                    type_="topic", value="기후 위기를 다룬 책을 찾음", confidence=0.9
+                    type_="topic",
+                    value="기후 위기를 다룬 책을 찾음",
+                    strength=3,
+                    keyword="기후 위기",
                 ),
-                _item(type_="author", value="김초엽 작가를 좋아함", confidence=0.7),
+                _item(
+                    type_="author",
+                    value="김초엽 작가를 좋아함",
+                    strength=3,
+                    keyword="김초엽",
+                ),
             ]
         }
     )
@@ -131,7 +147,7 @@ def test_벡터는_자기_문장에_붙는다(embed_calls) -> None:
         "김초엽 작가를 좋아함",
         "잔잔한 소설을 찾음",
     ]
-    assert all(item["vector"] == _vector(item["value"]) for item in result)
+    assert all(item["vector"] == _vector(item["keyword"]) for item in result)
 
 
 def test_벡터_길이는_임베딩이_돌려준_값을_쓴다(embed_calls) -> None:
@@ -143,21 +159,29 @@ def test_규칙에_걸린_후보는_벡터를_만들지_않는다(embed_calls) -
     result = _run({"extractions": [_item(), _item(type_="genre", value="버려질 것")]})
 
     assert [item["value"] for item in result] == ["잔잔한 소설을 찾음"]
-    assert embed_calls == [(["잔잔한 소설을 찾음"], "query")]
+    assert embed_calls == [(["잔잔한"], "query")]
 
 
-def test_이미_저장된_취향과_글자가_같은_후보는_나가지_않는다(embed_calls) -> None:
+def test_이미_저장된_취향과_글자가_같아도_다시_낸다(embed_calls) -> None:
+    # 같은 취향을 다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425)
     result = _run(
         {
             "extractions": [
                 _item(value="잔잔한 소설을 찾음"),
-                _item(type_="topic", value="기후 위기를 다룬 책을 찾음"),
+                _item(
+                    type_="topic",
+                    value="기후 위기를 다룬 책을 찾음",
+                    keyword="기후 위기",
+                ),
             ]
         },
         _request(existing=[("mood", "잔잔한 소설을 찾음.")]),
     )
 
-    assert [item["value"] for item in result] == ["기후 위기를 다룬 책을 찾음"]
+    assert [item["value"] for item in result] == [
+        "잔잔한 소설을 찾음",
+        "기후 위기를 다룬 책을 찾음",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -165,22 +189,11 @@ def test_이미_저장된_취향과_글자가_같은_후보는_나가지_않는�
     [
         pytest.param({"extractions": []}, id="뽑은_것_없음"),
         pytest.param(None, id="답이_깨짐"),
-        pytest.param({"extractions": [_item(confidence=0.2)]}, id="전부_규칙에_걸림"),
+        pytest.param({"extractions": [_item(strength=0)]}, id="전부_규칙에_걸림"),
     ],
 )
 def test_남은_후보가_없으면_임베딩을_부르지_않는다(embed_calls, llm_output) -> None:
     assert _run(llm_output) == []
-    assert embed_calls == []
-
-
-def test_남은_후보가_전부_이미_있는_취향이어도_임베딩을_부르지_않는다(
-    embed_calls,
-) -> None:
-    result = _run(
-        {"extractions": [_item()]}, _request(existing=[("mood", "잔잔한 소설을 찾음")])
-    )
-
-    assert result == []
     assert embed_calls == []
 
 
@@ -221,17 +234,17 @@ def test_LLM이_뽑은_취향이_벡터와_함께_나온다(monkeypatch, embed_c
         {
             "type": "mood",
             "value": "잔잔한 소설을 찾음",
-            "confidence": 0.8,
-            "vector": _vector("잔잔한 소설을 찾음"),
+            "strength": 2,
+            "applies_to": [],
+            "keyword": "잔잔한",
+            "vector": _vector("잔잔한"),
             "dim": _DIM,
             "source_conversation_id": "cv_1",
         }
     ]
 
 
-def test_LLM을_한_번만_부르고_대화와_저장된_취향을_넘긴다(
-    monkeypatch, embed_calls
-) -> None:
+def test_LLM을_한_번만_부르고_대화만_넘긴다(monkeypatch, embed_calls) -> None:
     seen = _use_model(monkeypatch, _answer_json())
 
     _extract(_request(existing=[("topic", "기후 위기를 다룬 책을 찾음")]))
@@ -239,7 +252,7 @@ def test_LLM을_한_번만_부르고_대화와_저장된_취향을_넘긴다(
     assert len(seen) == 1
     human = seen[0][-1].content
     assert "잔잔한 소설 추천해줘" in human
-    assert "기후 위기를 다룬 책을 찾음" in human
+    assert "기후 위기를 다룬 책을 찾음" not in human
 
 
 def test_LLM의_답도_규칙으로_거른다(monkeypatch, embed_calls) -> None:
@@ -353,20 +366,25 @@ def test_챗봇이_한_말을_근거로_든_취향은_나가지_않는다(
 def test_남의_취향이라고_적은_것은_나가지_않는다(monkeypatch, embed_calls) -> None:
     _use_model(
         monkeypatch,
-        _answer_json(_item(owner="other"), _item(type_="topic", value="시집을 찾음")),
+        _answer_json(
+            _item(owner="other"),
+            _item(type_="topic", value="시집을 찾음", keyword="시집"),
+        ),
     )
 
     assert [item["value"] for item in _extract()] == ["시집을 찾음"]
 
 
 def test_세_칸은_응답에_나가지_않는다(monkeypatch, embed_calls) -> None:
-    # 서버 안에서 거르는 데만 쓴다. 응답은 명세 ⑤의 여섯 칸 그대로다
+    # 서버 안에서 거르는 데만 쓴다. 응답은 명세 ⑤의 여덟 칸 그대로다
     _use_model(monkeypatch, _answer_json(_item()))
 
     assert set(_extract()[0]) == {
         "type",
         "value",
-        "confidence",
+        "strength",
+        "applies_to",
+        "keyword",
         "vector",
         "dim",
         "source_conversation_id",
@@ -412,3 +430,27 @@ def test_답을_JSON으로_고정하는_설정은_건드리지_않는다(
 ) -> None:
     # json_mode 를 끄면 모델이 JSON 이 아닌 글로 답할 수 있다. ⑤는 기본값(켬)을 쓴다
     assert "json_mode" not in _model_asked(monkeypatch)
+
+
+def test_좋아함과_싫어함은_핵심어가_같으면_벡터도_같고_세기의_부호로_가른다(
+    embed_calls,
+) -> None:
+    # 문장으로 벡터를 만들면 "좋아함"과 "읽지 않음"이 거의 같은 벡터가 되어 가를 수 없다(#399 근거 6)
+    result = _run(
+        {
+            "extractions": [
+                _item(type_="topic", value="추리 소설을 좋아함", keyword="추리 소설"),
+                _item(
+                    type_="mood",
+                    value="추리 소설은 읽지 않음",
+                    strength=-2,
+                    keyword="추리 소설",
+                ),
+            ]
+        }
+    )
+
+    assert [(item["strength"], item["vector"]) for item in result] == [
+        (2, _vector("추리 소설")),
+        (-2, _vector("추리 소설")),
+    ]
