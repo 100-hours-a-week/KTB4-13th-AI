@@ -104,6 +104,19 @@ JOIN v_books b USING (book_id)
 ORDER BY n.distance, n.book_id
 """
 
+# 자리 번호: 핵심어의 이름 벡터($1) → 소문자로 바꾼 핵심어($2) → 뽑을 권수($3). 제목에 그 말이 든 책을 글자
+# 조각 색인(<%)으로 찾아 가까운 순으로 뽑는다. 거리 식을 바꿔(+ 0) 벡터 색인을 못 쓰게 한다. 벡터 색인을 따라가며
+# 제목으로 거르면 거의 다 걸러져 몇 권 남지 않는다
+_TITLE_SQL = """
+SELECT e.book_id, b.isbn13, b.title, b.author, b.category,
+       (e.embedding <=> $1::vector) + 0 AS distance
+FROM v_books b
+JOIN book_embeddings e USING (book_id)
+WHERE $2 <% b.title AND strpos(lower(b.title), $2) > 0
+ORDER BY distance, e.book_id
+LIMIT $3
+"""
+
 
 @dataclass(frozen=True)
 class Pick:
@@ -263,24 +276,47 @@ async def pick_keyword(
     """키워드 관심사(키워드:고양이)의 책 limit 권. 핵심어의 이름 벡터와 가까운 책을 뽑고, 제목이나 소개글에
     그 말이 든 책을 앞에 둔다.
 
-    #395 의 (안)은 그 말이 든 책을 카탈로그 전체에서도 찾는 것이었다. 소개글에는 색인이 없어 그러면 관심사
-    하나에 1초 넘게 걸려(평가 DB 210만 권), 가까운 책 안에서만 가린다. 한 낱말 키워드는 가까운 200권의
-    90% 넘게 그 말이 들어 있었다(#450). 질의는 left() 초만 기다린다.
+    #395 의 (안)은 그 말이 든 책을 카탈로그 전체에서도 찾는 것이었다. 소개글에는 색인이 없어 운영에서 전체를
+    훑으면 40초가 넘어, 가까운 책 안에서만 가린다. 다만 드문 말(체스, 셜록 홈즈)은 가까운 책에 그 말이 든 책이
+    적어서, 그 말이 든 책이 limit 권보다 적으면 제목 색인으로 더 찾는다(#480). 흔한 말은 가까운 책이 이미 모두
+    그 말을 담고 있고, 제목 색인 조회가 오히려 비싸서 찾지 않는다. 질의는 left() 초만 기다린다.
     """
     keyword = name.removeprefix(interests.KEYWORD).strip().lower()
+    literal = to_vector_literal(list(vector))
     async with conn.transaction():
         # 이 조회는 반복해 훑지 않아 훑는 폭보다 많은 책을 돌려주지 못한다. 뽑을 권수만큼은 훑는다
         await conn.execute(f"SET LOCAL hnsw.ef_search = {max(PICK_EF_SEARCH, limit)}")
-        rows = await conn.fetch(
-            _KEYWORD_SQL,
-            to_vector_literal(list(vector)),
-            limit,
-            keyword,
-            timeout=left(),
+        rows = await conn.fetch(_KEYWORD_SQL, literal, limit, keyword, timeout=left())
+    mentioned = [row for row in rows if row["mentioned"]]
+    others = [row for row in rows if not row["mentioned"]]
+    if len(mentioned) < limit:
+        seen = {row["book_id"] for row in mentioned}
+        titled = await _titled(conn, literal, keyword, limit, left)
+        mentioned = sorted(
+            [*mentioned, *(row for row in titled if row["book_id"] not in seen)],
+            key=lambda row: (row["distance"], row["book_id"]),
         )
     return [
         _as_pick(
             row, scoring.interest_similarity_part(1 - row["distance"], by_name=True)
         )
-        for row in sorted(rows, key=lambda row: not row["mentioned"])
+        for row in [*mentioned, *others][:limit]
     ]
+
+
+async def _titled(
+    conn: asyncpg.Connection,
+    literal: str,
+    keyword: str,
+    limit: int,
+    left: Callable[[], float],
+) -> list[asyncpg.Record]:
+    """제목에 그 말이 든 책(가까운 순). 시간 예산을 넘기면 빈 목록이고, 그때는 가까운 책만 쓴다.
+
+    저장점으로 감싸, 시간을 넘긴 조회가 관심사를 뽑는 트랜잭션을 깨지 않게 한다.
+    """
+    try:
+        async with conn.transaction():
+            return await conn.fetch(_TITLE_SQL, literal, keyword, limit, timeout=left())
+    except TimeoutError:
+        return []
