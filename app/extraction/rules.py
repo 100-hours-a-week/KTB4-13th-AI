@@ -4,8 +4,8 @@ LLM 의 답은 믿을 수 있는 입력이 아니다. 종류를 지어내거나,
 내거나, 수십 개를 낼 수 있다. 응답에 나가는 것은 여기를 통과한 후보뿐이게 해서, 프롬프트가 바뀌어도
 명세 ⑤의 모양이 지켜지게 한다. 틀린 항목은 그 항목만 버린다.
 
-이미 저장된 취향과 겹치는지는 글자가 사실상 같은 것만 여기서 뺀다. 뜻이 같은지는 문장 벡터로
-가를 수 없어서(같은 취향 0.91–0.97, 다른 취향 0.88–0.95 로 범위가 겹친다) LLM 에게 맡긴다(#369).
+한 대화에서 글자가 사실상 같은 취향은 하나로 합친다. 이미 저장된 취향과는 견주지 않는다. 같은 취향을
+다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425).
 """
 
 import re
@@ -14,7 +14,6 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.core.validation import sanitize_string
-from app.extraction.schemas import ExistingPreference
 
 # 명세 ⑤ 의 extractions[].type
 PREFERENCE_TYPES = frozenset({"mood", "topic", "author", "condition"})
@@ -56,21 +55,6 @@ def text_key(value: str) -> str:
     뜻이 같은지는 보지 않는다. "조용한 산문"과 "차분한 산문"은 다른 값이다.
     """
     return "".join(value.casefold().split()).rstrip(_TRAILING_PUNCTUATION)
-
-
-def same_as_existing(
-    candidate: Candidate, existing: Sequence[ExistingPreference]
-) -> int | None:
-    """종류와 글자가 같은 이미 저장된 취향의 위치(0부터). 없으면 None.
-
-    지금은 빼는 데만 쓴다. 위치를 돌려주는 것은, 같은 취향이 다시 나왔다는 것을 나중에 BE 에 알려
-    그 취향을 무겁게 세는 데 쓰려는 것이다(#365).
-    """
-    key = text_key(candidate.value)
-    for index, saved in enumerate(existing):
-        if saved.type == candidate.type and text_key(saved.value) == key:
-            return index
-    return None
 
 
 def _letters(text: str) -> str:
@@ -151,15 +135,11 @@ def _candidate(item: Any) -> Candidate | None:
     return Candidate(type_, value, confidence)
 
 
-def screen(
-    llm_output: Any,
-    existing: Sequence[ExistingPreference] = (),
-    user_turns: Sequence[str] | None = None,
-) -> list[Candidate]:
+def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Candidate]:
     """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 신뢰도가 높은 순으로 돌려준다.
 
     한 대화에서 같은 취향이 두 번 나오면 하나로 합친다. 표기는 먼저 나온 것, 신뢰도는 높은 값이다.
-    이미 저장된 취향(existing)과 종류·글자가 같은 후보는 뺀다. 개수 상한은 그 뒤에 센다.
+    개수 상한은 합친 뒤에 센다.
     사용자가 한 말(user_turns)을 주면 근거·주인·직접 말했는지도 본다(drop_reason).
     """
     items = llm_output.get("extractions") if isinstance(llm_output, dict) else None
@@ -172,8 +152,6 @@ def screen(
         if candidate is None:
             continue
         if user_turns is not None and drop_reason(item, user_turns) is not None:
-            continue
-        if same_as_existing(candidate, existing) is not None:
             continue
         key = (candidate.type, text_key(candidate.value))
         seen = merged.get(key)

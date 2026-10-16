@@ -86,11 +86,11 @@ def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -
     summary, _calls = _run(_CASES, labeled)
 
     assert summary["labels"] == {
-        "labeled": 56,
+        "labeled": 59,
         "sign": 1.0,
         "strength": 1.0,
         "keyword": 1.0,
-        "where_labeled": 35,
+        "where_labeled": 36,
         "where": 1.0,
     }
 

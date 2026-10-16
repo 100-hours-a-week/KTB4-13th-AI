@@ -146,7 +146,8 @@ def test_규칙에_걸린_후보는_벡터를_만들지_않는다(embed_calls) -
     assert embed_calls == [(["잔잔한 소설을 찾음"], "query")]
 
 
-def test_이미_저장된_취향과_글자가_같은_후보는_나가지_않는다(embed_calls) -> None:
+def test_이미_저장된_취향과_글자가_같아도_다시_낸다(embed_calls) -> None:
+    # 같은 취향을 다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425)
     result = _run(
         {
             "extractions": [
@@ -157,7 +158,10 @@ def test_이미_저장된_취향과_글자가_같은_후보는_나가지_않는�
         _request(existing=[("mood", "잔잔한 소설을 찾음.")]),
     )
 
-    assert [item["value"] for item in result] == ["기후 위기를 다룬 책을 찾음"]
+    assert [item["value"] for item in result] == [
+        "잔잔한 소설을 찾음",
+        "기후 위기를 다룬 책을 찾음",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -170,17 +174,6 @@ def test_이미_저장된_취향과_글자가_같은_후보는_나가지_않는�
 )
 def test_남은_후보가_없으면_임베딩을_부르지_않는다(embed_calls, llm_output) -> None:
     assert _run(llm_output) == []
-    assert embed_calls == []
-
-
-def test_남은_후보가_전부_이미_있는_취향이어도_임베딩을_부르지_않는다(
-    embed_calls,
-) -> None:
-    result = _run(
-        {"extractions": [_item()]}, _request(existing=[("mood", "잔잔한 소설을 찾음")])
-    )
-
-    assert result == []
     assert embed_calls == []
 
 
@@ -229,9 +222,7 @@ def test_LLM이_뽑은_취향이_벡터와_함께_나온다(monkeypatch, embed_c
     ]
 
 
-def test_LLM을_한_번만_부르고_대화와_저장된_취향을_넘긴다(
-    monkeypatch, embed_calls
-) -> None:
+def test_LLM을_한_번만_부르고_대화만_넘긴다(monkeypatch, embed_calls) -> None:
     seen = _use_model(monkeypatch, _answer_json())
 
     _extract(_request(existing=[("topic", "기후 위기를 다룬 책을 찾음")]))
@@ -239,7 +230,7 @@ def test_LLM을_한_번만_부르고_대화와_저장된_취향을_넘긴다(
     assert len(seen) == 1
     human = seen[0][-1].content
     assert "잔잔한 소설 추천해줘" in human
-    assert "기후 위기를 다룬 책을 찾음" in human
+    assert "기후 위기를 다룬 책을 찾음" not in human
 
 
 def test_LLM의_답도_규칙으로_거른다(monkeypatch, embed_calls) -> None:

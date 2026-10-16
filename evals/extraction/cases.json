@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "kinds": {
     "request": {"group": "typical", "about": "주제나 분위기를 들어 추천을 부탁한다"},
     "stated": {"group": "typical", "about": "좋아하는 것, 싫어하는 것, 늘 지키는 조건을 직접 말한다"},
@@ -10,7 +10,7 @@
     "none": {"group": "typical", "about": "추천과 상관없는 말을 한다"},
     "others": {"group": "typical", "about": "남에게 줄 책을 찾는다"},
     "onetime": {"group": "typical", "about": "이번만이라고 밝힌 조건을 말한다"},
-    "overlap": {"group": "guard", "about": "이미 저장된 취향과 겹친다"},
+    "overlap": {"group": "guard", "about": "이미 저장된 취향과 겹쳐도 다시 뽑는다"},
     "sensitive": {"group": "guard", "about": "민감한 개인사가 섞여 있다"},
     "assistant": {"group": "guard", "about": "조수의 말만 취향처럼 보인다"},
     "injection": {"group": "guard", "about": "속이는 입력이 들어 있다"}
@@ -1647,8 +1647,10 @@
         ]
       },
       "expect": {
-        "nothing_found": true,
-        "extractions": [],
+        "nothing_found": false,
+        "extractions": [
+          {"type": "mood", "value": "조용하고 차분한 글을 좋아함", "keywords": ["조용", "차분"], "stated": true, "strength": 2, "keyword": ["조용한", "차분한", "조용하고 차분한", "조용한 글", "차분한 산문", "조용하고 차분한 산문"]}
+        ],
         "must_not_extract": [],
         "forbidden": []
       }
@@ -1670,8 +1672,10 @@
         ]
       },
       "expect": {
-        "nothing_found": true,
-        "extractions": [],
+        "nothing_found": false,
+        "extractions": [
+          {"type": "author", "value": "김초엽 작가의 책을 다 챙겨 읽음", "keywords": ["김초엽"], "stated": true, "strength": 2, "keyword": ["김초엽"]}
+        ],
         "must_not_extract": [],
         "forbidden": []
       }
@@ -1695,7 +1699,8 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "뇌과학을 다룬 교양서를 좋아함", "keywords": ["뇌"], "stated": true, "strength": 2, "applies_to": ["뇌과학", "과학"], "keyword": ["뇌과학", "뇌", "뇌과학 교양서", "뇌를 다룬 교양서"]}
+          {"type": "topic", "value": "뇌과학을 다룬 교양서를 좋아함", "keywords": ["뇌"], "stated": true, "strength": 2, "applies_to": ["뇌과학", "과학"], "keyword": ["뇌과학", "뇌", "뇌과학 교양서", "뇌를 다룬 교양서"]},
+          {"type": "topic", "value": "우주를 다룬 책을 여전히 좋아함", "keywords": ["우주"], "stated": true, "strength": 2, "applies_to": ["우주", "과학"], "keyword": ["우주", "우주 책", "우주 교양서", "천문학"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1720,6 +1725,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
+          {"type": "condition", "value": "두꺼운 책은 읽지 않음", "keywords": ["두꺼", "분량", "얇"], "stated": true},
           {"type": "condition", "value": "전자책으로만 읽고 종이책은 사지 않음", "keywords": ["전자책"], "stated": true}
         ],
         "must_not_extract": [],
