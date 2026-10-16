@@ -32,13 +32,6 @@ class Turn(_Strict):
     text: str = Field(max_length=MAX_TURN_CHARS)
 
 
-class ExistingPreference(_Strict):
-    """이미 저장된 취향. 같은 취향을 또 뽑지 않으려고 받는다."""
-
-    type: str
-    value: str
-
-
 class ExtractionRequest(_Strict):
     user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
     # 개인화 추천에 동의했는지(③과 같은 값). false 면 뽑지 않는다.
@@ -47,13 +40,8 @@ class ExtractionRequest(_Strict):
     conversation: list[Turn]
     # 뽑은 취향의 출처로 그대로 되돌려 준다.
     conversation_id: str = Field(min_length=1, max_length=MAX_CONVERSATION_ID_CHARS)
-    existing_preferences: list[ExistingPreference] = Field(default_factory=list)
-
-    # BE 는 비어 있는 목록을 null 로 보낼 수 있다(⑥과 같게, #301).
-    @field_validator("existing_preferences", mode="before")
-    @classmethod
-    def _null_is_empty(cls, value: object) -> object:
-        return [] if value is None else value
+    # 이미 저장된 취향(existing_preferences)은 받지 않는다. 보내면 다른 모르는 칸처럼 무시하고 400 을
+    # 내지 않는다(명세 ⑤, #425).
 
     def used_conversation(self) -> list[Turn]:
         """뽑는 데 쓰는 턴. 대화가 길면 최근 것만 본다(명세 ⑤)."""
