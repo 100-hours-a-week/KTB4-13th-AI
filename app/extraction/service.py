@@ -22,9 +22,11 @@ from app.gateway.llm import (
 
 logger = logging.getLogger(__name__)
 
-# 명세 ⑤ 각주: 취향 문장의 벡터는 ②의 purpose: query 와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이라서다.
+# 명세 ⑤ 각주: 핵심어의 벡터는 ②의 purpose: query 와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이라서다.
 # 임베딩은 모르는 용도를 오류 없이 문서용으로 처리하므로, 값이 틀려도 조용히 다른 벡터가 나온다.
 MEMORY_VECTOR_PURPOSE = "query"
+# ⑤ LLM 의 온도. 0 이면 같은 대화에 같은 답이 나오기 쉬워 평가로 지시문을 견줄 수 있다(#433)
+EXTRACTION_TEMPERATURE = 0.0
 
 
 class EmbeddingUnavailableError(Exception):
@@ -42,8 +44,12 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     """
     chain = (
         prompts.EXTRACTION_PROMPT
-        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다
-        | get_chat_model(model_id=get_settings().extraction_llm_model_id or None)
+        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
+        # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
+        | get_chat_model(
+            model_id=get_settings().extraction_llm_model_id or None,
+            temperature=EXTRACTION_TEMPERATURE,
+        )
         | message_text
         | parse_json_response
     )
@@ -71,14 +77,16 @@ async def to_extractions(
     """LLM 의 답을 걸러서 벡터를 붙이고, 명세 ⑤의 `extractions[]` 모양으로 만든다."""
     # 근거로 쓸 수 있는 것은 사용자가 한 말뿐이다. 챗봇의 말은 넘기지 않는다
     said = [turn.text for turn in req.used_conversation() if turn.role == "user"]
-    candidates = rules.screen(llm_output, req.existing_preferences, said)
+    candidates = rules.screen(llm_output, said)
     if not candidates:
         # 뽑은 것이 없는 대화가 흔하다. 그때는 임베딩 모델을 부르지 않는다
         return []
 
     try:
+        # 문장이 아니라 핵심어로 만든다. 문장으로 만들면 "좋아함"과 "읽지 않음"이 거의 같은 벡터가 되고
+        # (유사도 0.95, #399 근거 6), 방향은 세기의 부호가 따로 나타낸다(#426)
         vectors, dim, _model = await embedding.embed(
-            [candidate.value for candidate in candidates], MEMORY_VECTOR_PURPOSE
+            [candidate.keyword for candidate in candidates], MEMORY_VECTOR_PURPOSE
         )
     except Exception as exc:
         # 임베딩은 실패를 한 가지 예외로 모아 주지 않는다(②의 라우터도 Exception 으로 받는다).
@@ -88,7 +96,9 @@ async def to_extractions(
         {
             "type": candidate.type,
             "value": candidate.value,
-            "confidence": candidate.confidence,
+            "strength": candidate.strength,
+            "applies_to": list(candidate.applies_to),
+            "keyword": candidate.keyword,
             "vector": vector,
             # 설정값이 아니라 실제로 만든 벡터의 길이다. BE 가 자기 색인의 차원과 대조한다
             "dim": dim,
