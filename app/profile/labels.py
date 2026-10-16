@@ -1,7 +1,11 @@
 """⑥ 온보딩 라벨 벡터 — 서버가 뜰 때 한 번 만들어 메모리에 둔다(#94).
 
-명세 ⑥에는 503·504가 없어, 요청 중에 임베딩 모델을 부르지 않는다. 라벨은 대응표(#110)에 있는
-온보딩 카테고리와 세부 태그(#165)다. 목록에 없는 값은 벡터 없이 태그 가중치에만 쓰인다.
+명세 ⑥에는 503·504가 없어, 요청 중에 임베딩 모델을 부르지 않는다. 두 묶음을 만든다.
+
+- 온보딩 라벨: 대응표(#110)에 있는 온보딩 카테고리와 세부 태그(#165). 글자 그대로 만든다. 지금 ⑥이 쓰고,
+  목록에 없는 값은 벡터 없이 태그 가중치에만 쓰인다.
+- 관심사 이름(#423): 카테고리 14개와 서버 안 세부 카테고리 전부. categories.NAME_TEXTS 의 글로 만든다.
+  관심사별 홈 추천(#395)이 쓸 것이고 아직 쓰는 곳은 없다. 따로 만들어 온보딩 라벨 벡터에 닿지 않게 했다.
 """
 
 import logging
@@ -19,14 +23,15 @@ LABELS: tuple[str, ...] = tuple(
 _PURPOSE = "query"
 
 _vectors: dict[str, list[float]] = {}
+_name_vectors: dict[str, list[float]] = {}
 
 
 async def load() -> None:
-    """라벨 벡터를 만든다. 실패하면 ERROR 로그만 남기고 빈 채로 둔다.
+    """라벨 벡터와 관심사 이름 벡터를 만든다. 실패하면 ERROR 로그만 남기고 그 묶음은 빈 채로 둔다.
 
     라벨 벡터가 없어도 ⑥은 라벨을 빼고 계산할 수 있어, 기동을 막지 않는다.
     """
-    global _vectors
+    global _vectors, _name_vectors
     try:
         vectors, _, _ = await embedding.embed(list(LABELS), _PURPOSE)
         # 개수가 어긋나는 것도 실패로 본다. ⑥ 요청 안에서도 불리므로(ensure_loaded) 밖으로 새면 500 이 된다.
@@ -37,13 +42,26 @@ async def load() -> None:
         )
         return
     _vectors = loaded
+    _name_vectors = await _load_names()
+
+
+async def _load_names() -> dict[str, list[float]]:
+    try:
+        vectors, _, _ = await embedding.embed(
+            list(categories.NAME_TEXTS.values()), _PURPOSE
+        )
+        return dict(zip(categories.NAME_TEXTS, vectors, strict=True))
+    except Exception:
+        logger.exception("관심사 이름 벡터를 만들지 못했습니다")
+        return {}
 
 
 async def ensure_loaded() -> None:
     """기동 때 못 만들었는데 지금은 모델이 떠 있으면 만든다. 모델을 새로 읽지는 않는다.
 
     기동 때 모델이 실패했다가 ② 요청으로 나중에 뜨면, 이게 없을 때는 서버를 다시 켤 때까지 ⑥이
-    조용히 라벨을 빼고 계산한다. 라벨 61개가 로컬 CPU 에서 34ms 라 요청 안에서 만들어도 된다.
+    조용히 라벨을 빼고 계산한다. 라벨 61개와 관심사 이름 88개가 로컬 CPU 에서 90ms 남짓이라 요청
+    안에서 만들어도 된다. 관심사 이름만 못 만든 때는 다시 만들지 않는다. 아직 쓰는 곳이 없어서다.
     """
     if not _vectors and embedding.is_loaded():
         await load()
@@ -52,3 +70,8 @@ async def ensure_loaded() -> None:
 def vector(label: str) -> list[float] | None:
     """라벨의 벡터. 목록에 없는 라벨이거나 아직 못 만들었으면 None."""
     return _vectors.get(label)
+
+
+def name_vector(name: str) -> list[float] | None:
+    """관심사 이름(카테고리, 세부 카테고리)의 벡터. 목록에 없는 이름이거나 아직 못 만들었으면 None."""
+    return _name_vectors.get(name)

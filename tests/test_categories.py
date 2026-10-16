@@ -97,3 +97,36 @@ def test_어린이_태그와_목록에_없는_태그는_점수가_없다() -> No
 
 def test_같은_태그를_두_번_보내도_한_번만_친다() -> None:
     assert categories.tag_scores(["재테크", "재테크"], 1) == {"경제학": 1}
+
+
+def test_카테고리는_온보딩_3번_보기_14개다() -> None:
+    # 어린이는 대응표에 없지만 카테고리다(#228).
+    assert len(categories.CATEGORIES) == 14
+    assert "어린이" in categories.CATEGORIES
+
+
+def _subcategories() -> list[str]:
+    return [name for group in categories.SUBCATEGORIES.values() for name in group]
+
+
+def test_서버_안_세부_카테고리에_온보딩_세부_태그_48개가_모두_있다() -> None:
+    # 사용자가 고른 세부 카테고리는 그대로 관심사가 된다(#395 부록 1).
+    assert set(categories.ONBOARDING_TAGS) <= set(_subcategories())
+
+
+def test_세부_카테고리가_속한_카테고리는_14개_가운데_하나이거나_없다() -> None:
+    assert set(categories.SUBCATEGORIES) - {None} <= set(categories.CATEGORIES)
+
+
+def test_관심사_이름은_겹치지_않는다() -> None:
+    # 관심사는 이름으로 가리킨다. 두 묶음에 있거나 카테고리와 이름이 같으면 한 관심사로 섞인다.
+    names = _subcategories()
+    assert len(names) == len(set(names))
+    assert not set(names) & set(categories.CATEGORIES)
+    assert set(categories.NAME_TEXTS) == {*categories.CATEGORIES, *names}
+
+
+def test_이름_벡터를_만들_글도_겹치지_않는다() -> None:
+    # 글이 같으면 벡터가 같아 두 관심사를 가를 수 없다.
+    texts = list(categories.NAME_TEXTS.values())
+    assert len(texts) == len(set(texts))
