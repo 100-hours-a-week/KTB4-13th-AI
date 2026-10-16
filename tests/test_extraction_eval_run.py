@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import copy
 import json
 import logging
 
@@ -57,12 +58,41 @@ def _run(cases, answer=_ideal, runs=1):
 
 
 def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
-    # 기대 문장이 자기 핵심어를 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
+    # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
     assert len(calls) == len(_CASES) == 80
     assert summary["total"] == {"cases": 80, "runs": 80, "passed": 80, "pass_rate": 1.0}
     assert summary["failures"] == {}
+
+
+def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -> None:
+    # 받아들이는 말과 이름을 하나씩 골라 답한다. 기대값끼리 어긋나면(어디에를 비워야 하는데 이름을
+    # 적었거나, 핵심어가 비었거나) 여기서 드러난다
+    def labeled(request: dict) -> Outcome:
+        ideal = _ideal(request)
+        wanted = next(c for c in _CASES if c["request"] == request)["expect"]
+        for item, want in zip(
+            ideal.data["extractions"], wanted["extractions"], strict=True
+        ):
+            if "strength" in want:
+                item.update(
+                    strength=want["strength"],
+                    keyword=want["keyword"][0],
+                    applies_to=want.get("applies_to", [])[:1],
+                )
+        return ideal
+
+    summary, _calls = _run(_CASES, labeled)
+
+    assert summary["labels"] == {
+        "labeled": 56,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 1.0,
+        "where_labeled": 35,
+        "where": 1.0,
+    }
 
 
 def test_아무것도_안_뽑으면_뽑을_것이_없는_대화만_통과한다() -> None:
@@ -203,6 +233,42 @@ def test_걸린_시간의_중앙값과_가장_긴_값을_낸다() -> None:
     summary, _calls = _run(run.select(_CASES, kinds=["onetime"]), timed)
 
     assert summary["seconds"] == {"median": 2.0, "max": 9.0}
+
+
+def test_세_칸의_맞은_비율은_찾은_취향을_분모로_내고_표_아래에_적는다() -> None:
+    case = copy.deepcopy(_BY_ID["request-01"])
+    case["expect"]["extractions"][0].update(
+        strength=1, keyword=["쿠버네티스"], applies_to=["프로그래밍", "IT"]
+    )
+
+    def answer(request: dict) -> Outcome:
+        ideal = _ideal(request)
+        ideal.data["extractions"][0].update(
+            strength=1, keyword="쿠버네티스 입문서", applies_to=["프로그래밍"]
+        )
+        return ideal
+
+    summary, _calls = _run([case], answer, runs=2)
+
+    assert summary["labels"] == {
+        "labeled": 2,
+        "sign": 1.0,
+        "strength": 1.0,
+        "keyword": 0.0,
+        "where_labeled": 2,
+        "where": 1.0,
+    }
+    assert (
+        "세기 부호 100%, 크기까지 100%, 핵심어 0%, 어디에 100%(주제 2개)"
+        in run.render(summary)
+    )
+
+
+def test_세_칸을_적은_취향을_못_찾았으면_비율_줄을_내지_않는다() -> None:
+    summary, _calls = _run(run.select(_CASES, kinds=["none"]))
+
+    assert summary["labels"]["labeled"] == 0
+    assert "세기 부호" not in run.render(summary)
 
 
 # --- 돈이 드는 호출을 허락 없이 하지 않는다 ---

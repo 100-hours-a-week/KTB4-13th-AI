@@ -63,7 +63,7 @@ _KUBE = ("topic", "쿠버네티스 입문서를 찾음", ("쿠버네티스",))
 # --- 뽑아야 하는 대화 ---
 
 
-def test_기대한_취향의_핵심어가_든_문장을_뽑았으면_통과다() -> None:
+def test_기대한_취향의_찾는_말이_든_문장을_뽑았으면_통과다() -> None:
     result = score(_case([_KUBE]), _ok(_got(value="쿠버네티스를 다룬 입문서를 찾음")))
 
     assert result.passed
@@ -71,7 +71,7 @@ def test_기대한_취향의_핵심어가_든_문장을_뽑았으면_통과다()
     assert (result.expected, result.matched, result.extracted) == (1, 1, 1)
 
 
-def test_핵심어는_하나만_들어_있어도_되고_띄어쓰기와_대소문자를_보지_않는다() -> None:
+def test_찾는_말은_하나만_들어_있어도_되고_띄어쓰기와_대소문자를_보지_않는다() -> None:
     case = _case([("topic", "SF 소설을 좋아함", ("에스에프", "SF 소설"))])
 
     assert score(case, _ok(_got(value="sf소설을 즐겨 읽음"))).passed
@@ -85,7 +85,7 @@ def test_뽑아야_하는데_안_뽑았으면_실패다() -> None:
     assert (result.expected, result.matched, result.extracted) == (1, 0, 0)
 
 
-def test_뽑았지만_핵심어가_든_문장이_없으면_실패다() -> None:
+def test_뽑았지만_찾는_말이_든_문장이_없으면_실패다() -> None:
     result = score(_case([_KUBE]), _ok(_got(value="개발 책을 찾음")))
 
     assert result.failures == ("missed",)
@@ -217,3 +217,114 @@ def test_실패가_여럿이면_모두_적는다() -> None:
     result = score(case, _ok(_got(value="우울증에 좋은 책을 찾음", confidence=0.1)))
 
     assert set(result.failures) == {"format", "missed", "forbidden"}
+
+
+# --- 세기·어디에·핵심어(#424). 통과에는 쓰지 않고 맞은 개수만 센다 ---
+
+
+def _labeled(strength=1, keyword=("쿠버네티스",), applies_to=("프로그래밍", "IT")):
+    case = _case([_KUBE])
+    case["expect"]["extractions"][0].update(
+        strength=strength, keyword=list(keyword), applies_to=list(applies_to)
+    )
+    return case
+
+
+def _counts(result) -> tuple[int, ...]:
+    return (
+        result.labeled,
+        result.sign_matched,
+        result.strength_matched,
+        result.keyword_matched,
+        result.where_labeled,
+        result.where_matched,
+    )
+
+
+def test_세기와_핵심어와_어디에가_맞으면_모두_센다() -> None:
+    got = _got(strength=1, keyword="쿠버네티스", applies_to=["프로그래밍"])
+
+    assert _counts(score(_labeled(), _ok(got))) == (1, 1, 1, 1, 1, 1)
+
+
+def test_세기는_부호와_크기를_따로_센다() -> None:
+    got = _got(strength=2, keyword="쿠버네티스", applies_to=["프로그래밍"])
+
+    result = score(_labeled(strength=1), _ok(got))
+
+    assert (result.sign_matched, result.strength_matched) == (1, 0)
+
+
+def test_세기가_정수가_아니면_맞지_않다() -> None:
+    result = score(_labeled(), _ok(_got(strength=True)))
+
+    assert (result.sign_matched, result.strength_matched) == (0, 0)
+
+
+def test_핵심어는_받아들이는_말_하나와_같아야_하고_띄어쓰기와_대소문자는_보지_않는다() -> (
+    None
+):
+    case = _labeled(keyword=("쿠버네티스", "K8s 입문"))
+
+    assert score(case, _ok(_got(keyword="k8s입문"))).keyword_matched == 1
+    # 받아들이는 말을 담고 있어도 같지 않으면 맞지 않다. 문장을 그대로 적은 것을 잡는다
+    assert (
+        score(case, _ok(_got(keyword="쿠버네티스 입문서를 찾음"))).keyword_matched == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("names", "matched"),
+    [
+        (["프로그래밍"], 1),
+        (["프로그래밍", "IT"], 1),
+        (["프로그래밍", "AI"], 0),  # 하나라도 받아들이는 이름 밖이면 틀림
+        ([], 0),  # 맞는 이름이 있는데 고르지 않음
+        ("프로그래밍", 0),  # 목록이 아님
+    ],
+)
+def test_어디에는_고른_이름이_모두_받아들이는_이름_안에_있어야_맞다(
+    names, matched
+) -> None:
+    assert score(_labeled(), _ok(_got(applies_to=names))).where_matched == matched
+
+
+def test_맞는_이름이_없는_취향은_아무것도_고르지_않아야_맞다() -> None:
+    case = _labeled(applies_to=())
+
+    assert score(case, _ok(_got(applies_to=[]))).where_matched == 1
+    assert score(case, _ok(_got(applies_to=["취미"]))).where_matched == 0
+
+
+def test_어디에는_적어_둔_취향만_센다() -> None:
+    case = _labeled()
+    del case["expect"]["extractions"][0][
+        "applies_to"
+    ]  # 주제가 아닌 취향은 어디에가 없다
+
+    result = score(case, _ok(_got(strength=1, keyword="쿠버네티스")))
+
+    assert (result.labeled, result.where_labeled) == (1, 0)
+
+
+def test_세_칸을_적지_않은_기대_취향과_못_찾은_취향은_세지_않는다() -> None:
+    # 조건은 아직 세 칸을 적지 않았다(#427)
+    assert score(_case([_KUBE]), _ok(_got(strength=1))).labeled == 0
+    assert score(_labeled(), _ok(_got(value="파이썬 입문서를 찾음"))).labeled == 0
+
+
+def test_세_칸이_없는_응답은_찾았어도_맞지_않은_것으로_세고_통과는_그대로다() -> None:
+    # 지금 서버는 세 칸을 내지 않는다(#426 에서 생긴다). 세 칸은 통과에 쓰지 않는다
+    result = score(_labeled(), _ok(_got()))
+
+    assert result.passed
+    assert _counts(result) == (1, 0, 0, 0, 1, 0)
+
+
+def test_찾은_문장이_여럿이면_하나라도_맞으면_맞다() -> None:
+    first = _got(value="쿠버네티스 입문서를 찾음", strength=-2, keyword="입문서")
+    second = _got(value="쿠버네티스를 좋아함", strength=1, keyword="쿠버네티스")
+
+    result = score(_labeled(), _ok(first, second))
+
+    assert (result.sign_matched, result.keyword_matched) == (1, 1)

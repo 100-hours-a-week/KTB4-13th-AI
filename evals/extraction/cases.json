@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "kinds": {
     "request": {"group": "typical", "about": "주제나 분위기를 들어 추천을 부탁한다"},
     "stated": {"group": "typical", "about": "좋아하는 것, 싫어하는 것, 늘 지키는 조건을 직접 말한다"},
@@ -34,7 +34,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "쿠버네티스 입문서를 찾음", "keywords": ["쿠버네티스", "k8s"], "stated": false}
+          {"type": "topic", "value": "쿠버네티스 입문서를 찾음", "keywords": ["쿠버네티스", "k8s"], "stated": false, "strength": 1, "applies_to": ["프로그래밍", "IT"], "keyword": ["쿠버네티스", "쿠버네티스 입문서", "쿠버네티스 입문"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -58,7 +58,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "지쳤을 때 위로가 되는 책을 찾음", "keywords": ["위로"], "stated": false}
+          {"type": "mood", "value": "지쳤을 때 위로가 되는 책을 찾음", "keywords": ["위로"], "stated": false, "strength": 1, "keyword": ["위로", "위로되는", "위로가 되는", "위로받는"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -81,7 +81,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "자기 전에 조금씩 읽기 좋은 에세이를 찾음", "keywords": ["에세이"], "stated": false}
+          {"type": "topic", "value": "자기 전에 조금씩 읽기 좋은 에세이를 찾음", "keywords": ["에세이"], "stated": false, "strength": 1, "applies_to": ["에세이", "일상 에세이"], "keyword": ["에세이", "짧은 에세이"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -105,7 +105,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "재테크 기초를 알려 주는 입문서를 찾음", "keywords": ["재테크"], "stated": false}
+          {"type": "topic", "value": "재테크 기초를 알려 주는 입문서를 찾음", "keywords": ["재테크"], "stated": false, "strength": 1, "applies_to": ["재테크", "경제경영"], "keyword": ["재테크", "재테크 기초", "재테크 입문", "재테크 입문서"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -128,7 +128,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "재미있게 풀어 쓴 한국사 책을 찾음", "keywords": ["한국사", "역사"], "stated": false}
+          {"type": "topic", "value": "재미있게 풀어 쓴 한국사 책을 찾음", "keywords": ["한국사", "역사"], "stated": false, "strength": 1, "applies_to": ["한국사", "역사"], "keyword": ["한국사", "재미있는 한국사"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -152,7 +152,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "긴장감 넘치는 스릴러를 찾음", "keywords": ["스릴러"], "stated": false}
+          {"type": "topic", "value": "긴장감 넘치는 스릴러를 찾음", "keywords": ["스릴러"], "stated": false, "strength": 1, "applies_to": ["추리/스릴러", "소설"], "keyword": ["스릴러", "스릴러 소설", "긴장감 넘치는 스릴러"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -175,7 +175,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "글쓰기 연습에 도움이 되는 책을 찾음", "keywords": ["글쓰기"], "stated": false}
+          {"type": "topic", "value": "글쓰기 연습에 도움이 되는 책을 찾음", "keywords": ["글쓰기"], "stated": false, "strength": 1, "applies_to": ["독서/글쓰기", "인문"], "keyword": ["글쓰기", "글쓰기 연습"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -200,7 +200,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "인공지능이 사회에 주는 영향을 다룬 교양서를 찾음", "keywords": ["인공지능", "AI"], "stated": false}
+          {"type": "topic", "value": "인공지능이 사회에 주는 영향을 다룬 교양서를 찾음", "keywords": ["인공지능", "AI"], "stated": false, "strength": 1, "applies_to": ["AI", "테크 트렌드", "사회 이슈", "IT", "사회"], "keyword": ["인공지능", "AI", "인공지능과 사회", "AI와 사회", "인공지능 교양서"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -223,7 +223,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "자기 전에 읽으면 마음이 편해지는 책을 찾음", "keywords": ["편해", "편안"], "stated": false}
+          {"type": "mood", "value": "자기 전에 읽으면 마음이 편해지는 책을 찾음", "keywords": ["편해", "편안"], "stated": false, "strength": 1, "keyword": ["편안한", "마음이 편해지는", "마음 편해지는", "마음이 편안해지는", "편안함"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -247,7 +247,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "웃기고 유쾌한 책을 찾음", "keywords": ["웃", "유쾌", "유머"], "stated": false}
+          {"type": "mood", "value": "웃기고 유쾌한 책을 찾음", "keywords": ["웃", "유쾌", "유머"], "stated": false, "strength": 1, "keyword": ["웃긴", "유쾌한", "유머러스한", "웃기는", "유머"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -270,7 +270,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "어렵지 않은 철학 입문서를 찾음", "keywords": ["철학"], "stated": false}
+          {"type": "topic", "value": "어렵지 않은 철학 입문서를 찾음", "keywords": ["철학"], "stated": false, "strength": 1, "applies_to": ["철학"], "keyword": ["철학", "철학 입문", "철학 입문서", "쉬운 철학"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -294,7 +294,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "고양이를 다룬 책을 찾음", "keywords": ["고양이"], "stated": false}
+          {"type": "topic", "value": "고양이를 다룬 책을 찾음", "keywords": ["고양이"], "stated": false, "strength": 1, "applies_to": [], "keyword": ["고양이", "고양이 키우기", "반려묘"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -317,7 +317,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "사람의 마음을 설명하는 심리학 책을 찾음", "keywords": ["심리"], "stated": false}
+          {"type": "topic", "value": "사람의 마음을 설명하는 심리학 책을 찾음", "keywords": ["심리"], "stated": false, "strength": 1, "applies_to": ["심리학", "인문"], "keyword": ["심리학", "심리", "사람의 마음"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -340,7 +340,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "읽다가 눈물이 나는 슬픈 소설을 찾음", "keywords": ["슬픈", "눈물", "울"], "stated": false}
+          {"type": "mood", "value": "읽다가 눈물이 나는 슬픈 소설을 찾음", "keywords": ["슬픈", "눈물", "울"], "stated": false, "strength": 1, "keyword": ["슬픈", "눈물 나는", "눈물이 나는", "울 수 있는"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -365,7 +365,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "집에서 식물과 허브를 키우는 법을 다룬 책을 찾음", "keywords": ["식물", "허브"], "stated": false}
+          {"type": "topic", "value": "집에서 식물과 허브를 키우는 법을 다룬 책을 찾음", "keywords": ["식물", "허브"], "stated": false, "strength": 1, "applies_to": ["취미", "라이프스타일"], "keyword": ["식물 키우기", "허브 키우기", "식물", "허브", "가드닝", "반려식물", "식물 가꾸기", "허브 가꾸기"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -388,7 +388,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "파이썬으로 된 알고리즘 책을 찾음", "keywords": ["알고리즘", "코딩테스트", "파이썬"], "stated": false}
+          {"type": "topic", "value": "파이썬으로 된 알고리즘 책을 찾음", "keywords": ["알고리즘", "코딩테스트", "파이썬"], "stated": false, "strength": 1, "applies_to": ["프로그래밍", "IT"], "keyword": ["파이썬 알고리즘", "알고리즘", "코딩테스트", "파이썬"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -412,7 +412,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "그림을 감상하는 법을 알려 주는 미술 책을 찾음", "keywords": ["미술", "그림"], "stated": false}
+          {"type": "topic", "value": "그림을 감상하는 법을 알려 주는 미술 책을 찾음", "keywords": ["미술", "그림"], "stated": false, "strength": 1, "applies_to": ["미술"], "keyword": ["미술", "그림 감상", "미술 감상", "그림 보는 법"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -435,7 +435,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "달리기를 다룬 책을 찾음", "keywords": ["달리기", "러닝"], "stated": false}
+          {"type": "topic", "value": "달리기를 다룬 책을 찾음", "keywords": ["달리기", "러닝"], "stated": false, "strength": 1, "applies_to": ["스포츠", "건강·운동", "취미", "라이프스타일"], "keyword": ["달리기", "러닝"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -459,7 +459,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "조용하고 느린 호흡의 글을 좋아함", "keywords": ["조용", "느린"], "stated": true}
+          {"type": "mood", "value": "조용하고 느린 호흡의 글을 좋아함", "keywords": ["조용", "느린"], "stated": true, "strength": 2, "keyword": ["조용한", "느린 호흡", "느린 호흡의", "조용하고 느린", "조용하고 느린 호흡의"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -483,7 +483,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "우주와 천문학을 다룬 과학 교양서를 좋아함", "keywords": ["우주", "천문"], "stated": true}
+          {"type": "topic", "value": "우주와 천문학을 다룬 과학 교양서를 좋아함", "keywords": ["우주", "천문"], "stated": true, "strength": 3, "applies_to": ["우주", "과학"], "keyword": ["우주", "천문학", "우주 천문학", "우주와 천문학", "우주 교양서", "우주 과학", "과학 교양서"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -507,7 +507,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "김초엽 작가의 책을 꾸준히 찾아 읽음", "keywords": ["김초엽"], "stated": true}
+          {"type": "author", "value": "김초엽 작가의 책을 꾸준히 찾아 읽음", "keywords": ["김초엽"], "stated": true, "strength": 3, "keyword": ["김초엽"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -553,8 +553,8 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "범죄 수사물을 좋아함", "keywords": ["수사", "범죄"], "stated": true},
-          {"type": "mood", "value": "잔인한 묘사보다 두뇌 싸움이 중심인 이야기를 좋아함", "keywords": ["두뇌", "잔인"], "stated": true}
+          {"type": "topic", "value": "범죄 수사물을 좋아함", "keywords": ["수사", "범죄"], "stated": true, "strength": 2, "applies_to": ["추리/스릴러", "소설"], "keyword": ["범죄 수사물", "수사물", "범죄 수사", "범죄 소설", "수사 소설", "범죄물"]},
+          {"type": "mood", "value": "잔인한 묘사보다 두뇌 싸움이 중심인 이야기를 좋아함", "keywords": ["두뇌", "잔인"], "stated": true, "strength": 2, "keyword": ["두뇌 싸움", "두뇌 싸움 위주", "두뇌 싸움 위주의", "두뇌 싸움이 중심인"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -580,7 +580,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "조선 후기 실학자처럼 인물 중심으로 풀어 가는 역사서를 좋아함", "keywords": ["조선", "실학", "역사"], "stated": true}
+          {"type": "topic", "value": "조선 후기 실학자처럼 인물 중심으로 풀어 가는 역사서를 좋아함", "keywords": ["조선", "실학", "역사"], "stated": true, "strength": 2, "applies_to": ["한국사", "역사", "인물 에세이"], "keyword": ["조선 후기", "실학", "실학자", "조선 후기 실학", "조선 후기 실학자", "인물 중심 역사서", "인물 중심 역사", "조선 실학"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -604,8 +604,8 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "무라카미 하루키의 에세이를 좋아함", "keywords": ["하루키"], "stated": true},
-          {"type": "mood", "value": "담담하게 일상을 이야기하는 글을 좋아함", "keywords": ["담담", "일상"], "stated": true}
+          {"type": "author", "value": "무라카미 하루키의 에세이를 좋아함", "keywords": ["하루키"], "stated": true, "strength": 2, "keyword": ["무라카미 하루키"]},
+          {"type": "mood", "value": "담담하게 일상을 이야기하는 글을 좋아함", "keywords": ["담담", "일상"], "stated": true, "strength": 2, "keyword": ["담담한", "담담하게", "담담한 일상", "담담한 말투", "담담하게 일상을 이야기하는"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -652,7 +652,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "자기계발서를 읽지 않음", "keywords": ["자기계발"], "stated": true}
+          {"type": "topic", "value": "자기계발서를 읽지 않음", "keywords": ["자기계발"], "stated": true, "strength": -3, "applies_to": ["자기계발"], "keyword": ["자기계발", "자기계발서"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -675,7 +675,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "슬픈 결말의 이야기를 피함", "keywords": ["슬픈", "결말"], "stated": true}
+          {"type": "mood", "value": "슬픈 결말의 이야기를 피함", "keywords": ["슬픈", "결말"], "stated": true, "strength": -2, "keyword": ["슬픈 결말", "슬픈 결말의", "새드엔딩", "비극적인 결말"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -698,7 +698,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "한강 작가의 소설을 좋아함", "keywords": ["한강"], "stated": true}
+          {"type": "author", "value": "한강 작가의 소설을 좋아함", "keywords": ["한강"], "stated": true, "strength": 2, "keyword": ["한강"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -722,7 +722,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "따뜻한 분위기의 소설을 찾음", "keywords": ["따뜻"], "stated": false}
+          {"type": "mood", "value": "따뜻한 분위기의 소설을 찾음", "keywords": ["따뜻"], "stated": false, "strength": 1, "keyword": ["따뜻한", "따뜻함", "따뜻한 분위기"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -745,7 +745,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "인류 역사를 큰 흐름으로 다루는 책을 찾음", "keywords": ["인류", "역사"], "stated": false}
+          {"type": "topic", "value": "인류 역사를 큰 흐름으로 다루는 책을 찾음", "keywords": ["인류", "역사"], "stated": false, "strength": 1, "applies_to": ["세계사", "역사"], "keyword": ["인류 역사", "인류사", "인류의 역사", "빅 히스토리", "인류 역사의 큰 흐름"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -768,7 +768,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "코드를 잘 짜는 법을 다룬 책에 관심이 많음", "keywords": ["코드", "코딩", "프로그래밍", "개발"], "stated": true}
+          {"type": "topic", "value": "코드를 잘 짜는 법을 다룬 책에 관심이 많음", "keywords": ["코드", "코딩", "프로그래밍", "개발"], "stated": true, "strength": 2, "applies_to": ["프로그래밍", "IT"], "keyword": ["코드 잘 짜는 법", "클린 코드", "코드 설계", "좋은 코드", "코딩", "프로그래밍", "코드 작성법"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -792,7 +792,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "정세랑 작가의 책을 좋아함", "keywords": ["정세랑"], "stated": true}
+          {"type": "author", "value": "정세랑 작가의 책을 좋아함", "keywords": ["정세랑"], "stated": true, "strength": 2, "keyword": ["정세랑"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -815,7 +815,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "어른이 읽을 만한 판타지를 찾음", "keywords": ["판타지"], "stated": false}
+          {"type": "topic", "value": "어른이 읽을 만한 판타지를 찾음", "keywords": ["판타지"], "stated": false, "strength": 1, "applies_to": ["판타지", "소설"], "keyword": ["판타지", "어른을 위한 판타지", "성인 판타지", "어른이 읽을 판타지"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -839,7 +839,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "『데미안』을 재미있게 읽었고 비슷한 책을 찾음", "keywords": ["데미안"], "stated": true}
+          {"type": "topic", "value": "『데미안』을 재미있게 읽었고 비슷한 책을 찾음", "keywords": ["데미안"], "stated": true, "strength": 2, "applies_to": [], "keyword": ["『데미안』"]}
         ],
         "must_not_extract": [],
         "forbidden": ["성장", "헤세"]
@@ -862,7 +862,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "『미움받을 용기』와 『아몬드』를 좋아함", "keywords": ["미움받을 용기", "아몬드"], "stated": true}
+          {"type": "topic", "value": "『미움받을 용기』와 『아몬드』를 좋아함", "keywords": ["미움받을 용기", "아몬드"], "stated": true, "strength": 2, "applies_to": [], "keyword": ["『미움받을 용기』", "『아몬드』"]}
         ],
         "must_not_extract": [],
         "forbidden": ["심리학", "아들러", "손원평"]
@@ -886,7 +886,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "요즘은 SF를 주로 읽음", "keywords": ["SF"], "stated": true}
+          {"type": "topic", "value": "요즘은 SF를 주로 읽음", "keywords": ["SF"], "stated": true, "strength": 2, "applies_to": ["SF", "소설"], "keyword": ["SF", "SF 소설"]}
         ],
         "must_not_extract": ["추리소설을 좋아함"],
         "forbidden": []
@@ -910,7 +910,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "읽고 나서 여운이 남는 이야기를 좋아함", "keywords": ["여운"], "stated": true}
+          {"type": "mood", "value": "읽고 나서 여운이 남는 이야기를 좋아함", "keywords": ["여운"], "stated": true, "strength": 2, "keyword": ["여운", "여운이 남는", "여운 있는"]}
         ],
         "must_not_extract": ["해피엔딩인 이야기만 읽음"],
         "forbidden": []
@@ -934,7 +934,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "에세이는 즐기지 않지만 여행 에세이는 좋아함", "keywords": ["여행"], "stated": true}
+          {"type": "topic", "value": "에세이는 즐기지 않지만 여행 에세이는 좋아함", "keywords": ["여행"], "stated": true, "strength": 2, "applies_to": ["여행 에세이", "여행"], "keyword": ["여행 에세이"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -960,7 +960,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "비 오는 날 읽기 좋은 무겁지 않은 책을 찾음", "keywords": ["무겁", "가볍", "가벼"], "stated": false}
+          {"type": "mood", "value": "비 오는 날 읽기 좋은 무겁지 않은 책을 찾음", "keywords": ["무겁", "가볍", "가벼"], "stated": false, "strength": 1, "keyword": ["가벼운", "가볍게 읽히는", "가볍게 읽을", "가벼운 분위기"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -985,7 +985,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "따뜻한 가족 이야기를 좋아함", "keywords": ["따뜻", "가족"], "stated": true}
+          {"type": "mood", "value": "따뜻한 가족 이야기를 좋아함", "keywords": ["따뜻", "가족"], "stated": true, "strength": 2, "keyword": ["따뜻한", "따뜻한 가족 이야기", "가족 이야기", "따뜻한 가족"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1011,7 +1011,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "주식 입문서를 찾음", "keywords": ["주식"], "stated": false}
+          {"type": "topic", "value": "주식 입문서를 찾음", "keywords": ["주식"], "stated": false, "strength": 1, "applies_to": ["재테크", "경제경영"], "keyword": ["주식", "주식 입문", "주식 입문서", "주식 투자"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1037,7 +1037,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "퇴근길에 가볍게 읽을 소설을 찾음", "keywords": ["가볍", "가벼"], "stated": false}
+          {"type": "mood", "value": "퇴근길에 가볍게 읽을 소설을 찾음", "keywords": ["가볍", "가벼"], "stated": false, "strength": 1, "keyword": ["가벼운", "가볍게 읽을", "가볍게 읽히는", "가볍게"]}
         ],
         "must_not_extract": [],
         "forbidden": ["2만", "만원", "만 원"]
@@ -1060,7 +1060,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "경제경영 책을 찾음", "keywords": ["경제"], "stated": false}
+          {"type": "topic", "value": "경제경영 책을 찾음", "keywords": ["경제"], "stated": false, "strength": 1, "applies_to": ["경제경영"], "keyword": ["경제경영", "경제경영 책"]}
         ],
         "must_not_extract": [],
         "forbidden": ["2만", "만원", "만 원"]
@@ -1085,7 +1085,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "인공지능을 다룬 책을 찾음", "keywords": ["인공지능", "AI"], "stated": false}
+          {"type": "topic", "value": "인공지능을 다룬 책을 찾음", "keywords": ["인공지능", "AI"], "stated": false, "strength": 1, "applies_to": ["AI", "IT"], "keyword": ["인공지능", "AI", "인공지능 입문", "쉬운 인공지능"]}
         ],
         "must_not_extract": [],
         "forbidden": ["2020"]
@@ -1131,7 +1131,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "위로가 되는 책을 찾음", "keywords": ["위로"], "stated": false}
+          {"type": "mood", "value": "위로가 되는 책을 찾음", "keywords": ["위로"], "stated": false, "strength": 1, "keyword": ["위로", "위로되는", "위로가 되는", "위로받는"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1155,7 +1155,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "한국 작가가 쓴 SF를 찾음", "keywords": ["SF"], "stated": false}
+          {"type": "topic", "value": "한국 작가가 쓴 SF를 찾음", "keywords": ["SF"], "stated": false, "strength": 1, "applies_to": ["SF", "한국 소설", "소설"], "keyword": ["SF", "한국 SF", "한국 작가 SF", "한국 작가의 SF"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1178,7 +1178,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "파이썬 입문서를 찾음", "keywords": ["파이썬"], "stated": false}
+          {"type": "topic", "value": "파이썬 입문서를 찾음", "keywords": ["파이썬"], "stated": false, "strength": 1, "applies_to": ["프로그래밍", "IT"], "keyword": ["파이썬", "파이썬 입문", "파이썬 입문서"]}
         ],
         "must_not_extract": [],
         "forbidden": ["만 원", "만원", "원대"]
@@ -1290,7 +1290,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "한강 작가의 책을 찾아봄", "keywords": ["한강"], "stated": false}
+          {"type": "author", "value": "한강 작가의 책을 찾아봄", "keywords": ["한강"], "stated": false, "strength": 1, "keyword": ["한강"]}
         ],
         "must_not_extract": [],
         "forbidden": ["좋아"]
@@ -1313,7 +1313,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "author", "value": "김영하 작가의 신작을 챙겨 봄", "keywords": ["김영하"], "stated": true}
+          {"type": "author", "value": "김영하 작가의 신작을 챙겨 봄", "keywords": ["김영하"], "stated": true, "strength": 2, "keyword": ["김영하"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1558,7 +1558,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "여행 에세이를 좋아함", "keywords": ["여행"], "stated": true}
+          {"type": "topic", "value": "여행 에세이를 좋아함", "keywords": ["여행"], "stated": true, "strength": 2, "applies_to": ["여행 에세이", "에세이", "여행"], "keyword": ["여행 에세이"]}
         ],
         "must_not_extract": ["리더십 책을 좋아함"],
         "forbidden": ["리더십", "팀장"]
@@ -1695,7 +1695,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "뇌과학을 다룬 교양서를 좋아함", "keywords": ["뇌"], "stated": true}
+          {"type": "topic", "value": "뇌과학을 다룬 교양서를 좋아함", "keywords": ["뇌"], "stated": true, "strength": 2, "applies_to": ["뇌과학", "과학"], "keyword": ["뇌과학", "뇌", "뇌과학 교양서", "뇌를 다룬 교양서"]}
         ],
         "must_not_extract": [],
         "forbidden": []
@@ -1743,7 +1743,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "mood", "value": "다정한 문체로 위로를 건네는 에세이를 좋아함", "keywords": ["다정", "위로"], "stated": true}
+          {"type": "mood", "value": "다정한 문체로 위로를 건네는 에세이를 좋아함", "keywords": ["다정", "위로"], "stated": true, "strength": 2, "keyword": ["다정한", "다정한 문체", "위로", "위로되는", "다정한 에세이"]}
         ],
         "must_not_extract": [],
         "forbidden": ["우울증", "진단"]
@@ -1766,7 +1766,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "몰입해서 읽는 판타지를 어릴 때부터 좋아함", "keywords": ["판타지"], "stated": true}
+          {"type": "topic", "value": "몰입해서 읽는 판타지를 어릴 때부터 좋아함", "keywords": ["판타지"], "stated": true, "strength": 2, "applies_to": ["판타지", "소설"], "keyword": ["판타지", "판타지 소설", "몰입되는 판타지"]}
         ],
         "must_not_extract": [],
         "forbidden": ["이혼", "소송"]
@@ -1789,7 +1789,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "짧은 시가 실린 시집을 좋아함", "keywords": ["시집"], "stated": true}
+          {"type": "topic", "value": "짧은 시가 실린 시집을 좋아함", "keywords": ["시집"], "stated": true, "strength": 2, "applies_to": ["시"], "keyword": ["시집", "시", "짧은 시"]}
         ],
         "must_not_extract": [],
         "forbidden": ["투병", "간병", "아버지"]
@@ -1878,7 +1878,7 @@
       "expect": {
         "nothing_found": false,
         "extractions": [
-          {"type": "topic", "value": "시집을 좋아함", "keywords": ["시집"], "stated": true}
+          {"type": "topic", "value": "시집을 좋아함", "keywords": ["시집"], "stated": true, "strength": 2, "applies_to": ["시"], "keyword": ["시집", "시"]}
         ],
         "must_not_extract": [],
         "forbidden": ["script", "alert", "시스템"]
