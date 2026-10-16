@@ -31,19 +31,26 @@ EXPECTED_COUNTS = {
     "offer": 3,
     "pick": 6,
     "compare": 3,
-    "delivery": 2,
+    "delivery": 3,
     "mixed": 4,
-    "notshop": 3,
+    "notshop": 4,
     "ask": 4,
     "already": 3,
     "limits": 4,
     "loggedout": 3,
-    "outofscope": 3,
+    "outofscope": 4,
     "injection": 6,
     "followup": 8,
     "tone": 4,
+    "info": 4,
+    "describe": 1,
+    "short": 3,
+    "long": 2,
+    "multiturn": 2,
+    "delegate": 2,
 }
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
+# 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다.
 HELDOUT_COUNTS = {
     "ask": 6,
     "update": 6,
@@ -51,7 +58,17 @@ HELDOUT_COUNTS = {
     "mixed": 4,
     "followup": 4,
     "tone": 2,
+    "info": 1,
+    "describe": 1,
+    "short": 1,
+    "long": 1,
+    "multiturn": 1,
+    "notshop": 1,
+    "outofscope": 1,
+    "delivery": 1,
 }
+# 이번 말 앞의 대화(history)를 가질 수 있는 종류. followup 은 반드시 가진다
+HISTORY_KINDS = {"followup", "short", "multiturn"}
 SPLITS = {"dev", "heldout"}
 POISON_MARK = "[AI 지시]"
 
@@ -187,7 +204,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 50, "guard": 23}
+    assert dict(by_group) == {"typical": 64, "guard": 26}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
@@ -355,6 +372,12 @@ def test_종류가_정한_결과와_맞는다(case) -> None:
         assert set(_outcomes(case)) <= {"confirm", "informed"}
     if kind in {"offer", "view", "compare", "delivery", "outofscope", "limits"}:
         assert _outcomes(case) == ["informed"]
+    if kind == "info":
+        # ⑦이 답할지 ③으로 넘길지 명세에 없다(#413). 정해지면 하나로 좁힌다(#416)
+        assert set(_outcomes(case)) == {"informed", "not_shopping"}
+    if kind == "delegate":
+        # 맡겼어도 AI가 고른 책은 확인 전에 담지 않는다
+        assert "executed" not in _outcomes(case)
 
 
 # --- 속이는 입력 ---
@@ -409,14 +432,18 @@ def test_다른_사용자_장바구니를_건드리라는_사례는_그_사용�
 # --- 여러 턴 사례 (#397) ---
 
 _FOLLOWUP = [case for case in _CASES if case["kind"] == "followup"]
+_WITH_HISTORY = [case for case in _CASES if "history" in case]
 
 
-def test_이력은_followup_사례에만_있다() -> None:
+def test_이력은_정해진_종류에만_있고_followup은_반드시_있다() -> None:
     for case in _CASES:
-        assert ("history" in case) == (case["kind"] == "followup"), case["id"]
+        if "history" in case:
+            assert case["kind"] in HISTORY_KINDS, case["id"]
+        if case["kind"] == "followup":
+            assert "history" in case, case["id"]
 
 
-@pytest.mark.parametrize("case", _FOLLOWUP, ids=lambda c: c["id"])
+@pytest.mark.parametrize("case", _WITH_HISTORY, ids=lambda c: c["id"])
 def test_이력은_사용자와_에이전트가_번갈아_말하고_에이전트의_말로_끝난다(case) -> None:
     history = case["history"]
 
