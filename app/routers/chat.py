@@ -24,6 +24,8 @@ from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
 from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
 from app.feed import personalized, scoring
+from app.gate import rules as gate_rules
+from app.gate import shopping
 from app.gateway import embedding
 from app.gateway.llm import (
     LLMUnavailableError,
@@ -32,6 +34,7 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
 )
+from app.routers import agent
 from app.search import service
 from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
@@ -1032,6 +1035,8 @@ _NO_DESCRIPTION_REASON_NO_AUTHOR = "찾으신 『{title}』{copula}."
 MAX_REASON_SHORT_CHARS = 80
 
 
+# JSON 형식 예시의 값은 낱말이 아니라 설명으로 적는다. 예시에 `"detail": "잔잔함"`을 두었더니 모델이 사용자가 말하지
+# 않은 "잔잔한 분위기"를 답과 이유에 베꼈다(평가: LLM을 부른 턴의 32%, 설명으로 바꾸면 4%. #410).
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
 # 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
 CARD_PROMPT = ChatPromptTemplate.from_template(
@@ -1046,7 +1051,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     '다음 JSON 형식으로만 답하라: {{"reply": "말풍선에 보여줄 1-2문장", '
     '"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
-    '"match_basis": [{{"label": "분위기", "detail": "잔잔함"}}]}}]}}\n\n'
+    '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
 
@@ -1433,21 +1438,51 @@ async def chat(request: Request) -> JSONResponse:
         status, message = req
         return responses.error(status, message)
 
+    # 쇼핑 칸(idempotency_key)을 보낸 요청이면 문지기가 ③과 ⑦ 중 어디로 보낼지 정한다(#413).
+    # 칸이 없으면 이 변경 전과 똑같이 ③만 하고 응답에 route 도 없다.
+    lane = None
+    if shopping.enabled(payload):
+        lane = "recommend"
+        if gate_rules.route(req.message or "", shopping.cards_shown(payload)) == "shop":
+            shop_req = shopping.to_agent_request(payload)
+            if shop_req is None:
+                return responses.error(400, "invalid_request")
+            turn = await agent.shop_turn(shop_req, shopping.agent_payload(payload))
+            if turn.error is not None:
+                # ⑦ 이 실패한 것을 ③ 의 추천으로 덮지 않는다. 장바구니 요청에 추천 답을 하는 쪽이 더 나쁘다
+                return turn.error
+            if not turn.not_shopping:
+                logger.info("문지기: 쇼핑으로 처리했다")
+                return responses.success(turn.message, {**turn.data, "route": "shop"})
+            logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
+    return await _recommend(req, lane)
+
+
+def _with_lane(data: dict, lane: str | None) -> dict:
+    """문지기를 켠 요청에만 갈래(route)를 담는다. 안 켠 요청의 응답 모양은 그대로다."""
+    return data if lane is None else {**data, "route": lane}
+
+
+async def _recommend(req: ChatRequest, lane: str | None) -> JSONResponse:
+    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성."""
     unanswerable = _unanswerable_request(req.message, req.spec, req.recent_turns)
     if unanswerable:
         # LLM도 검색도 부르지 않는다. spec은 요청에 실린 그대로 돌려준다(6키 계약 유지).
         reply, followup = unanswerable
         return responses.success(
             "recommend_success",
-            {
-                "reply": reply,
-                "spec": req.spec.model_dump(),
-                "recognition": None,
-                "cards": [],
-                "followup": followup,
-                "buttons": [],
-                "degraded": False,
-            },
+            _with_lane(
+                {
+                    "reply": reply,
+                    "spec": req.spec.model_dump(),
+                    "recognition": None,
+                    "cards": [],
+                    "followup": followup,
+                    "buttons": [],
+                    "degraded": False,
+                },
+                lane,
+            ),
         )
 
     spec, spec_degraded = await update_spec(req.message, req.spec, req.recent_turns)
@@ -1502,13 +1537,16 @@ async def chat(request: Request) -> JSONResponse:
 
     return responses.success(
         "recommend_success",
-        {
-            "reply": reply,
-            "spec": spec.model_dump(),
-            "recognition": None,
-            "cards": cards,
-            "followup": followup,
-            "buttons": [],
-            "degraded": degraded,
-        },
+        _with_lane(
+            {
+                "reply": reply,
+                "spec": spec.model_dump(),
+                "recognition": None,
+                "cards": cards,
+                "followup": followup,
+                "buttons": [],
+                "degraded": degraded,
+            },
+            lane,
+        ),
     )
