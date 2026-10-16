@@ -27,6 +27,11 @@ from app.feed.personalized import (
 from app.profile import interests
 from app.search.vector import EF_SEARCH
 
+# 관심사 하나를 뽑을 때 벡터 색인을 얼마나 넓게 훑는지. 지금 홈 추천과 ① 검색은 1000 이지만, 목록 하나의
+# 3초 예산은 운영에서 200 으로 잰 시간에 맞춰 정했다(#399). 운영에서 1000 이면 큰 분류 하나가 2.7–7초라 첫
+# 관심사가 예산을 다 쓴다. 200 은 0.2–2.1초이고, 정확히 다 견준 결과와 평균 89% 같다(#478)
+PICK_EF_SEARCH = 200
+
 # 세부 카테고리 → 속한 카테고리. 어느 카테고리에도 속하지 않는 세부 카테고리는 None 이다
 _PARENT = {
     name: parent for parent, group in categories.SUBCATEGORIES.items() for name in group
@@ -188,8 +193,9 @@ async def pick(
     """관심사 하나에서 검색어와 가까운 책 limit 권. 번호가 이 관심사로 이어지는 책을 앞에 둔다.
 
     vector 는 그 관심사의 책 벡터 평균(길이를 줄이지 않은 것)이거나 이름 벡터(by_name)다. 분류 안의 책이
-    적으면 거리를 전부 계산하고, 많으면 벡터 색인으로 뽑는다. 고르는 기준은 지금 홈 추천과 같다
-    (personalized.py). 질의마다 left() 초만 기다리고, 시간을 다 쓰면 TimeoutError 다.
+    적으면 거리를 전부 계산하고, 많으면 벡터 색인으로 뽑는다. 고르는 기준은 지금 홈 추천과 같고
+    (personalized.py), 색인을 훑는 폭만 PICK_EF_SEARCH 로 좁다. 질의마다 left() 초만 기다리고, 시간을 다
+    쓰면 TimeoutError 다.
     """
     classes = classes_of(name)
     count = 0
@@ -198,9 +204,9 @@ async def pick(
         count = int(json.loads(plan)[0]["Plan"]["Plan Rows"])
 
     async def run(distance: str) -> list[asyncpg.Record]:
-        # SET LOCAL 은 트랜잭션 안에서만 먹는다(지금 홈 추천과 같은 설정)
+        # SET LOCAL 은 트랜잭션 안에서만 먹는다(훑는 폭 말고는 지금 홈 추천과 같은 설정)
         async with conn.transaction():
-            await conn.execute(f"SET LOCAL hnsw.ef_search = {EF_SEARCH}")
+            await conn.execute(f"SET LOCAL hnsw.ef_search = {PICK_EF_SEARCH}")
             await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
             await conn.execute("SET LOCAL plan_cache_mode = force_custom_plan")
             if classes:
