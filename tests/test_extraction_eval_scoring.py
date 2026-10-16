@@ -110,7 +110,7 @@ def test_기대에_없는_취향을_더_뽑은_것은_실패가_아니다() -> N
 
 def test_종류가_기대와_다른_것은_실패가_아니고_개수만_센다() -> None:
     # 종류가 맞는지는 LLM 채점의 몫이다(#341 기준 4). 코드는 참고용으로 센다
-    result = score(_case([_KUBE]), _ok(_got(type_="condition")))
+    result = score(_case([_KUBE]), _ok(_got(type_="mood")))
 
     assert result.passed
     assert result.type_matched == 0
@@ -197,6 +197,14 @@ def test_200이_아니면_본문에_무엇이_있든_실패다() -> None:
         pytest.param(_got(applies_to=["없는 이름"]), id="목록에_없는_이름"),
         pytest.param(
             _got(type_="mood", applies_to=["소설"]), id="주제가_아닌데_어디에"
+        ),
+        pytest.param(
+            _got(type_="condition", keyword="얇은 책", strength=2),
+            id="조건이_정해진_꼴이_아님",
+        ),
+        pytest.param(
+            _got(type_="condition", keyword="300쪽 이하", strength=1),
+            id="부탁만_한_조건",
         ),
         pytest.param(_got(dim=3), id="벡터_길이와_dim이_다름"),
         pytest.param(_got(vector=[]), id="빈_벡터"),

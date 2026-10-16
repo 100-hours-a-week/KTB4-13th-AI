@@ -22,18 +22,15 @@ _BY_ID = {case["id"]: case for case in _CASES}
 
 
 def _ideal(request: dict) -> Outcome:
-    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다.
-
-    세 칸을 적지 않은 조건(#427)은 직접 말했는지에 맞는 세기와 찾는 말을 핵심어로 쓴다.
-    """
+    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다."""
     case = next(c for c in _CASES if c["request"] == request)
     items = [
         {
             "type": want["type"],
             "value": want["value"],
-            "strength": want.get("strength", 2 if want["stated"] else 1),
+            "strength": want["strength"],
             "applies_to": want.get("applies_to", [])[:1],
-            "keyword": want.get("keyword", want["keywords"])[0],
+            "keyword": want["keyword"][0],
             "vector": [0.1, 0.2],
             "dim": 2,
             "source_conversation_id": request["conversation_id"],
@@ -66,8 +63,8 @@ def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
     # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
-    assert len(calls) == len(_CASES) == 80
-    assert summary["total"] == {"cases": 80, "runs": 80, "passed": 80, "pass_rate": 1.0}
+    assert len(calls) == len(_CASES) == 85
+    assert summary["total"] == {"cases": 85, "runs": 85, "passed": 85, "pass_rate": 1.0}
     assert summary["failures"] == {}
 
 
@@ -77,11 +74,11 @@ def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -
     summary, _calls = _run(_CASES)
 
     assert summary["labels"] == {
-        "labeled": 59,
+        "labeled": 67,
         "sign": 1.0,
         "strength": 1.0,
         "keyword": 1.0,
-        "where_labeled": 36,
+        "where_labeled": 38,
         "where": 1.0,
     }
 
@@ -94,7 +91,7 @@ def test_아무것도_안_뽑으면_뽑을_것이_없는_대화만_통과한다(
 
     expect_nothing = sum(c["expect"]["nothing_found"] for c in _CASES)
     assert summary["total"]["passed"] == expect_nothing
-    assert summary["failures"] == {"missed": 80 - expect_nothing}
+    assert summary["failures"] == {"missed": len(_CASES) - expect_nothing}
 
 
 # --- 고르기 ---

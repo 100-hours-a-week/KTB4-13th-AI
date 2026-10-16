@@ -7,6 +7,10 @@ LLM 의 답은 믿을 수 있는 입력이 아니다. 종류를 지어내거나,
 세기·어디에·핵심어(#426)도 여기서 본다. 범위 밖의 세기는 버리고, 피함의 부탁(-1)은 응답에서 뺀다.
 어디에는 서버 안 목록(app/core/categories.py)에 있는 이름만 남긴다.
 
+조건(#427)은 쪽수·가격·출간연도만 받는다. 핵심어를 정해진 꼴로 읽어 맞추고, 읽히지 않으면 버린다.
+번역서·전자책·오디오북처럼 책 정보로 가를 수 없는 조건이 여기서 걸린다. 늘 지킨다고 직접 말한 것(세기
+2 이상)만 남긴다. 부탁할 때만 붙인 조건("만 원 이하로 보여줘")은 프로필에 쓰지 않아서다.
+
 한 대화에서 종류와 핵심어가 같은 취향은 하나로 합친다. 이미 저장된 취향과는 견주지 않는다. 같은 취향을
 다른 날 또 말하면 또 내서, 자주 말한 취향이 무거워지게 한다(#425).
 """
@@ -34,6 +38,23 @@ MAX_APPLIES_TO = 3
 MAX_KEYWORD_CHARS = 100
 # 핵심어를 감싼 제목 괄호. 『』가 아니면 『』로 바꾼다. 제목만 말한 취향은 핵심어를 『』로 감싼다(명세 ⑤)
 _TITLE_BRACKETS = {"「": "」", "《": "》", "〈": "〉", "<": ">"}
+# 조건은 늘 지킨다고 직접 말한 것(세기 2 이상)만 남긴다(#427)
+MIN_CONDITION_STRENGTH = 2
+# 이번만 쓰는 부탁이라고 밝힌 말. 조건을 말한 사용자의 그 말에 있으면 조건을 뺀다(#427). 지시문으로만
+# 막으면 "이번 주는 200쪽 안쪽으로만"을 조건으로 뽑는 일이 잦았다
+_ONE_TIME = re.compile(r"이번|오늘|당분간")
+# 조건의 핵심어. 쪽수("300쪽 이하"), 가격("1만 원 이하", "15,000원 이하"), 출간연도("2024년 이후")
+_PAGES = re.compile(
+    r"(\d{1,5})\s*(?:쪽|페이지|p)\s*(이하|이상|미만|초과)", re.IGNORECASE
+)
+_PRICE_MAN = re.compile(
+    r"(\d{1,3}(?:\.\d)?)\s*만\s*(?:(\d)\s*천\s*)?원\s*(이하|이상|미만|초과)"
+)
+_PRICE_WON = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{3,7})\s*원\s*(이하|이상|미만|초과)")
+_YEAR = re.compile(r"((?:19|20)\d{2})\s*년\s*(?:도\s*)?(이후|이전|부터|까지)")
+# "미만"·"초과"도 받아 "이하"·"이상"으로 적는다. 쪽수·가격에서 하나 차이는 가를 일이 없다
+_BOUND = {"이하": "이하", "미만": "이하", "이상": "이상", "초과": "이상"}
+_SINCE = {"이후": "이후", "부터": "이후", "이전": "이전", "까지": "이전"}
 # LLM 이 취향마다 같이 적는 세 칸(#378). 프롬프트로 "하지 마라"고만 하면 지키지 않아서, LLM 에게는
 # 가려서 적게만 하고 버리는 것은 코드가 한다.
 OWNER_USER = "user"  # owner: 사용자 본인의 취향이다. 남의 취향("other")은 버린다
@@ -85,19 +106,21 @@ def _letters(text: str) -> str:
 _NAMES = {_letters(name): name for name in categories.NAME_TEXTS}
 
 
-def _quoted_from(evidence: Any, user_turns: Sequence[str]) -> bool:
-    """근거로 든 말이 사용자가 한 말 하나에서 옮긴 것인가.
+def _quoted_turn(evidence: Any, user_turns: Sequence[str]) -> str | None:
+    """근거로 든 말을 옮겨 온 사용자의 말. 옮긴 것이 아니면 None.
 
     글자 그대로일 필요는 없다. 모델은 가운데를 줄여서 옮기므로, 근거의 낱말이 사용자의 말 하나에
     모두 들어 있으면 된다. 챗봇의 말이나 지어낸 말은 낱말이 맞지 않아 걸린다.
     """
     if not isinstance(evidence, str):
-        return False
+        return None
     words = [word for word in map(_letters, evidence.split()) if word]
     if sum(len(word) for word in words) < MIN_EVIDENCE_CHARS:
-        return False
-    said = [_letters(turn) for turn in user_turns]
-    return any(all(word in turn for word in words) for turn in said)
+        return None
+    return next(
+        (turn for turn in user_turns if all(w in _letters(turn) for w in words)),
+        None,
+    )
 
 
 def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
@@ -107,17 +130,21 @@ def drop_reason(item: dict[str, Any], user_turns: Sequence[str]) -> str | None:
     - basis: 직접 말했는지 부탁했는지를 적지 않았다
     - evidence: 근거로 든 말이 사용자가 한 말에서 옮긴 것이 아니다(챗봇이 한 말이거나 지어낸 말이다)
     - unsaid_like: 찾기만 했는데 좋아한다고 썼다
+    - one_time: 조건을 말한 사용자의 말이 이번만 쓰는 부탁이라고 밝혔다
     """
     if item.get("owner") != OWNER_USER:
         return "owner"
     basis = item.get("basis")
     if basis not in (BASIS_STATED, BASIS_REQUESTED):
         return "basis"
-    if not _quoted_from(item.get("evidence"), user_turns):
+    turn = _quoted_turn(item.get("evidence"), user_turns)
+    if turn is None:
         return "evidence"
     value = item.get("value")
     if basis == BASIS_REQUESTED and isinstance(value, str) and _SAYS_LIKE.search(value):
         return "unsaid_like"
+    if item.get("type") == "condition" and _ONE_TIME.search(turn):
+        return "one_time"
     return None
 
 
@@ -170,6 +197,31 @@ def _keyword(raw: Any) -> str | None:
         return None
 
 
+def _won(amount: int) -> str:
+    """가격을 읽기 좋게 적는다. 15000 → 1만 5천 원, 9900 → 9,900원."""
+    if amount >= 10000 and amount % 1000 == 0:
+        man, rest = divmod(amount, 10000)
+        return f"{man}만 원" if rest == 0 else f"{man}만 {rest // 1000}천 원"
+    return f"{amount:,}원"
+
+
+def condition_keyword(raw: str) -> str | None:
+    """조건의 핵심어를 정해진 꼴로 맞춘다. 쪽수·가격·출간연도의 꼴이 아니면 None."""
+    text = " ".join(raw.split())
+    if match := _PAGES.fullmatch(text):
+        pages = int(match[1])
+        return f"{pages}쪽 {_BOUND[match[2]]}" if pages else None
+    if match := _PRICE_MAN.fullmatch(text):
+        amount = round(float(match[1]) * 10000) + int(match[2] or 0) * 1000
+        return f"{_won(amount)} {_BOUND[match[3]]}" if amount else None
+    if match := _PRICE_WON.fullmatch(text):
+        amount = int(match[1].replace(",", ""))
+        return f"{_won(amount)} {_BOUND[match[2]]}" if amount else None
+    if match := _YEAR.fullmatch(text):
+        return f"{match[1]}년 {_SINCE[match[2]]}"
+    return None
+
+
 def _is_title(keyword: str) -> bool:
     """책 제목만 말한 취향의 핵심어인가."""
     return keyword.startswith("『") and keyword.endswith("』")
@@ -195,6 +247,8 @@ def _candidate(item: Any) -> Candidate | None:
     value = _value(item.get("value"))
     strength = _strength(item.get("strength"), item.get("basis"), item.get("evidence"))
     keyword = _keyword(item.get("keyword"))
+    if keyword is not None and type_ == "condition":
+        keyword = condition_keyword(keyword)
     if value is None or strength is None or keyword is None:
         return None
     applies_to = _applies_to(item.get("applies_to"), type_, keyword)
@@ -204,7 +258,8 @@ def _candidate(item: Any) -> Candidate | None:
 def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Candidate]:
     """LLM 의 답(`{"extractions": [...]}`)에서 쓸 수 있는 후보만 세기의 크기가 큰 순으로 돌려준다.
 
-    피함의 부탁(세기 -1)은 뺀다. 한 대화에서 종류와 핵심어가 같은 취향이 두 번 나오면 하나로 합친다.
+    피함의 부탁(세기 -1)과 부탁할 때만 붙인 조건은 뺀다. 한 대화에서 종류와 핵심어가 같은 취향이 두 번
+    나오면 하나로 합친다.
     문장은 먼저 나온 것, 세기는 크기가 큰 쪽이다. 개수 상한은 합친 뒤에 센다.
     사용자가 한 말(user_turns)을 주면 근거·주인·직접 말했는지도 본다(drop_reason).
     """
@@ -216,6 +271,11 @@ def screen(llm_output: Any, user_turns: Sequence[str] | None = None) -> list[Can
     for item in items:
         candidate = _candidate(item)
         if candidate is None or candidate.strength == REQUEST_TO_AVOID:
+            continue
+        if (
+            candidate.type == "condition"
+            and candidate.strength < MIN_CONDITION_STRENGTH
+        ):
             continue
         if user_turns is not None and drop_reason(item, user_turns) is not None:
             continue

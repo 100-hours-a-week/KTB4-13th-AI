@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from app.core import categories
-from app.extraction.rules import MAX_EXTRACTIONS, MAX_VALUE_CHARS
+from app.extraction.rules import (
+    MAX_EXTRACTIONS,
+    MAX_VALUE_CHARS,
+    MIN_CONDITION_STRENGTH,
+    condition_keyword,
+)
 from app.extraction.rules import PREFERENCE_TYPES as TYPES
 from app.extraction.schemas import parse_request
 
@@ -27,12 +32,9 @@ _KINDS = _DATA["kinds"]
 _CASES = _DATA["cases"]
 _IDS = [case["id"] for case in _CASES]
 
-# 세기·어디에·핵심어를 적은 기대 취향(#424). 조건은 #427 에서 적는다.
+# 세기·어디에·핵심어를 적은 기대 취향(#424). 조건도 #427 부터 적는다.
 _LABELED = [
-    (case["id"], item)
-    for case in _CASES
-    for item in case["expect"]["extractions"]
-    if item["type"] != "condition"
+    (case["id"], item) for case in _CASES for item in case["expect"]["extractions"]
 ]
 # 명세 ⑤의 핵심어 최대 길이
 _MAX_KEYWORD_CHARS = 100
@@ -108,10 +110,8 @@ def test_대화_하나의_형식(case: dict) -> None:
     assert len(expect["extractions"]) <= MAX_EXTRACTIONS
 
     for item in expect["extractions"]:
-        # 세기·핵심어는 조건 말고 모두, 어디에는 주제에만 있다(명세 ⑤). 조건은 #427 에서 적는다.
-        labels = set()
-        if item["type"] != "condition":
-            labels = {"strength", "keyword"}
+        # 세기·핵심어는 모두, 어디에는 주제에만 있다(명세 ⑤).
+        labels = {"strength", "keyword"}
         if item["type"] == "topic":
             labels.add("applies_to")
         assert set(item) == {"type", "value", "keywords", "stated", *labels}
@@ -163,3 +163,8 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
         # 제목만 말한 취향은 어디에도 넣지 않는다(#395).
         if any(k.startswith("『") for k in keywords):
             assert names == []
+
+    if item["type"] == "condition":
+        # 조건은 정해진 꼴로 적고, 늘 지킨다고 말한 것만 뽑는다(#427).
+        assert all(condition_keyword(k) == k for k in keywords)
+        assert strength >= MIN_CONDITION_STRENGTH
