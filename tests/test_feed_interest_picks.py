@@ -515,6 +515,27 @@ def test_키워드는_가까운_책_가운데_제목이나_소개글에_그_말�
 
 
 @_needs_db
+def test_키워드는_그_말이_든_책이_모자라면_가까운_책_밖에서도_제목으로_찾는다() -> None:
+    books = [
+        _Book(9100341, cosine=1.0),
+        _Book(9100342, cosine=0.95),
+        # 가까운 두 권 밖이지만 제목에 그 말이 있다
+        _Book(9100343, cosine=0.2, title="쀍뷁 입문"),
+    ]
+
+    async def check(conn):
+        # 위 테스트와 같은 까닭으로 색인을 끄고 거리를 전부 계산한다
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        return await interest_picks.pick_keyword(
+            conn, "키워드:쀍뷁", _unit_like(1.0), limit=2, left=lambda: 5.0
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    assert [p.book_id for p in picks] == [9100343, 9100341]
+
+
+@_needs_db
 def test_대신할_책은_그_분류에서_인기_있는_책이고_유사도_항은_책_벡터로_매긴다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
