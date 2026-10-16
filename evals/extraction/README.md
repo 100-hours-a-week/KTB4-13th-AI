@@ -35,6 +35,7 @@
 | `expect.extractions` | 뽑아야 하는 취향. `type`은 종류, `value`는 기대 문장, `keywords`는 뽑은 문장에 하나라도 들어 있어야 하는 말(찾는 말), `stated`는 사용자가 직접 말한 취향이면 `true`이고 부탁한 내용에서 드러난 것이면 `false` |
 | `expect.extractions[].strength` | 기대 세기. -3, -2, 1, 2, 3 가운데 하나. 서버는 0과 -1을 내지 않습니다 |
 | `expect.extractions[].applies_to` | 주제에만 있습니다. 어디에로 고르면 맞는 이름(서버 안 카테고리·세부 카테고리, `app/core/categories.py`). 비어 있으면 맞는 이름이 없어 응답도 비어야 합니다 |
+| `expect.extractions[].applies_to_must` | 주제에만, 적고 싶을 때만 둡니다. 고른 이름 가운데 이 이름이 하나는 있어야 맞습니다. 위 카테고리만 고르면 틀리는 대화(장르를 다른 말로 부름)에 적습니다([#486](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/486)) |
 | `expect.extractions[].keyword` | 맞는 핵심어. 응답의 핵심어가 이 가운데 하나와 같으면 맞습니다 |
 | `expect.must_not_extract` | 뽑으면 안 되는 취향 문장. 뜻이 같은 것을 뽑으면 실패 |
 | `expect.forbidden` | 뽑은 문장 어디에도 들어가면 안 되는 말 |
