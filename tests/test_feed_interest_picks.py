@@ -79,13 +79,14 @@ class _FakeConn:
         self.estimated = False
         self.ran: list[str] = []
         self.sqls: list[str] = []
+        self.settings: list[str] = []
 
     @asynccontextmanager
     async def transaction(self):
         yield
 
     async def execute(self, sql: str) -> None:
-        pass
+        self.settings.append(sql)
 
     async def fetchval(self, sql: str, *args, timeout: float):
         assert sql.startswith("EXPLAIN (FORMAT JSON)")
@@ -154,6 +155,15 @@ def test_분류_안의_책이_너무_많으면_모자라도_다시_뽑지_않는
     _pick(conn)
 
     assert conn.ran == ["index"]
+
+
+def test_벡터_색인은_3초_예산을_잰_폭으로만_훑는다() -> None:
+    # 지금 홈 추천의 1000 이면 운영에서 큰 분류 하나가 예산(3초)을 다 쓴다(#478)
+    conn = _FakeConn(count=EXACT_LIMIT + 1, rows=[_row(1, 0.1)])
+
+    _pick(conn)
+
+    assert "SET LOCAL hnsw.ef_search = 200" in conn.settings
 
 
 def test_이름_벡터면_코사인을_이름_벡터의_구간으로_편다() -> None:
