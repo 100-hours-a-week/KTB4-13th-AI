@@ -246,6 +246,21 @@ def test_작가_이름으로_찾고_판본을_걸러도_모자라지_않게_넉�
     assert conn.args == [("J.K. 롤링", 10 * interest_picks.AUTHOR_READ_FACTOR)]
 
 
+@pytest.mark.parametrize(
+    ("author", "expected"),
+    [
+        ("한강, 데보라 스미스", True),
+        ("지은이: 한강", True),
+        ("한강준", False),  # 이름의 일부만 같다
+        (None, False),
+    ],
+)
+def test_저자_칸에_이름이_낱말로_통째로_있는지_본다(
+    author: str | None, expected: bool
+) -> None:
+    assert interest_picks.has_author(author, "한강") is expected
+
+
 def test_작가_이름이_비면_조회하지_않는다() -> None:
     conn = _FakeConn()
 

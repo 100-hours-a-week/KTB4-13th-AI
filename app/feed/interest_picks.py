@@ -257,6 +257,13 @@ async def pick(
     ]
 
 
+def has_author(author: str | None, name: str) -> bool:
+    """저자 칸에 그 이름이 낱말로 통째로 있는지. 작가 관심사를 뽑는 조회(_AUTHOR_SQL)와 같은 규칙이다."""
+    words = " ".join(re.split(_AUTHOR_SEPARATORS, author or ""))
+    wanted = " ".join(re.split(_AUTHOR_SEPARATORS, name)).strip()
+    return bool(wanted) and f" {wanted} " in f" {words} "
+
+
 async def pick_author(
     conn: asyncpg.Connection,
     name: str,
