@@ -189,16 +189,35 @@ def test_대체_자리가_표시된_목록을_저장된_프로필로_다시_뽑�
 
 
 @_needs_db
-def test_또_넘기면_표시를_남기고_그_밤에는_다시_집지_않는다(
+def test_또_넘기면_저장된_목록을_두고_표시만_남겨_그_밤에는_다시_집지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     build = _FakeBuild(Feed([Placed(2, "요리", 50)], ("요리",)))
 
     result, rows = _run_refresh(monkeypatch, build, {_A: (True, _feed())})
 
+    # 다시 뽑아 보기는 했으므로 센다
     assert result == {"refreshed": 1, "remaining": 0}
     assert rows[_A]["feed_partial"] is True
-    assert json.loads(rows[_A]["feed"])["retried_on"] == _NIGHT
+    assert rows[_A]["feed_version"] == 1
+    assert json.loads(rows[_A]["feed"]) == {
+        "books": _OLD_BOOKS,
+        "substituted": ["요리"],
+        "retried_on": _NIGHT,
+    }
+
+
+@_needs_db
+def test_잘_뽑혔던_관심사가_이번에_시간을_넘기면_저장된_목록을_그대로_둔다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 요리는 이번에 뽑혔지만, ⑥ 때 잘 뽑혔던 키워드:고양이가 시간을 넘겨 대신 채워졌다(#482)
+    build = _FakeBuild(Feed([Placed(2, "요리", 80)], ("키워드:고양이",)))
+
+    _, rows = _run_refresh(monkeypatch, build, {_A: (True, _feed())})
+
+    assert rows[_A]["feed_version"] == 1
+    assert json.loads(rows[_A]["feed"])["books"] == _OLD_BOOKS
 
 
 @_needs_db
