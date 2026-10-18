@@ -37,8 +37,11 @@ class ViewArgs(_Args):
 
 class AddArgs(_Args):
     book: BookRef = Field(description="담을 책")
-    # 범위(1~500)와 재고는 여기서 막지 않는다. BE 가 판단하고, 거절하면 그 이유를 결과에 적는다.
-    quantity: int = Field(default=1, description="담을 수량. 말하지 않았으면 1")
+    # 범위(1~500)와 재고는 여기서 막지 않는다. 장바구니가 판단하고, 거절하면 그 이유를 결과에 적는다.
+    # 말하지 않았으면 비운다. 이미 담긴 책은 수량을 말했을 때만 그 수량으로 바꾼다(tools._add)
+    quantity: int | None = Field(
+        default=None, description="사용자가 말한 수량. 말하지 않았으면 넣지 않는다(1권)"
+    )
 
 
 class UpdateArgs(_Args):
@@ -152,24 +155,33 @@ async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _
 
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
-    arguments = {"isbn": isbn, "quantity": args.quantity}
+    quantity = 1 if args.quantity is None else args.quantity
+    arguments = {"isbn": isbn, "quantity": quantity}
     # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
-    # 프롬프트로 부탁하는 것으로는 못 막아서 BE 를 부르기 전에 코드가 막는다
+    # 프롬프트로 부탁하는 것으로는 못 막아서 장바구니를 바꾸기 전에 코드가 막는다
     if isbn in ctx.picked:
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
     evidence.require(ctx, args.book, isbn)
-    # BE 의 담기는 "요청 수량으로 바꾸기"라서 이미 2권 담긴 책을 담으면 1권이 된다. LLM 이 조회를
-    # 건너뛰고 바로 담으라고 해도 막히도록, 담기 전에 BE 에서 다시 읽어 확인한다.
+    # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
+    # 담기 전에 장바구니를 다시 읽어 확인한다. 사용자가 수량을 말했으면("2권 담아줘") 그 수량으로 바꾼다(#489).
+    # LLM 이 수량을 채웠어도 사용자의 말에 수량이 없으면 말하지 않은 것으로 본다
     cart = await gateway.get_cart(ctx.user_id)
     existing = next((line for line in cart if line.isbn == isbn), None)
-    if existing is not None:
+    stated = args.quantity is not None and evidence.states_quantity(ctx)
+    if existing is not None and (not stated or quantity == existing.quantity):
         failure = _fail(
             ToolErrorCode.ALREADY_IN_CART.value,
             title=existing.title,
             quantity=existing.quantity,
         )
         return arguments, failure
-    return await _write(arguments, gateway.add_item(ctx.user_id, isbn, args.quantity))
+    arguments, result = await _write(
+        arguments, gateway.add_item(ctx.user_id, isbn, quantity)
+    )
+    if existing is not None and result.get("ok") is True:
+        # 결과 문장이 "담았어요"가 아니라 "수량을 N권으로 바꿨어요"가 되게 알린다
+        result = {**result, "replaced": True, "previous": existing.quantity}
+    return arguments, result
 
 
 async def _update(

@@ -94,3 +94,16 @@ class CommerceGateway(Protocol):
     async def get_offers(self, isbns: Sequence[str]) -> list[BookOffer]:
         """ISBN마다 가격·재고를 돌려준다. 모르는 책은 결과에서 빠진다."""
         ...
+
+
+@runtime_checkable
+class Restorable(Protocol):
+    """한 번에 시킨 쓰기를 되돌릴 수 있는 장바구니(#489). 요청으로 받은 복사본과 가짜 BE 가 따른다."""
+
+    def checkpoint(self) -> object:
+        """지금 상태. restore 에 그대로 넘긴다."""
+        ...
+
+    def restore(self, point: object) -> None:
+        """checkpoint 때의 상태로 되돌린다."""
+        ...

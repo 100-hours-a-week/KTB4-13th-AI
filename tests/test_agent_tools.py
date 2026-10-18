@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.agent import evidence
 from app.agent.compare import CompareError
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
@@ -1207,3 +1208,67 @@ def test_AI가_고른_책은_근거보다_확인이_먼저다() -> None:
 
     assert call.result["error"] == "CONFIRMATION_REQUIRED"
     assert fake.cart_state(UID) == {}
+
+
+# --- 담긴 책에 수량을 말하면 그 수량으로 (#489) ---
+
+
+def test_담긴_책에_수량을_말해_담으면_그_수량으로_바꾼다() -> None:
+    # 담기는 "요청 수량으로 바꾸기"다(BE#284). 3권이 있어도 "2권 담아줘"는 2권이다
+    spy, fake, ctx = _setup(seed=[(B, 3)], message="2번 2권 담아줘")
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2), "quantity": 2})
+
+    assert call.result == {"ok": True, "replaced": True, "previous": 3}
+    assert call.arguments == {"isbn": B, "quantity": 2}
+    assert fake.cart_state(UID) == {B: 2}
+
+
+@pytest.mark.parametrize("message", ["2번 담아줘", "2번 책 1번 더 보고 담아줘"])
+def test_사용자가_수량을_말하지_않았으면_LLM이_채운_수량으로_줄이지_않는다(
+    message: str,
+) -> None:
+    spy, fake, ctx = _setup(seed=[(B, 3)], message=message)
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2), "quantity": 1})
+
+    assert call.result["error"] == "ALREADY_IN_CART"
+    assert fake.cart_state(UID) == {B: 3}
+
+
+def test_이미_그_수량이면_바꾸지_않고_알린다() -> None:
+    spy, _, ctx = _setup(seed=[(B, 2)], message="2번 두 권 담아줘")
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2), "quantity": 2})
+
+    assert call.result["error"] == "ALREADY_IN_CART"
+    assert call.result["quantity"] == 2
+
+
+def test_새_책은_수량을_말하지_않으면_1권이다() -> None:
+    spy, fake, ctx = _setup(message="1번 담아줘")
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.arguments == {"isbn": A, "quantity": 1}
+    assert fake.cart_state(UID) == {A: 1}
+
+
+@pytest.mark.parametrize(
+    ("message", "stated"),
+    [
+        ("2권 담아줘", True),
+        ("두 권으로 담아줘", True),
+        ("3개 넣어줘", True),
+        ("한 권만 담아줘", True),
+        ("1번 담아줘", False),
+        ("2만원 이하로 담아줘", False),
+        ("담아줘", False),
+    ],
+)
+def test_수량은_권_개_부_단위가_붙은_말만_수량으로_본다(
+    message: str, stated: bool
+) -> None:
+    _, _, ctx = _setup(message=message)
+
+    assert evidence.states_quantity(ctx) is stated

@@ -467,3 +467,106 @@ def test_최근_대화의_모르는_칸은_무시한다() -> None:
 
     assert req is not None
     assert [(t.role, t.text) for t in req.recent_turns] == [("user", "안녕")]
+
+
+# --- 장바구니·가격 칸과 바꿀 것 목록 (#489) ---
+
+LINE = {
+    "isbn": "9788900000035",
+    "title": "아무튼, 산",
+    "price": 12800,
+    "quantity": 1,
+    "available": True,
+}
+
+
+def test_장바구니와_가격_칸이_없거나_null이면_빈_목록이다() -> None:
+    body = _request()
+    del body["cart"], body["offers"]
+
+    for req in (parse_request(body), parse_request(_request(cart=None, offers=None))):
+        assert req is not None
+        assert req.cart == []
+        assert req.offers == []
+
+
+def test_판매_중지된_장바구니_줄은_가격이_null이다() -> None:
+    req = parse_request(_request(cart=[{**LINE, "price": None, "available": False}]))
+
+    assert req is not None
+    assert req.cart[0].price is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"cart": [{**LINE, "isbn": "123"}]}, id="ISBN_형식"),
+        pytest.param({"cart": [{**LINE, "quantity": 0}]}, id="수량_0"),
+        pytest.param({"cart": [{**LINE, "quantity": 501}]}, id="수량_501"),
+        pytest.param({"cart": [{**LINE, "title": ""}]}, id="빈_제목"),
+        pytest.param({"cart": [{**LINE, "price": -1}]}, id="음수_가격"),
+        pytest.param({"cart": [LINE, LINE]}, id="같은_책_두_줄"),
+        pytest.param(
+            {"cart": [{**LINE, "isbn": f"97889{n:08d}"[:13]} for n in range(31)]},
+            id="31줄",
+        ),
+        pytest.param({"offers": [{"isbn": "9788900000011"}]}, id="가격_칸_빠짐"),
+        pytest.param(
+            {
+                "offers": [
+                    {
+                        "isbn": "9788900000011",
+                        "title": "책",
+                        "price": "13500",
+                        "in_stock": True,
+                    }
+                ]
+            },
+            id="가격이_문자열",
+        ),
+    ],
+)
+def test_장바구니와_가격_칸이_계약에_안_맞으면_400이다(overrides: dict) -> None:
+    assert parse_request(_request(**overrides)) is None
+
+
+def test_바꿀_것은_set이면_수량이_있고_remove면_수량_칸이_없다() -> None:
+    data = AgentActData(
+        reply="",
+        not_shopping=False,
+        actions=[
+            {"op": "remove", "isbn": "9788900000035"},
+            {"op": "set", "isbn": "9788900000011", "quantity": 2},
+        ],
+        tool_calls=[],
+        resolved_reference=None,
+        selection=None,
+        buttons=[],
+    )
+
+    assert data.model_dump(mode="json")["actions"] == [
+        {"op": "remove", "isbn": "9788900000035"},
+        {"op": "set", "isbn": "9788900000011", "quantity": 2},
+    ]
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"op": "set", "isbn": "9788900000011"},
+        {"op": "remove", "isbn": "9788900000011", "quantity": 1},
+        {"op": "add", "isbn": "9788900000011", "quantity": 1},
+        {"op": "set", "isbn": "9788900000011", "quantity": 0},
+    ],
+)
+def test_바꿀_것의_모양이_틀리면_응답을_만들지_못한다(action: dict) -> None:
+    with pytest.raises(ValidationError):
+        AgentActData(
+            reply="",
+            not_shopping=False,
+            actions=[action],
+            tool_calls=[],
+            resolved_reference=None,
+            selection=None,
+            buttons=[],
+        )

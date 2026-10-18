@@ -29,6 +29,12 @@ MAX_CONVERSATION_ID_CHARS = 200
 # 다른 점은 한 줄이 200자를 넘을 때다. ③ 은 400 이고 ⑦ 은 뒤쪽 200자만 쓴다(#402).
 MAX_RECENT_TURNS = 20
 MAX_TURN_CHARS = 200
+# 장바구니·가격 칸(#489). 장바구니는 BE 와 같이 서로 다른 책 30권, 수량 1~500. 가격·재고는 카드(최대 10권)와
+# 지금 보는 책이라 넉넉히 20권. 제목 길이는 명세에 없어 책 표의 제목 칸보다 넉넉하게 둔다.
+MAX_CART_LINES = 30
+MAX_QUANTITY = 500
+MAX_OFFERS = 20
+MAX_TITLE_CHARS = 500
 
 
 class ToolName(StrEnum):
@@ -83,6 +89,27 @@ class UserContext(_Strict):
     logged_in: bool
 
 
+class CartItemIn(_Strict):
+    """BE 가 실어 보낸 지금 장바구니 한 줄(#489). BE 장바구니 조회와 같은 칸이다."""
+
+    isbn: Isbn13
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    # 판매 중지·삭제된 상품은 가격이 없다
+    price: int | None = Field(ge=0)
+    quantity: int = Field(ge=1, le=MAX_QUANTITY)
+    # 구매할 수 있나(재고가 담은 수량 이상이고 판매 중)
+    available: bool
+
+
+class OfferIn(_Strict):
+    """카드 책(과 지금 보는 책)의 지금 가격·재고(#489)."""
+
+    isbn: Isbn13
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    price: int = Field(ge=0)
+    in_stock: bool
+
+
 def _trim_turn(item: object) -> object:
     """한 줄이 200자를 넘으면 뒤쪽 200자만 남긴다(#402).
 
@@ -117,6 +144,10 @@ class AgentActRequest(_Strict):
     user_context: UserContext
     allow_tools: list[ToolName] | None = None
     idempotency_key: str = Field(min_length=1)
+    # 지금 장바구니와 카드 책의 가격·재고(#489). AI 는 BE 를 부르지 않고 이 값으로 답한다. 없거나 null 이면 빈 것으로
+    # 본다(장바구니가 비어 있고 가격을 모르는 상태로 답한다)
+    cart: list[CartItemIn] = Field(default_factory=list, max_length=MAX_CART_LINES)
+    offers: list[OfferIn] = Field(default_factory=list, max_length=MAX_OFFERS)
 
     @field_validator("message", mode="after")
     @classmethod
@@ -137,10 +168,18 @@ class AgentActRequest(_Strict):
         return value
 
     # BE 는 비어 있는 목록을 null 로 보낼 수 있다(⑤⑥과 같게).
-    @field_validator("context_cards", mode="before")
+    @field_validator("context_cards", "cart", "offers", mode="before")
     @classmethod
     def _null_is_empty(cls, value: object) -> object:
         return [] if value is None else value
+
+    @model_validator(mode="after")
+    def _no_duplicate_lines(self) -> Self:
+        # 같은 책이 장바구니에 두 줄이면 어느 수량이 맞는지 모른다
+        isbns = [line.isbn for line in self.cart]
+        if len(isbns) != len(set(isbns)):
+            raise ValueError("장바구니에 같은 책이 두 번 있음")
+        return self
 
     # strict 모드는 문자열을 Enum 으로 바꿔 주지 않아서 직접 바꾼다. 모르는 이름은 400 이다(명세 ⑦).
     @field_validator("allow_tools", mode="before")
@@ -256,10 +295,34 @@ class Button(_Out):
         return {k: v for k, v in handler(self).items() if v is not None}
 
 
+class Action(_Out):
+    """BE 가 장바구니에 반영할 변경 하나(#489). set 은 그 책을 quantity 권으로(없으면 새로 담음), remove 는 빼기.
+
+    AI 는 장바구니를 바꾸지 않는다. 검증(재고, 30권 한도, 판매 중지)과 실제 변경은 BE 가 한다.
+    """
+
+    op: Literal["set", "remove"]
+    isbn: Isbn13
+    quantity: int | None = Field(default=None, ge=1, le=MAX_QUANTITY)
+
+    @model_validator(mode="after")
+    def _quantity_only_for_set(self) -> Self:
+        if (self.op == "set") != (self.quantity is not None):
+            raise ValueError("quantity 는 set 에만 있다")
+        return self
+
+    # remove 에는 quantity 칸을 싣지 않는다
+    @model_serializer(mode="wrap")
+    def _drop_unused(self, handler: Any) -> dict[str, Any]:
+        return {k: v for k, v in handler(self).items() if v is not None}
+
+
 class AgentActData(_Out):
     reply: str
     # true 면 쇼핑 요청이 아니라서 아무것도 하지 않았다. 호출자는 일반 챗봇 흐름으로 처리한다.
     not_shopping: bool
+    # BE 가 반영할 장바구니 변경. 없으면 []. reply 의 "담았어요"는 BE 가 이것을 모두 반영했을 때만 보여 준다
+    actions: list[Action]
     tool_calls: list[ToolCall]
     resolved_reference: ResolvedReference | None
     selection: Selection | None
@@ -269,6 +332,7 @@ class AgentActData(_Out):
     def _not_shopping_does_nothing(self) -> Self:
         if self.not_shopping and (
             self.reply
+            or self.actions
             or self.tool_calls
             or self.resolved_reference
             or self.selection
@@ -284,6 +348,7 @@ class AgentActData(_Out):
         return cls(
             reply="",
             not_shopping=True,
+            actions=[],
             tool_calls=[],
             resolved_reference=None,
             selection=None,
