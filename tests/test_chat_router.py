@@ -592,6 +592,33 @@ def test_recent_turns가_20턴_넘으면_최근_20개만_쓴다(
     assert "턴0" not in prompt  # 20개를 넘어가 잘려나감
 
 
+def test_recent_turns의_한_줄이_200자를_넘으면_400이_아니라_뒤쪽_200자만_쓴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """쇼핑 답은 200자를 넘을 수 있고, 챗봇 입구는 ③ 검사를 먼저 해서 400이면 다음 턴 전체가 실패한다(#490)."""
+    sent: list[str] = []
+    monkeypatch.setattr(chat, "get_chat_model", lambda: _capture_spec_prompt(sent))
+
+    long_reply = "앞" * 50 + "뒤" * 199 + "끝"
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(recent_turns=[{"role": "assistant", "text": long_reply}]),
+    )
+
+    assert res.status_code == 200
+    assert "뒤" * 199 + "끝" in sent[0]
+    assert "앞" not in sent[0]
+
+
+@pytest.mark.parametrize(
+    "turn", [{"role": "assistant"}, {"text": "안녕"}, {"role": "user", "text": 3}]
+)
+def test_recent_turns_항목의_형식이_틀리면_400이다(turn: dict) -> None:
+    res = client.post("/recommendations/chat", json=_request(recent_turns=[turn]))
+
+    assert res.status_code == 400
+
+
 def test_SPEC_PROMPT에_톤_조정_지시문과_예시가_실린다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

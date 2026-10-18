@@ -369,6 +369,9 @@ def _resolved(run: AgentRun) -> ResolvedReference | None:
     """실행한 도구가 풀어 낸 책. 코드가 채운 ISBN 만 쓴다."""
     isbns: list[str] = []
     for call in run.tool_calls:
+        # 근거 검사에 막힌 쓰기의 책은 모델이 고른 책이다. 사용자가 정한 책이 아니다(#418)
+        if call.result.get("error") == ToolErrorCode.REFERENCE_NOT_STATED.value:
+            continue
         if "isbn" in call.arguments:
             found = [call.arguments["isbn"]]
         elif "isbns" in call.arguments:
