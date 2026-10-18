@@ -14,13 +14,12 @@ from app.agent.schemas import (
     MAX_CONTEXT_CARDS,
     MAX_CONVERSATION_ID_CHARS,
     MAX_MESSAGE_CHARS,
-    MAX_RECENT_TURNS,
-    MAX_TURN_CHARS,
     AgentActData,
     Button,
     ToolName,
     parse_request,
 )
+from app.core.turns import MAX_RECENT_TURNS, MAX_TURN_CHARS
 
 EXAMPLES = json.loads(
     (Path(__file__).parent / "data" / "agent_act_examples.json").read_text(

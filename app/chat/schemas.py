@@ -5,13 +5,12 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.isbn import Isbn13
+from app.core.turns import MAX_TURN_CHARS, tail_turns
 from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 from app.search.schemas import SearchFilters
 
-# 명세 ③
+# 명세 ③. recent_turns 의 상한(최근 20턴, 한 줄 200자)은 ⑦ 과 같다(app/core/turns.py).
 MAX_MESSAGE_CHARS = 200
-MAX_RECENT_TURNS = 20
-MAX_TURN_CHARS = 200
 
 
 class _Strict(BaseModel):
@@ -62,6 +61,9 @@ class ChatRequest(_Strict):
     consented: bool
     spec: Spec
     message: str | None = Field(default=None, max_length=MAX_MESSAGE_CHARS)
+    # 20턴을 넘으면 최근 20턴만, 한 줄이 200자를 넘으면 뒤쪽 200자만 쓴다. 챗봇 입구는 쇼핑 갈래도 이 검사를
+    # 먼저 거치는데, 쇼핑 답은 200자를 넘을 수 있어서 400 으로 거절하면 그 다음 턴 전체가 실패한다(#490).
+    # 항목 형식이 틀리면 400 이다.
     recent_turns: list[Turn] = Field(default_factory=list)
     exclude_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
         default_factory=list
@@ -75,6 +77,11 @@ class ChatRequest(_Strict):
     # 보고 지금처럼 복제 표의 이력을 읽는다.
     purchased_isbns: list[Isbn13] | None = None
     library_isbns: list[Isbn13] | None = None
+
+    @field_validator("recent_turns", mode="before")
+    @classmethod
+    def _recent_turns_tail(cls, value: object) -> object:
+        return tail_turns(value)
 
     @model_validator(mode="after")
     def _message_xor_image(self) -> Self:

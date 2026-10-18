@@ -20,9 +20,10 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat.schemas import MAX_RECENT_TURNS, ChatRequest, Spec, Turn
+from app.chat.schemas import ChatRequest, Spec, Turn
 from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
+from app.core.turns import MAX_RECENT_TURNS
 from app.feed import personalized, scoring
 from app.gate import rules as gate_rules
 from app.gate import shopping
