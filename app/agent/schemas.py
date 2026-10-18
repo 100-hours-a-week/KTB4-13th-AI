@@ -37,7 +37,7 @@ MAX_TITLE_CHARS = 500
 class ToolName(StrEnum):
     """tool_calls[].name 과 allow_tools 에 올 수 있는 이름. 명세 ⑦ 의 tool 표와 같다."""
 
-    # BE 에 시키는 것
+    # 장바구니와 가격(요청으로 받은 복사본을 다룬다, #489)
     CART_VIEW = "cart.view"
     CART_ADD = "cart.add"
     CART_UPDATE = "cart.update"
