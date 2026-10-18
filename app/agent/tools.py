@@ -4,7 +4,7 @@ AI 서버 안의 도구는 화면 안내(ui.guide), 조합 고르기(selection.p
 소개글을 읽는 별도 호출)다.
 
 순서는 항상 같다: 실행해도 되는지 검사(guard) → 인자 확인 → 책을 ISBN 으로 확정(reference) → 쓰기면 사용자의 말이
-그 책의 근거인지 확인(evidence) → BE 호출.
+그 책의 근거인지 확인(evidence, 막히면 모델이 짚어 물을 책을 결과에 적는다) → BE 호출.
 어느 단계에서 막히든 예외를 던지지 않고 결과에 `{"ok": false, "error": "<코드>"}` 로 남긴다(명세 ⑦).
 결과에는 코드 이름만 적고 사용자 발화는 싣지 않는다.
 
@@ -150,6 +150,40 @@ async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _
     return {}, {"items": [_line(line) for line in lines], "total": _total(lines)}
 
 
+async def _unstated(
+    ctx: TurnContext, gateway: CommerceGateway, ref: BookRef, isbn: str
+) -> dict[str, Any] | None:
+    """사용자의 말에 이 책의 근거가 없으면 막는 결과, 있으면 None.
+
+    최근 대화가 있으면 대화에서 이야기한 책을 알아보는 데 카드 제목이 다 필요하다. 막기 전에만 한 번 읽어 다시
+    본다(#418). 그래도 막히면 모델이 고른 책을 결과에 적어, 모델이 그 책 한 권을 짚어 "담을까요?"라고 묻게
+    한다. 다시 말해 달라고 하면 사용자가 같은 말을 되풀이해야 한다(#416 측정). 사용자가 "네"라고 하면 직전에
+    한 권을 짚어 제안한 말에 대한 동의라서 근거가 된다(_from_history).
+    """
+    if evidence.has_evidence(ctx, ref, isbn):
+        return None
+    if evidence.needs_card_titles(ctx):
+        missing = [card.isbn for card in ctx.cards if card.isbn not in ctx.titles]
+        offers = await gateway.get_offers(list(dict.fromkeys(missing)))
+        ctx.titles.update({offer.isbn: offer.title for offer in offers})
+        if evidence.has_evidence(ctx, ref, isbn):
+            return None
+    return _fail(ToolErrorCode.REFERENCE_NOT_STATED.value, book=_named(ctx, ref, isbn))
+
+
+def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
+    """모델이 사용자에게 짚어 물을 수 있는 이름. ISBN 은 말하지 않는다. 제목을 모르면 번호만 쓴다."""
+    if ref.source == "cart":
+        where = f"장바구니 {ref.n}번째"
+        title = next(
+            (line.title for line in ctx.cart_snapshot or [] if line.isbn == isbn), None
+        )
+    else:
+        where = f"카드 {ref.n}번"
+        title = ctx.titles.get(isbn)
+    return f"{where} 《{title}》" if title else where
+
+
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
     arguments = {"isbn": isbn, "quantity": args.quantity}
@@ -157,7 +191,8 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
     # 프롬프트로 부탁하는 것으로는 못 막아서 BE 를 부르기 전에 코드가 막는다
     if isbn in ctx.picked:
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
-    evidence.require(ctx, args.book, isbn)
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return arguments, blocked
     # BE 의 담기는 "요청 수량으로 바꾸기"라서 이미 2권 담긴 책을 담으면 1권이 된다. LLM 이 조회를
     # 건너뛰고 바로 담으라고 해도 막히도록, 담기 전에 BE 에서 다시 읽어 확인한다.
     cart = await gateway.get_cart(ctx.user_id)
@@ -176,8 +211,9 @@ async def _update(
     ctx: TurnContext, gateway: CommerceGateway, args: UpdateArgs
 ) -> _Done:
     isbn = resolve(ctx, args.book)
-    evidence.require(ctx, args.book, isbn)
     arguments = {"isbn": isbn, "quantity": args.quantity}
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return arguments, blocked
     return await _write(
         arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
     )
@@ -187,7 +223,8 @@ async def _remove(
     ctx: TurnContext, gateway: CommerceGateway, args: RemoveArgs
 ) -> _Done:
     isbn = resolve(ctx, args.book)
-    evidence.require(ctx, args.book, isbn)
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return {"isbn": isbn}, blocked
     return await _write({"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
 
 

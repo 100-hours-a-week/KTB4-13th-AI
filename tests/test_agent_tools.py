@@ -13,7 +13,7 @@ import pytest
 from app.agent.compare import CompareError
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
-from app.agent.schemas import ContextCard, ToolCall, ToolName
+from app.agent.schemas import ContextCard, ToolCall, ToolName, Turn
 from app.agent.tools import ARG_MODELS, execute
 from app.gateway.commerce import CommerceGateway
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
@@ -1103,15 +1103,20 @@ def _words(ctx: TurnContext, message: str) -> TurnContext:
 
 
 @pytest.mark.parametrize(
-    ("name", "args"),
+    ("name", "args", "isbn", "book"),
     [
-        (ToolName.CART_ADD, {"book": card(1)}),
-        (ToolName.CART_UPDATE, {"book": cart(2), "quantity": 3}),
-        (ToolName.CART_REMOVE, {"book": cart(2)}),
+        (ToolName.CART_ADD, {"book": card(1)}, A, "카드 1번"),
+        (
+            ToolName.CART_UPDATE,
+            {"book": cart(2), "quantity": 3},
+            B,
+            "장바구니 2번째 《",
+        ),
+        (ToolName.CART_REMOVE, {"book": cart(2)}, B, "장바구니 2번째 《"),
     ],
 )
 def test_사용자가_누구인지_말하지_않았으면_쓰기는_BE를_부르지_않고_막힌다(
-    name, args
+    name, args, isbn, book
 ) -> None:
     spy, fake, ctx = _setup(seed=[(A, 1), (B, 1), (C, 1)])
     _see_cart(ctx, spy)
@@ -1121,11 +1126,14 @@ def test_사용자가_누구인지_말하지_않았으면_쓰기는_BE를_부르
 
     call = _run(ctx, spy, name, args)
 
-    assert call.result == {"ok": False, "error": "REFERENCE_NOT_STATED"}
+    assert call.result["ok"] is False
+    assert call.result["error"] == "REFERENCE_NOT_STATED"
+    # 모델이 그 책을 짚어 물을 수 있게 고른 책을 알려 준다(#418). 장바구니 책은 제목을 안다
+    assert call.result["book"].startswith(book)
     assert spy.calls == []
     assert fake.cart_state(UID) == before
-    # 책을 풀기 전에 막혔으니 기록에는 LLM 이 준 그대로가 남고 ISBN 은 없다
-    assert "isbn" not in call.arguments
+    # 책은 코드가 풀었으니 기록의 ISBN 은 코드가 채운 값이다. 막혔으므로 응답의 정해진 책은 아니다
+    assert call.arguments["isbn"] == isbn
 
 
 def test_번호나_제목을_말했으면_쓰기가_실행된다() -> None:
@@ -1207,3 +1215,53 @@ def test_AI가_고른_책은_근거보다_확인이_먼저다() -> None:
 
     assert call.result["error"] == "CONFIRMATION_REQUIRED"
     assert fake.cart_state(UID) == {}
+
+
+# --- 대화에서 이야기한 책과 막힌 쓰기의 후보 (#418) ---
+
+
+def _talked_about_a(ctx: TurnContext) -> TurnContext:
+    """카드 1번(A) 한 권만 이야기한 최근 대화. 에이전트는 제목으로 말한다."""
+    title = next(b.title for b in _books() if b.isbn == A)
+    ctx.turns = [
+        Turn(role="user", text="1번 얼마야?"),
+        Turn(role="assistant", text=f"《{title}》은 10,000원이에요."),
+    ]
+    return ctx
+
+
+def test_대화에서_한_권만_이야기했으면_제목을_읽어_보고_담는다() -> None:
+    spy, fake, ctx = _setup()
+    _talked_about_a(_words(ctx, "응 담아"))
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 1}
+    # 에이전트가 제목으로 말한 줄을 알아보려고, 막히기 직전에 카드 제목을 한 번 읽었다
+    assert spy.calls[0] == "get_offers"
+
+
+def test_이야기한_책과_다른_책을_고르면_막히고_고른_책을_알려_준다() -> None:
+    spy, fake, ctx = _setup()
+    _talked_about_a(_words(ctx, "응 담아"))
+    title_b = next(b.title for b in _books() if b.isbn == B)
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+
+    assert call.result == {
+        "ok": False,
+        "error": "REFERENCE_NOT_STATED",
+        "book": f"카드 2번 《{title_b}》",
+    }
+    assert fake.cart_state(UID) == {}
+
+
+def test_근거가_있으면_제목을_더_읽지_않는다() -> None:
+    spy, _fake, ctx = _setup()
+    _talked_about_a(_words(ctx, "2번 담아줘"))
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
+
+    assert call.result == {"ok": True}
+    assert "get_offers" not in spy.calls
