@@ -770,6 +770,15 @@ def test_동의처럼_시작해도_부정이_있으면_동의가_아니다(messa
     assert not evidence.has_evidence(ctx, _card(1), PY)
 
 
+@pytest.mark.parametrize(
+    "message", ["응 안 담을래", "네 담지 마세요", "좋아 근데 넣지 않을래"]
+)
+def test_동의처럼_시작해도_행동을_거절하면_동의가_아니다(message: str) -> None:
+    ctx = _history(_ctx(message, cards=[PY, DB, K8S]), ("user", "담아줘"), PROPOSE_PY)
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
 @pytest.mark.parametrize("message", ["어", "어?"])
 def test_어는_동의가_아니다(message: str) -> None:
     ctx = _history(_ctx(message, cards=[PY, DB, K8S]), ("user", "담아줘"), PROPOSE_PY)
@@ -861,6 +870,23 @@ def test_행동을_말하지_않거나_다른_책을_뜻하면_대화의_책은_
     message: str,
 ) -> None:
     ctx = _history(_ctx(message, cards=[PY, DB, K8S]), *TALK_PY)
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+
+
+@pytest.mark.parametrize(
+    "message", ["안 담을래", "담지 마", "안담아", "넣지 않을래", "빼지 말아 줘"]
+)
+def test_행동을_거절하면_대화의_책은_근거가_아니다(message: str) -> None:
+    # #419 리뷰: 행동 낱말만 보면 거절도 대화의 책에 대한 근거가 된다
+    ctx = _history(
+        _ctx(message, cards=[PY, DB, K8S]),
+        ("user", "1번 얼마야?"),
+        (
+            "assistant",
+            "카드 1번 《처음 만나는 파이썬》은 15,000원이에요. 장바구니에 담을까요?",
+        ),
+    )
 
     assert not evidence.has_evidence(ctx, _card(1), PY)
 
