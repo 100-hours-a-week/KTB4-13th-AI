@@ -177,6 +177,28 @@ def test_추천_말이면_쇼핑을_부르지_않고_추천으로_처리하며_r
     assert body["data"]["cards"]
 
 
+def test_직전_쇼핑_답이_200자를_넘어도_다음_턴은_400이_아니다(monkeypatch) -> None:
+    # 쇼핑 답에는 길이 상한이 없다. ③ 검사가 먼저라 400 이면 갈래와 상관없이 다음 턴 전체가 실패한다(#490)
+    _forbid(monkeypatch, agent, "shop_turn")
+    _wire_recommend(monkeypatch)
+    long_reply = "《책1》과 《책2》를 담았어요. " + "합계는 37,000원이에요. " * 20
+
+    res = client.post(
+        URL,
+        json=_body(
+            RECOMMEND_MESSAGE,
+            recent_turns=[
+                {"role": "user", "text": "1번이랑 2번 담아줘"},
+                {"role": "assistant", "text": long_reply},
+            ],
+        ),
+    )
+
+    assert len(long_reply) > 200
+    assert res.status_code == 200
+    assert res.json()["data"]["route"] == "recommend"
+
+
 def test_장바구니_말이면_추천을_부르지_않고_쇼핑으로_처리하며_route는_shop이다(
     monkeypatch,
 ) -> None:
