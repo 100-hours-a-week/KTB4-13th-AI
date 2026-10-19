@@ -13,6 +13,7 @@ LLM 과 DB 는 가짜로 끼운다. 한 요청에서 LLM 이 "새 요청 판정"
 """
 
 import json
+import time
 
 import httpx
 import openai
@@ -23,6 +24,7 @@ from langchain_core.runnables import RunnableLambda
 
 from app.chat import topic_switch
 from app.chat.schemas import Spec, SpecExact
+from app.core.config import get_settings
 from app.main import app
 from app.routers import chat
 from app.search.schemas import SearchFilters
@@ -560,3 +562,112 @@ def test_exclude에_제목이_섞여_와도_degraded가_되지_않는다(
 
     assert data["degraded"] is False
     assert data["spec"]["exclude"] == [1, 3]
+
+
+# --- 판정 호출의 모델과 기다리는 시간 ---------------------------------------------
+
+
+def test_판정_호출만_따로_정한_모델을_쓴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RELATION_LLM_MODEL_ID 를 주면 판정 호출만 그 모델이고, 1단계와 카드 생성은 기본 모델이다(⑤·⑦과 같은 방식)."""
+    monkeypatch.setenv("RELATION_LLM_MODEL_ID", "openai/gpt-4o-mini")
+    get_settings.cache_clear()
+    llm = _Llm(relation="same", specs=(_reply(),))
+    model = llm.model()
+    asked_with: list[str | None] = []
+
+    def _get_chat_model(**kwargs):
+        asked_with.append(kwargs.get("model_id"))
+        return model
+
+    monkeypatch.setattr(chat, "get_chat_model", _get_chat_model)
+    request_spec = {**INITIAL_SPEC, "semantic": "소설"}
+
+    res = client.post(
+        "/recommendations/chat",
+        json=_request(spec=request_spec, message="다른 거 보여줘"),
+    )
+
+    assert res.status_code == 200
+    # 판정 1번만 모델을 정하고, 1단계와 카드 생성 2번은 정하지 않는다
+    assert sorted(asked_with, key=lambda m: m or "") == [
+        None,
+        None,
+        "openai/gpt-4o-mini",
+    ]
+
+
+def test_판정_모델을_안_정하면_기본_모델이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RELATION_LLM_MODEL_ID", raising=False)
+    get_settings.cache_clear()
+    llm = _Llm(relation="same", specs=(_reply(),))
+    model = llm.model()
+    asked_with: list[str | None] = []
+
+    def _get_chat_model(**kwargs):
+        asked_with.append(kwargs.get("model_id"))
+        return model
+
+    monkeypatch.setattr(chat, "get_chat_model", _get_chat_model)
+
+    client.post(
+        "/recommendations/chat",
+        json=_request(
+            spec={**INITIAL_SPEC, "semantic": "소설"}, message="다른 거 보여줘"
+        ),
+    )
+
+    assert asked_with == [None, None, None]
+
+
+class _SlowRelation(_Llm):
+    """판정 호출만 일정 시간 뒤에 답하는 가짜 모델."""
+
+    def __init__(self, delay: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._delay = delay
+
+    def model(self) -> RunnableLambda:
+        fast = super().model()
+
+        def _answer(prompt) -> AIMessage:
+            if self._kind(prompt.to_string()) == "relation":
+                time.sleep(self._delay)
+            return fast.invoke(prompt)
+
+        return RunnableLambda(_answer)
+
+
+def test_판정이_1단계보다_너무_늦으면_기다리지_않고_이어가는_말로_본다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """판정은 1단계와 나란히 가므로 보통 시간이 안 늘지만, 판정만 느려지면 응답이 그만큼 늦어진다."""
+    monkeypatch.setattr(chat, "RELATION_GRACE_SECONDS", 0.05)
+    llm = _SlowRelation(0.5, relation="new", specs=(_reply(semantic="요리책"),))
+    request_spec = {**INITIAL_SPEC, "filters": {"price_max": 17500}, "semantic": "소설"}
+
+    started = time.monotonic()
+    data = _post(monkeypatch, llm, spec=request_spec, message="요리책 보여줘")
+    elapsed = time.monotonic() - started
+
+    assert data["degraded"] is False
+    # 판정이 새 요청이라고 답하기 전에 포기했으니 앞 조건이 남고 다시 뽑지 않는다
+    assert data["spec"]["filters"]["price_max"] == 17500
+    assert len(llm.prompts["spec"]) == 1
+    assert elapsed < 0.45
+
+
+def test_판정이_조금_늦어도_기다리는_한도_안이면_쓴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat, "RELATION_GRACE_SECONDS", 2.0)
+    llm = _SlowRelation(
+        0.2,
+        relation="new",
+        specs=(_reply(semantic="요리책"), _reply(semantic="요리책")),
+    )
+    request_spec = {**INITIAL_SPEC, "filters": {"price_max": 17500}, "semantic": "소설"}
+
+    data = _post(monkeypatch, llm, spec=request_spec, message="요리책 보여줘")
+
+    assert data["spec"]["filters"]["price_max"] is None
+    assert len(llm.prompts["spec"]) == 2
