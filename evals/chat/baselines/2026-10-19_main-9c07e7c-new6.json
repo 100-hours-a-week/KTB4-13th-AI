@@ -112,6 +112,8 @@
  "observed": [],
  "fail_reasons": {
   "조건 불일치(6턴 intent)": 3,
+  "조건 불일치(6턴 exact.title)": 3,
+  "조건 불일치(7턴 exact.title)": 3,
   "조건 불일치(2턴 filters.price_max)": 3,
   "되묻지 않음": 3,
   "조건 불일치(4턴 filters.price_max)": 2,

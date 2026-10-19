@@ -39,6 +39,7 @@ SOURCES_NEEDING_EVIDENCE = {"community", "chatlog", "study"}
 SPEC_PATHS = {
     "intent",
     "semantic",
+    "exact.title",
     "filters.category",
     "filters.price_min",
     "filters.price_max",
