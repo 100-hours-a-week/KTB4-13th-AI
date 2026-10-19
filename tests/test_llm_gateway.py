@@ -21,6 +21,7 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
 import app.gateway.llm as llm_gateway
+from app import main
 from app.gateway.llm import (
     LLMTimeoutError,
     LLMUnavailableError,
@@ -488,10 +489,10 @@ def test_가짜_LLM이면_모델을_남기지_않는다(
     assert caplog.records == []
 
 
-def test_서버가_뜰_때_DB에_붙기_전에_모델을_남긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_서버가_뜰_때_DB에_붙기_전에_모델을_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # 배포 로그에서 보려는 것이라 서버가 뜨는 길에서 불려야 한다. DB 연결에 실패해도 남도록 그 앞에서 부른다
-    import app.main as main
-
     called: list[str] = []
 
     class _Stop(Exception):

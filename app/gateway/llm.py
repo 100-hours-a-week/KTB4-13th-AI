@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any, Literal
 
 import openai
@@ -9,6 +10,8 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMUnavailableError(Exception):
@@ -97,6 +100,37 @@ def get_chat_model(
         model_kwargs={"response_format": {"type": "json_object"}} if json_mode else {},
         extra_body=extra_body,
     )
+
+
+def report_models() -> None:
+    """서버가 뜰 때 기능마다 실제로 쓰는 모델을 한 줄로 남기고, 기능별 설정이 빈 곳은 경고한다.
+
+    기능별 설정(⑤·③ 새 요청 판정·⑦)은 비어 있으면 아무 말 없이 공용 LLM_MODEL_ID 로 돈다. dev·운영
+    설정에 빠져 있어서 ⑦ 이 평가한 모델 대신 공용 gpt-4o 로 돌고 있었는데 아무도 몰랐다(#525). 배포
+    로그에서 바로 보이게 한다. 모델 이름을 코드 기본값으로 두지 않는 것은 모델 ID 형식이 공급자마다
+    달라서다(로컬 Ollama 등, 위 get_chat_model 의 게이트웨이 원칙).
+    """
+    settings = get_settings()
+    if settings.llm_mock:
+        # 가짜 응답만 쓰므로 어느 모델도 부르지 않는다
+        return
+    shared = settings.llm_model_id or "(비어 있음)"
+    own_models = (
+        ("EXTRACTION_LLM_MODEL_ID", "⑤ 취향 뽑기", settings.extraction_llm_model_id),
+        ("RELATION_LLM_MODEL_ID", "③ 새 요청 판정", settings.relation_llm_model_id),
+        ("AGENT_LLM_MODEL_ID", "⑦ 쇼핑 에이전트", settings.agent_llm_model_id),
+    )
+    parts = [f"공용 {shared}"]
+    for name, feature, model_id in own_models:
+        parts.append(f"{feature} {model_id or '공용'}")
+        if not model_id:
+            logger.warning(
+                "%s 가 비어 있어 %s도 공용 LLM_MODEL_ID(%s)로 돕니다",
+                name,
+                feature,
+                shared,
+            )
+    logger.info("LLM 모델: %s", ", ".join(parts))
 
 
 def message_text(message: BaseMessage) -> str:
