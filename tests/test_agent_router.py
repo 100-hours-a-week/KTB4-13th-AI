@@ -13,7 +13,9 @@ import httpx
 import openai
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, ToolMessage
 
+from app.agent.descriptors import llm_name
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.schemas import AgentActData, ToolName
@@ -1161,6 +1163,77 @@ def test_책을_가리키는_근거가_없어_막힌_쓰기는_되돌릴_이유�
     data = res.json()["data"]
     assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 1}]
     assert data["tool_calls"][1]["result"]["error"] == "REFERENCE_NOT_STATED"
+
+
+def _add_two_then_view() -> AIMessage:
+    return ai_calls(
+        (ToolName.CART_ADD, {"book": card(1)}),
+        (ToolName.CART_ADD, {"book": card(2)}),
+        (ToolName.CART_VIEW, {}),
+    )
+
+
+def _seen_view(model: ScriptedModel) -> dict:
+    """두 번째 LLM 호출이 받은 장바구니 조회 결과."""
+    (view,) = [
+        m
+        for m in model.calls[1]
+        if isinstance(m, ToolMessage) and m.name == llm_name(ToolName.CART_VIEW)
+    ]
+    return json.loads(view.content)
+
+
+def test_되돌린_묶음의_장바구니_조회는_되돌린_장바구니를_보여_준다(monkeypatch) -> None:
+    # 29권에 1번·2번을 담고 장바구니를 보면 2번이 30권 한도에 걸려 1번도 되돌린다. 조회 결과가 되돌리기 전
+    # 그대로면 "1번도 담지 않았어요" 옆에 1번이 담긴 목록과 틀린 합계가 LLM 에게 간다(#493 리뷰)
+    model = ScriptedModel([_add_two_then_view(), ai_text("결과예요.")])
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = _full_cart(29)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번이랑 2번 담고 장바구니 보여줘", cart=cart, offers=OFFERS
+        ),
+    )
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["actions"] == []
+    view = data["tool_calls"][2]["result"]
+    assert [item["isbn"] for item in view["items"]] == [line["isbn"] for line in cart]
+    assert view["total"] == 290000
+    seen = _seen_view(model)
+    assert len(seen["items"]) == 29
+    assert "책1" not in json.dumps(seen, ensure_ascii=False)
+    assert seen["total"] == 290000
+
+
+def test_되돌린_묶음에서_본_장바구니가_다음_번호의_기준이다(monkeypatch) -> None:
+    # 다음 묶음의 "장바구니 1번째"는 되돌린 장바구니의 1번째다. 되돌리기 전 목록이면 1번(맨 위에 담겼던 책)을
+    # 빼려다 장바구니에 없다고 실패한다
+    model = ScriptedModel(
+        [
+            _add_two_then_view(),
+            ai_calls((ToolName.CART_REMOVE, {"book": {"source": "cart", "n": 1}})),
+            ai_text("결과예요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = _full_cart(29)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번이랑 2번 담고 장바구니 보여줘. 장바구니 1번째는 빼줘",
+            cart=cart,
+            offers=OFFERS,
+        ),
+    )
+
+    data = res.json()["data"]
+    assert data["tool_calls"][3]["result"] == {"ok": True}
+    assert data["actions"] == [{"op": "remove", "isbn": cart[0]["isbn"]}]
 
 
 def test_담긴_책에_수량을_말해_담으면_수량을_바꿨다고_말한다(monkeypatch) -> None:
