@@ -1,4 +1,6 @@
-"""① 검색 평가 묶음의 채점(evals/search/scoring.py) 테스트(#495). DB 없이 돈다."""
+"""① 검색 평가 묶음의 채점(evals/search/scoring.py) 테스트(#495, #502). DB 없이 돈다."""
+
+import math
 
 import pytest
 
@@ -163,3 +165,69 @@ def test_저자_필터_없는_말은_각자의_숫자를_낸다() -> None:
     )
     assert kinds["nonsense"]["returned_mean"] == 20.0
     assert "hit_1" not in kinds["nonsense"]
+
+
+def _descriptive_case(facet: str = "topic") -> dict:
+    return {"id": f"descriptive-{facet}", "kind": "descriptive", "facet": facet}
+
+
+# 위 10권이 모두 2점일 때의 값. nDCG 의 이상값이다
+IDEAL = sum(3 / math.log2(rank + 1) for rank in range(1, 11))
+
+
+def test_서술형은_위_10권이_모두_2점인_순서를_이상값으로_nDCG를_낸다() -> None:
+    shelf = {i: _book(i) for i in range(1, 13)}
+    case = _descriptive_case()
+    labels = {case["id"]: {shelf[1].isbn: 2, shelf[2].isbn: 1, shelf[3].isbn: 0}}
+    # 0점, 2점, 1점 순서
+    s = score(case, _response(3, 1, 2), shelf, top=20, labels=labels)
+    assert s.ndcg == pytest.approx((3 / math.log2(3) + 1 / 2) / IDEAL)
+    assert (s.relevant, s.irrelevant, s.unlabeled) == (1, 1, 0)
+    # 위 10권이 모두 2점이면 1이고, 11등의 책은 세지 않는다
+    labels = {case["id"]: {shelf[i].isbn: 2 for i in range(1, 13)}}
+    full = score(case, _response(*range(1, 13)), shelf, top=20, labels=labels)
+    assert full.ndcg == pytest.approx(1.0) and full.relevant == 10
+
+
+def test_2점_책이_없으면_위_10권이_모두_1점이어도_3분의_1이다() -> None:
+    # 매긴 책 가운데 가장 좋은 순서를 이상값으로 쓰면 이 경우가 1이 된다(제목에 낱말만 든 책만 나온 검색어)
+    shelf = {i: _book(i) for i in range(1, 11)}
+    case = _descriptive_case()
+    labels = {case["id"]: {book.isbn: 1 for book in shelf.values()}}
+    s = score(case, _response(*range(1, 11)), shelf, top=20, labels=labels)
+    assert s.ndcg == pytest.approx(1 / 3)
+
+
+def test_점수를_매기지_않은_책은_0점으로_계산하고_따로_센다() -> None:
+    shelf = {1: _book(1), 2: _book(2), 3: _book(3)}
+    case = _descriptive_case()
+    labels = {case["id"]: {shelf[1].isbn: 2}}
+    s = score(case, _response(2, 1, 3), shelf, top=20, labels=labels)
+    assert s.ndcg == pytest.approx((3 / math.log2(3)) / IDEAL)
+    assert (s.relevant, s.irrelevant, s.unlabeled) == (1, 0, 2)
+    # 라벨 파일을 주지 않아도 돈다. 모든 책이 점수 없는 책이다
+    assert score(case, _response(1), shelf, top=20).unlabeled == 1
+
+
+def test_서술형은_종류와_소분류별로_모은다() -> None:
+    shelf = {1: _book(1), 2: _book(2)}
+    labels = {
+        "descriptive-topic": {shelf[1].isbn: 2, shelf[2].isbn: 0},
+        "descriptive-mood": {shelf[1].isbn: 0},
+    }
+    scores = [
+        score(
+            _descriptive_case("topic"), _response(1, 2), shelf, top=20, labels=labels
+        ),
+        score(_descriptive_case("mood"), _response(1, 2), shelf, top=20, labels=labels),
+    ]
+    summary = summarize(scores)
+    row = summary["kinds"]["descriptive"]
+    assert row["ndcg_mean"] == pytest.approx(3 / IDEAL / 2, abs=1e-3)
+    assert (row["relevant_mean"], row["irrelevant_mean"], row["unlabeled"]) == (
+        0.5,
+        1.0,
+        1,
+    )
+    assert summary["facets"]["topic"]["ndcg_mean"] == pytest.approx(3 / IDEAL, abs=1e-3)
+    assert summary["facets"]["mood"]["ndcg_mean"] == 0
