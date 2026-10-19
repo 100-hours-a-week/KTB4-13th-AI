@@ -32,12 +32,25 @@ DATABASE_URL=postgresql://…/평가DB uv run python -m evals.chat.run \
 uv run python -m evals.chat.grade evals/chat/results/이름-원본.json \
   --save evals/chat/results/이름.json
 uv run python -m evals.chat.grade 원본.json --skip-runs 4,5     # 버릴 회차
+uv run python -m evals.chat.grade 원본.json --only 8,43        # 일부만 돌린 원본과 같은 질문으로 견줄 때
+
+# 책소개를 저장하기 전(#503)에 만든 원본은 긴 이유 지표를 못 잽니다. 책 정보만 다시 채웁니다(LLM 안 부름)
+DATABASE_URL=postgresql://…/평가DB uv run python -m evals.chat.run --refill-books 원본.json
 
 # 전후 비교
 uv run python -m evals.chat.grade --compare 전.json 후.json
 ```
 
-**재는 것:** 종류별·출처별 통과율, 실패 사유별 수, 회차별 통과한 질문 수, 카드 0장 비율, 말하지 않은 분위기가 조건 문장에 붙은 비율, 응답 시간(중앙, p90), 가장 자주 보인 책.
+**재는 것:** 종류별·출처별 통과율, 실패 사유별 수, 회차별 통과한 질문 수, 카드 0장 비율, 말하지 않은 분위기가 조건 문장에 붙은 비율, 응답 시간(중앙, p90), 가장 자주 보인 책, 긴 이유 지표(아래).
+
+**긴 이유 지표(#503).** 긴 이유(`reason_long`)는 도서 상세 페이지에 책소개와 같이 보입니다. 책소개가 있는 책의 카드만, LLM 을 부른 턴만 봅니다. 모두 코드로 세는 어림이라 통과/실패에는 넣지 않고 전후를 견주는 데만 씁니다.
+
+| 지표 | 세는 법 | 못 잡는 것 |
+| --- | --- | --- |
+| 책소개를 옮김 | 띄어쓰기·기호를 지우고, 긴 이유의 이어진 8글자 묶음 중 책소개에도 있는 것이 50% 이상(`app/chat/copying.py`, 카드 생성의 규칙과 같은 잣대) | 낱말을 바꿔 줄여 쓴 글 |
+| 요청 낱말을 짚음 | 조건 문장(`spec.semantic`)의 낱말을 조사를 떼고 앞 두 글자로 견줌 | 책소개를 옮기다 우연히 겹친 것도 셈 |
+| 책소개에 없는 요청 낱말을 짚음 | 위 낱말 중 책소개에 없는 것(사용자의 상황)만 | 활용으로 앞 두 글자가 바뀌는 말("가볍게"·"가벼운") |
+| 말하지 않은 분위기를 붙임 | 사용자가 말하지 않았고 책소개에도 없는 분위기 낱말(`MOOD_WORDS`)이 긴 이유에 있음 | 목록에 없는 분위기 낱말 |
 
 ## 읽을 때 주의
 
