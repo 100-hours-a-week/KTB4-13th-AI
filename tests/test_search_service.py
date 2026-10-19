@@ -62,9 +62,11 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
     return state
 
 
-def _search(**kwargs) -> service.SearchOutcome:
+def _search(
+    weights: tuple[float, float] | None = None, **kwargs
+) -> service.SearchOutcome:
     req = SearchRequest.model_validate({"query": "책", **kwargs})
-    return asyncio.run(service.search(req))
+    return asyncio.run(service.search(req, weights=weights))
 
 
 def _ids(outcome: service.SearchOutcome) -> list[int]:
@@ -77,6 +79,14 @@ def test_둘_다_되면_순위를_합치고_헤더가_없다(fakes: dict) -> Non
     # 2 는 두 목록에 다 있어 맨 위, 1 은 키워드 1등(비중 3), 3 은 벡터에만 있다.
     assert _ids(outcome) == [2, 1, 3]
     assert outcome.degraded is None
+
+
+def test_비중을_주면_그_비중으로_순위를_합친다(fakes: dict) -> None:
+    # 키워드 [1, 2], 벡터 [2, 3]. 벡터를 3배로 치면 벡터에만 있는 3 이 키워드에만 있는 1 보다 앞선다(#515)
+    outcome = _search(weights=service.SEMANTIC_WEIGHTS)
+
+    assert _ids(outcome) == [2, 3, 1]
+    assert service.SEMANTIC_WEIGHTS == (1.0, 3.0)
 
 
 def test_제목이_검색어와_같은_책은_합치기_전에_맨_앞으로_간다(fakes: dict) -> None:
