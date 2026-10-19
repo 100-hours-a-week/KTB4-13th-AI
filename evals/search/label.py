@@ -14,12 +14,18 @@
 열지 않는다. 출처를 알면 판정이 기운다.
 """
 
+import argparse
+import asyncio
 import json
 import math
 import random
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from evals.search import run
+from evals.search.collect import collect_with
 
 LABELS_PATH = Path(__file__).with_name("labels.json")
 WORK = Path(__file__).parent / "results" / "label"
@@ -163,3 +169,108 @@ def apply_review(review: Mapping[str, dict], data: dict[str, Any], by: str) -> i
         "changed": changed,
     }
     return changed
+
+
+async def _books(url: str, key: str, values: list) -> dict[Any, Any]:
+    import asyncpg
+
+    kind = "int" if key == "book_id" else "text"
+    conn = await asyncpg.connect(url)
+    try:
+        sql = _BOOKS_SQL.format(intro=INTRO_CHARS, key=key, kind=kind)
+        rows = await conn.fetch(sql, values)
+    finally:
+        await conn.close()
+    return {r[key]: dict(r) for r in rows}
+
+
+def _write(name: str, text: str) -> Path:
+    WORK.mkdir(parents=True, exist_ok=True)
+    path = WORK / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _database(args: argparse.Namespace) -> str | None:
+    from app.core.config import get_settings
+
+    url = get_settings().database_url
+    reason = run.refusal(run.database_name(url), allow_any=args.any_db)
+    if reason:
+        print(reason, file=sys.stderr)
+        return None
+    return url
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="① 서술형 검색어에 점수를 매긴다")
+    sub = parser.add_subparsers(dest="command", required=True)
+    pool = sub.add_parser("pool", help="후보를 모아 채점 파일을 낸다")
+    pool.add_argument("--code", action="append", required=True, help="이름=폴더")
+    sub.add_parser("apply", help="grades.json 을 라벨에 넣는다").add_argument(
+        "--judge", required=True, help="점수를 매긴 사람이나 세션, 날짜"
+    )
+    sub.add_parser("review", help="사람이 확인할 표를 낸다")
+    sub.add_parser("apply-review", help="고친 점수를 넣는다").add_argument(
+        "--by", required=True, help="확인한 사람, 날짜"
+    )
+    for name in ("pool", "review"):
+        sub.choices[name].add_argument("--any-db", action="store_true")
+    args = parser.parse_args(argv)
+    data = load_labels()
+
+    if args.command in ("pool", "review") and (url := _database(args)) is None:
+        return 2
+    if args.command == "pool":
+        codes = dict(item.split("=", 1) for item in args.code)
+        cases = run.select(run.load_bundle()["cases"], kinds=["descriptive"])
+        requests = [run.request(case, POOL_TOP) for case in cases]
+        found = {
+            name: collect_with(Path(path), requests) for name, path in codes.items()
+        }
+        ids = sorted(
+            {i for results in found.values() for r in results for i in r["book_ids"]}
+        )
+        books = asyncio.run(_books(url, "book_id", ids))
+        text, grades, sources = gather(cases, found, books, data["labels"])
+        _write("grades.json", dump({"grades": grades}, "grades"))
+        _write("sources.json", json.dumps(sources, ensure_ascii=False))
+        count = sum(len(v) for v in grades.values())
+        print(f"점수를 매길 책 {count}권: {_write('candidates.md', text)}")
+    elif args.command == "apply":
+        grades = _json(WORK / "grades.json")["grades"]
+        added = apply(grades, _json(WORK / "sources.json"), data, args.judge)
+        LABELS_PATH.write_text(dump(data, "labels"), encoding="utf-8")
+        print(f"라벨 {added}개를 더했다: {LABELS_PATH}")
+    elif args.command == "review":
+        review = pick_review(data)
+        books = asyncio.run(_books(url, "isbn13", [r["isbn"] for r in review]))
+        rows = [
+            "| 번호 | 검색어 | 책 | 소개글 | 점수 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        queries = {c["id"]: c["query"] for c in run.load_bundle()["cases"]}
+        for n, item in enumerate(review, 1):
+            book = books[item["isbn"]]
+            rows.append(
+                f"| r{n:02d} | {queries[item['case']]} | {_line(book['title'])} "
+                f"({_line(book['author'])}, {_line(book['category'])}) "
+                f"| {_line(book['intro'])} | {item['grade']} |"
+            )
+        marks = {f"r{n:02d}": item for n, item in enumerate(review, 1)}
+        _write("review.json", dump({"review": marks}, "review"))
+        table = _write("review.md", "\n".join(rows) + "\n")
+        print(f"사람이 확인할 라벨 {len(review)}개: {table}")
+    else:
+        changed = apply_review(_json(WORK / "review.json")["review"], data, args.by)
+        LABELS_PATH.write_text(dump(data, "labels"), encoding="utf-8")
+        print(f"사람이 고친 라벨 {changed}개를 넣었다: {LABELS_PATH}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
