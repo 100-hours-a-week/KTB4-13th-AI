@@ -300,3 +300,119 @@ def test_LLM을_안_부른_턴은_분위기_지표의_분모에서_뺀다() -> N
 
     assert common["llm_turns"] == 0
     assert common["degraded_turns_per_run"] == [0, 1]
+
+
+# --- 긴 이유 지표(#503) ---
+
+_DESCRIPTION = (
+    "평범한 직장인이 퇴근 후에 그림을 배우며 발견한 빛나는 순간들을 기록한 에세이."
+)
+_DESCRIBED_BOOKS = {
+    **_BOOKS,
+    "1": {**_BOOKS["1"], "description": _DESCRIPTION},
+    "2": {**_BOOKS["2"], "description": ""},
+    "3": {**_BOOKS["3"], "description": "박경리의 대하소설."},
+}
+
+
+def _described_raw(runs: list[list[dict]]) -> dict:
+    return {
+        "meta": {},
+        "books": _DESCRIBED_BOOKS,
+        "runs": [{"1": turns} for turns in runs],
+    }
+
+
+def test_요청_낱말은_조사를_떼고_앞_두_글자로_뽑고_흔한_말은_뺀다() -> None:
+    assert grade.request_words("퇴근길에 가볍게 읽을 에세이") == [
+        "퇴근",
+        "가볍",
+        "에세",
+    ]
+    assert grade.request_words("SQL 입문서 추천") == ["sql", "입문"]
+    assert grade.request_words("책을 추천해줘") == []
+    assert grade.request_words(None) == []
+
+
+def test_책_소개를_옮긴_긴_이유와_요청을_짚은_긴_이유를_센다() -> None:
+    spec = {"filters": {}, "semantic": "퇴근길에 볼 에세이"}
+    copied = _turn(spec=spec, cards=[_card(1, reason_long=_DESCRIPTION)])
+    linked = _turn(
+        spec=spec,
+        cards=[
+            _card(
+                1,
+                reason_long="퇴근길에 볼 책을 찾으셨죠. 그림을 배우는 직장인 이야기예요.",
+            )
+        ],
+    )
+
+    common = grade.summarize(
+        _cases_file(_case()), _described_raw([[copied], [linked]])
+    )["common"]
+
+    assert common["reason_long_measured"] is True
+    assert (common["reason_long_cards"], common["reason_long_copied"]) == (2, 1)
+    # 두 이유 모두 "퇴근"(책 소개에도 있음)을 짚었다.
+    assert common["reason_long_mentions_request"] == 2
+    # 책 소개에 없는 요청 낱말 "퇴근길"의 앞 두 글자는 "퇴근"이라 책 소개에 있다 — 남는 것은 없다.
+    assert common["reason_long_own_word_cards"] == 0
+
+
+def test_책_소개에_없는_요청_낱말을_짚었는지_따로_센다() -> None:
+    spec = {"filters": {}, "semantic": "면접 준비할 때 볼 에세이"}
+    summary_like = _turn(
+        spec=spec, cards=[_card(1, reason_long="그림을 배우는 직장인의 에세이입니다.")]
+    )
+    linked = _turn(
+        spec=spec,
+        cards=[_card(1, reason_long="면접 준비로 지친 저녁에 읽기 좋은 에세이예요.")],
+    )
+
+    common = grade.summarize(
+        _cases_file(_case()), _described_raw([[summary_like], [linked]])
+    )["common"]
+
+    # "에세"는 책 소개에 있어 둘 다 짚은 것으로 세지만, 책 소개에 없는 "면접"·"준비"는 한쪽만 짚었다.
+    assert common["reason_long_mentions_request"] == 2
+    assert (
+        common["reason_long_own_word_cards"],
+        common["reason_long_mentions_own_word"],
+    ) == (2, 1)
+
+
+def test_책_소개가_있는데_긴_이유가_빈_카드를_센다() -> None:
+    # 책 소개가 없는 책(2)의 빈 긴 이유는 #407 대로라 세지 않는다.
+    turn = _turn(cards=[_card(1, reason_long=None), _card(2, reason_long=None)])
+
+    common = grade.summarize(_cases_file(_case()), _described_raw([[turn]]))["common"]
+
+    assert (common["reason_long_cards"], common["reason_long_missing"]) == (0, 1)
+
+
+def test_원본에_책_소개가_없으면_긴_이유_지표를_재지_않는다() -> None:
+    common = grade.summarize(_cases_file(_case()), _raw([[_turn(cards=[_card(1)])]]))[
+        "common"
+    ]
+
+    assert common == {**common, "reason_long_measured": False}
+    assert "reason_long_copied" not in common
+
+
+def test_일부_질문만_골라_센다() -> None:
+    first = _case()
+    second = {**_case(), "no": 2}
+    cases_file = {
+        "version": 1,
+        "kinds": {"situation": {"about": "가짜"}},
+        "cases": [first, second],
+    }
+    raw = {
+        "meta": {},
+        "books": _BOOKS,
+        "runs": [{"1": [_turn(cards=[_card(1)])], "2": [_turn()]}],
+    }
+
+    summary = grade.summarize(cases_file, raw, only=frozenset({1}))
+
+    assert (summary["cases"], summary["passed"], summary["only"]) == (1, 1, [1])

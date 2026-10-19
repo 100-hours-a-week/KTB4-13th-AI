@@ -8,6 +8,9 @@ LLM 을 실제로 부르므로 비용이 든다(60문항 × 5회에 요청 350�
 사용:
     DATABASE_URL=postgresql://…/bookjeok_ai_eval \
     uv run python -m evals.chat.run --base-url http://127.0.0.1:8001 --runs 5 --out 원본.json
+
+    # 책 소개를 저장하기 전(#503)에 만든 원본에 책 정보를 다시 채운다. LLM 은 부르지 않는다
+    DATABASE_URL=… uv run python -m evals.chat.run --refill-books 원본.json
 """
 
 import argparse
@@ -126,7 +129,10 @@ def run_case(base_url: str, token: str, case: dict) -> tuple[str, list[dict]]:
 
 
 async def fetch_books(database_url: str, book_ids: list[int]) -> dict[str, dict]:
-    """카드에 나온 책의 사실(출판사, 출간연도, 가격, 책소개 유무). 채점이 DB 없이 돌게 원본에 같이 넣는다."""
+    """카드에 나온 책의 사실(출판사, 출간연도, 가격, 책소개). 채점이 DB 없이 돌게 원본에 같이 넣는다.
+
+    책소개는 긴 이유가 책소개를 옮겼는지 재는 데 쓴다(#503).
+    """
     if not book_ids:
         return {}
     conn = await asyncpg.connect(database_url)
@@ -134,7 +140,8 @@ async def fetch_books(database_url: str, book_ids: list[int]) -> dict[str, dict]
         rows = await conn.fetch(
             "SELECT b.book_id, b.isbn13, b.title, b.author, b.publisher, b.pub_year,"
             f" {price_sql('b')} AS price,"
-            " (b.description IS NOT NULL AND b.description <> '') AS has_description"
+            " (b.description IS NOT NULL AND b.description <> '') AS has_description,"
+            " b.description"
             " FROM v_books b WHERE b.book_id = ANY($1::int[])",
             book_ids,
         )
@@ -149,16 +156,37 @@ async def fetch_books(database_url: str, book_ids: list[int]) -> dict[str, dict]
             "pub_year": r["pub_year"],
             "price": r["price"],
             "has_description": r["has_description"],
+            "description": r["description"],
         }
         for r in rows
     }
+
+
+def _card_book_ids(runs: list[dict[str, list[dict]]]) -> list[int]:
+    return sorted(
+        {
+            c["book_id"]
+            for r in runs
+            for ts in r.values()
+            for t in ts
+            for c in t["cards"]
+        }
+    )
+
+
+def refill_books(path: Path, database_url: str) -> None:
+    """원본의 책 정보를 지금 DB 로 다시 채운다. 평가 DB 는 고정이라 그때와 같은 값이 나온다."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["books"] = asyncio.run(fetch_books(database_url, _card_book_ids(raw["runs"])))
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    print(f"책 정보를 다시 채움: {path} (책 {len(raw['books'])}권)")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="③ 챗봇 평가 실행")
     parser.add_argument("--base-url", default="http://127.0.0.1:8001")
     parser.add_argument("--runs", type=int, default=5, help="질문마다 돌릴 횟수")
-    parser.add_argument("--out", required=True, help="원본을 저장할 경로(저장소 밖)")
+    parser.add_argument("--out", help="원본을 저장할 경로(저장소 밖)")
     parser.add_argument("--workers", type=int, default=4, help="동시에 보낼 질문 수")
     parser.add_argument("--only", default="", help="이 번호의 질문만. 예: 8,43")
     parser.add_argument(
@@ -170,11 +198,21 @@ def main() -> None:
     parser.add_argument(
         "--server-log", help="서버 로그 파일. 주면 끝난 뒤 벡터 검색이 끊긴 횟수를 센다"
     )
+    parser.add_argument(
+        "--refill-books",
+        metavar="원본",
+        help="질문을 보내지 않고 이 원본의 책 정보(책소개 포함)만 다시 채운다",
+    )
     args = parser.parse_args()
 
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         parser.error("DATABASE_URL 이 필요하다(서버가 쓰는 평가 DB 와 같은 값)")
+    if args.refill_books:
+        refill_books(Path(args.refill_books), database_url)
+        return
+    if not args.out:
+        parser.error("--out 이 필요하다")
     token = os.environ.get("AI_SERVICE_TOKEN", "")
 
     cases_file = load_cases()
@@ -218,16 +256,7 @@ def main() -> None:
             encoding="utf-8",
         )
 
-    book_ids = sorted(
-        {
-            c["book_id"]
-            for r in runs
-            for ts in r.values()
-            for t in ts
-            for c in t["cards"]
-        }
-    )
-    books = asyncio.run(fetch_books(database_url, book_ids))
+    books = asyncio.run(fetch_books(database_url, _card_book_ids(runs)))
     if args.server_log:
         log = Path(args.server_log).read_text(encoding="utf-8", errors="replace")
         meta["vector_fallbacks"] = log.count(VECTOR_FALLBACK_LOG)
