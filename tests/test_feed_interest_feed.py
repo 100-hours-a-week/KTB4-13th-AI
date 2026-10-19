@@ -37,6 +37,17 @@ def test_자리를_많이_받은_관심사부터_종류에_맞는_검색어로_�
     assert [j.limit for j in jobs] == [200, 100, 60, interest_feed.PICK_MIN]
 
 
+def test_책_벡터_평균으로_뽑는_관심사만_내_책_번호를_넘긴다() -> None:
+    seats = {"요리": 30, "SF": 3}
+
+    jobs = interest_feed.jobs(
+        seats, {"요리": [0.5]}, {}, lambda _: [0.9], {"요리": [11, 12], "SF": [13]}
+    )
+
+    # 이름 벡터로 뽑는 관심사는 내 책이 없다(#483)
+    assert [(j.name, j.anchors) for j in jobs] == [("요리", (11, 12)), ("SF", ())]
+
+
 def test_관심사_하나가_자리를_다_받아도_PICK_MAX_권까지만_뽑는다() -> None:
     # 관심사가 하나뿐이면 자리 200개를 다 받는다. 두 배(400권)를 찾으면 운영에서 0.5–4.8초가 더 들었다(#492)
     seats = {"소설": 200, "SF": 120}

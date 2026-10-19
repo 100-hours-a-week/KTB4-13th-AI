@@ -57,6 +57,13 @@ FROM v_books b LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
 WHERE b.book_id = ANY($1::int[])
 """
 
+# ⑨ 가 저장된 "책을 처음 본 날"의 책(ISBN)으로 관심사마다 내 책을 다시 가를 때 쓴다(#483)
+_BOOK_INFO_BY_ISBN_SQL = """
+SELECT b.book_id, b.isbn13, b.category, c.class_no
+FROM v_books b LEFT JOIN book_classes c ON c.isbn13 = b.isbn13
+WHERE b.isbn13 = ANY($1::text[])
+"""
+
 _READ_FIRST_SEEN_SQL = """
 SELECT book_first_seen::text FROM taste_profile WHERE user_id = $1
 """
@@ -188,16 +195,16 @@ async def _save_interests(
     책(owned: 이력의 책)을 뺀다.
     """
     rows = await conn.fetch(_BOOK_INFO_SQL, list(weights)) if weights else []
+    isbns = [row["isbn13"] for row in rows if row["isbn13"]]
+    first_seen = await _first_seen(conn, req.user_id, isbns)
     books = []
+    mine = []  # (관심사, 책 번호, 처음 본 날). 매칭 점수에 쓰는 내 책(#483)
     for row in rows:
-        vector = vectors.get(row["book_id"])
-        if vector is None:
-            continue
-        interest = interests.book_interest(
-            row["class_no"], row["category"], vector, labels.name_vector
-        )
-        if interest:
+        found = _book_interest(row, vectors)
+        if found:
+            interest, vector = found
             books.append((interest, float(weights[row["book_id"]]), vector))
+            mine.append((interest, row["book_id"], first_seen.get(row["isbn13"], "")))
     book_scores, interest_vectors = interests.book_scores(books)
 
     memories = req.used_memories()
@@ -215,8 +222,8 @@ async def _save_interests(
         keyword_vectors,
         conditions,
         owned,
+        book_anchors=interests.anchors(mine),
     )
-    isbns = [row["isbn13"] for row in rows if row["isbn13"]]
     await conn.execute(
         _SAVE_INTERESTS_SQL,
         req.user_id,
@@ -224,10 +231,44 @@ async def _save_interests(
         # 키워드 관심사의 핵심어 벡터도 남긴다. 밤에 목록을 다시 뽑는 ⑨ 는 요청 없이 저장된 것만 쓴다(#456)
         json.dumps({**interest_vectors, **keyword_vectors}, ensure_ascii=False),
         json.dumps(conditions, ensure_ascii=False),
-        json.dumps(await _first_seen(conn, req.user_id, isbns)),
+        json.dumps(first_seen),
         json.dumps(feed.stored(), ensure_ascii=False),
         bool(feed.substituted),
     )
+
+
+async def book_anchors(
+    conn: asyncpg.Connection, first_seen: dict[str, str], excluded: set[int]
+) -> dict[str, tuple[int, ...]]:
+    """저장된 "책을 처음 본 날"의 책을 관심사로 갈라, 관심사마다 매칭 점수에 쓰는 내 책 번호(⑨ 가 쓴다, #483).
+
+    ⑥ 이 이 책들로 관심사마다 책 벡터 평균을 만들었으므로 ⑥ 과 같은 책이다. 그 뒤 2점 이하 리뷰를 단 책
+    (excluded)은 뺀다.
+    """
+    if not first_seen:
+        return {}
+    rows = await conn.fetch(_BOOK_INFO_BY_ISBN_SQL, list(first_seen))
+    rows = [row for row in rows if row["book_id"] not in excluded]
+    vectors = await book_vectors(conn, [row["book_id"] for row in rows])
+    mine = []
+    for row in rows:
+        found = _book_interest(row, vectors)
+        if found:
+            mine.append((found[0], row["book_id"], first_seen[row["isbn13"]]))
+    return interests.anchors(mine)
+
+
+def _book_interest(
+    row: asyncpg.Record, vectors: dict[int, list[float]]
+) -> tuple[str, list[float]] | None:
+    """책 한 권이 점수를 주는 관심사와 그 책 벡터. 벡터가 없거나 관심사를 정할 수 없으면 None 이다."""
+    vector = vectors.get(row["book_id"])
+    if vector is None:
+        return None
+    interest = interests.book_interest(
+        row["class_no"], row["category"], vector, labels.name_vector
+    )
+    return (interest, vector) if interest else None
 
 
 def _keyword_vectors(memories: list[Memory]) -> dict[str, list[float]]:
