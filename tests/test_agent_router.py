@@ -1236,6 +1236,123 @@ def test_되돌린_묶음에서_본_장바구니가_다음_번호의_기준이�
     assert data["actions"] == [{"op": "remove", "isbn": cart[0]["isbn"]}]
 
 
+# --- 장바구니를 바꾼 턴과 골라 담기는 섞지 않는다 ---
+# BE(스택 6f98aae)는 selection 과 actions 가 같이 오면 응답 전체를 거절한다. 골라 담기는 확인 버튼으로 담고,
+# actions 는 이미 했다고 말한 것이라 둘을 한 응답에 싣지 않는다. 먼저 한 쪽을 하고 뒤에 온 쪽을 막는다.
+
+REMOVE_FIRST_LINE = {"book": {"source": "cart", "n": 1}}
+MIXED_MESSAGE = "장바구니 1번째 빼고 4만원 안에서 2권 골라줘"
+
+
+def _shop(monkeypatch, replies, message=MIXED_MESSAGE, cart=None) -> dict:
+    model = ScriptedModel(replies)
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = [_line(C, "책3", 28000, 1)] if cart is None else cart
+    res = client.post(URL, json=_request(message=message, cart=cart, offers=OFFERS))
+    assert res.status_code == 200
+    return res.json()["data"]
+
+
+def _errors(data: dict) -> list:
+    return [(c["name"], c["result"].get("error")) for c in data["tool_calls"]]
+
+
+def test_장바구니를_바꾼_묶음의_골라_담기는_막는다(monkeypatch) -> None:
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+                (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            ),
+            ai_text("골라 드리는 것은 따로 말씀해 주세요."),
+        ],
+    )
+
+    assert _errors(data) == [
+        ("cart.remove", None),
+        ("selection.pick", "SEPARATE_TURN_REQUIRED"),
+    ]
+    assert data["actions"] == [{"op": "remove", "isbn": C}]
+    assert data["selection"] is None
+    assert "confirm_selection" not in [b["action"] for b in data["buttons"]]
+
+
+def test_골라_담기를_한_묶음의_장바구니_쓰기는_막는다(monkeypatch) -> None:
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+                (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+            ),
+            ai_text("1번과 2번을 골랐어요. 담을까요?"),
+        ],
+    )
+
+    assert _errors(data) == [
+        ("selection.pick", None),
+        ("cart.remove", "SEPARATE_TURN_REQUIRED"),
+    ]
+    assert data["actions"] == []
+    assert [book["isbn"] for book in data["selection"]["chosen"]] == [A, B]
+    assert [b["action"] for b in data["buttons"]] == ["confirm_selection"]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "blocked"),
+    [
+        pytest.param(
+            (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+            (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            "selection.pick",
+            id="뺀_다음_묶음에서_고르기",
+        ),
+        pytest.param(
+            (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            (ToolName.CART_ADD, {"book": card(3)}),
+            "cart.add",
+            id="고른_다음_묶음에서_고르지_않은_책_담기",
+        ),
+    ],
+)
+def test_다음_묶음이라도_한_턴에_둘을_섞지_않는다(
+    monkeypatch, first, second, blocked
+) -> None:
+    data = _shop(
+        monkeypatch,
+        [ai_calls(first), ai_calls(second), ai_text("결과예요.")],
+        message="장바구니 1번째 빼고 4만원 안에서 2권 골라주고 3번도 담아줘",
+        cart=[_line(C, "책3", 28000, 1)] if blocked == "selection.pick" else [],
+    )
+
+    assert _errors(data)[1] == (blocked, "SEPARATE_TURN_REQUIRED")
+    assert not (data["selection"] is not None and data["actions"])
+
+
+def test_되돌린_쓰기는_장바구니를_바꾼_것이_아니라_골라_담기를_막지_않는다(
+    monkeypatch,
+) -> None:
+    # 29권에 두 권을 담다 한도에 걸려 모두 되돌렸으면 바꾼 것이 없다. 다음 묶음의 골라 담기는 된다
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.CART_ADD, {"book": card(1)}),
+                (ToolName.CART_ADD, {"book": card(2)}),
+            ),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("결과예요."),
+        ],
+        message="1번이랑 2번 담아줘. 안 되면 4만원 안에서 2권 골라줘",
+        cart=_full_cart(29),
+    )
+
+    assert data["actions"] == []
+    assert data["selection"] is not None
+    assert _errors(data)[2] == ("selection.pick", None)
+
+
 def test_담긴_책에_수량을_말해_담으면_수량을_바꿨다고_말한다(monkeypatch) -> None:
     model = ScriptedModel(
         [
