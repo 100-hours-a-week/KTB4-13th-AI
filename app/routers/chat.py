@@ -9,6 +9,7 @@
 불리는 것)은 안 바뀐다.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -20,9 +21,12 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
+from app.chat import topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
+from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, history, isbn, popularity, responses
+from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
 from app.feed import personalized, scoring
@@ -45,6 +49,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 CANDIDATE_LIMIT = 10
+# 새 요청 판정은 1단계와 나란히 가서 보통 시간이 안 늘어난다. 판정만 느려져도 응답이 그만큼 늦어지지 않게, 1단계가
+# 끝난 뒤 이만큼만 더 기다리고 못 받으면 이어가는 말로 본다(#513). 업계도 다시 쓰기 호출에 0.3~1초 한도를 둔다.
+RELATION_GRACE_SECONDS = 0.5
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
@@ -283,10 +290,16 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
             merged["filters"], filters_patch, "pub_year_from", "pub_year_to"
         )
 
+    # 모델은 책 id 를 모른다. "첫 번째는 별로야"에 제목이나 순번 같은 글자를 넣으면 Spec 검증(정수 목록)이 깨져
+    # LLM 은 멀쩡한데도 degraded 가 된다(#513, 평가 92번). 정수만 받고 나머지는 버린다.
     new_exclude = patch.get("exclude")
     if isinstance(new_exclude, list):
         merged["exclude"] = merged["exclude"] + [
-            book_id for book_id in new_exclude if book_id not in merged["exclude"]
+            book_id
+            for book_id in new_exclude
+            if isinstance(book_id, int)
+            and not isinstance(book_id, bool)
+            and book_id not in merged["exclude"]
         ]
 
     for key in ("intent", "semantic", "anchor_book"):
@@ -302,7 +315,72 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
     ):
         merged["intent"] = "exact"
 
+    # 분위기 요청(semantic)에서는 제목·저자가 검색에 쓰이지 않는다. 앞 턴의 제목이 응답 spec 에 남아 다음 턴으로
+    # 이어지지 않게, 이번 patch 가 고르지 않은 제목·저자는 비운다(#513, 평가 104번 7턴). 출판사는 분위기 요청에도
+    # 걸 수 있어 남긴다. 이번 patch 가 직접 고른 제목은 그대로 둔다(intent 를 직접 준 경우는 LLM 판단을 따른다).
+    if merged["intent"] == "semantic":
+        given = exact_patch if isinstance(exact_patch, dict) else {}
+        for key in ("title", "author"):
+            if key not in given:
+                merged["exact"][key] = None
+
     return merged
+
+
+async def _ask_spec_patch(message: str, spec: Spec, recent_turns: list[Turn]) -> dict:
+    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
+    return await invoke_chain(
+        chain,
+        {
+            "recent_turns": _format_recent_turns(recent_turns),
+            "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
+            "message": message,
+        },
+    )
+
+
+async def _asks_new_request(message: str, previous: str) -> bool:
+    """모델이 이전 요청과 이번 메시지만 보고 새 책 찾기라고 판정했는지. 호출이 실패하면 아니라고 본다.
+
+    spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
+    """
+    model_id = get_settings().relation_llm_model_id
+    model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
+    chain = RELATION_PROMPT | model | message_text | parse_json_response
+    try:
+        answer = await invoke_chain(chain, {"previous": previous, "message": message})
+    except LLMUnavailableError:
+        logger.warning("새 요청 판정 실패 — 이어가는 말로 본다", exc_info=True)
+        return False
+    return answer.get("relation") == "new"
+
+
+async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
+    """판정 결과를 받는다. 1단계가 끝난 뒤 RELATION_GRACE_SECONDS 안에 못 받으면 포기하고 아니라고 본다."""
+    try:
+        return await asyncio.wait_for(relation, timeout=RELATION_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "새 요청 판정이 1단계보다 %.1f초 넘게 늦어 이어가는 말로 본다",
+            RELATION_GRACE_SECONDS,
+        )
+        return False
+
+
+async def _restart_patch(message: str, fresh: Spec) -> dict | None:
+    """새 요청이라는 판정을 확인하려고, 조건도 앞 대화도 없이 같은 메시지로 다시 뽑은 patch.
+
+    메시지가 스스로 주제를 말하지 않으면(has_topic 아님) None 이다. 판정이 새 요청이라 했어도 "2만원 이하 아니어도
+    돼", "또 다른 거", 인사처럼 주제 없는 말은 앞 요청을 이어가는 말이다. 최근 대화까지 빼는 것은, 빈 spec 이어도
+    최근 대화에 있는 앞 가격과 앞 주제를 모델이 다시 옮겨 적었기 때문이다(평가 104번 6턴의 재현). 다시 뽑다
+    LLM 이 실패해도 None 이다. 앞 조건을 남기는 쪽이 고치기 전과 같은 동작이다.
+    """
+    try:
+        patch = await _ask_spec_patch(message, fresh, [])
+    except LLMUnavailableError:
+        logger.warning("빈 조건에서 다시 뽑기 실패 — 앞 조건을 남긴다", exc_info=True)
+        return None
+    return patch if topic_switch.has_topic(patch) else None
 
 
 async def update_spec(
@@ -318,22 +396,36 @@ async def update_spec(
     메시지가 뭘 가리키는지 판단하는 데만 쓴다. 서버는 대화를 저장하지 않으므로
     (명세) 이번 호출이 끝나면 버려지고, 다음 턴에도 호출자가 다시 실어 보낸다.
 
+    새 요청이면 patch 를 앞 spec 위에 겹쳐 쓰지 않는다(#513). 앞 요청에 주제가 있으면 새 요청인지 판정하는 호출을
+    1단계 호출과 나란히 보내고(지연이 늘지 않는다), 새 요청으로 판정되고 빈 조건으로 다시 뽑은 patch 가 스스로 주제를
+    담고 있으면 그 patch 를 앞 조건을 비운 spec 위에 쓴다. 옛 spec 이 프롬프트에 있어 흔들린 첫 patch 는 버린다
+    (app/chat/topic_switch.py).
+
     실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
     돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
     요청의 spec으로 2만 돌려 점수 상위 3권을 낸다" — 호출부(chat())가 이
     신호를 보고 3단계(카드 생성)를 건너뛴다.
     """
-    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
-        patch = await invoke_chain(
-            chain,
-            {
-                "recent_turns": _format_recent_turns(recent_turns),
-                "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
-                "message": message,
-            },
-        )
-        return Spec.model_validate(_merge_spec_patch(spec, patch)), False
+        previous = topic_switch.previous_request(spec)
+        base, new_request = spec, False
+        if previous is None:
+            patch = await _ask_spec_patch(message, spec, recent_turns)
+        else:
+            relation = asyncio.create_task(_asks_new_request(message, previous))
+            try:
+                patch = await _ask_spec_patch(message, spec, recent_turns)
+            except BaseException:
+                relation.cancel()
+                raise
+            new_request = await _relation_within_grace(relation)
+        if new_request:
+            fresh = topic_switch.fresh_spec(spec)
+            restarted = await _restart_patch(message, fresh)
+            if restarted is not None:
+                logger.info("주제가 바뀌어 앞 조건을 비웠다")
+                base, patch = fresh, restarted
+        return Spec.model_validate(_merge_spec_patch(base, patch)), False
     except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
         return spec, True

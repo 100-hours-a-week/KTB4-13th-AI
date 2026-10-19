@@ -709,7 +709,9 @@ def test_새_제목이_오면_이전_턴_저자_출판사를_지운다(
     patch에 author가 안 실려도 이전 author가 그대로 남으면 안 된다.
     """
     spec_reply = _spec_reply(exact={"title": "달러구트 꿈 백화점"})
-    model = _sequenced_model(spec_reply, '{"cards": []}')
+    # 앞 요청에 주제(저자 김영하)가 있으면 새 요청 판정이 1단계와 나란히 불려 LLM 호출이 하나 늘어난다(#513).
+    # 판정은 "relation"이 없는 답을 이어가는 말로 본다
+    model = _sequenced_model(spec_reply, spec_reply, '{"cards": []}')
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
     request_spec = {

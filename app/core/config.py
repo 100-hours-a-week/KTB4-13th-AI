@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # 뽑는 일이라 작은 모델로 충분하고, 평가도 작은 모델로 잰다. 챗봇과 같은 값을 쓰면 운영에서는
     # 평가에 쓴 것과 다른 모델로 돌게 되어 따로 둔다.
     extraction_llm_model_id: str = ""
+    # ③ 새 요청 판정 호출만 쓰는 모델(#513). 비어 있으면 llm_model_id 를 쓴다. 이어지는 턴마다 한 번 더 도는 짧은
+    # 분류라 작고 빠른 모델로 충분하다. 평가도 작은 모델(gpt-4o-mini)로 쟀다. 챗봇과 같은 값이면 운영에서는
+    # 더 큰 모델이 이 호출을 하게 되어 따로 둔다.
+    relation_llm_model_id: str = ""
     llm_base_url: str = "http://localhost:11434/v1"
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30
