@@ -20,9 +20,12 @@ from app.feed.interest_picks import Pick
 from app.profile import interests, labels
 
 # 관심사마다 받은 자리의 두 배를 뽑는다. 가진 책·판본·다른 관심사와 겹친 책을 빼도 자리가 비지 않게 한다.
-# 자리가 적은 관심사도 PICK_MIN 권은 뽑는다
+# 자리가 적은 관심사도 PICK_MIN 권은 뽑고, 많은 관심사도 PICK_MAX 권까지만 뽑는다. 관심사가 하나뿐이면 자리
+# 200개를 다 받아 400권을 찾았는데, 운영에서 200권보다 0.5–4.8초가 더 들었다(#492). 덜 찬 자리는 다른 관심사나
+# 인기 있는 책이 채운다
 PICK_FACTOR = 2
 PICK_MIN = 20
+PICK_MAX = 200
 
 # 서버 안에서 목록 뽑기는 한 번에 하나만 한다. 운영에서 10명을 동시에 뽑으니 한 사람이 12초까지 늘었다(#399).
 # 서버는 프로세스 하나로 돈다(Dockerfile 의 uvicorn)
@@ -78,20 +81,25 @@ def jobs(
     book_vectors: Mapping[str, Sequence[float]],
     keyword_vectors: Mapping[str, Sequence[float]],
     name_vector: Callable[[str], Sequence[float] | None],
+    book_anchors: Mapping[str, Sequence[int]] | None = None,
 ) -> list[Job]:
     """관심사마다 뽑을 일. 자리를 많이 받은 관심사부터다.
 
-    검색어는 그 관심사의 책 벡터 평균이고, 없으면 이름 벡터다. 키워드 관심사는 핵심어의 이름 벡터다.
+    검색어는 그 관심사의 책 벡터 평균이고, 없으면 이름 벡터다. 키워드 관심사는 핵심어의 이름 벡터다. 책 벡터
+    평균으로 뽑는 관심사는 그 관심사의 내 책 번호(book_anchors)도 넘겨, 매칭 점수를 가장 비슷한 내 책과의
+    유사도로 매기게 한다(#483).
     """
+    book_anchors = book_anchors or {}
     out = []
     for name, count in sorted(seats.items(), key=lambda item: -item[1]):
-        limit = max(count * PICK_FACTOR, PICK_MIN)
+        limit = min(max(count * PICK_FACTOR, PICK_MIN), PICK_MAX)
         if name.startswith(interests.AUTHOR):
             out.append(Job(name, limit))
         elif name.startswith(interests.KEYWORD):
             out.append(Job(name, limit, keyword_vectors.get(name), by_name=True))
         elif name in book_vectors:
-            out.append(Job(name, limit, book_vectors[name]))
+            anchors = tuple(book_anchors.get(name, ()))
+            out.append(Job(name, limit, book_vectors[name], anchors=anchors))
         else:
             out.append(Job(name, limit, name_vector(name), by_name=True))
     return out
@@ -108,13 +116,15 @@ async def build(
     name_vector: Callable[[str], Sequence[float] | None] = labels.name_vector,
     total: int = interest_list.TOTAL_SEATS,
     seconds: float = interest_fetch.BUDGET_SECONDS,
+    book_anchors: Mapping[str, Sequence[int]] | None = None,
 ) -> Feed:
     """관심사 점수로 홈 추천 목록을 뽑는다. 서버 안에서 한 번에 하나만 뽑고, 뒤에 온 것은 기다린다.
 
     scores 는 관심사마다 합친 점수, book_vectors 는 관심사마다 책 벡터 평균, keyword_vectors 는 키워드 관심사마다
     핵심어의 이름 벡터(그 취향 기억 줄의 벡터), conditions 는 프로필의 조건 목록이다. owned_book_ids 는 지금
     목록에서 빼는 책과 같다(산 책, 나의 도서관 책, 2점 이하 리뷰를 단 책. ⑥ 이 읽은 이력의 책). seconds 는
-    관심사를 뽑는 시간 예산이다(⑥ 3초, 밤에 다시 뽑는 ⑨ 는 더 길게).
+    관심사를 뽑는 시간 예산이다(⑥ 3초, 밤에 다시 뽑는 ⑨ 는 더 길게). book_anchors 는 관심사마다 매칭 점수에
+    쓰는 내 책 번호다(#483).
     """
     async with _BUILDING:
         return await _build(
@@ -127,6 +137,7 @@ async def build(
             name_vector,
             total,
             seconds,
+            book_anchors,
         )
 
 
@@ -140,10 +151,13 @@ async def _build(
     name_vector: Callable[[str], Sequence[float] | None],
     total: int,
     seconds: float,
+    book_anchors: Mapping[str, Sequence[int]] | None,
 ) -> Feed:
     seats = interest_list.allocate(scores, total)
     fetched = await interest_fetch.fetch(
-        conn, jobs(seats, book_vectors, keyword_vectors, name_vector), seconds=seconds
+        conn,
+        jobs(seats, book_vectors, keyword_vectors, name_vector, book_anchors),
+        seconds=seconds,
     )
     negatives = {name for name, score in scores.items() if score < 0}
     picked = sorted({pick.book_id for got in fetched.picks.values() for pick in got})

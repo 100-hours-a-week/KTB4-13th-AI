@@ -1,0 +1,374 @@
+{
+ "bundle_version": 2,
+ "catalog": {
+  "built": "2026-10-13",
+  "books": 2107214,
+  "with_vectors": 595329
+ },
+ "database": {
+  "name": "bookjeok_ai_eval",
+  "books": 2107214,
+  "with_vectors": 595329
+ },
+ "measured": "2026-10-19",
+ "runs": {
+  "v1": {
+   "code": "421a77c",
+   "summary": {
+    "kinds": {
+     "title": {
+      "cases": 300,
+      "measured": 300,
+      "returned_mean": 20.0,
+      "seconds_median": 0.088,
+      "hit_1": 0.997,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 0.998,
+      "missed": 0
+     },
+     "title-variant": {
+      "cases": 100,
+      "measured": 100,
+      "returned_mean": 20.0,
+      "seconds_median": 0.072,
+      "hit_1": 0.87,
+      "hit_5": 0.96,
+      "hit_20": 1.0,
+      "mrr": 0.915,
+      "missed": 0
+     },
+     "author": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 20.0,
+      "seconds_median": 0.045,
+      "author_share_mean": 0.96
+     },
+     "filter": {
+      "cases": 20,
+      "measured": 20,
+      "returned_mean": 19.4,
+      "seconds_median": 0.061,
+      "violations": 0,
+      "violating_cases": 0
+     },
+     "nonsense": {
+      "cases": 5,
+      "measured": 5,
+      "returned_mean": 20.0,
+      "seconds_median": 0.049
+     },
+     "descriptive": {
+      "cases": 40,
+      "measured": 40,
+      "returned_mean": 20.0,
+      "seconds_median": 0.124,
+      "ndcg_mean": 0.619,
+      "relevant_mean": 4.7,
+      "irrelevant_mean": 1.4,
+      "unlabeled": 0
+     }
+    },
+    "changes": {
+     "no-subtitle": {
+      "cases": 20,
+      "measured": 20,
+      "returned_mean": 20.0,
+      "seconds_median": 0.079,
+      "hit_1": 0.75,
+      "hit_5": 0.95,
+      "hit_20": 1.0,
+      "mrr": 0.848,
+      "missed": 0
+     },
+     "volume-roman": {
+      "cases": 13,
+      "measured": 13,
+      "returned_mean": 20.0,
+      "seconds_median": 0.126,
+      "hit_1": 0.385,
+      "hit_5": 0.769,
+      "hit_20": 1.0,
+      "mrr": 0.578,
+      "missed": 0
+     },
+     "volume-circled": {
+      "cases": 12,
+      "measured": 12,
+      "returned_mean": 20.0,
+      "seconds_median": 0.124,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     },
+     "case": {
+      "cases": 25,
+      "measured": 25,
+      "returned_mean": 20.0,
+      "seconds_median": 0.113,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     },
+     "nospace": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 20.0,
+      "seconds_median": 0.043,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     }
+    },
+    "facets": {
+     "topic": {
+      "cases": 7,
+      "measured": 7,
+      "returned_mean": 20.0,
+      "seconds_median": 0.149,
+      "ndcg_mean": 0.686,
+      "relevant_mean": 6.0,
+      "irrelevant_mean": 0.9,
+      "unlabeled": 0
+     },
+     "mood": {
+      "cases": 7,
+      "measured": 7,
+      "returned_mean": 20.0,
+      "seconds_median": 0.117,
+      "ndcg_mean": 0.607,
+      "relevant_mean": 4.6,
+      "irrelevant_mean": 2.3,
+      "unlabeled": 0
+     },
+     "audience": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.101,
+      "ndcg_mean": 0.754,
+      "relevant_mean": 6.5,
+      "irrelevant_mean": 1.2,
+      "unlabeled": 0
+     },
+     "situation": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.104,
+      "ndcg_mean": 0.498,
+      "relevant_mean": 3.2,
+      "irrelevant_mean": 1.7,
+      "unlabeled": 0
+     },
+     "long": {
+      "cases": 8,
+      "measured": 8,
+      "returned_mean": 20.0,
+      "seconds_median": 0.142,
+      "ndcg_mean": 0.57,
+      "relevant_mean": 3.4,
+      "irrelevant_mean": 1.0,
+      "unlabeled": 0
+     },
+     "mixed": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.131,
+      "ndcg_mean": 0.603,
+      "relevant_mean": 5.0,
+      "irrelevant_mean": 1.8,
+      "unlabeled": 0
+     }
+    }
+   }
+  },
+  "main": {
+   "code": "9c07e7c",
+   "summary": {
+    "kinds": {
+     "title": {
+      "cases": 300,
+      "measured": 300,
+      "returned_mean": 20.0,
+      "seconds_median": 0.093,
+      "hit_1": 0.997,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 0.998,
+      "missed": 0
+     },
+     "title-variant": {
+      "cases": 100,
+      "measured": 100,
+      "returned_mean": 20.0,
+      "seconds_median": 0.078,
+      "hit_1": 0.87,
+      "hit_5": 0.96,
+      "hit_20": 1.0,
+      "mrr": 0.915,
+      "missed": 0
+     },
+     "author": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 20.0,
+      "seconds_median": 0.045,
+      "author_share_mean": 0.96
+     },
+     "filter": {
+      "cases": 20,
+      "measured": 20,
+      "returned_mean": 19.4,
+      "seconds_median": 0.058,
+      "violations": 0,
+      "violating_cases": 0
+     },
+     "nonsense": {
+      "cases": 5,
+      "measured": 5,
+      "returned_mean": 20.0,
+      "seconds_median": 0.051
+     },
+     "descriptive": {
+      "cases": 40,
+      "measured": 40,
+      "returned_mean": 20.0,
+      "seconds_median": 0.127,
+      "ndcg_mean": 0.619,
+      "relevant_mean": 4.7,
+      "irrelevant_mean": 1.4,
+      "unlabeled": 0
+     }
+    },
+    "changes": {
+     "no-subtitle": {
+      "cases": 20,
+      "measured": 20,
+      "returned_mean": 20.0,
+      "seconds_median": 0.085,
+      "hit_1": 0.75,
+      "hit_5": 0.95,
+      "hit_20": 1.0,
+      "mrr": 0.848,
+      "missed": 0
+     },
+     "volume-roman": {
+      "cases": 13,
+      "measured": 13,
+      "returned_mean": 20.0,
+      "seconds_median": 0.14,
+      "hit_1": 0.385,
+      "hit_5": 0.769,
+      "hit_20": 1.0,
+      "mrr": 0.578,
+      "missed": 0
+     },
+     "volume-circled": {
+      "cases": 12,
+      "measured": 12,
+      "returned_mean": 20.0,
+      "seconds_median": 0.139,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     },
+     "case": {
+      "cases": 25,
+      "measured": 25,
+      "returned_mean": 20.0,
+      "seconds_median": 0.116,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     },
+     "nospace": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 20.0,
+      "seconds_median": 0.045,
+      "hit_1": 1.0,
+      "hit_5": 1.0,
+      "hit_20": 1.0,
+      "mrr": 1.0,
+      "missed": 0
+     }
+    },
+    "facets": {
+     "topic": {
+      "cases": 7,
+      "measured": 7,
+      "returned_mean": 20.0,
+      "seconds_median": 0.15,
+      "ndcg_mean": 0.686,
+      "relevant_mean": 6.0,
+      "irrelevant_mean": 0.9,
+      "unlabeled": 0
+     },
+     "mood": {
+      "cases": 7,
+      "measured": 7,
+      "returned_mean": 20.0,
+      "seconds_median": 0.111,
+      "ndcg_mean": 0.607,
+      "relevant_mean": 4.6,
+      "irrelevant_mean": 2.3,
+      "unlabeled": 0
+     },
+     "audience": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.102,
+      "ndcg_mean": 0.754,
+      "relevant_mean": 6.5,
+      "irrelevant_mean": 1.2,
+      "unlabeled": 0
+     },
+     "situation": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.103,
+      "ndcg_mean": 0.498,
+      "relevant_mean": 3.2,
+      "irrelevant_mean": 1.7,
+      "unlabeled": 0
+     },
+     "long": {
+      "cases": 8,
+      "measured": 8,
+      "returned_mean": 20.0,
+      "seconds_median": 0.143,
+      "ndcg_mean": 0.57,
+      "relevant_mean": 3.4,
+      "irrelevant_mean": 1.0,
+      "unlabeled": 0
+     },
+     "mixed": {
+      "cases": 6,
+      "measured": 6,
+      "returned_mean": 20.0,
+      "seconds_median": 0.132,
+      "ndcg_mean": 0.603,
+      "relevant_mean": 5.0,
+      "irrelevant_mean": 1.8,
+      "unlabeled": 0
+     }
+    }
+   }
+  }
+ }
+}
