@@ -270,9 +270,7 @@ async def build(url: str, built: str) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="① 검색 평가 묶음을 평가 DB 에서 뽑는다"
-    )
+    parser = argparse.ArgumentParser(description="① 검색 평가 묶음을 뽑는다")
     parser.add_argument(
         "--catalog-built", required=True, help="책 표를 만든 날. 예: 2026-10-13"
     )
