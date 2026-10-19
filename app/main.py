@@ -27,6 +27,8 @@ async def lifespan(app: FastAPI):
     # 앱이 뜰 때
     cursor.check_key()
     warn_if_disabled()
+    # 기능마다 어느 모델로 도는지 배포 로그에 남긴다. DB 에 못 붙어도 보이게 그 앞에서 부른다(#525).
+    llm.report_models()
     await db.connect()
     # 색인이 빠지면 에러 없이 검색·피드만 느려진다. 배포 로그에서 바로 보이게 한다.
     async with db.get_pool().acquire() as conn:

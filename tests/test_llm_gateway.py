@@ -9,6 +9,7 @@ complete()는 httpx.MockTransport로 응답 본문만 흉내 내 네트워크 �
 
 import asyncio
 import json
+import logging
 
 import httpx
 import openai
@@ -20,6 +21,7 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
 import app.gateway.llm as llm_gateway
+from app import main
 from app.gateway.llm import (
     LLMTimeoutError,
     LLMUnavailableError,
@@ -29,6 +31,7 @@ from app.gateway.llm import (
     last_known_status,
     message_text,
     parse_json_response,
+    report_models,
 )
 
 
@@ -415,3 +418,98 @@ def test_서버가_제한_시간_안에_답하지_않으면_LLMTimeoutError다(m
 
     with pytest.raises(LLMTimeoutError):
         asyncio.run(complete("아무 프롬프트"))
+
+
+# --- 서버가 뜰 때 기능별 모델 남기기(#525) ---
+
+# 기능별 설정 이름. 비어 있으면 공용 LLM_MODEL_ID 로 돈다
+_OWN_MODELS = ("EXTRACTION_LLM_MODEL_ID", "RELATION_LLM_MODEL_ID", "AGENT_LLM_MODEL_ID")
+
+
+def _set_models(monkeypatch: pytest.MonkeyPatch, **own: str) -> None:
+    """공용 모델은 shared-model, 기능별 설정은 준 것만 채우고 나머지는 비운다."""
+    monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.setenv("LLM_MODEL_ID", "shared-model")
+    for name in _OWN_MODELS:
+        monkeypatch.setenv(name, own.get(name, ""))
+
+
+def _logged(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno == level]
+
+
+@pytest.mark.parametrize("missing", _OWN_MODELS)
+def test_기능별_모델이_비면_공용_모델로_돈다고_경고한다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, missing: str
+) -> None:
+    # dev·운영 설정에 AGENT_LLM_MODEL_ID 가 빠져 ⑦ 이 평가한 모델(gpt-5.4-mini) 대신 공용 gpt-4o 로
+    # 돌았는데, 로그에 아무것도 없어 몰랐다. 빠진 설정 이름과 대신 쓰는 모델이 경고에 나와야 한다
+    _set_models(monkeypatch, **{n: "own-model" for n in _OWN_MODELS if n != missing})
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    warnings = _logged(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    assert missing in warnings[0]
+    assert "shared-model" in warnings[0]
+
+
+def test_기능별_모델을_다_정하면_경고_없이_쓰는_모델을_한_줄로_남긴다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 설정을 넣은 뒤 배포 로그 한 줄로 실제 모델을 확인할 수 있어야 한다
+    _set_models(
+        monkeypatch,
+        EXTRACTION_LLM_MODEL_ID="extraction-model",
+        RELATION_LLM_MODEL_ID="relation-model",
+        AGENT_LLM_MODEL_ID="agent-model",
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    assert _logged(caplog, logging.WARNING) == []
+    infos = _logged(caplog, logging.INFO)
+    assert len(infos) == 1
+    for model in ("shared-model", "extraction-model", "relation-model", "agent-model"):
+        assert model in infos[0]
+
+
+def test_가짜_LLM이면_모델을_남기지_않는다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # LLM_MOCK 이면 어느 모델도 부르지 않는다. 기능별 설정이 비어도 경고할 일이 아니다
+    _set_models(monkeypatch)
+    monkeypatch.setenv("LLM_MOCK", "true")
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    assert caplog.records == []
+
+
+def test_서버가_뜰_때_DB에_붙기_전에_모델을_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 배포 로그에서 보려는 것이라 서버가 뜨는 길에서 불려야 한다. DB 연결에 실패해도 남도록 그 앞에서 부른다
+    called: list[str] = []
+
+    class _Stop(Exception):
+        pass
+
+    async def _connect() -> None:
+        called.append("db")
+        raise _Stop
+
+    monkeypatch.setattr(main.cursor, "check_key", lambda: None)
+    monkeypatch.setattr(main.llm, "report_models", lambda: called.append("models"))
+    monkeypatch.setattr(main.db, "connect", _connect)
+
+    async def _start() -> None:
+        async with main.lifespan(main.app):
+            pass
+
+    with pytest.raises(_Stop):
+        asyncio.run(_start())
+    assert called == ["models", "db"]
