@@ -33,20 +33,24 @@ class _Fakes:
         self.calls: list[tuple[str, str]] = []
         self.lefts: list = []
         self.popular: list[tuple[str, object]] = []
+        self.anchors: dict[str, tuple[int, ...]] = {}
 
         def picker(kind: str):
             async def fake(conn, name, *args, limit, left, **kwargs):
                 left()  # 실제 뽑기처럼 조회 전에 남은 시간을 받는다
                 self.lefts.append(left)
                 self.calls.append((kind, name))
+                if "anchors" in kwargs:
+                    self.anchors[f"{kind}:{name}"] = kwargs["anchors"]
                 if name in slow:
                     raise TimeoutError
                 return _picked(name, kind)
 
             return fake
 
-        async def popular(conn, name, vector, *, by_name, limit, timeout):
+        async def popular(conn, name, vector, *, by_name, limit, timeout, anchors=()):
             self.popular.append((name, vector))
+            self.anchors[f"popular:{name}"] = anchors
             if popular_slow:
                 raise TimeoutError
             return _picked(name, "popular")
@@ -147,7 +151,7 @@ def test_검색어가_없는_관심사는_조회하지_않고_대신한다(
 def test_조회가_시간을_넘겨도_바깥_트랜잭션은_깨지지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def slow_pick(conn, name, vector, *, by_name, limit, left):
+    async def slow_pick(conn, name, vector, *, by_name, limit, left, anchors=()):
         await conn.fetch("SELECT pg_sleep(1)", timeout=left())
         return []
 
@@ -175,3 +179,23 @@ def test_조회가_시간을_넘겨도_바깥_트랜잭션은_깨지지_않는�
     assert fetched.substituted == ("요리",)
     assert fetched.picks["요리"] == []
     assert alive == 1
+
+
+def test_책_벡터_평균으로_뽑는_관심사는_내_책_번호를_뽑기와_대신할_책에_넘긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 매칭 점수를 가장 비슷한 내 책과의 유사도로 매기려고 넘긴다(#483)
+    fakes = _Fakes(monkeypatch, slow=frozenset({"역사"}))
+
+    _fetch(
+        [
+            Job("요리", 10, [1.0], anchors=(11, 12)),
+            Job("역사", 10, [1.0], anchors=(13,)),
+        ]
+    )
+
+    assert fakes.anchors == {
+        "pick:요리": (11, 12),
+        "pick:역사": (13,),
+        "popular:역사": (13,),
+    }

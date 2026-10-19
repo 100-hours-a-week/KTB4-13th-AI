@@ -1,0 +1,327 @@
+{
+ "meta": {
+  "cases_version": 3,
+  "server_version": "dev",
+  "model": "openai/gpt-4o-mini",
+  "started_at": "2026-10-16T11:35:36+09:00",
+  "base_url": "http://127.0.0.1:8032",
+  "runs": 5,
+  "workers": 4,
+  "note": "origin/main 20f7d74(#407·#408·#411 포함) + 평가용 제한 시간 60초, 103문항 v3, ZDR 끔",
+  "vector_fallbacks": 0
+ },
+ "cases_version": 4,
+ "runs": 5,
+ "skipped_runs": [],
+ "cases": 99,
+ "passed": 427,
+ "total": 495,
+ "pass_rate": 86.3,
+ "passed_per_run": [
+  85,
+  86,
+  89,
+  83,
+  84
+ ],
+ "zero_cards": 6,
+ "zero_cards_total": 470,
+ "zero_cards_rate": 1.3,
+ "zero_cards_by_case": {
+  "51": 2,
+  "84": 4
+ },
+ "by_kind": {
+  "topic": {
+   "passed": 54,
+   "total": 55,
+   "rate": 98.2,
+   "min_rate": 90.9
+  },
+  "situation": {
+   "passed": 135,
+   "total": 135,
+   "rate": 100.0,
+   "min_rate": 100.0
+  },
+  "like": {
+   "passed": 43,
+   "total": 60,
+   "rate": 71.7,
+   "min_rate": 58.3
+  },
+  "lookup": {
+   "passed": 33,
+   "total": 40,
+   "rate": 82.5,
+   "min_rate": 75.0
+  },
+  "condition": {
+   "passed": 65,
+   "total": 80,
+   "rate": 81.2,
+   "min_rate": 75.0
+  },
+  "edge": {
+   "passed": 35,
+   "total": 45,
+   "rate": 77.8,
+   "min_rate": 77.8
+  },
+  "multi": {
+   "passed": 62,
+   "total": 80,
+   "rate": 77.5,
+   "min_rate": 68.8
+  }
+ },
+ "lowest_kind": {
+  "kind": "like",
+  "passed": 43,
+  "total": 60,
+  "rate": 71.7,
+  "min_rate": 58.3
+ },
+ "by_source": {
+  "bug": {
+   "passed": 76,
+   "total": 80,
+   "rate": 95.0,
+   "min_rate": 93.8
+  },
+  "research": {
+   "passed": 178,
+   "total": 215,
+   "rate": 82.8,
+   "min_rate": 81.4
+  },
+  "community": {
+   "passed": 53,
+   "total": 55,
+   "rate": 96.4,
+   "min_rate": 90.9
+  },
+  "chatlog": {
+   "passed": 115,
+   "total": 140,
+   "rate": 82.1,
+   "min_rate": 75.0
+  },
+  "study": {
+   "passed": 5,
+   "total": 5,
+   "rate": 100.0,
+   "min_rate": 100.0
+  }
+ },
+ "observed": [
+  71,
+  97,
+  101,
+  102
+ ],
+ "fail_reasons": {
+  "기준 책이 카드에 나옴": 17,
+  "권수 초과": 11,
+  "되묻지 않음": 10,
+  "카드 0장": 6,
+  "엉뚱한 책": 5,
+  "보여 준 책 밖에서 고름": 5,
+  "톤 미반영": 5,
+  "같은 책 중복": 4,
+  "주제 전환 무시": 4,
+  "빼 달라는 저자가 나옴": 3,
+  "저자 불일치": 3,
+  "하면 안 되는 말을 함": 1,
+  "요청 오류": 1
+ },
+ "passed_by_case": {
+  "1": 5,
+  "2": 5,
+  "3": 5,
+  "4": 5,
+  "5": 5,
+  "6": 5,
+  "7": 5,
+  "8": 5,
+  "9": 5,
+  "10": 5,
+  "11": 5,
+  "12": 5,
+  "13": 5,
+  "14": 5,
+  "15": 5,
+  "16": 5,
+  "17": 5,
+  "18": 5,
+  "19": 5,
+  "20": 5,
+  "21": 1,
+  "22": 5,
+  "23": 0,
+  "24": 2,
+  "25": 5,
+  "26": 5,
+  "27": 2,
+  "28": 5,
+  "29": 5,
+  "30": 1,
+  "31": 2,
+  "32": 5,
+  "33": 5,
+  "34": 5,
+  "35": 5,
+  "36": 5,
+  "37": 5,
+  "38": 5,
+  "39": 5,
+  "40": 5,
+  "41": 5,
+  "42": 5,
+  "43": 5,
+  "44": 0,
+  "45": 5,
+  "46": 5,
+  "47": 0,
+  "48": 5,
+  "49": 5,
+  "50": 5,
+  "51": 0,
+  "52": 5,
+  "53": 5,
+  "54": 5,
+  "55": 5,
+  "56": 5,
+  "57": 1,
+  "58": 5,
+  "59": 5,
+  "60": 5,
+  "61": 4,
+  "62": 5,
+  "63": 5,
+  "64": 5,
+  "65": 5,
+  "66": 5,
+  "67": 4,
+  "68": 5,
+  "69": 5,
+  "70": 5,
+  "72": 5,
+  "73": 5,
+  "74": 5,
+  "75": 5,
+  "76": 5,
+  "77": 5,
+  "78": 5,
+  "79": 5,
+  "80": 4,
+  "81": 5,
+  "82": 5,
+  "83": 0,
+  "84": 1,
+  "85": 5,
+  "86": 5,
+  "87": 5,
+  "88": 5,
+  "89": 5,
+  "90": 4,
+  "91": 5,
+  "92": 5,
+  "93": 5,
+  "94": 5,
+  "95": 0,
+  "96": 5,
+  "98": 4,
+  "99": 1,
+  "100": 1,
+  "103": 5
+ },
+ "common": {
+  "llm_turns": 579,
+  "unsaid_mood_turns": 137,
+  "unsaid_mood_rate": 23.7,
+  "leak_word": "잔잔",
+  "leak_word_turns": 24,
+  "leak_word_rate": 4.1,
+  "turns_with_card_without_description": 38,
+  "turns_with_same_title_cards": 25,
+  "turns_with_same_work_cards": 30,
+  "turns_with_null_reason_long": 39,
+  "null_reason_long_by_case": {
+   "29": 2,
+   "31": 3,
+   "32": 5,
+   "33": 5,
+   "34": 2,
+   "35": 5,
+   "51": 3,
+   "52": 5,
+   "57": 2,
+   "72": 1,
+   "77": 5,
+   "92": 1
+  },
+  "match_score": {
+   "all": {
+    "cards": 1460,
+    "zero": 145,
+    "min": 0,
+    "p25": 15,
+    "median": 20,
+    "p75": 25,
+    "max": 39
+   },
+   "by_intent": {
+    "exact": {
+     "cards": 143,
+     "zero": 128,
+     "min": 0,
+     "p25": 0,
+     "median": 0,
+     "p75": 0,
+     "max": 20
+    },
+    "semantic": {
+     "cards": 1317,
+     "zero": 17,
+     "min": 0,
+     "p25": 17,
+     "median": 21,
+     "p75": 25,
+     "max": 39
+    }
+   }
+  },
+  "degraded_turns_per_run": [
+   0,
+   0,
+   1,
+   0,
+   0
+  ],
+  "most_shown_books": [
+   {
+    "title": "1985년의 하와이",
+    "rate": 4.8
+   },
+   {
+    "title": "코딩 강화 파이썬",
+    "rate": 3.0
+   },
+   {
+    "title": "데미안",
+    "rate": 2.4
+   },
+   {
+    "title": "스피드파이썬",
+    "rate": 2.4
+   },
+   {
+    "title": "우리에게 위로가 필요할 때",
+    "rate": 2.2
+   }
+  ],
+  "seconds_median": 7.0,
+  "seconds_p90": 10.9
+ }
+}

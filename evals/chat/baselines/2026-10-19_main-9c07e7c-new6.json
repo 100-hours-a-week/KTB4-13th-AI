@@ -1,0 +1,207 @@
+{
+ "meta": {
+  "cases_version": 4,
+  "server_version": "dev",
+  "model": "openai/gpt-4o-mini",
+  "started_at": "2026-10-19T15:48:49+09:00",
+  "base_url": "http://127.0.0.1:8011",
+  "runs": 3,
+  "workers": 3,
+  "note": "#504 새 문항만, main 9c07e7c 앱 코드, ZDR 끔, 평가용 제한 시간 60초",
+  "vector_fallbacks": 0
+ },
+ "cases_version": 4,
+ "runs": 3,
+ "skipped_runs": [],
+ "cases": 6,
+ "passed": 7,
+ "total": 18,
+ "pass_rate": 38.9,
+ "passed_per_run": [
+  2,
+  2,
+  3
+ ],
+ "zero_cards": 0,
+ "zero_cards_total": 15,
+ "zero_cards_rate": 0.0,
+ "zero_cards_by_case": {},
+ "by_kind": {
+  "topic": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "situation": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "like": {
+   "passed": 1,
+   "total": 3,
+   "rate": 33.3,
+   "min_rate": 0.0
+  },
+  "lookup": {
+   "passed": 6,
+   "total": 6,
+   "rate": 100.0,
+   "min_rate": 100.0
+  },
+  "condition": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "edge": {
+   "passed": 0,
+   "total": 3,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "multi": {
+   "passed": 0,
+   "total": 6,
+   "rate": 0.0,
+   "min_rate": 0.0
+  }
+ },
+ "lowest_kind": {
+  "kind": "edge",
+  "passed": 0,
+  "total": 3,
+  "rate": 0.0,
+  "min_rate": 0.0
+ },
+ "by_source": {
+  "bug": {
+   "passed": 7,
+   "total": 18,
+   "rate": 38.9,
+   "min_rate": 33.3
+  },
+  "research": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "community": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "chatlog": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  },
+  "study": {
+   "passed": 0,
+   "total": 0,
+   "rate": 0.0,
+   "min_rate": 0.0
+  }
+ },
+ "observed": [],
+ "fail_reasons": {
+  "조건 불일치(6턴 intent)": 3,
+  "조건 불일치(6턴 exact.title)": 3,
+  "조건 불일치(7턴 exact.title)": 3,
+  "조건 불일치(2턴 filters.price_max)": 3,
+  "되묻지 않음": 3,
+  "조건 불일치(4턴 filters.price_max)": 2,
+  "기준 책이 카드에 나옴": 2
+ },
+ "passed_by_case": {
+  "104": 0,
+  "105": 0,
+  "106": 1,
+  "107": 0,
+  "108": 3,
+  "109": 3
+ },
+ "common": {
+  "llm_turns": 42,
+  "unsaid_mood_turns": 15,
+  "unsaid_mood_rate": 35.7,
+  "leak_word": "잔잔",
+  "leak_word_turns": 0,
+  "leak_word_rate": 0.0,
+  "turns_with_card_without_description": 9,
+  "turns_with_same_title_cards": 2,
+  "turns_with_same_work_cards": 2,
+  "turns_with_null_reason_long": 9,
+  "null_reason_long_by_case": {
+   "104": 3,
+   "108": 3,
+   "109": 3
+  },
+  "match_score": {
+   "all": {
+    "cards": 105,
+    "zero": 25,
+    "min": 0,
+    "p25": 12,
+    "median": 19,
+    "p75": 25,
+    "max": 32
+   },
+   "by_intent": {
+    "exact": {
+     "cards": 25,
+     "zero": 25,
+     "min": 0,
+     "p25": 0,
+     "median": 0,
+     "p75": 0,
+     "max": 0
+    },
+    "semantic": {
+     "cards": 80,
+     "zero": 0,
+     "min": 11,
+     "p25": 17,
+     "median": 22,
+     "p75": 26,
+     "max": 32
+    }
+   }
+  },
+  "degraded_turns_per_run": [
+   0,
+   0,
+   0
+  ],
+  "most_shown_books": [
+   {
+    "title": "해리포터",
+    "rate": 38.9
+   },
+   {
+    "title": "데미안을 찾아서",
+    "rate": 33.3
+   },
+   {
+    "title": "(쉽게 배우는) 파이썬",
+    "rate": 27.8
+   },
+   {
+    "title": "(초보자도 간단히 단숨에 배우는) 파이썬",
+    "rate": 22.2
+   },
+   {
+    "title": "코딩 강화 파이썬",
+    "rate": 22.2
+   }
+  ],
+  "seconds_median": 6.8,
+  "seconds_p90": 9.4
+ }
+}

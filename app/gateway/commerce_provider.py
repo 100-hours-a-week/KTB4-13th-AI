@@ -1,21 +1,21 @@
-"""⑦ 라우터가 쓸 장바구니(CommerceGateway)와 카탈로그(CatalogGateway)를 고른다(#358, #363).
+"""⑦ 라우터가 쓸 장바구니(CommerceGateway)와 카탈로그(CatalogGateway)를 고른다(#358, #363, #489).
 
-진짜 BE 호출은 11단계에서 만든다. 그 전에는 COMMERCE_MOCK 이 켜진 로컬에서만 메모리 가짜 장바구니를
-쓰고, 꺼져 있으면 CommerceNotConfigured 를 던져 /agent/act 가 503 으로 답하게 한다. 배포 환경에서 가짜
-장바구니로 "담았어요"라고 답하는 일을 막으려는 것이다.
+장바구니는 BE 를 부르지 않는다. BE 가 요청에 실어 보낸 장바구니와 가격·재고로 이번 턴만 쓰는 복사본을 만들고,
+끝나면 그 차이를 actions 로 돌려준다(A안, #489). 그래서 운영과 개발이 같은 길로 돈다.
+
+카탈로그(소개글)는 AI DB 의 책 표에서 읽는다(#415). COMMERCE_MOCK 이 켜진 로컬에서는 DB 없이 손으로 시험할 수
+있게 가공의 서가를 쓴다.
 """
 
+from app.agent.schemas import AgentActRequest
 from app.core.config import get_settings
 from app.gateway.catalog import CatalogGateway
-from app.gateway.commerce import CommerceGateway
+from app.gateway.catalog_db import DbCatalog
+from app.gateway.commerce import BookOffer, CartLine
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
+from app.gateway.commerce_snapshot import SnapshotCommerce
 
-
-class CommerceNotConfigured(Exception):
-    """진짜 BE 장바구니가 연결되지 않았고 가짜도 꺼져 있다."""
-
-
-# 로컬에서 손으로 시험할 때 쓰는 가공의 서가. 평가 사례(evals/agent)의 서가와 같은 것이 아니다.
+# 로컬에서 손으로 시험할 때 쓰는 가공의 서가(소개글). 평가 사례(evals/agent)의 서가와 같은 것이 아니다.
 _DEV_BOOKS = [
     FakeBook(
         "9788900001001",
@@ -36,31 +36,22 @@ _DEV_BOOKS = [
     FakeBook("9788900001049", "소프트웨어 설계의 기본기", 18000, 3),
 ]
 
-_dev_commerce: FakeCommerce | None = None
 
-
-def _dev() -> FakeCommerce:
-    global _dev_commerce
-    if not get_settings().commerce_mock:
-        raise CommerceNotConfigured
-    if _dev_commerce is None:
-        _dev_commerce = FakeCommerce(_DEV_BOOKS)
-    return _dev_commerce
-
-
-def get_commerce(user_id: int) -> CommerceGateway:
-    """이번 요청의 사용자에게 쓸 장바구니. 가짜는 프로세스 안에서 계속 이어진다(개발용)."""
-    dev = _dev()
-    dev.register_user(user_id)
-    return dev
+def get_commerce(req: AgentActRequest) -> SnapshotCommerce:
+    """이번 요청에 실린 장바구니와 가격·재고로 만든 복사본."""
+    cart = [
+        CartLine(line.isbn, line.title, line.price, line.quantity, line.available)
+        for line in req.cart
+    ]
+    offers = [
+        BookOffer(offer.isbn, offer.title, offer.price, offer.in_stock)
+        for offer in req.offers
+    ]
+    return SnapshotCommerce(cart, offers)
 
 
 def get_catalog() -> CatalogGateway:
-    """책의 제목과 소개글을 읽는 곳. 진짜(AI 서버의 카탈로그)는 11단계에서 연결한다."""
-    return _dev()
-
-
-def reset_dev_commerce() -> None:
-    """테스트가 서로의 장바구니를 보지 않게 비운다."""
-    global _dev_commerce
-    _dev_commerce = None
+    """책의 제목과 소개글을 읽는 곳."""
+    if get_settings().commerce_mock:
+        return FakeCommerce(_DEV_BOOKS)
+    return DbCatalog()

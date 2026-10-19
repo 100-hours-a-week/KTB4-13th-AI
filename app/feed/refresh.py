@@ -50,7 +50,7 @@ WHERE feed_partial AND coalesce(feed->>'retried_on', '') <> $1
 """
 _PROFILE_SQL = """
 SELECT interest_scores::text, interest_vectors::text, conditions::text,
-       (feed->'substituted')::text AS substituted
+       book_first_seen::text, (feed->'substituted')::text AS substituted
 FROM taste_profile WHERE user_id = $1
 """
 # ⑥ 과 같이 판 번호를 올리고 바로 앞 판을 남긴다
@@ -106,6 +106,10 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         row = await conn.fetchrow(_PROFILE_SQL, user_id)
         vectors = json.loads(row["interest_vectors"])
         hist = await history.read(conn, user_id)
+        # 매칭 점수에 쓰는 내 책은 ⑥ 처럼 관심사마다 다시 가른다. 저장된 칸을 늘리지 않으려는 것이다(#483)
+        anchors = await profile_service.book_anchors(
+            conn, json.loads(row["book_first_seen"] or "{}"), hist.disliked_book_ids
+        )
         feed = await interest_feed.build(
             conn,
             interests.combined(json.loads(row["interest_scores"])),
@@ -114,6 +118,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
             json.loads(row["conditions"]),
             set(hist.weights) | hist.disliked_book_ids,
             seconds=LIST_BUDGET_SECONDS,
+            book_anchors=anchors,
         )
         before = set(json.loads(row["substituted"] or "[]"))
         if not set(feed.substituted) < before:

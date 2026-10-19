@@ -282,3 +282,16 @@ def test_취향_기억의_마지막_방향이_피함이면_다른_재료가_있�
 
 def test_재료가_없으면_점수도_없다() -> None:
     assert interests.combined({}) == {}
+
+
+def test_매칭_점수에_쓰는_내_책은_관심사마다_처음_본_날이_늦은_책부터_열_권이다() -> (
+    None
+):
+    books = [("요리", 100 + i, f"2026-10-{i + 1:02d}") for i in range(12)]
+    books += [("역사", 7, "2026-10-01"), ("역사", 8, "2026-10-01")]
+
+    picked = interests.anchors(books)
+
+    # 늦게 본 열 권. 같은 날이면 번호가 큰 책부터다(#483)
+    assert picked["요리"] == tuple(range(111, 101, -1))
+    assert picked["역사"] == (8, 7)

@@ -10,7 +10,7 @@ LLM 호출은 invoke_chain 을 거친다. /health 의 LLM 상태와 provider 예
 
 import json
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -23,14 +23,20 @@ from langchain_core.messages import (
 )
 from langgraph.graph import END, START, StateGraph
 
-from app.agent import descriptors, prompts
+from app.agent import descriptors, guard, prompts
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import AgentActRequest, ToolCall, ToolName
-from app.agent.tools import execute
+from app.agent.tools import execute, view_result
 from app.agent.view import llm_view
-from app.gateway.commerce import CommerceError, CommerceGateway
+from app.gateway.commerce import (
+    CommerceError,
+    CommerceErrorCode,
+    CommerceGateway,
+    Restorable,
+)
+from app.gateway.commerce_snapshot import CartAction, diff_cart
 from app.gateway.llm import invoke_chain
 
 # 명세 ⑦: tool 반복은 최대 3번
@@ -59,6 +65,8 @@ class AgentRun:
     hit_cap: bool  # 반복을 상한까지 다 썼다
     timings: list[StepTiming]
     ctx: TurnContext  # 끝난 뒤의 상태(마지막으로 조회한 장바구니 등)
+    # BE 가 반영할 장바구니 변경(#489). 처음과 끝 장바구니의 차이다
+    actions: list[CartAction] = field(default_factory=list)
 
 
 class _State(TypedDict):
@@ -88,6 +96,55 @@ def _text(message: BaseMessage) -> str:
         part.get("text", "") if isinstance(part, dict) else str(part)
         for part in content
     )
+
+
+def _reply(ctx: TurnContext, call: ToolCall, call_id: str, name: str) -> ToolMessage:
+    return ToolMessage(
+        content=json.dumps(llm_view(ctx, call), ensure_ascii=False),
+        tool_call_id=call_id,
+        name=name,
+    )
+
+
+# 장바구니 규칙(재고, 30권, 수량, 판매 중지, 없는 항목)에 걸린 쓰기. 책을 가리키는 근거가 없어 막힌 것
+# (REFERENCE_NOT_STATED 등)은 그 책만 되묻으면 되므로 넣지 않는다
+_RULE_FAILURES = frozenset(code.value for code in CommerceErrorCode)
+
+
+def _roll_back(calls: list[ToolCall]) -> bool:
+    """한 묶음에서 쓰기가 성공하기도 하고 장바구니 규칙에 걸리기도 했나."""
+    writes = [c for c in calls if c.name in guard.WRITE_TOOLS]
+    return any(c.result.get("ok") is True for c in writes) and any(
+        c.result.get("error") in _RULE_FAILURES for c in writes
+    )
+
+
+async def _rolled_back(
+    ctx: TurnContext, gateway: CommerceGateway, calls: list[ToolCall]
+) -> list[ToolCall]:
+    """되돌린 묶음의 기록. 성공한 쓰기는 되돌렸다고 적고, 규칙에 걸린 호출은 그 이유를 그대로 둔다.
+
+    같은 묶음의 장바구니 조회는 되돌리기 전 장바구니를 읽었다. 되돌린 장바구니로 다시 만든다. 그대로 두면
+    "담지 않았어요" 옆에 그 책이 담긴 목록과 합계가 LLM 에게 가고, 다음 묶음의 "장바구니 n번째"도 그 목록으로
+    푼다(pending_cart, #493 리뷰).
+    """
+    viewed = any(c.name == ToolName.CART_VIEW and "items" in c.result for c in calls)
+    lines = await gateway.get_cart(ctx.user_id) if viewed else None
+    if lines is not None:
+        ctx.pending_cart = lines
+    failed = {"ok": False, "error": ToolErrorCode.BATCH_ROLLED_BACK.value}
+    out: list[ToolCall] = []
+    for call in calls:
+        if call.name in guard.WRITE_TOOLS and call.result.get("ok") is True:
+            call = call.model_copy(update={"result": failed})
+        elif (
+            lines is not None
+            and call.name == ToolName.CART_VIEW
+            and "items" in call.result
+        ):
+            call = call.model_copy(update={"result": view_result(lines)})
+        out.append(call)
+    return out
 
 
 def build_graph(
@@ -136,6 +193,19 @@ def build_graph(
         started = perf_counter()
         replies: list[ToolMessage] = []
         recorded: list[ToolCall] = []
+        # 실행한 호출의 (replies 안의 자리, LLM 이 준 호출 id·이름). 되돌린 호출의 답을 고쳐 쓸 때 쓴다
+        slots: list[tuple[int, str, str]] = []
+        # 한 번에 쓰기를 둘 이상 시키면 하나라도 장바구니 규칙에 걸릴 때 모두 되돌린다(#488, #489)
+        writes = [
+            r
+            for r in ai.tool_calls
+            if descriptors.FROM_LLM_NAME.get(r["name"]) in guard.WRITE_TOOLS
+        ]
+        point = (
+            gateway.checkpoint()
+            if len(writes) >= 2 and isinstance(gateway, Restorable)
+            else None
+        )
 
         # 순서대로 하나씩 실행한다. 장바구니 번호는 LLM 이 본 목록 기준이라 순서가 바뀌면 안 된다
         for index, requested in enumerate(ai.tool_calls):
@@ -157,13 +227,18 @@ def build_graph(
             call = await execute(
                 ctx, gateway, name, requested["args"], comparer=comparer
             )
+            slots.append((len(replies), requested["id"], requested["name"]))
             recorded.append(call)
-            replies.append(
-                ToolMessage(
-                    content=json.dumps(llm_view(ctx, call), ensure_ascii=False),
-                    tool_call_id=requested["id"],
-                    name=requested["name"],
-                )
+            replies.append(_reply(ctx, call, requested["id"], requested["name"]))
+        if point is not None and _roll_back(recorded):
+            gateway.restore(point)
+            recorded = await _rolled_back(ctx, gateway, recorded)
+            for (at, call_id, call_name), call in zip(slots, recorded, strict=True):
+                replies[at] = _reply(ctx, call, call_id, call_name)
+            # 되돌린 쓰기는 바꾼 것이 아니다. 앞 묶음에서 성공한 쓰기만 남았으면 그것으로 다시 정한다
+            ctx.changed_cart = any(
+                c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
+                for c in state["tool_calls"]
             )
         # JSON 이 깨진 호출. 실행하지 않고 이유만 돌려준다
         for index, broken in enumerate(getattr(ai, "invalid_tool_calls", None) or []):
@@ -233,6 +308,7 @@ async def run_agent(
     """
     ctx = TurnContext.from_request(req)
     await prefetch_cart(ctx, gateway)
+    start = list(ctx.cart_snapshot or [])
     graph = build_graph(model, gateway, ctx, comparer)
     out: _State = await graph.ainvoke(
         {
@@ -248,6 +324,12 @@ async def run_agent(
         }
     )
     final_text = _text(out["messages"][-1])
+    actions: list[CartAction] = []
+    if any(
+        call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
+        for call in out["tool_calls"]
+    ):
+        actions = diff_cart(start, await gateway.get_cart(ctx.user_id))
     return AgentRun(
         final_text=final_text,
         not_shopping=not out["tool_calls"]
@@ -258,4 +340,5 @@ async def run_agent(
         hit_cap=out["iterations"] >= MAX_TOOL_STEPS,
         timings=out["timings"],
         ctx=ctx,
+        actions=actions,
     )
