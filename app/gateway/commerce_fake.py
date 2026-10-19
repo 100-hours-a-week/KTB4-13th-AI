@@ -8,7 +8,7 @@ BE의 조회 순서(created_at 내림차순)가 같이 재현된다.
 """
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.gateway.catalog import BookText
 from app.gateway.commerce import (
@@ -101,6 +101,23 @@ class FakeCommerce:
             if book is not None:
                 texts.append(BookText(isbn, book.title, book.description))
         return texts
+
+    # --- Restorable ---
+
+    def checkpoint(self) -> object:
+        carts = {
+            user: {isbn: replace(row) for isbn, row in rows.items()}
+            for user, rows in self._carts.items()
+        }
+        return carts, self._seq
+
+    def restore(self, point: object) -> None:
+        carts, seq = point  # type: ignore[misc]
+        self._carts = {
+            user: {isbn: replace(row) for isbn, row in rows.items()}
+            for user, rows in carts.items()
+        }
+        self._seq = seq
 
     # --- 평가·테스트용. CommerceGateway에는 없다 ---
 

@@ -33,7 +33,9 @@ from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
+from app.gateway.commerce import CommerceError
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
+from app.gateway.commerce_provider import get_commerce
 from app.gateway.llm import LLMUnavailableError, get_chat_model
 from evals.agent import grade
 
@@ -90,6 +92,55 @@ def _is_timeout(exc: BaseException) -> bool:
     return False
 
 
+async def be_fields(fake: FakeCommerce, uid: int, case: dict) -> dict:
+    """BE 가 챗봇 요청에 실어 보낼 지금 장바구니와 카드 책의 가격·재고(A안, #489). 가짜 BE 에서 읽는다.
+
+    로그인하지 않았으면 장바구니를 싣지 않는다. 가격·재고는 카드와 지금 보는 책만이고, BE 가 모르는 책과 판매 중지
+    책은 빠진다(BE 의 가격·재고 조회와 같다).
+    """
+    request = case["request"]
+    logged_in = request.get("user_context", {}).get("logged_in", False)
+    lines = await fake.get_cart(uid) if logged_in else []
+    isbns = [card["isbn"] for card in request.get("context_cards") or []]
+    if request.get("focused_isbn"):
+        isbns.append(request["focused_isbn"])
+    offers = await fake.get_offers(isbns)
+    return {
+        "cart": [
+            {
+                "isbn": line.isbn,
+                "title": line.title,
+                "price": line.price,
+                "quantity": line.quantity,
+                "available": line.available,
+            }
+            for line in lines
+        ],
+        "offers": [
+            {"isbn": o.isbn, "title": o.title, "price": o.price, "in_stock": o.in_stock}
+            for o in offers
+        ],
+    }
+
+
+async def apply_actions(
+    fake: FakeCommerce, uid: int, actions: list[dict]
+) -> str | None:
+    """BE 가 하는 일을 흉내 낸다: actions 를 차례로 반영하고, 하나라도 거절되면 모두 되돌린다(BE#284 안).
+    거절되면 그 오류 이름을 돌려준다. 그때 사용자에게는 reply 대신 BE 의 안내 문구가 보인다."""
+    point = fake.checkpoint()
+    try:
+        for action in actions:
+            if action["op"] == "set":
+                await fake.add_item(uid, action["isbn"], action["quantity"])
+            else:
+                await fake.remove_item(uid, action["isbn"])
+    except CommerceError as e:
+        fake.restore(point)
+        return e.code.value
+    return None
+
+
 def request_payload(case: dict, *, accepts_history: bool) -> dict:
     """사례의 요청. 사례에 history 가 있고 API 가 recent_turns 를 받으면 그 칸에 실어 보낸다(#397).
 
@@ -124,10 +175,13 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "hit_cap": False,
         "tokens_in": 0,
         "tokens_out": 0,
+        # BE 가 actions 를 반영하다 거절한 오류 이름(#489). 이때 사용자는 reply 대신 BE 안내 문구를 본다
+        "be_rejected": None,
     }
     payload = request_payload(
         case, accepts_history="recent_turns" in AgentActRequest.model_fields
     )
+    payload.update(await be_fields(fake, uid, case))
     req = parse_request(payload)
     if req is None:
         record.update(status=400, error="요청 형식 오류(사례 파일 문제)")
@@ -136,12 +190,17 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         try:
             comparer = LlmComparer(fake, model)
             async with asyncio.timeout(timeout):
-                run = await run_agent(req, model=model, gateway=fake, comparer=comparer)
+                # 서버와 같이 요청에 실린 값으로 만든 복사본 위에서 돈다. 가짜 BE 는 actions 를 반영할 때만 쓴다
+                run = await run_agent(
+                    req, model=model, gateway=get_commerce(req), comparer=comparer
+                )
             finished = finish(run)
+            data = finished.data.model_dump(mode="json")
+            record["be_rejected"] = await apply_actions(fake, uid, data["actions"])
             record.update(
                 raw_reply=run.final_text,
                 reply=finished.data.reply,
-                data=finished.data.model_dump(mode="json"),
+                data=data,
                 removed=finished.removed,
                 llm_calls=run.llm_calls,
                 iterations=run.iterations,
@@ -272,6 +331,9 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
             "status_counts": dict(Counter(str(r["status"]) for r in records)),
             "removed_reasons": dict(Counter(x for r in records for x in r["removed"])),
             "executed_without_confirm": unconfirmed,
+            "be_rejected": dict(
+                Counter(r["be_rejected"] for r in records if r.get("be_rejected"))
+            ),
             "blocked_writes": blocked_writes,
             "injection_failed": [
                 sum(not r["grade"]["passed"] for r in injection),
@@ -319,6 +381,7 @@ def format_report(summary: dict) -> str:
         f"| 반복 상한에 걸림 | {m['hit_cap']}회 |",
         f"| 확인 없이 실행된 조합 | {m['executed_without_confirm']}회 |",
         f"| 코드가 막은 쓰기 시도(모델이 짐작) | {m.get('blocked_writes', 0)}회 |",
+        f"| BE 가 actions 반영을 거절 | {m.get('be_rejected') or '없음'} |",
         f"| 속이는 입력에 넘어감 | {bad}/{total}회 |",
         f"| 응답 상태 | {m['status_counts']} |",
         f"| 답변 검사가 지운 문장(이유별) | {m['removed_reasons'] or '없음'} |",

@@ -114,6 +114,9 @@ def test_대화_하나의_형식(case: dict) -> None:
         labels = {"strength", "keyword"}
         if item["type"] == "topic":
             labels.add("applies_to")
+            # 꼭 고를 이름은 주제에만 있고, 적지 않아도 된다(#486).
+            if "applies_to_must" in item:
+                labels.add("applies_to_must")
         assert set(item) == {"type", "value", "keywords", "stated", *labels}
         assert item["type"] in TYPES
         assert 0 < len(item["value"]) <= MAX_VALUE_CHARS
@@ -163,6 +166,12 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
         # 제목만 말한 취향은 어디에도 넣지 않는다(#395).
         if any(k.startswith("『") for k in keywords):
             assert names == []
+
+    if "applies_to_must" in item:
+        must = item["applies_to_must"]
+        # 받아들이는 이름 가운데 하나는 꼭 골라야 하는 이름이다. 그 밖의 이름이면 맞힐 수 없다(#486).
+        assert must and len(must) == len(set(must))
+        assert set(must) <= set(item["applies_to"])
 
     if item["type"] == "condition":
         # 조건은 정해진 꼴로 적고, 늘 지킨다고 말한 것만 뽑는다(#427).

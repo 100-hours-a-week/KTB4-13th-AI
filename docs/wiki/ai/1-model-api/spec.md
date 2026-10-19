@@ -4,12 +4,12 @@ type: spec
 group: ai-1
 owner: 김세훈
 status: 작성중
-updated: 2026-10-12
+updated: 2026-10-16
 sources:
   - 모델-API-설계.md
 limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장을 자르지 않고 전부 보존 (변환 문서)
 ---
-**요약** BE ↔ AI 구간의 엔드포인트 8개와 공통 규약을 정의한다.
+**요약** BE ↔ AI 구간의 엔드포인트 9개와 공통 규약을 정의한다.
 
 책 커머스 “북적북적”의 AI 서버 API 명세다.
 
@@ -33,14 +33,17 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 | ④ | `GET /recommendations/feed` | 사용자 취향 프로필로 개인화 추천 목록을 만든다. 검색어를 받지 않는다 | V1 |
 | ⑤ | `POST /preferences/extractions` | 밤에 한 번, 그날 끝난 대화에서 취향을 뽑아낸다(동의한 사용자만) | V2 |
 | ⑥ | `POST /preferences/profile` | 온보딩 응답과 취향 기억으로 취향 프로필을 생성한다 ³ | V1 |
-| ⑦ | `POST /agent/act` | 사용자 메시지에서 쇼핑 의도를 해석해 백엔드 tool을 실행한다 | V2 |
+| ⑦ | `POST /agent/act` | 사용자 메시지에서 쇼핑 의도를 해석해 백엔드 tool을 실행한다 ⁴ | V2 |
 | ⑧ | `GET /health` | 서버와 구성 요소의 가용 상태를 반환한다 | 공통 |
+| ⑨ | `POST /recommendations/feed/refresh` | 밤 배치 맨 끝에, 임시로 채운 자리가 있는 추천 목록을 다시 뽑는다 | V2 |
 
 ¹ 키워드 검색과 벡터 검색 순위를 합친다. 결과가 0건이면 대화형 추천으로 전환하라는 신호를 함께 반환한다
 
-² 사용자 메시지를 읽어 추천 조건을 갱신하고 카드를 최대 3장 준다. 카드마다 한 줄 이유와 상세 페이지용 긴 이유를 한 번의 LLM 호출로 함께 만든다. (V2) 사진을 보내면 같은 요청에서 표지를 인식한다
+² 사용자 메시지를 읽어 추천 조건을 갱신하고 카드를 최대 3장 준다. 카드마다 한 줄 이유와 상세 페이지용 긴 이유를 한 번의 LLM 호출로 함께 만든다. (V2) 사진을 보내면 같은 요청에서 표지를 인식한다. 쇼핑 칸(`idempotency_key` 등)을 함께 보내면 AI 서버가 추천과 쇼핑을 가른다 ⁴
 
 ³ 구매·도서관·리뷰는 아래 복제 테이블에서 직접 읽는다. 호출할 때마다 전체를 다시 계산한다
+
+⁴ **BE는 ⑦을 직접 부르지 않는다.** 추천인지 쇼핑인지는 AI 서버가 가른다(AI #413). BE는 ③ 하나만 부르고, 쇼핑에 필요한 칸을 ③ 요청에 실어 보낸다. 응답의 `route`로 어느 쪽 응답인지 안다. `/agent/act`는 같은 처리를 직접 부르는 입구로 그대로 남는다
 
 **AI → BE**. 반대 방향의 **호출**은 엔드포인트가 아니라 **tool**이다 (V2 쇼핑 에이전트 전용). 호출 외에 ⑤의 `extractions[]`와 ③의 `reason_long`이 **응답 본문**으로 나가 BE가 저장한다. **DB 복제는 BE→AI 한 방향뿐이고 역방향 복제 채널은 없다.**
 
@@ -52,7 +55,7 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 | cart.remove | 장바구니에서 빼기 | 쓰기 | 본인 장바구니만 |
 | book.offer | 가격, 재고 조회(isbn마다 price, in_stock). 모르는 책은 결과에서 빠진다 | 읽기 | - |
 
-- **BE tool 5개는 책을 ISBN으로 받는다.** BE는 ISBN을 상품과 장바구니 항목 번호로 바꾼다. AI 서버만 부를 수 있는 입구를 BE가 열고, 모양은 BE와 확정한다.
+- **BE tool 5개는 책을 ISBN으로 받는다.** BE는 ISBN을 상품과 장바구니 항목 번호로 바꾼다. AI 서버만 부를 수 있는 내부 API를 BE가 열고, 모양은 BE와 확정한다.
 - **AI 서버 안에서 처리하는 tool 3개는 BE로 나가지 않는다.** `selection.pick`(예산, 권수 조합 고르기), `book.compare`(비교), `ui.guide`(화면 이동 버튼 붙이기)이다. `tool_calls[]`에는 기록된다.
 - **인증**. AI→BE tool 호출은 방향 전용 서비스 토큰으로 인증하고, 누구 장바구니인지는 BE가 `user_id`로 tool마다 다시 확인한다. “본인만”, “본인 주문만”은 그 확인을 뜻한다.
 
@@ -261,10 +264,12 @@ limit_exempt: 원본 8개 엔드포인트의 필드표·에러표·규칙 문장
 
 서버는 대화를 저장하지 않는다. V1에서는 호출자가 spec과 최근 대화를 요청마다 실어 보낸다. V2에서는 백엔드가 대화 스레드를 보관한다.
 
+**추천과 쇼핑을 가르는 일은 AI 서버가 한다.** `idempotency_key`가 있는 요청이면 AI 서버의 규칙(LLM을 부르지 않는다)이 말 한 줄과 카드가 보이는지를 보고 갈래를 정한다. 추천 낱말만 있으면 ③이 바로 처리하고(`route: "recommend"`), 그 밖의 말은 ⑦이 처리한다(`route: "shop"`). ⑦이 쇼핑 요청이 아니라고(`not_shopping`) 하면 같은 요청을 ③이 처리한다. 이 되돌림은 BE에 보이지 않는다. ⑦이 실패하면 ③의 추천으로 덮지 않고 그 에러를 그대로 돌려준다. 장바구니 요청에 추천 답을 하는 쪽이 더 나쁘기 때문이다. `idempotency_key`가 없으면 규칙을 쓰지 않고 ③만 처리하며 응답에 `route`도 없다.
+
 **처리(참고)**
 
 1. 이번 메시지로 spec을 갱신한다. LLM이 한다
-2. 갱신된 spec으로 후보 10권을 뽑는다. 키워드와 벡터 순위를 합치고 취향 유사도로 점수를 매긴다. 취향은 취향 프로필에 **프로필이 반영한 이력 이후에 생긴 이력**(구매, 담기, 리뷰)을 더한 것이고, 인기는 `v_book_popularity`에서 읽는다. 이미 산 책과 별점 1–2점을 준 책은 후보에서 뺀다
+2. 갱신된 spec으로 후보 10권을 뽑는다. 키워드와 벡터 순위를 합치고 취향 유사도로 점수를 매긴다. 취향은 취향 프로필에 **프로필이 반영한 이력 이후에 생긴 이력**(구매, 담기, 리뷰)을 더한 것이고, 인기는 `v_book_popularity`에서 읽는다. 산 책과 나의 도서관 책은 후보에서 뺀다. 요청에 `purchased_isbns`, `library_isbns`가 오지 않으면 복제 테이블에서 산 책과 별점 1–2점을 준 책을 뺀다
 3. LLM이 후보 중 3권을 고르고 카드마다 한 줄 이유(`reason_short`), 긴 이유(`reason_long`), 근거(`match_basis`)를 **한 번의 호출로** 쓴다. 고른 순서가 곧 rank이며,  
     match_score는 후보 점수 그대로라 내림차순이 아닐 수 있다
 4. 한 줄 이유를 못 만든 책은 뺀다. 그래서 3장보다 적을 수 있다. 긴 이유만 비면 카드는 남기고 `reason_long: null`로 둔다(BE는 상세 페이지의 이유 영역을 숨긴다)
@@ -280,7 +285,10 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
   "spec": { "…": "현재 추천 조건(6키 전체)" },
   "message": "너무 무겁지 않은 걸로",
   "recent_turns": [{ "role": "user", "text": "비 오는 날 읽을 책 추천해줘" }],
-  "exclude_book_ids": [4021],
+  "exclude_book_ids": [],
+  "exclude_isbns": ["9788900000042"],
+  "purchased_isbns": ["9788900000035"],
+  "library_isbns": [],
   "image_ref": null
 }
 ```
@@ -292,8 +300,17 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | spec | object | Y | spec(추천 조건 객체, 6개 키) ¹ |
 | message | string | N | 이번 턴의 사용자 메시지 ² |
 | recent_turns | object[] | N | 최근 대화(role, text) ³ |
-| exclude_book_ids | int[] | N | 이 대화에서 이미 보여준 도서 ID. 같은 책이 또 나오지 않게 검색에서 제외(사용자가 뺀 spec.exclude와 합쳐서) |
+| exclude_book_ids | int[] | N | 이 대화에서 이미 보여준 도서 ID. 같은 책이 또 나오지 않게 검색에서 제외(사용자가 뺀 spec.exclude와 합쳐서) ⁶ |
+| exclude_isbns | string[] | N | 이 대화에서 이미 보여준 도서의 ISBN-13. exclude_book_ids와 합쳐서 제외 ⁶ |
+| purchased_isbns | string[]? | N | 산 책(결제 완료)의 ISBN-13. 후보에서 뺀다 ⁷ |
+| library_isbns | string[]? | N | 나의 도서관에 담은 책의 ISBN-13. 후보에서 뺀다 ⁷ |
 | image_ref | string? | N | (V2) 표지 사진의 Pre-signed URL(BE가 업로드 후 발급) ⁴ |
+| idempotency_key | string | N | (V2) 쇼핑 칸. 있으면 추천과 쇼핑을 가르는 규칙을 켠다 ⁸ |
+| user_context | object | N | (V2) 쇼핑 칸. `logged_in`(bool). ⑦ 입력과 같다 ⁸ |
+| context_cards | object[] | N | (V2) 쇼핑 칸. 가장 최근에 카드가 보인 묶음 `{isbn, rank, match_score}`(최대 10개) ⁸ |
+| focused_isbn | string? | N | (V2) 쇼핑 칸. 사용자가 지금 보고 있는 책의 ISBN-13 ⁸ |
+| conversation_id | string? | N | (V2) 쇼핑 칸. ⑦ 입력과 같다 ⁸ |
+| allow_tools | string[]? | N | (V2) 쇼핑 칸. 허용할 tool 이름. null이면 전부. ⑦ 입력과 같다 ⁸ |
 
 ¹ 서버가 대화를 저장하지 않으므로 클라이언트가 직전 응답의 spec을 그대로 돌려보내야 대화가 이어짐(V2는 BE가 보관). 첫 턴은 초기 spec
 
@@ -305,6 +322,12 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 ⁵ V1에서는 동작에 영향 없음. 개인화는 취향 프로필 유무로 판단한다(AI #266). V2에서 false면 대화에서 취향을 뽑지 않는다
 
+⁶ 책 번호를 ISBN으로 옮기는 중이라 두 칸을 다 받는다(AI #317). 다 옮기면 exclude_book_ids를 뺀다. ISBN은 13자리 숫자 문자열이고 형식이 틀리면 400이다. 책 표에 없는 ISBN은 건너뛴다
+
+⁷ BE가 요청마다 싣는다(AI #319). **칸이 없거나 null인 것과 빈 목록 []은 뜻이 다르다.** 두 칸이 모두 없거나 null이면 아직 보내지 않는 것으로 보고 복제 테이블의 이력으로 뺀다. 빈 목록은 가진 책이 없다는 뜻이라 복제 테이블을 읽지 않는다. 그래서 목록을 채우기 전에 []부터 보내면 산 책이 다시 추천된다. 별점 1–2점을 준 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어 산 책 목록에 들어 있다. 형식과 책 표에 없는 ISBN은 ⁶과 같다. 목록 개수 상한은 아직 정하지 않았다(BE #252). 요청 본문은 64KB까지이고 넘으면 413이다
+
+⁸ 쇼핑 칸은 모두 선택이다. `idempotency_key`가 있으면 규칙을 켜고, 없으면 이 변경 전과 같이 ③만 처리하며 응답 모양도 같다(BE가 쇼핑 칸을 보내기 전에 AI 서버가 먼저 배포되어도 안전하다). 쇼핑 칸은 갈래가 `shop`일 때만 ⑦ 입력 검사로 검사하고 틀리면 400이다. 갈래가 `recommend`면 검사하지 않아 ③이 쇼핑 칸 때문에 실패하지 않는다. `idempotency_key`는 요청마다 새 값을 쓰고, 같은 요청을 다시 보낼 때만 같은 값을 쓴다. 재시도에서 spec 같은 본문이 달라지면 새 값을 쓴다. 쇼핑 갈래는 한 턴이 최대 30초라서 BE의 읽기 제한 시간은 이보다 길어야 한다. ③ 칸(`user_id`, `message`, `recent_turns`)은 ⑦도 같은 값을 쓴다. ③ 칸 검사(`spec` 등)는 갈래와 상관없이 먼저 한다
+
 **`spec` 스키마**. 서버가 이 형식을 검증한다.
 
 ```json
@@ -313,8 +336,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
   "exact": { "title": null, "author": null, "publisher": null },
   "filters": {
     "category": "에세이",
-    "price_max": 20000,
-    "in_stock_only": true
+    "price_max": 20000
   },
   "semantic": "비 오는 날 카페에서 읽을 잔잔한 책",
   "anchor_book": null,
@@ -328,10 +350,12 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 |---|---|---|---|
 | intent | enum | Y | exact(제목, 저자를 지정한 요청), semantic(분위기, 상황 요청) |
 | exact.title, .author, .publisher | string? | Y | 지정된 제목, 저자, 출판사. 없으면 null |
-| filters | object | Y | 검색 API와 같은 필터 키. 재고 조건은 in_stock_only |
+| filters | object | Y | 검색 API와 같은 필터 키. 재고 조건(in_stock_only)은 실려 와도 무시한다 |
 | semantic | string? | Y | 분위기, 상황 설명 문장 |
 | anchor_book | int? | Y | 기준 도서 ID(“이 책과 비슷한”). 이미지 턴에서 인식된 책이 들어감 |
 | exclude | int[] | Y | 사용자가 직접 뺀 도서 ID |
+
+`anchor_book`과 `exclude`는 ISBN으로 옮기지 않고 도서 ID 그대로 둔다. AI가 만들어 응답에 싣고 호출자가 다음 요청에 그대로 되돌려 보내는 값이라 BE가 해석하지 않는다(AI #317).
 
 **초기 spec**. 새 스레드의 첫 턴, 그리고 422 이후 초기화할 때 BE가 보내는 값이다.
 
@@ -358,6 +382,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
     "cards": [
       {
         "book_id": 1088,
+        "isbn": "9788900000011",
         "rank": 1,
         "match_score": 87,
         "title": "달러구트 꿈 백화점",
@@ -380,6 +405,41 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 ```
 
 > **`buttons`, `degraded`는 V1 일반 턴에도 항상 존재한다.** 일반 턴은 보통 `buttons: []`, `degraded: false`.
+
+**출력 (200). 쇼핑 칸을 보낸 요청 (V2)**
+
+`idempotency_key`를 보낸 요청의 응답에는 `data.route`가 있다. 안 보낸 요청에는 `route`가 없다.
+
+| route | message | data |
+|---|---|---|
+| `recommend` | `recommend_success` | 위의 ③ 응답 그대로에 `route`만 더한다 |
+| `shop` | `agent_success` | ⑦ 출력(`reply`, `not_shopping`, `tool_calls`, `resolved_reference`, `selection`, `buttons`)에 `route`를 더한다 |
+
+`shop`이면 **`spec`, `cards`, `followup`, `degraded`는 오지 않는다.** BE는 카드를 저장하지 않고, 저장해 둔 spec을 바꾸지 않는다. 버튼은 객체 목록이며 `action` 값은 5장 표를 따른다.
+
+```json
+{
+  "message": "agent_success",
+  "data": {
+    "route": "shop",
+    "reply": "《달러구트 꿈 백화점》을 장바구니에 담았어요.",
+    "not_shopping": false,
+    "tool_calls": [
+      {
+        "name": "cart.add",
+        "arguments": { "isbn": "9788900000011", "quantity": 1 },
+        "result": { "ok": true },
+        "grounded": true
+      }
+    ],
+    "resolved_reference": { "ref": "1번", "isbns": ["9788900000011"] },
+    "selection": null,
+    "buttons": [
+      { "label": "장바구니 보기", "action": "navigate", "target": "CART-001" }
+    ]
+  }
+}
+```
 
 **출력 (200). 이미지 턴 (`image_ref` 있음) (V2)**
 
@@ -454,6 +514,7 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | spec | object | 업데이트된 spec(6개 키). 다음 턴 요청에 그대로 싣는다 |
 | cards | object[] | 추천 카드 최대 3장, 배열 순서가 순위 ¹ |
 | cards[].book_id | int | 도서 ID |
+| cards[].isbn | string? | ISBN-13. 책 표에 ISBN이 없는 도서는 null ⁵ |
 | cards[].rank | int | 추천 순위 1–3. 배열 순서와 같다 |
 | cards[].match_score | int | 매칭 점수 0–100 ² |
 | cards[].title | string | 제목 |
@@ -479,9 +540,11 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 
 ⁴ 항목: book_id, title, author, cover_url, confidence(0–1, 내부 판정용). 그 외 []
 
+⁵ 책 번호를 ISBN으로 옮기는 중이라 book_id와 함께 싣는다(AI #317). 다 옮기면 book_id를 뺀다
+
 - **긴 이유는 이 응답이 마지막 생성 지점이다.** AI 서버는 카드를 캐시하지 않으므로, BE가 `reason_long`을 카드와 함께 보관했다가 상세 페이지에서 그대로 보여준다. 같은 책을 다시 상세로 열어도 AI를 부르지 않는다.
 - 두 이유는 같은 근거(`match_basis`)에서 나온다. 한 줄 이유는 카드 한 줄, 긴 이유는 그 근거를 질의와 취향에 붙여 2–4문장으로 푼 것이다.
-- **이력과 인기는 요청에 담기지 않는다.** 서버가 `user_id`로 `v_user_purchases`, `v_user_library`, `v_user_reviews`를, book_id로 `v_book_popularity`를 복제 테이블에서 직접 읽는다. 호출자가 모아 보낼 것이 없다. 복제 지연만큼 값이 늦게 반영될 수 있으며 그건 오류가 아니다(ERD §3 신선도 예산).
+- **가진 책은 요청으로 받고, 인기는 요청에 담기지 않는다.** 산 책과 나의 도서관 책은 BE가 `purchased_isbns`, `library_isbns`로 싣는다(입력 ⁷). 두 칸이 오지 않는 동안은 서버가 `user_id`로 `v_user_purchases`, `v_user_library`, `v_user_reviews`를 복제 테이블에서 읽는다. 인기는 book_id로 `v_book_popularity`를 복제 테이블에서 읽는다. 복제 지연만큼 값이 늦게 반영될 수 있으며 그건 오류가 아니다(ERD §3 신선도 예산).
 - 표지를 읽지 못한 경우와 읽었으나 카탈로그에 없는 경우를 구분하지 않는다. 두 경우 모두 같은 안내 reply를 반환한다.
 
 **에러**
@@ -494,8 +557,12 @@ LLM 장애면 1과 3을 건너뛰고 요청의 spec으로 2만 돌려 점수 상
 | 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
 | 500 | internal_server_error | 서버 내부 오류 |
 | 404 | image_not_found | (V2) image_ref로 이미지를 못 찾음(URL 만료 포함) |
-| 413 | payload_too_large | (V2) 이미지 10MB 초과. 재촬영, 압축 안내 |
+| 413 | payload_too_large | 요청 본문 64KB 초과. (V2) 이미지 10MB 초과면 재촬영, 압축 안내 |
 | 422 | image_unreadable | (V2) 이미지가 깨졌거나 JPG, PNG 외 형식 |
+| 409 | idempotency_conflict | (V2, 쇼핑 갈래) 같은 `idempotency_key`에 다른 본문. 재시도 중단 |
+| 422 | grounding_failed | (V2, 쇼핑 갈래) 답변의 핵심 주장을 tool 결과로 뒷받침하지 못해 답변을 통째로 버림. 클라이언트는 일반 안내로 대체 |
+| 503 | upstream_unavailable | (V2, 쇼핑 갈래) 업스트림 LLM 장애, 한도, BE 장바구니 미연결. Retry-After 뒤 재시도 |
+| 504 | generation_timeout | (V2, 쇼핑 갈래) 한 턴이 30초를 넘음 |
 
 </details>
 
@@ -600,9 +667,10 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 
 **뽑는 기준**
 
-- 사용자가 자기가 읽으려고 찾거나 좋아한다고 말한 분위기, 주제, 작가, 늘 지키는 조건을 뽑는다. 좋아한다고 직접 말하지 않고 추천을 부탁하기만 해도 뽑는다.
+- 사용자가 자기가 읽으려고 찾거나 좋아한다고 말한 분위기, 주제, 작가, 늘 지키는 쪽수·가격·출간연도 조건을 뽑는다. 좋아한다고 직접 말하지 않고 추천을 부탁하기만 해도 뽑는다.
 - 싫어하거나 읽지 않는다고 말한 것도 뽑는다.
-- 남에게 줄 책, 제목으로 찾은 책 한 권, 가격·출간 연도·배송 같은 조건은 뽑지 않는다.
+- 이미 저장된 취향인지는 보지 않는다. 같은 취향을 다른 날 또 말하면 또 뽑는다.
+- 남에게 줄 책, 제목으로 찾은 책 한 권은 뽑지 않는다. 배송이나 번역서·오디오북처럼 책 정보로 가를 수 없는 조건도 뽑지 않는다.
 - "오늘은", "이번 달은"처럼 이번만이라고 밝힌 것과 말했다가 거둔 것은 뽑지 않는다.
 - 챗봇만 말하고 사용자가 받아들이지 않은 것은 뽑지 않는다.
 - 좋아한 책을 제목으로만 말하면 topic으로 뽑고 문장에 그 제목을 넣는다. 사용자가 말하지 않은 그 책의 성격은 덧붙이지 않는다.
@@ -619,10 +687,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
     { "role": "assistant", "text": "잔잔한 소설 위주로 골라봤어요." },
     { "role": "user", "text": "이별 후에 위로가 될 만한 걸로" }
   ],
-  "conversation_id": "cv_20260903_a1",
-  "existing_preferences": [
-    { "type": "mood", "value": "잔잔한 에세이를 선호함" }
-  ]
+  "conversation_id": "cv_20260903_a1"
 }
 ```
 
@@ -632,7 +697,7 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | consented | bool | Y | 개인화 추천에 동의했는지(③과 같은 값). false면 뽑지 않고 nothing_found: true |
 | conversation | object[] | Y | 대화 세션 한 개의 전체 턴(role, text). 최대 40턴(초과분은 최근 40턴만 사용), text 각 4,000자 이하, 빈 목록이면 뽑지 않고 nothing_found: true |
 | conversation_id | string | Y | 세션 ID(200자 이하). 뽑은 취향의 출처로 기록하고, 세션을 다시 처리하면 이 ID로 이전 결과를 교체 |
-| existing_preferences | object[] | N | 이미 저장된 취향 전체({type, value}). 같은 취향을 또 뽑지 않기 위해 보냄 |
+| existing_preferences | object[] | N | 쓰지 않는다. 보내도 무시하며 400이 아니다 |
 
 **출력** `200`
 
@@ -644,7 +709,9 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
       {
         "type": "mood",
         "value": "이별 후 위로되는 잔잔한 소설을 찾음",
-        "confidence": 0.82,
+        "strength": 1,
+        "applies_to": [],
+        "keyword": "위로되는",
         "vector": [0.01, -0.04, "…"],
         "dim": 384,
         "source_conversation_id": "cv_20260903_a1"
@@ -657,18 +724,24 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| extractions | object[] | 뽑은 취향 사실. 없으면 []. 대화 하나에 최대 5개이고 신뢰도가 높은 순이다 |
-| extractions[].type | enum | mood(분위기), topic(주제), author(작가), condition(늘 지키는 조건) |
+| extractions | object[] | 뽑은 취향 사실. 없으면 []. 대화 하나에 최대 5개이고 세기의 크기가 큰 순이다 |
+| extractions[].type | enum | mood(분위기), topic(주제), author(작가), condition(늘 지키는 쪽수·가격·출간연도 조건) |
 | extractions[].value | string | 한두 문장 요약. 200자 이하 |
-| extractions[].confidence | float | 신뢰도 0–1. 0.5 미만은 반환하지 않는다. 호출자의 임계 판정용이다 ¹ |
-| extractions[].vector | float[] | value 문장의 벡터. BE가 함께 저장하고 프로필 계산에 씀 ² |
+| extractions[].strength | int | 세기. -3 이상 3 이하이고 0은 오지 않는다 ¹ |
+| extractions[].applies_to | string[] | 어디에. 이 취향에 해당하는 카테고리·세부 카테고리 이름 3개 이하 ³ |
+| extractions[].keyword | string | 핵심어. 1자 이상 100자 이하 ⁴ |
+| extractions[].vector | float[] | keyword의 벡터. BE가 함께 저장하고 프로필 계산에 씀 ² |
 | extractions[].dim | int | 벡터 길이. 임베딩 API가 돌려주는 값과 같다 |
 | extractions[].source_conversation_id | string | 요청의 conversation_id 그대로 |
-| nothing_found | bool | true면 뽑을 게 없거나 전부 이미 있거나 동의 안 함. 이때 extractions는 [] |
+| nothing_found | bool | true면 뽑을 게 없거나 동의 안 함. 이때 extractions는 [] |
 
-¹ 사용자가 직접 말한 취향은 높게, 추천을 부탁한 내용에서 드러난 취향은 그보다 낮게 매긴다
+¹ 양수는 좋아함, 음수는 싫어함이다. 크기는 추천을 부탁하기만 했으면 1, 직접 말했으면 2, 강하게 말했으면 3이다. 싫은 쪽을 부탁하기만 한 것(-1)은 내지 않는다
 
 ² ②의 `purpose: query`와 같은 방식으로 만든다. 책 벡터와 견주는 쪽이기 때문이다
+
+³ topic일 때만 채우고, 맞는 것이 없거나 다른 종류면 []이다. 이름은 온보딩 3·4번 보기와 같고, AI 서버만 쓰는 세부 카테고리도 올 수 있다. BE는 검사하지 않고 저장했다가 ⑥에 그대로 보낸다
+
+⁴ 주제는 그 주제("추리 소설"), 작가는 이름("김영하"), 분위기는 그 말("잔잔한"), 조건은 정해진 꼴("300쪽 이하", "1만 원 이하", "2024년 이후")이다. 책 제목만 말했으면 『』로 감싼다("『불편한 편의점』")
 
 **에러**
 
@@ -715,12 +788,20 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
     {
       "type": "author",
       "value": "김영하의 문장을 좋아함",
+      "strength": 2,
+      "applies_to": [],
+      "keyword": "김영하",
+      "created_at": "2026-09-04T00:12:30.123456",
       "vector": [0.02, -0.01, "…"],
       "dim": 384
     },
     {
       "type": "mood",
       "value": "이별 후 위로되는 잔잔한 소설을 찾음",
+      "strength": 1,
+      "applies_to": [],
+      "keyword": "위로되는",
+      "created_at": "2026-09-04T00:12:30.123457",
       "vector": [0.01, -0.04, "…"],
       "dim": 384
     }
@@ -738,15 +819,28 @@ GET /recommendations/feed?user_id=123&surface=recommend_more&sort=match
 | onboarding.categories | string[] | N | 관심 대분류(앱 화면 값). 최대 3개. ①④ 필터의 category와 같은 값이다. 카탈로그 분류와는 대응표로 잇고, 대응표에 없는 값은 건너뛴다 |
 | onboarding.tags | string[] | N | 세부 태그. 최대 9개 |
 | onboarding.liked_book_ids | int[] | N | 마음에 드는 책 ID. 0권 가능, 상한 없음. 서버는 앞 50권만 씀 |
-| memories | object[] | N | 저장된 취향 기억 전체 {type, value, vector, dim} ³ |
+| memories | object[] | N | 저장된 취향 기억 전체. 사용자가 지운 것은 빼고 보낸다 ³ |
+| memories[].type | enum | Y | ⑤가 준 값(mood, topic, author, condition) |
+| memories[].value | string | Y | ⑤가 준 값 |
+| memories[].strength | int | Y | ⑤가 준 세기. -3 이상 3 이하, 0이 아님 |
+| memories[].applies_to | string[] | Y | ⑤가 준 어디에. 3개 이하, 빈 목록 가능 ⁴ |
+| memories[].keyword | string | Y | ⑤가 준 핵심어. 1자 이상 100자 이하 |
+| memories[].created_at | string | Y | 취향 기억 표의 created_at 그대로 ⁵ |
+| memories[].vector | float[] | Y | ⑤가 준 핵심어의 벡터. 길이는 dim과 같다 |
+| memories[].dim | int | Y | 벡터 길이 |
 
 ¹ 같은 키, 같은 본문이면 다시 계산하지 않고 저장 결과를 200으로 반환. 응답이 유실돼 재시도해도 프로필이 두 번 바뀌지 않게
 
 ² 매번 처음부터 다시 만들기 때문에 기억만 바뀌어도 온보딩 응답을 다시 보냄. 건너뛴 사용자는 {}
 
-³ 매번 전체를 보내 처음부터 다시 계산. 작가 취향은 이 경로로만 들어옴(type: author). 최대 500건(넘으면 최근 500건만)
+³ 매번 전체를 보내 처음부터 다시 계산. 작가 취향은 이 경로로만 들어옴(type: author). 최대 500건(넘으면 created_at이 최근인 500건만). 보내는 순서는 상관없다
+
+⁴ 서버가 모르는 이름이면 그 이름만 건너뛰고 400이 아니다
+
+⁵ 날짜·시각(한국 시간). 예: `2026-09-04T00:12:30.123456`. 소수점 아래는 없어도 된다. 같은 관심사를 좋아한다고도 싫다고도 했을 때 어느 쪽이 나중인지 가리는 데 쓴다. 같은 밤에 저장된 줄끼리도 가려야 해서 마이크로초까지 보낸다
 
 - memories[].dim이 서버가 쓰는 벡터 인덱스 차원과 다르면 400 invalid_request로 거절한다.
+- memories[]의 strength가 범위 밖이거나 0, applies_to가 4개 이상, keyword가 비었거나 100자를 넘음, created_at이 날짜·시각 모양이 아니면 400 invalid_request로 거절한다.
 - 이력은 요청 필드가 아니라 복제 테이블에서 읽으므로, 같은 `idempotency_key`에 같은 본문이어도 그 사이 구매가 생겼거나 복제가 도착하면 결과가 달라질 수 있다. 멱등 규약은 **재계산을 건너뛰고 저장된 결과를 그대로 돌려주는 것**이라 이 경우에도 응답은 일관된다.
 
 **출력** `200`
@@ -783,9 +877,9 @@ centroid = 가중평균( liked 책 문서벡터
 |---|---|---|
 | 좋아한 책 (liked_book_ids) | 책 적재 때 만든 벡터 재사용 | 이미 있음 |
 | 구매, 도서관, 리뷰 책 (이력 3종) | 같은 도서 임베딩 재사용 | 이미 있음 |
-| 관심 작가 (memories type: author) | 기억 문장 벡터 그대로 (`memories[].vector`) | 야간 배치, 문장당 1번 |
+| 관심 작가 (memories type: author) | 기억 핵심어 벡터 그대로 (`memories[].vector`) | 야간 배치, 줄당 1번 |
 | 관심 카테고리, 태그 | 종류가 적어 미리 벡터로 | 미리 만들어 둠 |
-| 기억 문장 | 취향 추출 때 벡터로 | 야간 배치, 문장당 1번 |
+| 기억 핵심어 | 취향 추출 때 벡터로 | 야간 배치, 줄당 1번 |
 | reading_times, criteria | 벡터 없음. 태그 신호로만(V1 미구현: 받기만 하고 쓰지 않는다) |  |
 
 **이력 가중치**. 카테고리 점수와 centroid 가중평균에 같은 값을 쓴다.
@@ -801,6 +895,7 @@ centroid = 가중평균( liked 책 문서벡터
 ¹ 2.0점 이하. centroid 재료에서는 빼고(가중평균에 넣지 않는다) 그 책 자체는 추천에서 제외한다. 카테고리 점수는 책마다 큰 값 하나라, 산 책이면 구매 점수가 남는다(AI #103)
 
 - 같은 책이 여러 테이블에 있으면(구매한 책에 리뷰까지 쓴 경우) **가장 큰 가중치 하나만** 쓴다. 더하지 않는다.
+- 취향 기억은 좋아함 줄만 centroid에 섞는다. 세기가 양수이고 조건이 아니며, 그 뒤에 같은 관심사를 피한다고 하지 않은 줄이다. 핵심어 벡터에는 좋고 싫음이 담기지 않기 때문이다(AI #395).
 - 이력이 하나도 없고 온보딩도 건너뛰었으면 `cold_start: true`다. 구매나 리뷰가 하나라도 있으면 개인화를 켠다.
 - **`computed_at`은 응답에 나가지 않는 내부 값이다.** 프로필이 **실제로 반영한 이력 행들의 최대 시각**을 저장해 두고, ③·④가 채점할 때 그보다 나중의 이력만 골라 점수에 더한다(같은 가중치 표). 프로필을 다시 만들지 않아도 방금 산 책이 다음 추천에 반영되고, 이미 녹아든 이력을 두 번 더하지 않는다. 보정은 AI 서버 안에서 끝나 호출자가 할 일은 없다.
 - **계산 시각이 아니라 반영 시각이어야 한다.** 이력을 복제 테이블에서 읽으므로 계산 시점에 아직 도착하지 않은 이력이 있을 수 있는데, 계산 시각을 기준으로 삼으면 그 이력이 프로필에도 가산 대상에도 없어 **영구히 누락된다.** 반영한 이력이 없으면 값이 비고 그때는 이력 전부를 가산한다.
@@ -809,7 +904,7 @@ centroid = 가중평균( liked 책 문서벡터
 
 | 상태 | message | 언제 |
 |---|---|---|
-| 400 | invalid_request | 형식 오류, onboarding 누락, 배열 상한 초과(reading_times 5, criteria 3, categories 3, tags 9), memories[].dim 불일치 |
+| 400 | invalid_request | 형식 오류, onboarding 누락, 배열 상한 초과(reading_times 5, criteria 3, categories 3, tags 9), memories[].dim 불일치, memories[] 칸 위반 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 409 | idempotency_conflict | 같은 idempotency_key에 다른 본문. 재시도 중단 |
 | 413 | payload_too_large | 요청 본문이 8MB 초과 |
@@ -823,6 +918,8 @@ centroid = 가중평균( liked 책 문서벡터
 대화 중에 나온 쇼핑 요청(“담아줘”, “빼줘”, “3만원 안에서 골라줘”, “재고 있어?”, “1번이랑 3번 뭐 달라”, “배송 언제?”)을 알아듣고 백엔드 기능(tool)을 대신 실행한다. **서버에 대화를 저장하지 않는다**. 대화 맥락은 요청에 담겨 온다. 주문 생성, 결제는 범위 밖이며 결제 화면으로의 이동만 안내한다.
 
 다루는 요청: **시키는 대로 실행**(담기, 수량 변경, 빼기, 장바구니 조회, 주문 요약, 재고), **조건 걸고 골라 담기**(예산, 권수 안에서 조합을 골라 줌. 가능한 조합을 전부 따져 본다), **비교**, **배송 문의**(안내와 이동 버튼), **“이거, 1번”이 어느 책인지 찾기 + 애매하면 되묻기**. 주문 요약은 장바구니 조회 결과로 답한다. 제외: ‘제일 취향인 거’, 선물 의도, 단건 Q&A, 취소, 환불, 결제수단, 결제 확정, 실시간 배송 추적, 무료배송 조건, 웹 검색, 리뷰.
+
+**호출 경로.** BE는 이 엔드포인트를 직접 부르지 않고 ③ 챗봇 입구에 쇼핑 칸을 실어 보낸다(③ 입력 ⁸). AI 서버가 추천인지 쇼핑인지 가려 이 처리로 넘긴다. 이 엔드포인트는 같은 처리를 직접 부르는 입구로 그대로 남고, 직접 부르면 `not_shopping: true`가 그대로 나간다.
 
 **입력**
 
@@ -848,15 +945,18 @@ centroid = 가중평균( liked 책 문서벡터
 | user_id | int | Y | 사용자 ID. BE 기능을 누구 이름으로 실행할지. LLM이 정하지 않고 요청의 값을 그대로 쓴다 |
 | conversation_id | string | N | 대화 ID. 로그, 중복 대조용. AI는 저장 안 함 |
 | message | string | Y | 이번 턴의 사용자 메시지(1–200자) |
-| context_cards | object[] | N | 직전 턴에 보여준 추천 카드 ¹ |
+| context_cards | object[] | N | 가장 최근에 카드가 보인 묶음 ¹ |
 | focused_isbn | string? | N | 사용자가 지목한 도서의 ISBN-13. 지시 표현 해석에 쓴다 |
 | user_context.logged_in | bool | Y | 로그인 여부. false면 쓰기 tool(담기, 수량 변경, 빼기)을 실행하지 않는다 |
 | allow_tools | string[]? | N | 이번 턴에 허용할 tool 이름. null이면 전부 허용. 위 tool 표에 없는 이름은 400 |
 | idempotency_key | string | Y | 멱등 키(idempotency key) ² |
+| recent_turns | object[] | N | 최근 대화(role, text). 되물은 다음 턴의 답을 푸는 재료 ³ |
 
-¹ “1번, 이거” 같은 지시 표현을 풀고 후보를 고르는 재료. 항목: isbn, rank, match_score. 최대 10개, 초과는 400. 카드의 가격과 재고는 받지 않는다. 가격, 재고는 이번 턴의 tool 결과로만 말한다
+¹ “1번, 이거” 같은 지시 표현을 풀고 후보를 고르는 재료. 호출자는 사용자 화면에서 **가장 최근에 카드가 보인 묶음**을 보낸다. 그 뒤에 카드가 없는 턴(⑦ 등)이 끼어도 마지막으로 보인 묶음을 유지하고, 보인 카드가 없으면 빈 배열이거나 생략한다. 항목: isbn, rank, match_score. 최대 10개, 초과는 400. 카드의 가격과 재고는 받지 않는다. 가격, 재고는 이번 턴의 tool 결과로만 말한다
 
 ² 재시도로 같은 요청이 두 번 와도 장바구니에 두 번 담기지 않게. 읽기만 하는 턴에서는 무시. BE로는 이 키에서 파생한 키를 보내지 않는다. 담기와 수량 변경이 요청 수량으로 바꾸는 방식이라 같은 호출을 두 번 보내도 결과가 같다
+
+³ “1번이요”, “네”처럼 되물은 다음 턴의 답을 직전 말과 이어서 푸는 재료다. ③의 `recent_turns`와 같은 모양이고, 최대 20턴(초과분은 최근 20턴만 쓴다), 한 줄 text는 200자다. 200자를 넘는 줄은 400이 아니라 **뒤쪽 200자만** 쓴다(구현 예정, 지금은 400). 제안과 질문이 말의 끝에 오기 때문이다. 항목 길이 위반을 400으로 하는 5장 ‘상한 초과 처리’의 예외다. ⑦의 답변에는 길이 상한이 없어서 호출자가 그대로 싣으면 200자를 넘을 수 있다
 
 **출력** `200`
 
@@ -874,9 +974,9 @@ centroid = 가중평균( liked 책 문서벡터
         },
         "result": {
           "offers": [
-            { "isbn": "9788900000011", "price": 13500, "in_stock": true },
-            { "isbn": "9788900000028", "price": 14000, "in_stock": true },
-            { "isbn": "9788900000035", "price": 12800, "in_stock": true }
+            { "isbn": "9788900000011", "title": "달러구트 꿈 백화점", "price": 13500, "in_stock": true },
+            { "isbn": "9788900000028", "title": "밤의 도서관", "price": 14000, "in_stock": true },
+            { "isbn": "9788900000035", "title": "아무튼, 산", "price": 12800, "in_stock": true }
           ]
         },
         "grounded": true
@@ -885,7 +985,11 @@ centroid = 가중평균( liked 책 문서벡터
         "name": "selection.pick",
         "arguments": { "budget_total": 27000, "count": 2 },
         "result": {
-          "chosen": ["9788900000011", "9788900000035"],
+          "ok": true,
+          "chosen": [
+            { "isbn": "9788900000011", "title": "달러구트 꿈 백화점", "price": 13500, "match_score": 92 },
+            { "isbn": "9788900000035", "title": "아무튼, 산", "price": 12800, "match_score": 81 }
+          ],
           "total_price": 26300,
           "alternatives_considered": 3
         },
@@ -911,8 +1015,7 @@ centroid = 가중평균( liked 책 문서벡터
         "label": "담기",
         "action": "confirm_selection",
         "isbns": ["9788900000011", "9788900000035"]
-      },
-      { "label": "다른 조합", "action": "reselect" }
+      }
     ]
   }
 }
@@ -921,7 +1024,7 @@ centroid = 가중평균( liked 책 문서벡터
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | reply | string | 답변 문장. 가격, 재고, 수량, 합계와 “담았어요” 같은 행동 서술은 이번 턴의 tool 결과가 뒷받침할 때만 쓴다 |
-| not_shopping | bool | true면 쇼핑 요청이 아니라서 아무것도 하지 않았다. reply는 빈 문자열이고, 호출자는 이 메시지를 일반 챗봇 흐름으로 처리한다 |
+| not_shopping | bool | true면 쇼핑 요청이 아니라서 아무것도 하지 않았다. reply는 빈 문자열이고, ③ 입구로 들어온 요청은 AI 서버가 ③으로 처리해 BE에는 보이지 않는다 |
 | tool_calls | object[] | 실행한 tool과 결과 ¹ |
 | tool_calls[].name | string | tool 이름(위 표) |
 | tool_calls[].arguments | object | tool에 넘긴 인자. 책은 ISBN이다. 권한, 재고는 BE가 다시 확인 |
@@ -929,13 +1032,15 @@ centroid = 가중평균( liked 책 문서벡터
 | tool_calls[].grounded | bool | false면 그 결과가 답변 내용을 뒷받침하지 못함. 판정 규칙은 아래 |
 | resolved_reference | object? | “이거, 1번”이 가리키는 책을 찾은 결과 { ref, isbns } ³ |
 | selection | object? | “예산 안에서 N권”처럼 조건 걸고 골라 담을 때만 { goal, constraints, chosen[], total_price, alternatives_considered }. 아니면 null |
-| buttons | object[] | 호출자가 제시할 후속 동작 목록. 없으면 []. action 값은 5장 action 표 참고 |
+| buttons | object[] | 호출자가 제시할 후속 동작 목록. 없으면 []. action 값은 5장 action 표 참고 ⁴ |
 
 ¹ 없으면 []. 골라 담기, 비교, 화면 안내처럼 AI 서버 안에서 처리한 tool도 기록용으로 포함
 
 ² BE tool의 결과 형식은 예시이며 BE와 합의해 확정
 
-³ 카드와 장바구니 목록에 대조해 사용자가 말한 책이 정해질 때만 isbns를 채운다. 어느 책인지 하나로 정해지지 않으면 isbns가 빈 목록이고 되묻는 답변을 준다(tool_calls: []). 해석할 게 없으면 null
+³ **사용자의 말이 가리킨 책**(번호, 그 책만 가리키는 제목 낱말, 지금 보고 있는 책)이 정해질 때만 isbns를 채운다. 어느 책인지 하나로 정해지지 않으면 `null`이고 되묻는 답변을 준다. 되묻기 위해 선택지의 제목을 조회(`book.offer`)했어도 그 책들은 싣지 않는다. 그래서 되물음의 `tool_calls`는 `[]`이거나 조회 기록만 있다
+
+⁴ 지금 만드는 버튼은 `confirm_selection`과 `navigate`뿐이다. `confirm_reference`, `dismiss`, `reselect`, `open_book`은 5장 action 표에 정의만 있고 만들지 않는다(후속). 버튼 없이 되물으면 `buttons`는 `[]`다. `confirm_selection`을 눌렀을 때 누가 담는지는 5장 action 표 아래 설명을 따른다
 
 **grounding 규칙**
 
@@ -949,7 +1054,7 @@ centroid = 가중평균( liked 책 문서벡터
 
 **시키는 대로 실행, 담기**
 
-담기 전에 장바구니를 조회한다. 담기가 “요청 수량으로 바꾸기”라서 이미 담긴 책을 담으면 수량이 줄 수 있기 때문이다.
+담기 전에 BE에서 장바구니를 다시 읽는다. 담기가 “요청 수량으로 바꾸기”라서 이미 담긴 책을 담으면 수량이 줄 수 있기 때문이다. 이 조회는 `cart.add` 안에서 하며 `tool_calls`에 따로 남지 않는다.
 
 ```json
 {
@@ -958,22 +1063,6 @@ centroid = 가중평균( liked 책 문서벡터
     "reply": "《달러구트 꿈 백화점》을 장바구니에 담았어요.",
     "not_shopping": false,
     "tool_calls": [
-      {
-        "name": "cart.view",
-        "arguments": {},
-        "result": {
-          "items": [
-            {
-              "isbn": "9788900000035",
-              "title": "아무튼, 산",
-              "price": 12800,
-              "quantity": 1,
-              "available": true
-            }
-          ]
-        },
-        "grounded": true
-      },
       {
         "name": "cart.add",
         "arguments": { "isbn": "9788900000011", "quantity": 1 },
@@ -1003,18 +1092,13 @@ centroid = 가중평균( liked 책 문서벡터
     "not_shopping": false,
     "tool_calls": [
       {
-        "name": "cart.view",
-        "arguments": {},
+        "name": "cart.add",
+        "arguments": { "isbn": "9788900000011", "quantity": 1 },
         "result": {
-          "items": [
-            {
-              "isbn": "9788900000011",
-              "title": "달러구트 꿈 백화점",
-              "price": 13500,
-              "quantity": 2,
-              "available": true
-            }
-          ]
+          "ok": false,
+          "error": "ALREADY_IN_CART",
+          "title": "달러구트 꿈 백화점",
+          "quantity": 2
         },
         "grounded": true
       }
@@ -1031,9 +1115,54 @@ centroid = 가중평균( liked 책 문서벡터
 }
 ```
 
-**되물음 (confidence 낮음, tool 미실행)**
+**장바구니 보기, 합계**
 
-confidence는 두지 않는다. 카드와 장바구니 목록에 대조해도 어느 책인지 하나로 정해지지 않을 때가 이 경우다.
+`cart.view` 결과의 `total`은 AI 서버가 구매할 수 있는 책의 가격 × 수량을 더해 넣는다. BE는 합계를 주지 않는다. 합계는 이 값으로만 말한다.
+
+```json
+{
+  "message": "agent_success",
+  "data": {
+    "reply": "《달러구트 꿈 백화점》 2권과 《아무튼, 산》 1권이 담겨 있고, 합계는 39,800원이에요.",
+    "not_shopping": false,
+    "tool_calls": [
+      {
+        "name": "cart.view",
+        "arguments": {},
+        "result": {
+          "items": [
+            {
+              "isbn": "9788900000011",
+              "title": "달러구트 꿈 백화점",
+              "price": 13500,
+              "quantity": 2,
+              "available": true
+            },
+            {
+              "isbn": "9788900000035",
+              "title": "아무튼, 산",
+              "price": 12800,
+              "quantity": 1,
+              "available": true
+            }
+          ],
+          "total": 39800
+        },
+        "grounded": true
+      }
+    ],
+    "resolved_reference": null,
+    "selection": null,
+    "buttons": [
+      { "label": "장바구니 보기", "action": "navigate", "target": "CART-001" }
+    ]
+  }
+}
+```
+
+**되물음 (tool 미실행)**
+
+카드와 장바구니 목록에 대조해도 어느 책인지 하나로 정해지지 않을 때가 이 경우다. 사용자의 말에 책을 가리키는 번호, 제목, “전부” 같은 근거가 없는데 LLM이 책을 골라 쓰기 tool을 부르려 하면 코드가 `REFERENCE_NOT_STATED`로 막고 되묻게 한다. 되묻기 버튼(`네, 1번`, `아니요`)은 아직 만들지 않는다.
 
 ```json
 {
@@ -1042,15 +1171,9 @@ confidence는 두지 않는다. 카드와 장바구니 목록에 대조해도 �
     "reply": "어떤 책 말씀이실까요? 방금 추천한 1번 《달러구트 꿈 백화점》이 맞을까요?",
     "not_shopping": false,
     "tool_calls": [],
-    "resolved_reference": {
-      "ref": "그 책",
-      "isbns": []
-    },
+    "resolved_reference": null,
     "selection": null,
-    "buttons": [
-      { "label": "네, 1번", "action": "confirm_reference", "isbn": "9788900000011" },
-      { "label": "아니요", "action": "dismiss" }
-    ]
+    "buttons": []
   }
 }
 ```
@@ -1069,8 +1192,8 @@ confidence는 두지 않는다. 카드와 장바구니 목록에 대조해도 �
         "arguments": { "isbns": ["9788900000011", "9788900000035"] },
         "result": {
           "offers": [
-            { "isbn": "9788900000011", "price": 13500, "in_stock": true },
-            { "isbn": "9788900000035", "price": 12800, "in_stock": true }
+            { "isbn": "9788900000011", "title": "달러구트 꿈 백화점", "price": 13500, "in_stock": true },
+            { "isbn": "9788900000035", "title": "아무튼, 산", "price": 12800, "in_stock": true }
           ]
         },
         "grounded": true
@@ -1078,7 +1201,11 @@ confidence는 두지 않는다. 카드와 장바구니 목록에 대조해도 �
       {
         "name": "book.compare",
         "arguments": { "isbns": ["9788900000011", "9788900000035"] },
-        "result": { "basis": "description" },
+        "result": {
+          "ok": true,
+          "basis": "description",
+          "summary": "1번은 문장이 담백하고 3번은 화제작이지만 호흡이 무겁다."
+        },
         "grounded": true
       }
     ],
@@ -1087,9 +1214,7 @@ confidence는 두지 않는다. 카드와 장바구니 목록에 대조해도 �
       "isbns": ["9788900000011", "9788900000035"]
     },
     "selection": null,
-    "buttons": [
-      { "label": "1번 담기", "action": "confirm_reference", "isbn": "9788900000011" }
-    ]
+    "buttons": []
   }
 }
 ```
@@ -1144,27 +1269,47 @@ BE tool은 쓰지 않고, AI 서버 안의 `ui.guide`로 이동 버튼만 붙인
 | 200 | agent_success | 정상 처리. 되물음, 범위 밖 안내, 쇼핑 요청 아님, tool 실행 실패도 200으로 반환하고 tool_calls에 결과를 기록한다 |
 | 401 | unauthorized | 서비스 토큰 없음, 불일치 |
 | 409 | idempotency_conflict | 같은 idempotency_key에 다른 본문. 재시도 중단 |
+| 413 | payload_too_large | 요청 본문이 64KB 초과 |
 | 422 | grounding_failed | 답변의 핵심 주장을 tool 결과로 뒷받침하지 못해 답변을 통째로 버림. 클라이언트는 일반 안내로 대체 |
-| 429 | rate_limited | 호출 한도 초과. Retry-After 헤더(대기 초)를 함께 보냄 |
-| 503 | upstream_unavailable | 업스트림 LLM 장애, 한도. Retry-After 뒤 재시도 |
+| 429 | rate_limited | (V1 미구현) 호출 한도를 두지 않아 지금은 나가지 않는다. 한도를 두게 되면 Retry-After 헤더(대기 초)를 함께 보낸다 |
+| 503 | upstream_unavailable | 업스트림 LLM 장애, 한도, BE 장바구니 미연결(11단계 전 개발 중). Retry-After 뒤 재시도 |
 | 504 | generation_timeout | 생성 30초 초과 |
 | 400, 500 | invalid_request, internal_server_error | 형식 오류, 서버 내부 오류 |
 
 **내부 처리 (요청 1건에 끝남)**
 
-1. **입력 검사와 중복 확인**. 형식을 검사하고, 같은 `idempotency_key`가 이미 처리됐으면 저장된 결과를 돌려준다. 쇼핑 요청이 아니면 `not_shopping: true`로 끝낸다.
-2. **tool 반복**. 상한 3번. LLM이 tool을 고르고, 코드가 검사한 뒤 실행하고, 결과를 LLM에 돌려준다. 한 요청에 tool을 여러 개 부를 수 있다. 책은 LLM이 “카드 1번”, “장바구니 2번째”, “지금 보고 있는 책”으로만 가리키고, ISBN과 `user_id`는 코드가 채운다. 가격, 재고, 합계, 책 조합도 코드가 정한다.
+1. **입력 검사와 중복 확인**. 형식을 검사하고, 같은 `idempotency_key`가 이미 처리됐으면 저장된 결과를 돌려준다. 쇼핑 요청이 아니면 `not_shopping: true`로 끝낸다. ③ 입구로 들어온 요청이면 같은 요청을 ③이 이어 받는다.
+2. **tool 반복**. 시작할 때 로그인한 요청이면 코드가 장바구니를 먼저 읽어, 번호 붙은 목록(번호, 제목, 수량)을 LLM에게 보여 준다. 가격과 합계는 보여 주지 않아서 `cart.view` 결과로만 말한다. 읽지 못하면 건너뛴다. 상한 3번. LLM이 tool을 고르고, 코드가 검사한 뒤 실행하고, 결과를 LLM에 돌려준다. 한 요청에 tool을 여러 개 부를 수 있다. 책은 LLM이 “카드 1번”, “장바구니 2번째”, “지금 보고 있는 책”으로만 가리키고, ISBN과 `user_id`는 코드가 채운다. 가격, 재고, 합계, 책 조합도 코드가 정한다.
 3. **마무리**. 위 “grounding 규칙”으로 답변의 숫자와 행동 서술을 검사하고, `resolved_reference`, `selection`, `buttons`를 조립한다.
 
 코드가 강제하는 규칙:
 
 - 직전 카드와 장바구니 목록에 없는 책은 실행하지 않는다.
 - 어느 책인지 하나로 정해지지 않으면 실행하지 않고 되묻는다.
+- 사용자의 말에 그 책을 가리키는 근거가 없으면 쓰기 tool을 실행하지 않는다. 근거는 그 책의 번호(“1번”, “두 번째”, “맨 위”), 같은 목록의 다른 책 제목에 없는 제목 낱말(맞춘 글자가 세 글자 이상), 전체 표현(“전부”), 목록에 책이 하나뿐인 경우다. 지금 보고 있는 책(`focused_isbn`)은 검사하지 않는다. 막히면 tool 결과에 `REFERENCE_NOT_STATED`가 남는다.
 - `logged_in`이 false면 쓰기 tool을 막는다.
 - 사용자가 책과 행동을 직접 말하면 바로 실행한다. 골라 담기처럼 AI가 고른 조합은 실행하지 않고 `[담기]` 버튼으로 확인받는다.
-- 담기 전에 `cart.view`로 조회한다. 이미 담긴 책이면 담지 않고 알려 준다.
+- 담기 전에 `cart.add` 안에서 BE의 장바구니를 다시 읽는다. 이미 담긴 책이면 담지 않고 `ALREADY_IN_CART`로 알려 준다.
 - 골라 담기는 직전 카드 안에서만 고른다. 권수 조합을 전부 따져 `book.offer`의 가격 합계가 예산 이하이고 `match_score` 합이 최대인 조합을 `selection.pick`이 고른다.
 - 비교에 쓴 소개글은 tool을 고르는 LLM에게 다시 보여 주지 않는다. 소개글 속 지시문이 tool 선택에 섞이지 않게 하기 위해서다.
+
+**tool 결과의 오류 코드**
+
+AI 서버가 BE를 부르기 전에 막거나 하지 않기로 한 것은 `tool_calls[].result`에 `{ "ok": false, "error": "코드" }`로 남는다. 응답은 200이다. BE가 거절한 것(재고 부족, 30권 한도 등)은 BE의 오류 이름을 그대로 `error`에 적는다.
+
+| 코드 | 뜻 |
+|---|---|
+| LOGIN_REQUIRED | 로그인하지 않았는데 쓰기 tool이다 |
+| TOOL_NOT_ALLOWED | 이번 요청의 `allow_tools`에 없는 tool이다 |
+| INVALID_ARGUMENTS | 모르는 칸, 자료형 오류 |
+| BOOK_NOT_IN_CARDS, BOOK_NOT_IN_CART | 직전 카드나 장바구니에 없는 번호다 |
+| CART_NOT_LOADED | 장바구니 목록이 없는데 장바구니 번호를 썼다 |
+| NO_FOCUSED_BOOK | 지금 보고 있는 책이 없다 |
+| AMBIGUOUS_BOOK | 같은 번호가 둘이라 하나로 정해지지 않는다 |
+| REFERENCE_NOT_STATED | 사용자의 말에 그 책을 가리키는 근거가 없다 |
+| ALREADY_IN_CART | 이미 담긴 책이라 담지 않았다 |
+| CONFIRMATION_REQUIRED | AI가 고른 책이라 확인 버튼 없이는 담지 않는다 |
+| NO_COMBINATION | 예산 안에서 그 권수를 채울 조합이 없다 |
 
 </details>
 
@@ -1214,6 +1359,49 @@ BE tool은 쓰지 않고, AI 서버 안의 `ui.guide`로 이동 버튼만 붙인
 | 503 | (envelope 없이) 본문 {“status”:“down”} | 일부 장애를 넘어 서버 전체가 응답 불능일 때 |
 
 인증 예외 엔드포인트라 401은 발생하지 않으며, 요청 본문이 없어 400도 해당 없다.
+
+</details>
+
+<details><summary>⑨ <code>POST /recommendations/feed/refresh</code> — 대체 자리 다시 뽑기 (V2)</summary>
+
+**밤 배치**가 ⑥을 다 부른 뒤 **맨 끝에** 부른다. ⑥을 부를 사용자가 없는 밤에도 부른다.
+
+⑥은 추천 목록을 뽑을 때 관심사마다 조회 시간을 제한하고, 제한을 넘긴 관심사의 자리는 그 분류의 인기 책으로 임시로 채운다. 바뀐 것이 없는 사용자에게는 ⑥이 다시 불리지 않아 그 자리가 계속 남으므로, 이 호출이 그런 목록의 임시 자리를 다시 뽑는다. 저장해 둔 프로필로 계산해서 요청 본문은 없다.
+
+응답의 `remaining`이 0이 될 때까지 다시 부른다. 서버가 한 번에 20초 안쪽에서 끊어 응답하므로 30초 클라이언트로 부른다. 한 밤에 한 목록은 한 번만 다시 뽑아서, 다시 넘기는 목록이 있어도 끝없이 돌지 않는다.
+
+이 경로는 LLM과 임베딩을 호출하지 않으므로 503, 504가 없다.
+
+**입력**
+
+요청 본문 없음(`{}`도 받는다).
+
+**출력** `200`
+
+```json
+{
+  "message": "refresh_success",
+  "data": {
+    "refreshed": 12,
+    "remaining": 30
+  }
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| refreshed | int | 이번 호출에서 다시 뽑은 목록 수 |
+| remaining | int | 오늘 밤 아직 시도하지 않은 목록 수. 0이면 그만 부른다 |
+
+다시 뽑을 목록이 없으면 `refreshed`와 `remaining`이 모두 0이다.
+
+**에러**
+
+| 상태 | message | 언제 |
+|---|---|---|
+| 401 | unauthorized | 서비스 토큰 없음, 불일치 |
+| 429 | rate_limited | 내지 않는다(호출 한도를 두지 않음) |
+| 500 | internal_server_error | 서버 내부 오류. 그날 밤은 멈추고 다음 밤에 다시 부른다 |
 
 </details>
 
@@ -1285,9 +1473,12 @@ flowchart TB
 | 추천 근거 상세 조회 | 없음. ③ 응답의 cards[].reason_long을 BE가 보관했다가 표시 |
 | 대화 세션 종료 후 야간 배치 (V2) | /preferences/extractions |
 | 온보딩 완료, 취향 기억 변경(개인화 추천에 동의한 사용자만) | /preferences/profile |
+| 밤 배치 맨 끝, ⑥을 다 부른 뒤 (V2) | /recommendations/feed/refresh |
 | 구매, 담기, 리뷰 발생 | 호출 없음. 복제로 넘어오고, AI가 채점할 때 복제 테이블에서 읽는다. 반영까지 최대 5분 |
 | 판매, 평점 집계 갱신 | 호출 없음. BE가 원본을 갱신하고 복제가 도착하면 다음 요청부터 반영. 허용 지연 24시간 |
-| 대화에서 쇼핑 의도 감지 (V2) | /agent/act |
+| 챗봇에서 사용자가 쇼핑 요청을 함 (V2) | /recommendations/chat, 쇼핑 칸 포함. AI 서버가 ⑦로 넘기고 응답의 `route`가 `shop` ⁹ |
+
+⁹ BE는 `/agent/act`를 직접 부르지 않는다(③ 입력 ⁸).
 
 판매량 순위 목록은 개인화가 없어 이 API의 범위가 아니다. 도서 상세의 추천 이유는 추천을 거친 조회에만 존재한다 — 챗봇 카드로 들어온 경우에만 긴 이유가 있고, 검색이나 카테고리로 바로 들어온 상세 페이지에는 이유 영역이 없다.
 
@@ -1305,7 +1496,7 @@ flowchart TB
 - **상관관계 ID**: 모든 요청에 X-Request-Id 헤더 권장. 없으면 서버가 만들어 응답 헤더로 돌려줌. 로그를 이어 붙이는 키
 - **상한 초과 처리**: 개수 상한 초과는 N개만 쓰고 200(recent_turns 20, conversation 40, memories 500은 최근 것, liked_book_ids 50은 앞의 것). 항목 길이, 형식, 값 범위 위반과 size 50 초과는 400. 예외. context_cards(최대 10)는 초과 시 400(앞을 자르면 “N번” 해석이 어긋남)
 - **점수 필드**: 사용자에게 보이는 점수는 match_score(0–100)뿐. 인기 집계(판매, 평점, 리뷰 수)는 순위 계산 입력이며 그대로 노출하지 않는다
-- **점수 필드 예외**: 응답에 싣되 사용자에게 노출하지 않는 0–1 값: 취향 추출 confidence, 지시 표현 해석 confidence, 표지 후보 confidence
+- **점수 필드 예외**: 응답에 싣되 사용자에게 노출하지 않는 0–1 값: 표지 후보 confidence
 - **축소 알림 헤더**: X-Degraded. 축소 응답일 때만 붙는다. keyword-only(검색), rule-only(피드). BE가 FE로 전달. **값은 이 둘뿐이며 복제 지연·행 부재에는 붙이지 않는다**
 - **축소 알림, 본문**: 챗봇 추천은 헤더 대신 본문 data.degraded로 알림. V2에서 스트리밍하면 200 헤더가 먼저 나가 헤더를 못 붙이기 때문
 - **재시도 헤더**: Retry-After. 429, 503에만
@@ -1321,7 +1512,7 @@ flowchart TB
 - **이력 이중 반영 방지**: 프로필 행의 computed_at(내부 값)은 그 프로필이 **반영한 이력 행들의 최대 시각**이다. ③·④는 그보다 나중의 이력만 채점 때 더한다. 계산 시각이 아니라 반영 시각이라 복제가 늦게 도착한 이력도 빠지지 않는다. 반영한 이력이 없으면 이력 전부를 더한다
 - **이미지 입력**: BE가 올리고 Pre-signed URL을 image_ref로 넘김. AI 서버는 이미지를 저장하지 않음
 - **멱등 키(idempotency key)**: /preferences/profile, /agent/act의 idempotency_key는 같은 규약. 같은 키, 같은 본문 = 저장 결과 200, 같은 키, 다른 본문 = 409. 키, 결과 매핑은 최소 24시간 보관
-- **멱등 키, tool 파생**: 한 턴에 쓰기 tool이 여러 번 나갈 수 있어, BE로 넘기는 tool별 키는 {idempotency_key}:{tool_call_index}(그 턴에서의 순번, 0부터). 턴 전체 재시도는 본문 키로, 개별 쓰기 중복은 파생 키로 막음
+- **멱등 키, tool 파생**: ⑦은 BE로 파생 키를 보내지 않는다. 담기와 수량 변경이 요청 수량으로 바꾸는 방식이라 같은 호출을 두 번 보내도 결과가 같다. 턴 전체 재시도는 본문 키로 막는다(쓰기가 성공한 턴의 응답을 저장해 두었다가, 같은 키로 오면 LLM과 BE를 부르지 않고 그 응답을 돌려준다)
 - **커서, 방식**: 목록 API(검색, 피드)는 커서 방식. 요청 cursor / 응답 next_cursor, 마지막은 null
 - **커서, 불투명**: 서버가 서명한 문자열이라 클라이언트는 해석, 생성하지 않음. 위조, 변조는 410
 - **커서, 전달**: ① 검색은 요청 본문, ④ 피드는 쿼리 파라미터로 싣는다. 쿼리로 보낼 때는 `+`·`/`·`=`가 섞이므로 URL 인코딩한다
@@ -1343,6 +1534,10 @@ flowchart TB
 | open_book | 쇼핑 에이전트 | isbn | 해당 도서 조회 |
 | navigate | 챗봇, 쇼핑 에이전트 | target | 호출자가 정의한 이동 대상 식별자 |
 | dismiss | 챗봇, 쇼핑 에이전트 |  | 제안 닫기 |
+
+⑦이 지금 만드는 버튼은 `confirm_selection`과 `navigate`뿐이다. ⑦의 `confirm_reference`, `reselect`, `open_book`, `dismiss`는 정의만 있고 만들지 않는다(후속).
+
+`confirm_selection`을 눌렀을 때 담는 쪽은 호출자다. FE가 버튼의 `isbns`로 BE 장바구니 API를 직접 호출하고, AI 서버는 버튼 클릭을 받지 않는다(⑦ 요청에 버튼 칸이 없다). 서버가 대화를 저장하지 않아 멈췄다가 이어 갈 수 없고, 사용자 본인 세션으로 BE가 확인하는 클릭이 가장 확실한 승인이기 때문이다. AI가 고른 조합은 이 버튼을 누르기 전에는 장바구니에 담지 않는다. FE, BE 확인 대기: 어려우면 알려 주면 다른 방식(⑦ 요청에 확인 칸을 더하고 AI가 LLM 없이 담는 방식)을 검토한다.
 
 ### 공통 에러 (모든 엔드포인트)
 

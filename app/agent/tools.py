@@ -1,10 +1,13 @@
-"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358, #363). BE 에 시키는 5개와 AI 서버 안의 3개가 있다.
+"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358, #363). 장바구니·가격을 다루는 5개와 그 밖의 3개가 있다.
+
+장바구니·가격 도구는 요청으로 받은 장바구니의 복사본을 읽고 바꾼다. BE 는 부르지 않고, 바뀐 것은 턴이 끝날 때
+actions 로 돌려준다(#489).
 
 AI 서버 안의 도구는 화면 안내(ui.guide), 조합 고르기(selection.pick, 코드 계산), 비교(book.compare,
 소개글을 읽는 별도 호출)다.
 
 순서는 항상 같다: 실행해도 되는지 검사(guard) → 인자 확인 → 책을 ISBN 으로 확정(reference) → 쓰기면 사용자의 말이
-그 책의 근거인지 확인(evidence) → BE 호출.
+그 책의 근거인지 확인(evidence, 막히면 모델이 짚어 물을 책을 결과에 적는다) → 장바구니 호출.
 어느 단계에서 막히든 예외를 던지지 않고 결과에 `{"ok": false, "error": "<코드>"}` 로 남긴다(명세 ⑦).
 결과에는 코드 이름만 적고 사용자 발화는 싣지 않는다.
 
@@ -37,8 +40,11 @@ class ViewArgs(_Args):
 
 class AddArgs(_Args):
     book: BookRef = Field(description="담을 책")
-    # 범위(1~500)와 재고는 여기서 막지 않는다. BE 가 판단하고, 거절하면 그 이유를 결과에 적는다.
-    quantity: int = Field(default=1, description="담을 수량. 말하지 않았으면 1")
+    # 범위(1~500)와 재고는 여기서 막지 않는다. 장바구니가 판단하고, 거절하면 그 이유를 결과에 적는다.
+    # 말하지 않았으면 비운다. 이미 담긴 책은 수량을 말했을 때만 그 수량으로 바꾼다(tools._add)
+    quantity: int | None = Field(
+        default=None, description="사용자가 말한 수량. 말하지 않았으면 넣지 않는다(1권)"
+    )
 
 
 class UpdateArgs(_Args):
@@ -121,13 +127,27 @@ def _fail(code: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error": code, **extra}
 
 
-async def _write(arguments: dict[str, Any], call: Awaitable[None]) -> _Done:
+async def _write(
+    ctx: TurnContext, arguments: dict[str, Any], call: Awaitable[None]
+) -> _Done:
     """쓰기 호출을 하고 BE 가 거절하면 이유를 결과에 적는다. 장바구니는 바뀌지 않았다."""
     try:
         await call
     except CommerceError as e:
         return arguments, _fail(e.code.value)
+    ctx.changed_cart = True
     return arguments, {"ok": True}
+
+
+def _separate(ctx: TurnContext) -> dict[str, Any] | None:
+    """이번 턴에 조합을 골랐으면 장바구니를 바꾸지 않는 결과, 아니면 None.
+
+    고른 조합(selection)은 확인 버튼으로 담고, 장바구니 변경(actions)은 이미 했다고 말한 것이라 BE 가 한 응답에
+    같이 받지 않는다(#489). 고른 책 자체를 담으려 하면 그 전에 CONFIRMATION_REQUIRED 로 막힌다.
+    """
+    if ctx.picked:
+        return _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
+    return None
 
 
 def _total(lines: list[CartLine]) -> int:
@@ -142,44 +162,98 @@ def _total(lines: list[CartLine]) -> int:
     )
 
 
+def view_result(lines: list[CartLine]) -> dict[str, Any]:
+    """cart.view 의 결과. 한 묶음을 되돌린 뒤 그 묶음의 조회 결과를 다시 만들 때도 쓴다(graph)."""
+    return {"items": [_line(line) for line in lines], "total": _total(lines)}
+
+
 async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _Done:
     lines = await gateway.get_cart(ctx.user_id)
     # 번호를 푸는 목록(cart_snapshot)은 여기서 바꾸지 않는다. 같은 묶음의 "장바구니 n번째"는 LLM 이 이 결과를
     # 받기 전에 본 목록으로 풀어야 한다. 묶음이 끝나면 부르는 쪽이 ctx.commit_cart_view() 로 올린다.
     ctx.pending_cart = lines
-    return {}, {"items": [_line(line) for line in lines], "total": _total(lines)}
+    return {}, view_result(lines)
+
+
+async def _unstated(
+    ctx: TurnContext, gateway: CommerceGateway, ref: BookRef, isbn: str
+) -> dict[str, Any] | None:
+    """사용자의 말에 이 책의 근거가 없으면 막는 결과, 있으면 None.
+
+    최근 대화가 있으면 대화에서 이야기한 책을 알아보는 데 카드 제목이 다 필요하다. 막기 전에만 한 번 읽어 다시
+    본다(#418). 그래도 막히면 모델이 고른 책을 결과에 적어, 모델이 그 책 한 권을 짚어 "담을까요?"라고 묻게
+    한다. 다시 말해 달라고 하면 사용자가 같은 말을 되풀이해야 한다(#416 측정). 사용자가 "네"라고 하면 직전에
+    한 권을 짚어 제안한 말에 대한 동의라서 근거가 된다(_from_history).
+    """
+    if evidence.has_evidence(ctx, ref, isbn):
+        return None
+    if evidence.needs_card_titles(ctx):
+        missing = [card.isbn for card in ctx.cards if card.isbn not in ctx.titles]
+        offers = await gateway.get_offers(list(dict.fromkeys(missing)))
+        ctx.titles.update({offer.isbn: offer.title for offer in offers})
+        if evidence.has_evidence(ctx, ref, isbn):
+            return None
+    return _fail(ToolErrorCode.REFERENCE_NOT_STATED.value, book=_named(ctx, ref, isbn))
+
+
+def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
+    """모델이 사용자에게 짚어 물을 수 있는 이름. ISBN 은 말하지 않는다. 제목을 모르면 번호만 쓴다."""
+    if ref.source == "cart":
+        where = f"장바구니 {ref.n}번째"
+        title = next(
+            (line.title for line in ctx.cart_snapshot or [] if line.isbn == isbn), None
+        )
+    else:
+        where = f"카드 {ref.n}번"
+        title = ctx.titles.get(isbn)
+    return f"{where} 《{title}》" if title else where
 
 
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
-    arguments = {"isbn": isbn, "quantity": args.quantity}
+    quantity = 1 if args.quantity is None else args.quantity
+    arguments = {"isbn": isbn, "quantity": quantity}
     # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
-    # 프롬프트로 부탁하는 것으로는 못 막아서 BE 를 부르기 전에 코드가 막는다
+    # 프롬프트로 부탁하는 것으로는 못 막아서 장바구니를 바꾸기 전에 코드가 막는다
     if isbn in ctx.picked:
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
-    evidence.require(ctx, args.book, isbn)
-    # BE 의 담기는 "요청 수량으로 바꾸기"라서 이미 2권 담긴 책을 담으면 1권이 된다. LLM 이 조회를
-    # 건너뛰고 바로 담으라고 해도 막히도록, 담기 전에 BE 에서 다시 읽어 확인한다.
+    if (separate := _separate(ctx)) is not None:
+        return arguments, separate
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return arguments, blocked
+    # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
+    # 담기 전에 장바구니를 다시 읽어 확인한다. 사용자가 수량을 말했으면("2권 담아줘") 그 수량으로 바꾼다(#489).
+    # LLM 이 수량을 채웠어도 사용자의 말에 수량이 없으면 말하지 않은 것으로 본다
     cart = await gateway.get_cart(ctx.user_id)
     existing = next((line for line in cart if line.isbn == isbn), None)
-    if existing is not None:
+    stated = args.quantity is not None and evidence.states_quantity(ctx)
+    if existing is not None and (not stated or quantity == existing.quantity):
         failure = _fail(
             ToolErrorCode.ALREADY_IN_CART.value,
             title=existing.title,
             quantity=existing.quantity,
         )
         return arguments, failure
-    return await _write(arguments, gateway.add_item(ctx.user_id, isbn, args.quantity))
+    arguments, result = await _write(
+        ctx, arguments, gateway.add_item(ctx.user_id, isbn, quantity)
+    )
+    if existing is not None and result.get("ok") is True:
+        # 결과 문장이 "담았어요"가 아니라 "수량을 N권으로 바꿨어요"가 되게 알린다
+        result = {**result, "replaced": True, "previous": existing.quantity}
+    return arguments, result
 
 
 async def _update(
     ctx: TurnContext, gateway: CommerceGateway, args: UpdateArgs
 ) -> _Done:
     isbn = resolve(ctx, args.book)
-    evidence.require(ctx, args.book, isbn)
     arguments = {"isbn": isbn, "quantity": args.quantity}
+    if (separate := _separate(ctx)) is not None:
+        return arguments, separate
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return arguments, blocked
     return await _write(
-        arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
+        ctx, arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
     )
 
 
@@ -187,8 +261,11 @@ async def _remove(
     ctx: TurnContext, gateway: CommerceGateway, args: RemoveArgs
 ) -> _Done:
     isbn = resolve(ctx, args.book)
-    evidence.require(ctx, args.book, isbn)
-    return await _write({"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
+    if (separate := _separate(ctx)) is not None:
+        return {"isbn": isbn}, separate
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+        return {"isbn": isbn}, blocked
+    return await _write(ctx, {"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
 
 
 async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) -> _Done:
@@ -217,8 +294,13 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
     가격과 재고는 LLM 이 읽어 오게 하지 않고 여기서 BE 에서 직접 읽는다(LLM 이 틀린 값을 넘길 수 없다).
     이미 장바구니에 있는 책은 고르지 않는다. 확인 버튼으로 담을 때 BE 의 담기가 "요청 수량으로 바꾸기"라서
     2권 담긴 책이 1권이 될 수 있기 때문이다.
+
+    이번 턴에 장바구니를 이미 바꿨으면 고르지 않는다. 고른 조합(selection)과 장바구니 변경(actions)을 BE 가 한
+    응답에 같이 받지 않는다(#489).
     """
     arguments = {"budget_total": args.budget_total, "count": args.count}
+    if ctx.changed_cart:
+        return arguments, _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
     ordered = sorted(ctx.cards, key=lambda card: card.rank)
     in_cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
     offers = {o.isbn: o for o in await gateway.get_offers([c.isbn for c in ordered])}

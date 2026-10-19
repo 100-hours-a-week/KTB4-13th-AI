@@ -10,7 +10,9 @@ LLM 이 고른 책(card n / cart n)마다 아래 중 하나가 사용자의 말�
 - 목록 전체를 가리키는 말: "전부", "모두", "다 빼줘", 목록 크기와 같은 "둘 다". 수를 말했는데 목록보다 적으면
   ("그 두 권 다 빼줘") 전체가 아니라 일부라서 근거가 아니다
 - 목록에 책이 하나뿐이라 가리킬 수 있는 책이 그것뿐인 경우
-지금 보고 있는 책(focused)은 화면 상태가 지목한 것이라 짐작이 아니므로 검사하지 않는다.
+- 최근 대화에서 이야기한 책이 그 한 권뿐인 경우(#418, 아래 _from_topic)
+지금 보고 있는 책(focused)은 화면 상태가 지목한 것이라 짐작이 아니므로 검사하지 않는다. 최근 대화에서 이야기한
+책이 한 권뿐인 것도 같은 이치로, 말투가 아니라 대화 상태가 정한 책이다.
 
 완벽한 말 풀이가 아니다. 근거를 못 찾으면 사용자에게 되묻는 쪽으로 틀리도록 만들었다(잘못 막으면 한 번
 더 묻고, 잘못 통과시키면 장바구니가 엉뚱하게 바뀐다).
@@ -23,6 +25,7 @@ LLM 이 고른 책(card n / cart n)마다 아래 중 하나가 사용자의 말�
 import re
 
 from app.agent.errors import RefError, ToolErrorCode
+from app.agent.prompts import PROMPT_TURNS
 from app.agent.reference import BookRef, TurnContext
 
 # 말로 쓴 순서. "두 번째", "첫 번째". "두 번 담아줘"(횟수)와 헷갈리지 않게 "번째"/"째"가 있어야 순서로 본다
@@ -205,7 +208,11 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     if _list_size(ctx, ref) <= 1:
         return True
 
-    return _explicit(ctx, ref, isbn, message) or _from_history(ctx, isbn, message)
+    return (
+        _explicit(ctx, ref, isbn, message)
+        or _from_history(ctx, isbn, message)
+        or _from_topic(ctx, isbn, message)
+    )
 
 
 def _says_title(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool:
@@ -243,8 +250,11 @@ _DEICTIC = re.compile(
 )
 _PROPOSAL = re.compile(r"\?|까요|드릴까")
 # "그거 말고 다른 책"의 "그거"는 그 책을 원하지 않는다는 말이다. "네? 아니요"의 "네"도 동의가 아니다.
-# 부정이 있으면 지시어도 동의도 근거로 보지 않는다
-_NEGATION = re.compile(r"말고|아니|싫|그만|하지\s*마")
+# 부정이 있으면 지시어도 동의도 근거로 보지 않는다.
+# "안 담을래", "담지 마", "넣지 않을래"처럼 행동을 거절하는 꼴도 부정이다(#419 리뷰). 대화의 책(_from_topic)은 행동
+# 낱말만 있으면 들어오므로, 이 꼴을 보지 않으면 거절이 그 책에 대한 근거가 된다. "나쁘지 않네 담아줘"도 막히지만
+# 막히면 그 책을 짚어 되묻는 쪽이라 잘못 담는 것보다 낫다
+_NEGATION = re.compile(r"말고|아니|싫|그만|지\s*(?:마|말)|않|안\s*(?:담|넣|빼|사|살)")
 # 동의 뒤에 길게 이어지는 말은 다른 요청이 섞인 것이라 동의로만 보지 않는다
 _MAX_AGREEMENT_CHARS = 30
 _CARD_MENTION = re.compile(r"카드\s*(\d+)\s*번")
@@ -303,6 +313,82 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
         and len(message) <= _MAX_AGREEMENT_CHARS
         and bool(_PROPOSAL.search(last))
     )
+
+
+# --- 대화에서 이야기한 책 (#418) ---
+# 실제 모델로 재 보니 "1번 얼마야?" → "15,000원이에요" → "응 담아"나, 한 책의 가격·재고·난이도를 차례로 물은 뒤의
+# "그럼 두 권 담아줘"가 막혔다. 모델은 맞는 책을 골랐다. 이번 말이 책을 다시 말하지 않아도 앞 대화가 그 책 한 권만
+# 이야기했다면 어느 책인지는 정해져 있다. 모델에게 보여 준 대화(최근 PROMPT_TURNS 줄)만 본다.
+# 이번 말이 다른 책을 찾으면("다른 거", "딴 책") 이야기한 책을 뜻하지 않는다.
+#
+# 이번 말이 행동을 스스로 말할 때만 쓴다. "네", "어?"처럼 행동을 말하지 않은 짧은 말은 직전에 한 권을 짚어
+# 제안한 말에 대한 동의일 때만 근거다(_from_history, #397). 알림("담았어요") 뒤의 "네"는 시킨 것이 아니다.
+# 행동 낱말은 장바구니를 바꾸는 것뿐이다(담기, 빼기, 수량 바꾸기). "주세요"는 "알려 주세요"와 겹쳐 넣지 않았다.
+# 책을 다른 말로 꾸며 가리키면("예쁜 거", "제일 싼 거") 대화의 책이 아니라 그 말이 가리키는 책이다. 코드는 그
+# 뜻을 확인할 수 없으므로 이 길로 풀지 않는다(모델이 그 책을 짚어 묻는다). "그거", "이 책" 같은 지시어는 꾸밈이 아니다.
+_OTHER_BOOK = re.compile(r"다른|딴\s*(?:거|것|책)")
+_CART_ACTION = re.compile(
+    r"담|넣|추가|빼|뺄|지워|지우|삭제|제거|취소|바꿔|바꾸|늘려|늘리|줄여|줄이|변경"
+)
+_DESCRIBED = re.compile(r"[가-힣]\s*(?:거|것|책)")
+
+
+def needs_card_titles(ctx: TurnContext) -> bool:
+    """대화에서 이야기한 책을 알아보려면 카드 제목이 다 있어야 한다. 에이전트는 책을 제목으로 말하기도 해서,
+    제목을 모르는 카드가 있으면 그 카드를 이야기한 줄을 못 알아보고 한 권만 이야기했다고 잘못 볼 수 있다."""
+    return bool(ctx.turns) and any(card.isbn not in ctx.titles for card in ctx.cards)
+
+
+def _turn_books(ctx: TurnContext, text: str) -> set[str]:
+    """대화 한 줄이 짚은 책들. 번호와 제목 전체에 더해, 그 책만 가리키는 제목 낱말도 센다("쿠버네티스 책은?").
+    많이 세면 한 권으로 정해지지 않을 뿐이라(되묻는 쪽) 넉넉히 센다."""
+    named = _books_named(ctx, text)
+    spoken = normalize(text)
+    named |= {
+        card.isbn
+        for card in ctx.cards
+        if _says_title(ctx, BookRef(source="card", n=card.rank), card.isbn, spoken)
+    }
+    named |= {
+        line.isbn
+        for position, line in enumerate(ctx.cart_snapshot or [], start=1)
+        if _says_title(ctx, BookRef(source="cart", n=position), line.isbn, spoken)
+    }
+    return named
+
+
+def _from_topic(ctx: TurnContext, isbn: str, message: str) -> bool:
+    """최근 대화에서 사용자와 에이전트가 짚은 책이 이 책 한 권뿐이고, 이번 말이 그 책에 할 행동을 말하며 다른 책을
+    가리키지 않는가."""
+    if not ctx.turns or needs_card_titles(ctx):
+        return False
+    if not _CART_ACTION.search(message) or _DESCRIBED.search(
+        _DEICTIC.sub(" ", message)
+    ):
+        return False
+    named: set[str] = set()
+    for turn in ctx.turns[-PROMPT_TURNS:]:
+        named |= _turn_books(ctx, turn.text)
+    if named != {isbn}:
+        return False
+    return not (
+        _NEGATION.search(message)
+        or _OTHER_BOOK.search(message)
+        or _names_other_book(ctx, isbn, message)
+    )
+
+
+# --- 수량 (#489) ---
+# 담기는 "요청 수량으로 바꾸기"라서, 이미 담긴 책에 사용자가 말하지 않은 수량을 LLM 이 채우면 3권이 1권으로 준다.
+# 그래서 사용자의 이번 말에 수량("2권", "두 개")이 있을 때만 그 수량으로 바꾼다. 단위가 없는 숫자("1번")는 번호다.
+_QUANTITY = re.compile(
+    r"(?:\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:권|개|부)"
+)
+
+
+def states_quantity(ctx: TurnContext) -> bool:
+    """사용자의 이번 말이 수량을 말했는가. 말을 모르면(message 가 None) 말하지 않은 것으로 본다."""
+    return ctx.message is not None and bool(_QUANTITY.search(normalize(ctx.message)))
 
 
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:

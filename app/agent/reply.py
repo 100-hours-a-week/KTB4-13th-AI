@@ -23,6 +23,7 @@ from app.agent.errors import ToolErrorCode
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.schemas import (
+    Action,
     AgentActData,
     Button,
     ResolvedReference,
@@ -122,6 +123,9 @@ def _facts(run: AgentRun) -> _Facts:
     for index, call in enumerate(calls):
         if call.name in guard.WRITE_TOOLS and call.result.get("ok") is True:
             succeeded.add(call.name)
+            # 이미 담긴 책에 수량을 말해 담으면 수량을 바꾼 것이다(#489). "바꿨어요"도 사실이다
+            if call.result.get("replaced") is True:
+                succeeded.add(ToolName.CART_UPDATE)
         if call.name == ToolName.CART_VIEW and "items" in call.result:
             view_index = total_index = index
             allowed.add(call.result["total"])
@@ -232,8 +236,11 @@ def _particle(word: str, with_batchim: str, without_batchim: str) -> str:
 # BE 가 거절한 이유(CommerceErrorCode)와 이미 담긴 책을 담지 않은 것. 이 코드들이 결과에 있으면 BE 까지
 # 갔던 호출이다. 그 앞에서 막힌 것(책을 못 가리킴, 인자 오류 등)은 LLM 이 되묻거나 설명한다.
 _REACHED_BE = frozenset(
-    {code.value for code in CommerceErrorCode} | {ToolErrorCode.ALREADY_IN_CART.value}
+    {code.value for code in CommerceErrorCode}
+    | {ToolErrorCode.ALREADY_IN_CART.value, ToolErrorCode.BATCH_ROLLED_BACK.value}
 )
+# 한 번에 시킨 쓰기 중 하나가 걸려서 함께 되돌린 것(#488, #489). 걸린 쪽의 이유는 그 호출의 문장이 말한다
+_TOGETHER = "함께 부탁하신 것 중 하나가 안 돼서"
 LOGIN_REPLY = "로그인이 필요해요. 로그인한 뒤에 다시 말씀해 주세요."
 
 
@@ -259,10 +266,14 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
     count = quantity if isinstance(quantity, int) else None
 
     if name == ToolName.CART_ADD:
+        if result.get("ok") is True and result.get("replaced") is True:
+            return f"{shown}의 수량을 {count}권으로 바꿨어요."
         if result.get("ok") is True:
             if count is not None and count > 1:
                 return f"{shown} {count}권을 장바구니에 담았어요."
             return f"{shown}{eul} 장바구니에 담았어요."
+        if error == ToolErrorCode.BATCH_ROLLED_BACK.value:
+            return f"{_TOGETHER} {shown}도 담지 않았어요."
         if error == ToolErrorCode.ALREADY_IN_CART.value:
             have = result.get("quantity")
             has = f" {have}권" if isinstance(have, int) else ""
@@ -280,6 +291,8 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
     if name == ToolName.CART_UPDATE:
         if result.get("ok") is True and count is not None:
             return f"{shown}의 수량을 {count}권으로 바꿨어요."
+        if error == ToolErrorCode.BATCH_ROLLED_BACK.value:
+            return f"{_TOGETHER} {shown}의 수량도 바꾸지 않았어요."
         if error == CommerceErrorCode.INSUFFICIENT_PRODUCT_STOCK.value:
             return f"재고가 부족해서 {shown}의 수량을 바꾸지 못했어요."
         if error == CommerceErrorCode.INVALID_CART_ITEM_QUANTITY.value:
@@ -291,6 +304,8 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
     # CART_REMOVE
     if result.get("ok") is True:
         return f"{shown}{eul} 장바구니에서 뺐어요."
+    if error == ToolErrorCode.BATCH_ROLLED_BACK.value:
+        return f"{_TOGETHER} {shown}도 빼지 않았어요."
     if error == CommerceErrorCode.CART_ITEM_NOT_FOUND.value:
         return f"{shown}{eun} 장바구니에 없어요."
     return f"{shown}{eul} 빼지 못했어요."
@@ -354,6 +369,9 @@ def _resolved(run: AgentRun) -> ResolvedReference | None:
     """실행한 도구가 풀어 낸 책. 코드가 채운 ISBN 만 쓴다."""
     isbns: list[str] = []
     for call in run.tool_calls:
+        # 근거 검사에 막힌 쓰기의 책은 모델이 고른 책이다. 사용자가 정한 책이 아니다(#418)
+        if call.result.get("error") == ToolErrorCode.REFERENCE_NOT_STATED.value:
+            continue
         if "isbn" in call.arguments:
             found = [call.arguments["isbn"]]
         elif "isbns" in call.arguments:
@@ -500,6 +518,9 @@ def finish(run: AgentRun) -> Finished:
     data = AgentActData(
         reply=reply,
         not_shopping=False,
+        actions=[
+            Action(op=a.op, isbn=a.isbn, quantity=a.quantity) for a in run.actions
+        ],
         tool_calls=calls,
         resolved_reference=_resolved(run),
         selection=_selection(calls),

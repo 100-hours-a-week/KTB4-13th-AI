@@ -43,14 +43,14 @@ EXPECTED_COUNTS = {
     "followup": 8,
     "tone": 4,
     "info": 4,
-    "describe": 1,
+    "describe": 2,
     "short": 3,
     "long": 2,
-    "multiturn": 2,
+    "multiturn": 3,
     "delegate": 2,
 }
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
-# 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다.
+# 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다. 근거 검사를 고치기 전에 쓴 사례(#418)를 더했다.
 HELDOUT_COUNTS = {
     "ask": 6,
     "update": 6,
@@ -60,9 +60,9 @@ HELDOUT_COUNTS = {
     "tone": 2,
     "info": 1,
     "describe": 1,
-    "short": 1,
+    "short": 2,
     "long": 1,
-    "multiturn": 1,
+    "multiturn": 3,
     "notshop": 1,
     "outofscope": 1,
     "delivery": 1,
@@ -204,7 +204,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 64, "guard": 26}
+    assert dict(by_group) == {"typical": 66, "guard": 26}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
@@ -339,6 +339,11 @@ def test_숫자와_말_조건은_형식이_맞다(case) -> None:
     )
     for text in expect.get("forbidden_text", []):
         assert isinstance(text, str) and text
+    for text in expect.get("required_text", []):
+        assert isinstance(text, str) and text
+    assert not set(expect.get("required_text", [])) & set(
+        expect.get("forbidden_text", [])
+    )
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_IDS)

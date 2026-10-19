@@ -13,12 +13,13 @@ import httpx
 import openai
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, ToolMessage
 
+from app.agent.descriptors import llm_name
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.schemas import AgentActData, ToolName
 from app.core.config import get_settings
-from app.gateway import commerce_provider
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError
 from app.main import app
@@ -35,13 +36,6 @@ EXAMPLES = json.loads(
 INVALID = {"message": "invalid_request", "data": None}
 UID = 123  # 명세 예시 요청의 user_id
 A, B, C = "9788900000011", "9788900000028", "9788900000035"  # 예시 요청의 카드 1~3번
-
-
-@pytest.fixture(autouse=True)
-def _fresh_dev_commerce():
-    commerce_provider.reset_dev_commerce()
-    yield
-    commerce_provider.reset_dev_commerce()
 
 
 def _request(**overrides) -> dict:
@@ -93,6 +87,7 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다(monk
     assert set(body["data"]) == {
         "reply",
         "not_shopping",
+        "actions",
         "tool_calls",
         "resolved_reference",
         "selection",
@@ -313,17 +308,15 @@ def test_소개글이_없는_책이_있으면_비교하지_못했다고_알린�
     assert data["tool_calls"][0]["result"] == {"ok": False, "error": "NO_DESCRIPTION"}
 
 
-def test_요청의_사용자_번호가_장바구니에_전달된다(monkeypatch) -> None:
-    seen: list[int] = []
+def test_요청이_그대로_장바구니를_만드는_곳에_전달된다(monkeypatch) -> None:
+    seen: list = []
     model = ScriptedModel([ai_text(NOT_SHOPPING)])
     monkeypatch.setattr(agent, "agent_model", lambda: model)
-    monkeypatch.setattr(
-        agent, "get_commerce", lambda user_id: seen.append(user_id) or _fake()
-    )
+    monkeypatch.setattr(agent, "get_commerce", lambda req: seen.append(req) or _fake())
 
     client.post(URL, json=_request(user_id=777))
 
-    assert seen == [777]
+    assert [req.user_id for req in seen] == [777]
 
 
 def test_도구_없이_되묻는_답도_200이다(monkeypatch) -> None:
@@ -454,47 +447,96 @@ def test_맞는_합계는_그대로_나간다(monkeypatch) -> None:
 # --- 오류 응답 ---
 
 
-def test_장바구니가_연결되지_않았으면_503이다() -> None:
-    # COMMERCE_MOCK 이 꺼져 있고(기본) 진짜 BE 호출은 아직 없다. 가짜로 답하지 않는다
-    res = client.post(URL, json=_request())
-
-    assert res.status_code == 503
-    assert res.json() == {"message": "upstream_unavailable", "data": None}
-    assert res.headers["retry-after"] == "5"
-
-
-def test_장바구니가_연결되지_않았으면_LLM도_부르지_않는다(monkeypatch) -> None:
-    called: list[str] = []
-    monkeypatch.setattr(agent, "agent_model", lambda: called.append("model"))
-
-    client.post(URL, json=_request())
-
-    assert called == []
+def _line(isbn: str, title: str, price: int, quantity: int) -> dict:
+    return {
+        "isbn": isbn,
+        "title": title,
+        "price": price,
+        "quantity": quantity,
+        "available": True,
+    }
 
 
-def test_COMMERCE_MOCK을_켜면_개발용_가짜_장바구니로_돌고_요청_사이에_이어진다(
+def _offer(isbn: str, title: str, price: int) -> dict:
+    return {"isbn": isbn, "title": title, "price": price, "in_stock": True}
+
+
+OFFERS = [_offer(A, "책1", 15000), _offer(B, "책2", 22000), _offer(C, "책3", 28000)]
+
+
+def test_BE를_부르지_않고_요청의_장바구니로_돌아_바꿀_것을_돌려준다(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("COMMERCE_MOCK", "true")
-    get_settings.cache_clear()
-    dev_isbn = "9788900001001"  # 개발용 서가의 첫 책
-    cards = [{"isbn": dev_isbn, "rank": 1, "match_score": 90}]
-    first = ScriptedModel(
-        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")]
+    # A안(#489): 장바구니를 바꾸는 것은 BE 다. COMMERCE_MOCK 이 꺼진 운영에서도 503 이 아니다
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1), "quantity": 2})),
+            ai_text("담았어요."),
+        ]
     )
-    monkeypatch.setattr(agent, "agent_model", lambda: first)
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
 
-    res1 = client.post(URL, json=_request(context_cards=cards, focused_isbn=None))
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번 2권 담아줘", cart=[_line(C, "책3", 28000, 1)], offers=OFFERS
+        ),
+    )
 
-    assert res1.json()["data"]["tool_calls"][0]["result"] == {"ok": True}
-    second = ScriptedModel(
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 2}]
+    assert data["tool_calls"][0]["result"] == {"ok": True}
+
+
+def test_장바구니에_이미_있는_책은_요청의_장바구니로_알아본다(monkeypatch) -> None:
+    model = ScriptedModel(
         [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("이미 담겨 있어요.")]
     )
-    monkeypatch.setattr(agent, "agent_model", lambda: second)
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
 
-    res2 = client.post(URL, json=_request(context_cards=cards, focused_isbn=None))
+    res = client.post(
+        URL, json=_request(cart=[_line(A, "책1", 15000, 3)], offers=OFFERS)
+    )
 
-    assert res2.json()["data"]["tool_calls"][0]["result"]["error"] == "ALREADY_IN_CART"
+    data = res.json()["data"]
+    assert data["tool_calls"][0]["result"]["error"] == "ALREADY_IN_CART"
+    assert data["actions"] == []
+
+
+def test_빼기는_remove로_돌려주고_수량_칸이_없다(monkeypatch) -> None:
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_REMOVE, {"book": {"source": "cart", "n": 1}})),
+            ai_text("뺐어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="장바구니 1번째 빼줘",
+            cart=[_line(B, "책2", 22000, 1), _line(C, "책3", 28000, 1)],
+            offers=OFFERS,
+        ),
+    )
+
+    assert res.json()["data"]["actions"] == [{"op": "remove", "isbn": B}]
+
+
+def test_가격을_모르는_카드_책은_담지_못한다(monkeypatch) -> None:
+    # BE 가 offers 에 싣지 않은 책(모르는 상품)은 AI 가 후보로 내지 않는다
+    model = ScriptedModel(
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담지 못했어요.")]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(URL, json=_request(offers=[]))
+
+    data = res.json()["data"]
+    assert data["tool_calls"][0]["result"]["error"] == "PRODUCT_NOT_FOUND"
+    assert data["actions"] == []
 
 
 def test_LLM_장애는_503과_Retry_After다(monkeypatch) -> None:
@@ -952,6 +994,7 @@ def test_같은_네라도_최근_대화가_없으면_담지_않는다(monkeypatc
     assert data["tool_calls"][0]["result"] == {
         "ok": False,
         "error": "REFERENCE_NOT_STATED",
+        "book": "카드 1번",
     }
     assert data["resolved_reference"] is None
     assert fake.cart_state(UID) == {}
@@ -1014,3 +1057,318 @@ def test_최근_대화의_role이_틀리면_400이다(monkeypatch) -> None:
 
     assert res.status_code == 400
     assert res.json() == INVALID
+
+
+# --- 한 번에 시킨 쓰기는 모두 되거나 모두 안 된다 (#488, #489) ---
+
+
+def _full_cart(n: int) -> list[dict]:
+    return [_line(f"97911{i:08d}", f"꽂힌 책{i}", 10000, 1) for i in range(n)]
+
+
+def test_한_번에_시킨_담기_중_하나가_한도에_걸리면_모두_되돌린다(monkeypatch) -> None:
+    # 29권에 두 권을 담으면 두 번째가 30권 한도에 걸린다. 첫 권만 담기면 사용자가 모르는 사이 일부만 바뀐다
+    model = ScriptedModel(
+        [
+            ai_calls(
+                (ToolName.CART_ADD, {"book": card(1)}),
+                (ToolName.CART_ADD, {"book": card(2)}),
+            ),
+            ai_text("둘 다 담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(
+        URL,
+        json=_request(message="1번이랑 2번 담아줘", cart=_full_cart(29), offers=OFFERS),
+    )
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["actions"] == []
+    assert [c["result"].get("error") for c in data["tool_calls"]] == [
+        "BATCH_ROLLED_BACK",
+        "CART_ITEM_LIMIT_EXCEEDED",
+    ]
+    assert "가득 차서" in data["reply"]
+    assert "함께 부탁하신 것 중 하나가 안 돼서" in data["reply"]
+    assert "둘 다 담았어요" not in data["reply"]
+
+
+def test_빼고_담기를_같이_시키면_뺀_자리에_담긴다(monkeypatch) -> None:
+    model = ScriptedModel(
+        [
+            ai_calls(
+                (ToolName.CART_REMOVE, {"book": {"source": "cart", "n": 1}}),
+                (ToolName.CART_ADD, {"book": card(1)}),
+            ),
+            ai_text("바꿔 담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = _full_cart(30)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="장바구니 1번째 빼고 1번 담아줘", cart=cart, offers=OFFERS
+        ),
+    )
+
+    assert res.json()["data"]["actions"] == [
+        {"op": "remove", "isbn": cart[0]["isbn"]},
+        {"op": "set", "isbn": A, "quantity": 1},
+    ]
+
+
+def test_따로_시킨_쓰기는_되돌리지_않고_한_것과_못_한_것을_말한다(monkeypatch) -> None:
+    # 되돌리는 것은 LLM 이 한 번에 시킨 묶음 안에서만이다. 앞 묶음에서 한 일은 이미 결과를 말했다
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+            ai_calls((ToolName.CART_ADD, {"book": card(2)})),
+            ai_text("결과예요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(
+        URL,
+        json=_request(message="1번이랑 2번 담아줘", cart=_full_cart(29), offers=OFFERS),
+    )
+
+    data = res.json()["data"]
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 1}]
+    assert "가득 차서" in data["reply"]
+
+
+def test_책을_가리키는_근거가_없어_막힌_쓰기는_되돌릴_이유가_아니다(
+    monkeypatch,
+) -> None:
+    # "1번 담아줘"에 LLM 이 3번까지 담으려 하면 3번만 막고(되묻기) 1번은 담는다
+    model = ScriptedModel(
+        [
+            ai_calls(
+                (ToolName.CART_ADD, {"book": card(1)}),
+                (ToolName.CART_ADD, {"book": card(3)}),
+            ),
+            ai_text("담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(URL, json=_request(message="1번 담아줘", offers=OFFERS))
+
+    data = res.json()["data"]
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 1}]
+    assert data["tool_calls"][1]["result"]["error"] == "REFERENCE_NOT_STATED"
+
+
+def _add_two_then_view() -> AIMessage:
+    return ai_calls(
+        (ToolName.CART_ADD, {"book": card(1)}),
+        (ToolName.CART_ADD, {"book": card(2)}),
+        (ToolName.CART_VIEW, {}),
+    )
+
+
+def _seen_view(model: ScriptedModel) -> dict:
+    """두 번째 LLM 호출이 받은 장바구니 조회 결과."""
+    (view,) = [
+        m
+        for m in model.calls[1]
+        if isinstance(m, ToolMessage) and m.name == llm_name(ToolName.CART_VIEW)
+    ]
+    return json.loads(view.content)
+
+
+def test_되돌린_묶음의_장바구니_조회는_되돌린_장바구니를_보여_준다(monkeypatch) -> None:
+    # 29권에 1번·2번을 담고 장바구니를 보면 2번이 30권 한도에 걸려 1번도 되돌린다. 조회 결과가 되돌리기 전
+    # 그대로면 "1번도 담지 않았어요" 옆에 1번이 담긴 목록과 틀린 합계가 LLM 에게 간다(#493 리뷰)
+    model = ScriptedModel([_add_two_then_view(), ai_text("결과예요.")])
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = _full_cart(29)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번이랑 2번 담고 장바구니 보여줘", cart=cart, offers=OFFERS
+        ),
+    )
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["actions"] == []
+    view = data["tool_calls"][2]["result"]
+    assert [item["isbn"] for item in view["items"]] == [line["isbn"] for line in cart]
+    assert view["total"] == 290000
+    seen = _seen_view(model)
+    assert len(seen["items"]) == 29
+    assert "책1" not in [item["title"] for item in seen["items"]]
+    assert seen["total"] == 290000
+
+
+def test_되돌린_묶음에서_본_장바구니가_다음_번호의_기준이다(monkeypatch) -> None:
+    # 다음 묶음의 "장바구니 1번째"는 되돌린 장바구니의 1번째다. 되돌리기 전 목록이면 1번(맨 위에 담겼던 책)을
+    # 빼려다 장바구니에 없다고 실패한다
+    model = ScriptedModel(
+        [
+            _add_two_then_view(),
+            ai_calls((ToolName.CART_REMOVE, {"book": {"source": "cart", "n": 1}})),
+            ai_text("결과예요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = _full_cart(29)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번이랑 2번 담고 장바구니 보여줘. 장바구니 1번째는 빼줘",
+            cart=cart,
+            offers=OFFERS,
+        ),
+    )
+
+    data = res.json()["data"]
+    assert data["tool_calls"][3]["result"] == {"ok": True}
+    assert data["actions"] == [{"op": "remove", "isbn": cart[0]["isbn"]}]
+
+
+# --- 장바구니를 바꾼 턴과 골라 담기는 섞지 않는다 ---
+# BE(스택 6f98aae)는 selection 과 actions 가 같이 오면 응답 전체를 거절한다. 골라 담기는 확인 버튼으로 담고,
+# actions 는 이미 했다고 말한 것이라 둘을 한 응답에 싣지 않는다. 먼저 한 쪽을 하고 뒤에 온 쪽을 막는다.
+
+REMOVE_FIRST_LINE = {"book": {"source": "cart", "n": 1}}
+MIXED_MESSAGE = "장바구니 1번째 빼고 4만원 안에서 2권 골라줘"
+
+
+def _shop(monkeypatch, replies, message=MIXED_MESSAGE, cart=None) -> dict:
+    model = ScriptedModel(replies)
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    cart = [_line(C, "책3", 28000, 1)] if cart is None else cart
+    res = client.post(URL, json=_request(message=message, cart=cart, offers=OFFERS))
+    assert res.status_code == 200
+    return res.json()["data"]
+
+
+def _errors(data: dict) -> list:
+    return [(c["name"], c["result"].get("error")) for c in data["tool_calls"]]
+
+
+def test_장바구니를_바꾼_묶음의_골라_담기는_막는다(monkeypatch) -> None:
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+                (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            ),
+            ai_text("골라 드리는 것은 따로 말씀해 주세요."),
+        ],
+    )
+
+    assert _errors(data) == [
+        ("cart.remove", None),
+        ("selection.pick", "SEPARATE_TURN_REQUIRED"),
+    ]
+    assert data["actions"] == [{"op": "remove", "isbn": C}]
+    assert data["selection"] is None
+    assert "confirm_selection" not in [b["action"] for b in data["buttons"]]
+
+
+def test_골라_담기를_한_묶음의_장바구니_쓰기는_막는다(monkeypatch) -> None:
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+                (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+            ),
+            ai_text("1번과 2번을 골랐어요. 담을까요?"),
+        ],
+    )
+
+    assert _errors(data) == [
+        ("selection.pick", None),
+        ("cart.remove", "SEPARATE_TURN_REQUIRED"),
+    ]
+    assert data["actions"] == []
+    assert [book["isbn"] for book in data["selection"]["chosen"]] == [A, B]
+    assert [b["action"] for b in data["buttons"]] == ["confirm_selection"]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "blocked"),
+    [
+        pytest.param(
+            (ToolName.CART_REMOVE, REMOVE_FIRST_LINE),
+            (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            "selection.pick",
+            id="뺀_다음_묶음에서_고르기",
+        ),
+        pytest.param(
+            (ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}),
+            (ToolName.CART_ADD, {"book": card(3)}),
+            "cart.add",
+            id="고른_다음_묶음에서_고르지_않은_책_담기",
+        ),
+    ],
+)
+def test_다음_묶음이라도_한_턴에_둘을_섞지_않는다(
+    monkeypatch, first, second, blocked
+) -> None:
+    data = _shop(
+        monkeypatch,
+        [ai_calls(first), ai_calls(second), ai_text("결과예요.")],
+        message="장바구니 1번째 빼고 4만원 안에서 2권 골라주고 3번도 담아줘",
+        cart=[_line(C, "책3", 28000, 1)] if blocked == "selection.pick" else [],
+    )
+
+    assert _errors(data)[1] == (blocked, "SEPARATE_TURN_REQUIRED")
+    assert not (data["selection"] is not None and data["actions"])
+
+
+def test_되돌린_쓰기는_장바구니를_바꾼_것이_아니라_골라_담기를_막지_않는다(
+    monkeypatch,
+) -> None:
+    # 29권에 두 권을 담다 한도에 걸려 모두 되돌렸으면 바꾼 것이 없다. 다음 묶음의 골라 담기는 된다
+    data = _shop(
+        monkeypatch,
+        [
+            ai_calls(
+                (ToolName.CART_ADD, {"book": card(1)}),
+                (ToolName.CART_ADD, {"book": card(2)}),
+            ),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("결과예요."),
+        ],
+        message="1번이랑 2번 담아줘. 안 되면 4만원 안에서 2권 골라줘",
+        cart=_full_cart(29),
+    )
+
+    assert data["actions"] == []
+    assert data["selection"] is not None
+    assert _errors(data)[2] == ("selection.pick", None)
+
+
+def test_담긴_책에_수량을_말해_담으면_수량을_바꿨다고_말한다(monkeypatch) -> None:
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1), "quantity": 2})),
+            ai_text("2권 담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+
+    res = client.post(
+        URL,
+        json=_request(
+            message="1번 2권 담아줘", cart=[_line(A, "책1", 15000, 3)], offers=OFFERS
+        ),
+    )
+
+    data = res.json()["data"]
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 2}]
+    assert data["reply"] == "《책1》의 수량을 2권으로 바꿨어요."
