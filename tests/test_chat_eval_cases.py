@@ -25,6 +25,7 @@ CARD_KEYS = {
     "title_none_exact",
     "author_none",
     "distinct_titles",
+    "distinct_works",
     "max_cards",
     "price_max",
     "year_from",
