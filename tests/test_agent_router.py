@@ -1205,7 +1205,7 @@ def test_되돌린_묶음의_장바구니_조회는_되돌린_장바구니를_�
     assert view["total"] == 290000
     seen = _seen_view(model)
     assert len(seen["items"]) == 29
-    assert "책1" not in json.dumps(seen, ensure_ascii=False)
+    assert "책1" not in [item["title"] for item in seen["items"]]
     assert seen["total"] == 290000
 
 

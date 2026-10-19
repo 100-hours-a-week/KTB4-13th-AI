@@ -28,7 +28,7 @@ from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import AgentActRequest, ToolCall, ToolName
-from app.agent.tools import execute
+from app.agent.tools import execute, view_result
 from app.agent.view import llm_view
 from app.gateway.commerce import (
     CommerceError,
@@ -119,12 +119,32 @@ def _roll_back(calls: list[ToolCall]) -> bool:
     )
 
 
-def _rolled_back(call: ToolCall) -> ToolCall:
-    """되돌린 쓰기의 기록. 규칙에 걸린 호출은 그 이유를 그대로 둔다."""
-    if call.name in guard.WRITE_TOOLS and call.result.get("ok") is True:
-        failed = {"ok": False, "error": ToolErrorCode.BATCH_ROLLED_BACK.value}
-        return call.model_copy(update={"result": failed})
-    return call
+async def _rolled_back(
+    ctx: TurnContext, gateway: CommerceGateway, calls: list[ToolCall]
+) -> list[ToolCall]:
+    """되돌린 묶음의 기록. 성공한 쓰기는 되돌렸다고 적고, 규칙에 걸린 호출은 그 이유를 그대로 둔다.
+
+    같은 묶음의 장바구니 조회는 되돌리기 전 장바구니를 읽었다. 되돌린 장바구니로 다시 만든다. 그대로 두면
+    "담지 않았어요" 옆에 그 책이 담긴 목록과 합계가 LLM 에게 가고, 다음 묶음의 "장바구니 n번째"도 그 목록으로
+    푼다(pending_cart, #493 리뷰).
+    """
+    viewed = any(c.name == ToolName.CART_VIEW and "items" in c.result for c in calls)
+    lines = await gateway.get_cart(ctx.user_id) if viewed else None
+    if lines is not None:
+        ctx.pending_cart = lines
+    failed = {"ok": False, "error": ToolErrorCode.BATCH_ROLLED_BACK.value}
+    out: list[ToolCall] = []
+    for call in calls:
+        if call.name in guard.WRITE_TOOLS and call.result.get("ok") is True:
+            call = call.model_copy(update={"result": failed})
+        elif (
+            lines is not None
+            and call.name == ToolName.CART_VIEW
+            and "items" in call.result
+        ):
+            call = call.model_copy(update={"result": view_result(lines)})
+        out.append(call)
+    return out
 
 
 def build_graph(
@@ -212,7 +232,7 @@ def build_graph(
             replies.append(_reply(ctx, call, requested["id"], requested["name"]))
         if point is not None and _roll_back(recorded):
             gateway.restore(point)
-            recorded = [_rolled_back(call) for call in recorded]
+            recorded = await _rolled_back(ctx, gateway, recorded)
             for (at, call_id, call_name), call in zip(slots, recorded, strict=True):
                 replies[at] = _reply(ctx, call, call_id, call_name)
         # JSON 이 깨진 호출. 실행하지 않고 이유만 돌려준다

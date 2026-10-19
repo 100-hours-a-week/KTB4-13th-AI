@@ -148,12 +148,17 @@ def _total(lines: list[CartLine]) -> int:
     )
 
 
+def view_result(lines: list[CartLine]) -> dict[str, Any]:
+    """cart.view 의 결과. 한 묶음을 되돌린 뒤 그 묶음의 조회 결과를 다시 만들 때도 쓴다(graph)."""
+    return {"items": [_line(line) for line in lines], "total": _total(lines)}
+
+
 async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _Done:
     lines = await gateway.get_cart(ctx.user_id)
     # 번호를 푸는 목록(cart_snapshot)은 여기서 바꾸지 않는다. 같은 묶음의 "장바구니 n번째"는 LLM 이 이 결과를
     # 받기 전에 본 목록으로 풀어야 한다. 묶음이 끝나면 부르는 쪽이 ctx.commit_cart_view() 로 올린다.
     ctx.pending_cart = lines
-    return {}, {"items": [_line(line) for line in lines], "total": _total(lines)}
+    return {}, view_result(lines)
 
 
 async def _unstated(
