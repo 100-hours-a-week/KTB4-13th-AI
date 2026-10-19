@@ -77,6 +77,22 @@
 - **2점 책, 0점 책**: 위 10권 중 그 점수의 책 수(평균)
 - **점수 없는 책**: 라벨에 없는 책은 0점으로 계산하고 따로 셉니다. 검색 코드를 바꿔 처음 보는 책이 많이 나오면 그 책만 더 매깁니다
 
+### 점수를 매기는 법
+
+점수는 사람이나 작업하는 세션이 직접 매깁니다. 서버의 LLM이나 팀 API 키는 쓰지 않습니다. 중간 파일은 `evals/search/results/label/`에 생기고 저장소에는 올리지 않습니다.
+
+```
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool --code main=. --code ef200=../ef200
+uv run python -m evals.search.label apply --judge "누가 매겼는지, 날짜"
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label review
+uv run python -m evals.search.label apply-review --by "누가 확인했는지, 날짜"
+```
+
+1. `pool`: 견줄 코드(아래 "다른 커밋의 코드로 재기"의 worktree)마다 위 20권을 받아 ISBN으로 합치고, 라벨에 아직 없는 책만 검색어마다 섞어 `candidates.md`에 씁니다. 책에는 번호(c01…)만 붙이고, 어느 코드의 몇 등이었는지는 `sources.json`에만 적습니다. 채점이 끝날 때까지 이 파일은 열지 않습니다
+2. `candidates.md`를 읽고 `grades.json`의 빈칸에 점수를 적은 뒤 `apply`로 `labels.json`에 넣습니다. 이미 있는 라벨은 덮지 않습니다
+3. `review`: 라벨의 10%를 시드로 골라 사람이 확인할 표(`review.md`)를 냅니다. 고친 점수를 `review.json`의 `fixed`에 적고 `apply-review`로 넣으면 본 수와 고친 수가 `labels.json`에 남습니다
+4. 검색 코드를 바꿔 점수 없는 책이 많이 나오면 1과 2만 다시 합니다. 이미 매긴 책은 다시 매기지 않습니다
+
 ## 돌리는 법
 
 평가 DB에 붙여 돌립니다. 평가 DB를 만드는 법은 `evals/feed/README.md`의 "평가용 책 표"에 있습니다. 서버를 따로 띄우지 않습니다. LLM은 부르지 않고 검색어 벡터만 로컬 임베딩 모델로 만듭니다. 이 PC에서는 묶음 전부에 1분 안팎 걸렸습니다.
