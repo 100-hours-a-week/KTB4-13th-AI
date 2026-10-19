@@ -558,7 +558,14 @@ class _FakeBuild:
         self.calls: list[dict] = []
 
     async def __call__(
-        self, conn, scores, book_vectors, keyword_vectors, conditions, owned
+        self,
+        conn,
+        scores,
+        book_vectors,
+        keyword_vectors,
+        conditions,
+        owned,
+        book_anchors=None,
     ):
         self.calls.append(
             {
@@ -566,6 +573,7 @@ class _FakeBuild:
                 "keyword_vectors": keyword_vectors,
                 "conditions": conditions,
                 "owned": owned,
+                "book_anchors": book_anchors,
             }
         )
         return self.feeds.pop(0) if self.feeds else Feed([], ())
@@ -704,6 +712,22 @@ def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가�
     assert call["conditions"] == ["300쪽 이하"]
     # 산 책은 빼고, 좋아한다고만 한 책(9100201)은 빼지 않는다
     assert call["owned"] == {9100202}
+
+
+def test_목록_뽑기에_관심사마다_매칭_점수에_쓸_내_책을_넘긴다(interest_feed) -> None:
+    async def check(conn):
+        req = _request(
+            onboarding={"liked_book_ids": [9100201]},
+            history={"purchased_isbns": [_isbn(9100202)]},
+        )
+        await service.rebuild_on(conn, req)
+
+    _run_with_interest_tables(check)
+
+    [call] = interest_feed.calls
+    # 9100201 은 요리 번호(594.5)라 요리의 내 책이다. 9100202 는 한국소설인데 장르를 가를 이름 벡터가 없어
+    # 관심사를 정하지 못한다(#483)
+    assert call["book_anchors"] == {"요리": (9100201,)}
 
 
 def test_기능_플래그가_꺼져_있으면_새_칸을_쓰지_않는다() -> None:

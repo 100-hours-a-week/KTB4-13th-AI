@@ -66,6 +66,9 @@ class TurnContext:
     titles: dict[str, str] = field(default_factory=dict)
     # 이번 턴에 selection.pick 이 고른 책. 사용자가 확인하기 전에는 담지 못한다(tools._add)
     picked: set[str] = field(default_factory=set)
+    # 이번 턴에 성공한 쓰기가 있다(되돌린 것은 빼고, graph 가 묶음마다 다시 정한다). 있으면 골라 담기를 하지
+    # 않는다. 골라 담기(selection)와 장바구니 변경(actions)은 한 응답에 같이 싣지 않는다(tools._pick)
+    changed_cart: bool = False
     # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
     # LLM 이 본 적 없는 목록의 n번째가 실행된다. 묶음이 끝나 결과를 LLM 에게 돌려줄 때 commit_cart_view 로 올린다.
     pending_cart: list[CartLine] | None = None

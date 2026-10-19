@@ -36,6 +36,11 @@ class ToolErrorCode(StrEnum):
     )
     # AI 가 이번 턴에 고른 책이라 사용자 확인 없이 담지 않았다(확인 버튼으로 담는다)
     CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
+    # 한 번에 시킨 쓰기 중 하나가 장바구니 규칙에 걸려서 이것도 되돌렸다(일부만 담기지 않게, #488 #489)
+    BATCH_ROLLED_BACK = "BATCH_ROLLED_BACK"
+    # 이번 턴에 장바구니를 이미 바꿨거나 조합을 이미 골라서 다른 쪽은 하지 않았다. 다음 말로 따로 해야 한다.
+    # 골라 담기는 확인 버튼으로 담고 쓰기는 이미 했다고 말한 것이라 BE 가 한 응답에 같이 받지 않는다(#489)
+    SEPARATE_TURN_REQUIRED = "SEPARATE_TURN_REQUIRED"
     # 예산 안에서 그 권수를 채울 조합이 없다(재고 있는 직전 카드 안에서만 고른다)
     NO_COMBINATION = "NO_COMBINATION"
     # 비교하려는 책에 소개글이 없다

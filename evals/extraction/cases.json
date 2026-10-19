@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "kinds": {
     "request": {"group": "typical", "about": "주제나 분위기를 들어 추천을 부탁한다"},
     "stated": {"group": "typical", "about": "좋아하는 것, 싫어하는 것, 늘 지키는 조건을 직접 말한다"},
@@ -14,7 +14,8 @@
     "overlap": {"group": "guard", "about": "이미 저장된 취향과 겹쳐도 다시 뽑는다"},
     "sensitive": {"group": "guard", "about": "민감한 개인사가 섞여 있다"},
     "assistant": {"group": "guard", "about": "조수의 말만 취향처럼 보인다"},
-    "injection": {"group": "guard", "about": "속이는 입력이 들어 있다"}
+    "injection": {"group": "guard", "about": "속이는 입력이 들어 있다"},
+    "alias": {"group": "guard", "about": "장르를 다른 말로 불러도 그 세부 카테고리를 고른다"}
   },
   "cases": [
     {
@@ -2002,6 +2003,213 @@
         ],
         "must_not_extract": [],
         "forbidden": ["script", "alert", "시스템"]
+      }
+    },
+    {
+      "id": "alias-01",
+      "kind": "alias",
+      "about": "미스터리를 다른 말로 불러도 추리/스릴러를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-01",
+        "conversation": [
+          {"role": "user", "text": "미스터리물 좋아해요. 범인 찾는 게 제일 재밌더라고요"},
+          {"role": "assistant", "text": "미스터리 위주로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "미스터리물을 좋아함", "keywords": ["미스터리"], "stated": true, "strength": 2, "applies_to": ["소설", "추리/스릴러"], "applies_to_must": ["추리/스릴러"], "keyword": ["미스터리", "미스터리물", "미스터리 소설", "추리 소설", "추리"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-02",
+      "kind": "alias",
+      "about": "탐정 소설을 찾으면 추리/스릴러를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-02",
+        "conversation": [
+          {"role": "user", "text": "탐정 나오는 소설 추천해 줄래?"},
+          {"role": "assistant", "text": "탐정이 나오는 소설을 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "탐정이 나오는 소설을 찾음", "keywords": ["탐정"], "stated": false, "strength": 1, "applies_to": ["소설", "추리/스릴러"], "applies_to_must": ["추리/스릴러"], "keyword": ["탐정 소설", "탐정", "탐정물", "추리 소설"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-03",
+      "kind": "alias",
+      "about": "연애 소설을 좋아하면 로맨스를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-03",
+        "conversation": [
+          {"role": "user", "text": "연애 소설 좋아해요"},
+          {"role": "assistant", "text": "연애 소설로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "연애 소설을 좋아함", "keywords": ["연애"], "stated": true, "strength": 2, "applies_to": ["소설", "로맨스"], "applies_to_must": ["로맨스"], "keyword": ["연애 소설", "연애", "로맨스", "로맨스 소설"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-04",
+      "kind": "alias",
+      "about": "로맨스를 싫어해도 로맨스를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-04",
+        "conversation": [
+          {"role": "user", "text": "로맨스는 별로예요. 다른 장르로 보여 주세요"},
+          {"role": "assistant", "text": "로맨스는 빼고 찾아볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "로맨스를 좋아하지 않음", "keywords": ["로맨스"], "stated": true, "strength": -2, "applies_to": ["소설", "로맨스"], "applies_to_must": ["로맨스"], "keyword": ["로맨스", "로맨스 소설"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-05",
+      "kind": "alias",
+      "about": "공상과학을 SF로 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-05",
+        "conversation": [
+          {"role": "user", "text": "공상과학 소설을 좋아해"},
+          {"role": "assistant", "text": "공상과학 소설을 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "공상과학 소설을 좋아함", "keywords": ["공상과학", "SF"], "stated": true, "strength": 2, "applies_to": ["소설", "SF"], "applies_to_must": ["SF"], "keyword": ["공상과학", "공상과학 소설", "SF", "SF 소설"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-06",
+      "kind": "alias",
+      "about": "공포물을 싫어하면 호러를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-06",
+        "conversation": [
+          {"role": "user", "text": "공포물은 무서워서 싫어요"},
+          {"role": "assistant", "text": "공포물은 빼고 찾아볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "공포물을 좋아하지 않음", "keywords": ["공포"], "stated": true, "strength": -2, "applies_to": ["소설", "호러"], "applies_to_must": ["호러"], "keyword": ["공포", "공포물", "공포 소설", "호러"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-07",
+      "kind": "alias",
+      "about": "마법 학교 소설을 찾으면 판타지를 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-07",
+        "conversation": [
+          {"role": "user", "text": "마법 학교가 나오는 소설 추천해 줘"},
+          {"role": "assistant", "text": "마법 학교가 나오는 소설을 골라 봤어요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "마법 학교가 나오는 소설을 찾음", "keywords": ["마법"], "stated": false, "strength": 1, "applies_to": ["소설", "판타지"], "applies_to_must": ["판타지"], "keyword": ["마법 학교", "마법", "마법 학교 소설", "판타지"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-08",
+      "kind": "alias",
+      "about": "범죄 실화는 추리/스릴러로 고르지 않는다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-08",
+        "conversation": [
+          {"role": "user", "text": "범죄 실화 책 좋아해요. 실제 사건 다룬 거요"},
+          {"role": "assistant", "text": "실제 사건을 다룬 책으로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "범죄 실화 책을 좋아함", "keywords": ["범죄"], "stated": true, "strength": 2, "applies_to": ["사회", "사회 이슈", "법"], "keyword": ["범죄 실화", "범죄", "실화 범죄", "범죄 논픽션", "실제 사건"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
+      }
+    },
+    {
+      "id": "alias-09",
+      "kind": "alias",
+      "about": "주식 공부 책을 재테크로 고른다",
+      "request": {
+        "user_id": 9100901,
+        "consented": true,
+        "conversation_id": "eval_alias-09",
+        "conversation": [
+          {"role": "user", "text": "주식 공부하는 책 좋아해요"},
+          {"role": "assistant", "text": "주식 공부 책으로 골라 볼게요."}
+        ],
+        "existing_preferences": []
+      },
+      "expect": {
+        "nothing_found": false,
+        "extractions": [
+          {"type": "topic", "value": "주식 공부하는 책을 좋아함", "keywords": ["주식"], "stated": true, "strength": 2, "applies_to": ["경제경영", "재테크"], "applies_to_must": ["재테크"], "keyword": ["주식", "주식 공부", "주식 투자"]}
+        ],
+        "must_not_extract": [],
+        "forbidden": []
       }
     }
   ]

@@ -14,7 +14,6 @@ from langchain_core.runnables import RunnableLambda
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.schemas import ToolName
-from app.gateway import commerce_provider
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError
 from app.main import app
@@ -51,6 +50,7 @@ CARD_REPLY = (
 )
 CHAT_KEYS = {"reply", "spec", "recognition", "cards", "followup", "buttons", "degraded"}
 SHOP_KEYS = {
+    "actions",
     "reply",
     "not_shopping",
     "tool_calls",
@@ -58,13 +58,6 @@ SHOP_KEYS = {
     "selection",
     "buttons",
 }
-
-
-@pytest.fixture(autouse=True)
-def _fresh_dev_commerce():
-    commerce_provider.reset_dev_commerce()
-    yield
-    commerce_provider.reset_dev_commerce()
 
 
 @pytest.fixture(autouse=True)
@@ -219,6 +212,52 @@ def test_장바구니_말이면_추천을_부르지_않고_쇼핑으로_처리�
     assert set(body["data"]) == SHOP_KEYS | {"route"}
     assert body["data"]["route"] == "shop"
     assert _cart(fake) == [(A, 1)]
+
+
+def test_챗봇_입구로_온_장바구니와_가격으로_돌아_바꿀_것을_돌려준다(
+    monkeypatch,
+) -> None:
+    # A안(#489): BE 는 챗봇 입구에 장바구니와 가격을 실어 보내고, 응답의 actions 를 반영한다
+    _forbid(monkeypatch, chat, "update_spec")
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    offers = [{"isbn": A, "title": "책1", "price": 15000, "in_stock": True}]
+
+    res = client.post(URL, json=_body("1번 담아줘", cart=[], offers=offers))
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["route"] == "shop"
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 1}]
+
+
+def test_BE가_가격을_소수점_붙여_보내도_쇼핑_턴이_400이_아니다(monkeypatch) -> None:
+    # BE 는 가격을 DECIMAL(19,2) 그대로 보낸다("price": 15000.00, BE 스택 6f98aae). 본문 글자 그대로 보낸다
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("담았어요."),
+        ]
+    )
+    monkeypatch.setattr(agent, "agent_model", lambda: model)
+    line = {"isbn": C, "title": "책3", "price": 28000, "quantity": 1, "available": True}
+    offers = [{"isbn": A, "title": "책1", "price": 15000, "in_stock": True}]
+    raw = json.dumps(_body("1번 담아줘", cart=[line], offers=offers))
+    raw = raw.replace('"price": 28000', '"price": 28000.00')
+    raw = raw.replace('"price": 15000', '"price": 15000.00')
+    assert '"price": 28000.00' in raw and '"price": 15000.00' in raw
+
+    res = client.post(URL, content=raw, headers={"Content-Type": "application/json"})
+
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["route"] == "shop"
+    assert data["actions"] == [{"op": "set", "isbn": A, "quantity": 1}]
 
 
 def test_쇼핑_에이전트가_쇼핑이_아니라고_하면_추천으로_되돌리고_route는_recommend다(
