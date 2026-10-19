@@ -88,6 +88,33 @@ def test_골라서_돌리고_표와_사례마다의_결과를_낸다(tmp_path: P
     assert saved["summary"]["kinds"]["title"]["hit_1"] == 1.0
 
 
+def test_서술형은_매긴_점수로_위_10권의_nDCG_를_소분류별로도_낸다(capsys) -> None:
+    labels = json.loads(
+        Path(run.__file__).with_name("labels.json").read_text(encoding="utf-8")
+    )["labels"]
+    isbn = next(i for i, grade in labels["descriptive-01"].items() if grade == 2)
+    book = Book(
+        book_id=1,
+        isbn=isbn,
+        title="책",
+        author=None,
+        category=None,
+        pub_year=None,
+        price=None,
+    )
+
+    def search(requests: list[dict]) -> list[dict]:
+        return [{"status": 200, "degraded": None, "book_ids": [1, 2], "seconds": 0.1}]
+
+    argv = ["--ids", "descriptive-01", "--yes"]
+    assert run.main(argv, search=search, facts=lambda ids: {1: book}) == 0
+
+    printed = capsys.readouterr().out
+    # 2점 책이 1등이고, 책 표에 없는 2번은 점수 없는 책이다. 이상값(위 10권이 모두 2점)으로 나눠 3 / 13.63
+    assert "| descriptive | 1 | 0.220 | 1.0 | 0.0 | 1 |" in printed
+    assert "| ↳ topic | 1 | 0.220 |" in printed
+
+
 def test_yes_가_없으면_부르지_않고_모르는_종류나_코드_폴더면_멈춘다() -> None:
     def search(requests: list[dict]) -> list[dict]:
         raise AssertionError("부르면 안 된다")

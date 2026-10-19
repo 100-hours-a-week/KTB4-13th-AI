@@ -22,6 +22,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.chat import topic_switch
+from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, history, isbn, popularity, responses
@@ -1132,6 +1133,12 @@ MAX_REASON_SHORT_CHARS = 80
 # 않은 "잔잔한 분위기"를 답과 이유에 베꼈다(평가: LLM을 부른 턴의 32%, 설명으로 바꾸면 4%. #410).
 # {intro}·{limit}·{listing}이 채워지는 자리다. JSON 예시의 중괄호는 자리 표시로
 # 오해받지 않게 {{ }}로 겹쳐 쓴다 — 실제로 모델에 가는 글자는 겹치기 전과 같다.
+#
+# 긴 이유(reason_long)는 도서 상세 페이지에 책 소개와 같이 보인다(#503). "긴 이유(2-4문장)"라고만 적었더니 모델이
+# 책 소개를 줄여 쓰거나 그대로 옮겼다 — 평가에서 긴 이유의 절반이 "이 책은 …"·"이 소설은 …"으로 시작했고,
+# 사용자의 상황을 짚은 것은 33%였다. 그래서 요청과 책 소개의 맞는 점을 이으라고 적는다. 그래도 옮긴 글은
+# generate_cards()가 규칙으로 버린다. 책 소개가 없는 책을 따로 짚지는 않는다(#86 — 짚으면 그 책을 안 골라 카드가
+# 0장이 된다).
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "{intro}\n\n"
     "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
@@ -1141,9 +1148,13 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     "reply는 고른 책을 언급하며 사용자에게 말하듯 1-2문장으로 답하라(최대 200자).\n"
+    "reason_long은 도서 상세 페이지에서 책 소개와 함께 보인다. 책 소개 문장을 옮기거나 "
+    "줄여 쓰지 말고, 사용자가 찾은 것(위 조건)과 이 책 소개의 어떤 점이 맞는지 이어서 "
+    "2-4문장으로 써라(최대 300자). 근거는 그 책의 소개에 있는 것만 쓴다.\n"
     '다음 JSON 형식으로만 답하라: {{"reply": "말풍선에 보여줄 1-2문장", '
     '"cards": [{{"book_id": 정수, '
-    '"reason_short": "한 줄 이유(80자 이내)", "reason_long": "긴 이유(2-4문장)", '
+    '"reason_short": "한 줄 이유(80자 이내)", '
+    '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
@@ -1205,6 +1216,26 @@ def _no_description_reason(book: dict) -> str:
     return _NO_DESCRIPTION_REASON_NO_AUTHOR.format(
         title=title[:room].rstrip() + "…", copula="이에요"
     )
+
+
+def _unless_copied(reason_long: Any, book: dict) -> Any:
+    """긴 이유가 책 소개를 옮긴 글이면 None(#503). 상세 페이지에 같은 글이 두 번 보이느니 이유 칸을 숨긴다.
+
+    명세 ③: 긴 이유만 비면 카드는 남기고 reason_long 은 null 이다(BE 는 상세의 이유 영역을 숨긴다). 한 줄 이유로
+    채우지 않는다 — 한 줄 이유는 카드에 이미 보이고, 명세의 2-4문장도 아니다.
+    """
+    if not isinstance(reason_long, str):
+        return reason_long
+    share = copied_share(reason_long, book.get("description"))
+    if share < COPIED_SHARE_MIN:
+        return reason_long
+    # 글은 남기지 않는다(#202처럼 응답 내용을 로그에 남기지 않는다). 몇 번 버렸는지만 센다.
+    logger.info(
+        "긴 이유가 책 소개를 옮겨 비움: book_id=%s 옮긴 몫=%.2f",
+        book.get("book_id"),
+        share,
+    )
+    return None
 
 
 def _parse_match_basis(raw: Any) -> list[dict]:
@@ -1287,7 +1318,7 @@ async def generate_cards(
             continue
         if _has_description(book):
             reason_short = item.get("reason_short")
-            reason_long = item.get("reason_long")
+            reason_long = _unless_copied(item.get("reason_long"), book)
             match_basis = _parse_match_basis(item.get("match_basis"))
         else:
             # 소개글이 없으면 근거로 쓸 글이 없다(#86). 모델이 뭘 썼든 쓰지 않고 규칙으로 쓴다:
