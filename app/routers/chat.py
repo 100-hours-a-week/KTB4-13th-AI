@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
+from app.chat import topic_switch
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
@@ -282,10 +283,16 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
             merged["filters"], filters_patch, "pub_year_from", "pub_year_to"
         )
 
+    # 모델은 책 id 를 모른다. "첫 번째는 별로야"에 제목이나 순번 같은 글자를 넣으면 Spec 검증(정수 목록)이 깨져
+    # LLM 은 멀쩡한데도 degraded 가 된다(#513, 평가 92번). 정수만 받고 나머지는 버린다.
     new_exclude = patch.get("exclude")
     if isinstance(new_exclude, list):
         merged["exclude"] = merged["exclude"] + [
-            book_id for book_id in new_exclude if book_id not in merged["exclude"]
+            book_id
+            for book_id in new_exclude
+            if isinstance(book_id, int)
+            and not isinstance(book_id, bool)
+            and book_id not in merged["exclude"]
         ]
 
     for key in ("intent", "semantic", "anchor_book"):
@@ -301,7 +308,48 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
     ):
         merged["intent"] = "exact"
 
+    # 분위기 요청(semantic)에서는 제목·저자가 검색에 쓰이지 않는다. 앞 턴의 제목이 응답 spec 에 남아 다음 턴으로
+    # 이어지지 않게, 이번 patch 가 고르지 않은 제목·저자는 비운다(#513, 평가 104번 7턴). 출판사는 분위기 요청에도
+    # 걸 수 있어 남긴다. 이번 patch 가 직접 고른 제목은 그대로 둔다(intent 를 직접 준 경우는 LLM 판단을 따른다).
+    if merged["intent"] == "semantic":
+        given = exact_patch if isinstance(exact_patch, dict) else {}
+        for key in ("title", "author"):
+            if key not in given:
+                merged["exact"][key] = None
+
     return merged
+
+
+async def _ask_spec_patch(message: str, spec: Spec, recent_turns: list[Turn]) -> dict:
+    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
+    return await invoke_chain(
+        chain,
+        {
+            "recent_turns": _format_recent_turns(recent_turns),
+            "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
+            "message": message,
+        },
+    )
+
+
+async def _restart_patch(message: str, fresh: Spec, first_patch: dict) -> dict:
+    """새 요청으로 판명된 턴의 patch. 첫 답이 제목·저자를 골랐으면 빈 조건에서 다시 뽑은 답을 쓴다.
+
+    옛 spec 이 프롬프트에 있으면 모델이 "해리포터 가튼 판타지 소설"을 제목 찾기로 봤다(평가 104번 6턴, 8번 중
+    8번). 같은 말을 빈 spec 으로 물으면 분위기 요청으로 봤다(8번 중 0번). 최근 대화도 빼는 것은, 빈 spec 이어도
+    최근 대화에 있는 앞 가격과 앞 주제를 모델이 다시 옮겨 적었기 때문이다. 분위기 요청으로 바꾼 patch 는 이런
+    뒤바뀜이 관찰되지 않아 다시 뽑지 않는다(LLM 호출이 늘어나는 것은 제목을 고른 새 요청뿐이다).
+    다시 뽑다 LLM 이 실패해도 첫 답은 이미 있다. 그 답으로 이어간다(앞 조건은 비운 채).
+    """
+    redo = topic_switch.names_a_book(first_patch)
+    logger.info("주제가 바뀌어 앞 조건을 비운다 (제목·저자 다시 뽑기=%s)", redo)
+    if not redo:
+        return first_patch
+    try:
+        return await _ask_spec_patch(message, fresh, [])
+    except LLMUnavailableError:
+        logger.warning("빈 조건에서 다시 뽑기 실패 — 첫 답으로 이어간다", exc_info=True)
+        return first_patch
 
 
 async def update_spec(
@@ -317,22 +365,22 @@ async def update_spec(
     메시지가 뭘 가리키는지 판단하는 데만 쓴다. 서버는 대화를 저장하지 않으므로
     (명세) 이번 호출이 끝나면 버려지고, 다음 턴에도 호출자가 다시 실어 보낸다.
 
+    patch 가 앞 요청과 상관없는 새 주제를 냈으면 앞 조건을 비운 spec 위에 겹쳐 쓴다(#513). 주제가 바뀌었는지
+    판단은 코드가 한다(app/chat/topic_switch.py). 새 요청인데 첫 답이 제목·저자를 골랐으면 옛 spec 과 앞 대화가
+    판단을 흔든 것일 수 있어, 조건도 앞 대화도 없이 같은 메시지로 한 번 더 뽑는다(_restart_patch).
+
     실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
     돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
     요청의 spec으로 2만 돌려 점수 상위 3권을 낸다" — 호출부(chat())가 이
     신호를 보고 3단계(카드 생성)를 건너뛴다.
     """
-    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
-        patch = await invoke_chain(
-            chain,
-            {
-                "recent_turns": _format_recent_turns(recent_turns),
-                "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
-                "message": message,
-            },
-        )
-        return Spec.model_validate(_merge_spec_patch(spec, patch)), False
+        patch = await _ask_spec_patch(message, spec, recent_turns)
+        base = spec
+        if topic_switch.starts_new_request(spec, patch):
+            base = topic_switch.fresh_spec(spec)
+            patch = await _restart_patch(message, base, patch)
+        return Spec.model_validate(_merge_spec_patch(base, patch)), False
     except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
         return spec, True

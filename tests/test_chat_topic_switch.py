@@ -2,7 +2,7 @@
 
 1단계 LLM 은 "바뀌는 값만 담은 patch"를 돌려주고 서버가 앞 spec 위에 겹쳐 쓴다. 그래서 주제가 바뀌었는데
 모델이 가격·제목을 null 로 지우지 않으면 앞 조건이 남는다(dev 16턴, 평가 104·105번). 주제가 바뀌었는지는
-코드가 가른다: patch 가 내놓은 주제가 앞 주제와 겹치는 낱말이 하나도 없으면 새 요청이다(app/chat/topic.py).
+코드가 가른다: patch 가 내놓은 주제가 앞 주제와 겹치는 낱말이 하나도 없으면 새 요청이다(app/chat/topic_switch.py).
 
 LLM 과 DB 는 가짜로 끼운다. 여기서는 갈라내는 규칙과 그 규칙이 spec·호출 횟수에 미치는 영향만 본다.
 """
@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from app.chat import topic
+from app.chat import topic_switch as topic
 from app.chat.schemas import Spec, SpecExact
 from app.main import app
 from app.routers import chat
@@ -493,6 +493,10 @@ def test_exclude에_제목이_섞여_와도_degraded가_되지_않는다(
         calls,
         spec=request_spec,
         message="두 번째는 읽었고 첫 번째는 별로야. 다른 거",
+        recent_turns=[
+            {"role": "user", "text": "자기계발 책 추천해줘"},
+            {"role": "assistant", "text": "골라봤어요."},
+        ],
     )
 
     assert data["degraded"] is False

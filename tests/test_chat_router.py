@@ -709,7 +709,8 @@ def test_새_제목이_오면_이전_턴_저자_출판사를_지운다(
     patch에 author가 안 실려도 이전 author가 그대로 남으면 안 된다.
     """
     spec_reply = _spec_reply(exact={"title": "달러구트 꿈 백화점"})
-    model = _sequenced_model(spec_reply, '{"cards": []}')
+    # 김영하 → 달러구트는 앞 주제와 낱말이 안 겹치는 새 요청이고 제목을 골랐으니 1단계를 한 번 더 부른다(#513)
+    model = _sequenced_model(spec_reply, spec_reply, '{"cards": []}')
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
     request_spec = {
