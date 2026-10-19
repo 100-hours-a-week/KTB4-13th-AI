@@ -19,7 +19,11 @@ CANDIDATE_LIMIT = 50
 # 이 모델은 모든 책의 유사도가 0.8~0.9 에 빽빽이 몰려 있어 특히 놓치기 쉽다.
 # 13만 권에서 정확 검색과 비교하면 50 → 67%, 400 → 92%, 1000 → 97% 를 찾았고
 # 1000 이어도 10ms 였다. 그래서 pgvector 가 허용하는 최댓값을 쓴다.
+# 지금은 ④ 홈 추천의 더 보기(app/feed/personalized.py)가 이 값을 쓴다.
 EF_SEARCH = 1000
+
+# 검색(① 검색창, 그리고 ③ 챗봇이 부르는 검색)의 탐색 폭. 홈 추천과 따로 둔다(#516).
+SEARCH_EF_SEARCH = 1000
 
 # 벡터 질의를 기다리는 최대 시간(초). BE 는 /search 응답을 5초까지만 기다린다. 연결 기본
 # 제한(db.py 의 command_timeout 5초)에 맡기면 질의가 느릴 때 5초를 다 쓰고 실패해, 키워드
@@ -52,7 +56,7 @@ async def search_ids(
     where, filter_params = build_where(filters, first_param=3)
     # SET LOCAL 은 트랜잭션 안에서만 먹고, 끝나면 연결이 원래 설정으로 돌아간다.
     async with conn.transaction():
-        await conn.execute(f"SET LOCAL hnsw.ef_search = {EF_SEARCH}")
+        await conn.execute(f"SET LOCAL hnsw.ef_search = {SEARCH_EF_SEARCH}")
         await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
         rows = await conn.fetch(
             _SQL.format(where=where),
