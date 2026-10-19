@@ -378,6 +378,19 @@ def _from_topic(ctx: TurnContext, isbn: str, message: str) -> bool:
     )
 
 
+# --- 수량 (#489) ---
+# 담기는 "요청 수량으로 바꾸기"라서, 이미 담긴 책에 사용자가 말하지 않은 수량을 LLM 이 채우면 3권이 1권으로 준다.
+# 그래서 사용자의 이번 말에 수량("2권", "두 개")이 있을 때만 그 수량으로 바꾼다. 단위가 없는 숫자("1번")는 번호다.
+_QUANTITY = re.compile(
+    r"(?:\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:권|개|부)"
+)
+
+
+def states_quantity(ctx: TurnContext) -> bool:
+    """사용자의 이번 말이 수량을 말했는가. 말을 모르면(message 가 None) 말하지 않은 것으로 본다."""
+    return ctx.message is not None and bool(_QUANTITY.search(normalize(ctx.message)))
+
+
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
     """이 책을 LLM 이 가리킬 때 쓸 수 있는 말들(카드 번호, 장바구니 번호, 지금 보는 책)."""
     refs = [

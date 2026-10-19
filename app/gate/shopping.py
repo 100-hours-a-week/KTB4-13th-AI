@@ -22,6 +22,8 @@ SHOP_KEYS = (
     "user_context",
     "allow_tools",
     "idempotency_key",
+    "cart",
+    "offers",
 )
 
 

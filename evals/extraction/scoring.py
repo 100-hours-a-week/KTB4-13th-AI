@@ -96,12 +96,18 @@ def _sign(strength: Any) -> int | None:
     return (strength > 0) - (strength < 0)
 
 
-def _where_ok(names: Any, allowed: list[str]) -> bool:
-    """고른 이름이 모두 받아들이는 이름 안에 있는가. 받아들이는 이름이 없으면 아무것도 고르지 않아야 한다."""
+def _where_ok(names: Any, allowed: list[str], must: list[str]) -> bool:
+    """고른 이름이 모두 받아들이는 이름 안에 있는가. 받아들이는 이름이 없으면 아무것도 고르지 않아야 한다.
+
+    꼭 고를 이름(must)을 적어 둔 취향은 그중 하나가 있어야 한다. 장르를 다른 말로 불렀을 때 위 카테고리만
+    고르고 세부 카테고리를 놓치는 것을 잡는다(#486).
+    """
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         return False
     if not allowed:
         return not names
+    if must and not set(names) & set(must):
+        return False
     return bool(names) and set(names) <= set(allowed)
 
 
@@ -125,7 +131,12 @@ def _count_labels(want: dict[str, Any], found: list[dict], counts: Counter) -> N
     if "applies_to" in want:
         counts["where_labeled"] += 1
         counts["where_matched"] += any(
-            _where_ok(item.get("applies_to"), want["applies_to"]) for item in found
+            _where_ok(
+                item.get("applies_to"),
+                want["applies_to"],
+                want.get("applies_to_must", []),
+            )
+            for item in found
         )
 
 

@@ -22,14 +22,19 @@ _BY_ID = {case["id"]: case for case in _CASES}
 
 
 def _ideal(request: dict) -> Outcome:
-    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다."""
+    """기대값 그대로 답하는 가짜 API. 세기·어디에·핵심어는 받아들이는 것 가운데 첫째를 고른다.
+
+    어디에는 꼭 고를 이름이 있으면 그 첫째를 고른다(#486).
+    """
     case = next(c for c in _CASES if c["request"] == request)
     items = [
         {
             "type": want["type"],
             "value": want["value"],
             "strength": want["strength"],
-            "applies_to": want.get("applies_to", [])[:1],
+            "applies_to": (want.get("applies_to_must") or want.get("applies_to", []))[
+                :1
+            ],
             "keyword": want["keyword"][0],
             "vector": [0.1, 0.2],
             "dim": 2,
@@ -63,8 +68,8 @@ def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
     # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
-    assert len(calls) == len(_CASES) == 85
-    assert summary["total"] == {"cases": 85, "runs": 85, "passed": 85, "pass_rate": 1.0}
+    assert len(calls) == len(_CASES) == 94
+    assert summary["total"] == {"cases": 94, "runs": 94, "passed": 94, "pass_rate": 1.0}
     assert summary["failures"] == {}
 
 
@@ -74,11 +79,11 @@ def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -
     summary, _calls = _run(_CASES)
 
     assert summary["labels"] == {
-        "labeled": 67,
+        "labeled": 76,
         "sign": 1.0,
         "strength": 1.0,
         "keyword": 1.0,
-        "where_labeled": 38,
+        "where_labeled": 47,
         "where": 1.0,
     }
 
@@ -111,7 +116,7 @@ def test_번호로_고른다() -> None:
 
 
 def test_묶음으로_고른다() -> None:
-    assert len(run.select(_CASES, group="guard")) == 11
+    assert len(run.select(_CASES, group="guard")) == 20
 
 
 @pytest.mark.parametrize(

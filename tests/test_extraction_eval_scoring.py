@@ -304,6 +304,24 @@ def test_어디에는_고른_이름이_모두_받아들이는_이름_안에_있�
     assert score(_labeled(), _ok(_got(applies_to=names))).where_matched == matched
 
 
+@pytest.mark.parametrize(
+    ("names", "matched"),
+    [
+        (["소설", "추리/스릴러"], 1),
+        (["추리/스릴러"], 1),
+        (["소설"], 0),  # 위 카테고리만 고르고 세부 카테고리를 놓침
+        (["소설", "SF"], 0),  # 받아들이는 이름 밖
+    ],
+)
+def test_꼭_고를_이름을_적어_둔_취향은_그_이름이_하나는_있어야_맞다(
+    names, matched
+) -> None:
+    case = _labeled(applies_to=("소설", "추리/스릴러"))
+    case["expect"]["extractions"][0]["applies_to_must"] = ["추리/스릴러"]
+
+    assert score(case, _ok(_got(applies_to=names))).where_matched == matched
+
+
 def test_맞는_이름이_없는_취향은_아무것도_고르지_않아야_맞다() -> None:
     case = _labeled(applies_to=())
 

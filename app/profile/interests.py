@@ -257,6 +257,27 @@ def book_scores(
     return scores, vectors
 
 
+# 매칭 점수에서 "가장 비슷한 내 책"을 찾을 때 관심사마다 쓰는 책 수. 책이 많을수록 상관없는 책도 그중 한 권과는
+# 가깝게 나와 점수가 오르므로, 최근 책으로 묶는다(#483)
+ANCHORS_PER_INTEREST = 10
+
+
+def anchors(books: Iterable[tuple[str, int, str]]) -> dict[str, tuple[int, ...]]:
+    """(관심사, 책 번호, 처음 본 날) 들 → 관심사마다 매칭 점수에 쓰는 내 책 번호(#483).
+
+    관심사마다 처음 본 날이 늦은 책부터 ANCHORS_PER_INTEREST 권이다. 같은 날이면 번호가 큰 책부터다.
+    """
+    grouped: dict[str, list[tuple[str, int]]] = {}
+    for interest, book_id, seen in books:
+        grouped.setdefault(interest, []).append((seen, book_id))
+    return {
+        interest: tuple(
+            book_id for _, book_id in sorted(items, reverse=True)[:ANCHORS_PER_INTEREST]
+        )
+        for interest, items in grouped.items()
+    }
+
+
 def per_interest(
     onboarding: Mapping[str, float],
     memory: Mapping[str, float],
