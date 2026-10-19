@@ -6,7 +6,7 @@
 
 검색은 따로 띄운 파이썬에서 부르고(collect.py), 채점은 이 저장소의 코드로 한다. `--code` 로 다른 커밋의
 worktree 를 주면 검색만 그 코드로 바뀐다. V1 운영 코드처럼 채점에 쓰는 모듈(editions 등)이 없는 커밋도 같은
-묶음, 같은 규칙으로 잰다.
+묶음, 같은 규칙으로 잰다. 서술형 검색어는 책마다 매긴 점수(labels.json, #502)로 잰다.
 
 검색은 DB 에 쓰지 않는다. 그래도 묶음의 책을 고른 평가 DB 가 아닌 곳에서 잰 숫자와 섞이지 않게 이름이
 `_eval` 로 끝나는 DB 에만 돌린다.
@@ -17,7 +17,7 @@ import asyncio
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -125,7 +125,11 @@ async def read_db(url: str, book_ids: set[int]) -> tuple[dict[int, Book], dict]:
 
 
 def score_all(
-    cases: Sequence[dict], results: Sequence[dict], shelf: dict[int, Book], top: int
+    cases: Sequence[dict],
+    results: Sequence[dict],
+    shelf: dict[int, Book],
+    top: int,
+    labels: Mapping[str, Mapping[str, int]] | None = None,
 ) -> list[Score]:
     return [
         score(
@@ -133,6 +137,7 @@ def score_all(
             Response(**{**result, "book_ids": tuple(result["book_ids"])}),
             shelf,
             top,
+            labels,
         )
         for case, result in zip(cases, results, strict=True)
     ]
@@ -150,6 +155,10 @@ _NOTE = (
     "제목은 띄어쓰기·문장부호·영문 대소문자를 빼고 같으면 맞은 것으로 본다. "
     "시간은 이 PC 에서 잰 것이라 종류끼리 견주는 데만 쓴다."
 )
+_DESCRIPTIVE_NOTE = (
+    "- 서술형은 매긴 점수(labels.json)로 잰다. 2점·0점 책은 위 10권 중 그 점수의 책 수(평균), "
+    "점수 없는 책은 라벨에 없어 0점으로 센 책의 수(합)다"
+)
 
 
 def render(summary: dict[str, Any], top: int) -> str:
@@ -157,7 +166,13 @@ def render(summary: dict[str, Any], top: int) -> str:
     kinds = summary["kinds"]
     titles = [(kind, row) for kind, row in kinds.items() if "mrr" in row]
     titles += [(f"↳ {change}", row) for change, row in summary["changes"].items()]
-    others = [(kind, row) for kind, row in kinds.items() if "mrr" not in row]
+    described = [(kind, row) for kind, row in kinds.items() if "ndcg_mean" in row]
+    described += [(f"↳ {facet}", row) for facet, row in summary["facets"].items()]
+    others = [
+        (kind, row)
+        for kind, row in kinds.items()
+        if "mrr" not in row and "ndcg_mean" not in row
+    ]
     lines = [f"위 {top}권 기준. {_NOTE}"]
     if titles:
         lines += [
@@ -189,6 +204,20 @@ def render(summary: dict[str, Any], top: int) -> str:
             f"| {kind} | {row['measured']} | {measure} | {_num(row['returned_mean'])} "
             f"| {_num(row['seconds_median'], 3)} |"
         )
+    if described:
+        lines += [
+            "",
+            "| 종류 | 사례 | 위 10권 nDCG | 2점 책 | 0점 책 | 점수 없는 책 | 시간(초, 중앙값) |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    for name, row in described:
+        lines.append(
+            f"| {name} | {row['measured']} | {_num(row['ndcg_mean'], 3)} "
+            f"| {_num(row['relevant_mean'])} | {_num(row['irrelevant_mean'])} "
+            f"| {row['unlabeled']} | {_num(row['seconds_median'], 3)} |"
+        )
+    if described:
+        lines += ["", _DESCRIPTIVE_NOTE]
     failed = sum(row["cases"] - row["measured"] for row in kinds.values())
     if failed:
         lines += [
@@ -256,7 +285,10 @@ def main(
         results = collect_with(code, requests)
         book_ids = {i for r in results for i in r["book_ids"]}
         shelf, database = asyncio.run(read_db(url, book_ids))
-    scores = score_all(picked, results, shelf, bundle["top"])
+    from evals.search.label import load_labels
+
+    labels = load_labels()["labels"]
+    scores = score_all(picked, results, shelf, bundle["top"], labels)
     summary = summarize(scores)
     print()
     catalog = bundle["catalog"]
