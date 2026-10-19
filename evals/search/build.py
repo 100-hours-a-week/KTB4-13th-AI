@@ -22,7 +22,7 @@ from app.core import editions, products
 from app.feed.interest_picks import has_author
 
 CASES_PATH = Path(__file__).with_name("cases.json")
-VERSION = 1
+VERSION = 2
 # 위 몇 권을 보는지. 사례마다 /search 에 이 권수를 한 번 요청한다
 TOP = 20
 # 책을 고르는 순서를 정하는 값. 바꾸면 다른 묶음이 나온다
@@ -117,6 +117,51 @@ FILTERS = (
 )
 # 없는 말. 자판을 아무렇게나 친 것처럼 만들었다
 NONSENSE = ("ㅁㄴㅇㄹㅍ", "ㅋㅌㅊ ㅍㅎㄱ", "뷁쒧퀣", "qzxjvk wpfh", "ㄷㄱㅅㅂ ㅈㄷㄱ")
+# 서술형 검색어(#502). 맞는 책이 여럿이라 나온 책마다 매긴 점수(labels.json)로 잰다. 사람이 쓴 목록 그대로 쓴다.
+# (소분류, 검색어, 출처). 출처는 handoff(인계 문서의 예시), chat-eval(③ 챗봇 평가 질문을 검색창에 칠 말로 줄임),
+# written(직접 씀)이다. long 은 조건이 여럿인 20자 이상의 검색어다.
+DESCRIPTIVE = (
+    ("topic", "우주의 기원에 관한 책", "handoff"),
+    ("topic", "조선 시대 궁중 음식", "handoff"),
+    ("topic", "인공지능이 바꿀 미래 사회", "chat-eval"),
+    ("topic", "한국사를 재미있게 풀어 쓴 책", "chat-eval"),
+    ("topic", "기후 위기와 환경", "written"),
+    ("topic", "컴퓨터 역사 속 해커 이야기", "chat-eval"),
+    ("topic", "재테크 기초", "chat-eval"),
+    ("mood", "마음이 편해지는 책", "handoff"),
+    ("mood", "위로가 되는 에세이", "chat-eval"),
+    ("mood", "여운이 남는 소설", "chat-eval"),
+    ("mood", "따뜻한 소설", "chat-eval"),
+    ("mood", "소름 돋는 추리 소설", "chat-eval"),
+    ("mood", "기분 좋아지는 책", "chat-eval"),
+    ("mood", "술술 읽히는 가벼운 소설", "chat-eval"),
+    ("audience", "초등학생이 읽을 과학책", "handoff"),
+    ("audience", "중학생 코딩 입문서", "chat-eval"),
+    ("audience", "7살 아이 그림책", "chat-eval"),
+    ("audience", "어른이 읽는 판타지 소설", "chat-eval"),
+    ("audience", "사춘기 자녀를 둔 부모", "written"),
+    ("audience", "비전공자를 위한 컴퓨터 기초", "chat-eval"),
+    ("situation", "비 오는 날 읽을 책", "handoff"),
+    ("situation", "퇴근길에 가볍게 읽을 소설", "chat-eval"),
+    ("situation", "잠이 안 올 때 읽는 책", "chat-eval"),
+    ("situation", "번아웃이 왔을 때", "chat-eval"),
+    ("situation", "이직을 고민할 때", "written"),
+    ("situation", "주말에 카페에서 읽을 소설", "chat-eval"),
+    ("long", "개발자가 알아야 할 만큼만 쉽게 설명한 네트워크 책", "chat-eval"),
+    ("long", "수식을 쉬운 말로 풀어 주는 파이썬 통계 입문서", "chat-eval"),
+    ("long", "팀 프로젝트에서 의견 충돌을 줄이는 협업과 대화법", "chat-eval"),
+    ("long", "열등감을 건강하게 다스리고 싶을 때 읽을 쉬운 철학책", "chat-eval"),
+    ("long", "어려움을 이겨 내는 이야기가 담긴 어린이 그림책", "chat-eval"),
+    ("long", "편의점에서 일하는 여자가 주인공인 일본 소설", "chat-eval"),
+    ("long", "회사에서 발표할 때 말을 조리 있게 하는 법", "chat-eval"),
+    ("long", "엄마가 된 뒤의 마음을 솔직하게 쓴 에세이", "written"),
+    ("mixed", "초등학생이 읽을 우주 이야기", "written"),
+    ("mixed", "비 오는 날 읽기 좋은 잔잔한 소설", "written"),
+    ("mixed", "직장인을 위한 쉬운 경제 공부", "written"),
+    ("mixed", "한국 작가가 쓴 SF 소설", "chat-eval"),
+    ("mixed", "마음이 지칠 때 읽는 짧은 시집", "written"),
+    ("mixed", "아이와 함께 읽는 공룡 그림책", "written"),
+)
 
 # 벡터와 상품(가격)이 있는 책을 시드 순서로. ISBN 으로 순서를 정해 책 번호가 바뀌어도 같은 순서가 나온다.
 _POOL_SQL = f"""
@@ -216,7 +261,7 @@ def _between(low_key: str, high_key: str, bounds: tuple) -> dict[str, int]:
 
 
 def fixed_cases() -> list[dict]:
-    """필터와 없는 말의 사례. 표본을 뽑지 않고 위의 목록 그대로 만든다."""
+    """필터, 없는 말, 서술형의 사례. 표본을 뽑지 않고 위의 목록 그대로 만든다."""
     cases = []
     for word, category, years, price in FILTERS:
         one = (
@@ -228,9 +273,13 @@ def fixed_cases() -> list[dict]:
             cases.append(
                 _case(f"filter-{len(cases) + 1:02d}", "filter", word, filters=filters)
             )
-    return cases + [
+    cases += [
         _case(f"nonsense-{i}", "nonsense", query)
         for i, query in enumerate(NONSENSE, start=1)
+    ]
+    return cases + [
+        _case(f"descriptive-{i:02d}", "descriptive", query, facet=facet, source=source)
+        for i, (facet, query, source) in enumerate(DESCRIPTIVE, start=1)
     ]
 
 
