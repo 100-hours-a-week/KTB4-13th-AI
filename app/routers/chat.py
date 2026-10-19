@@ -9,6 +9,7 @@
 불리는 것)은 안 바뀐다.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ from pydantic import ValidationError
 
 from app.chat import topic_switch
 from app.chat.schemas import ChatRequest, Spec, Turn
+from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, history, isbn, popularity, responses
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -332,24 +334,34 @@ async def _ask_spec_patch(message: str, spec: Spec, recent_turns: list[Turn]) ->
     )
 
 
-async def _restart_patch(message: str, fresh: Spec, first_patch: dict) -> dict:
-    """새 요청으로 판명된 턴의 patch. 첫 답이 제목·저자를 골랐으면 빈 조건에서 다시 뽑은 답을 쓴다.
+async def _asks_new_request(message: str, previous: str) -> bool:
+    """모델이 이전 요청과 이번 메시지만 보고 새 책 찾기라고 판정했는지. 호출이 실패하면 아니라고 본다.
 
-    옛 spec 이 프롬프트에 있으면 모델이 "해리포터 가튼 판타지 소설"을 제목 찾기로 봤다(평가 104번 6턴, 8번 중
-    8번). 같은 말을 빈 spec 으로 물으면 분위기 요청으로 봤다(8번 중 0번). 최근 대화도 빼는 것은, 빈 spec 이어도
-    최근 대화에 있는 앞 가격과 앞 주제를 모델이 다시 옮겨 적었기 때문이다. 분위기 요청으로 바꾼 patch 는 이런
-    뒤바뀜이 관찰되지 않아 다시 뽑지 않는다(LLM 호출이 늘어나는 것은 제목을 고른 새 요청뿐이다).
-    다시 뽑다 LLM 이 실패해도 첫 답은 이미 있다. 그 답으로 이어간다(앞 조건은 비운 채).
+    spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
     """
-    redo = topic_switch.names_a_book(first_patch)
-    logger.info("주제가 바뀌어 앞 조건을 비운다 (제목·저자 다시 뽑기=%s)", redo)
-    if not redo:
-        return first_patch
+    chain = RELATION_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
-        return await _ask_spec_patch(message, fresh, [])
+        answer = await invoke_chain(chain, {"previous": previous, "message": message})
     except LLMUnavailableError:
-        logger.warning("빈 조건에서 다시 뽑기 실패 — 첫 답으로 이어간다", exc_info=True)
-        return first_patch
+        logger.warning("새 요청 판정 실패 — 이어가는 말로 본다", exc_info=True)
+        return False
+    return answer.get("relation") == "new"
+
+
+async def _restart_patch(message: str, fresh: Spec) -> dict | None:
+    """새 요청이라는 판정을 확인하려고, 조건도 앞 대화도 없이 같은 메시지로 다시 뽑은 patch.
+
+    메시지가 스스로 주제를 말하지 않으면(has_topic 아님) None 이다. 판정이 새 요청이라 했어도 "2만원 이하 아니어도
+    돼", "또 다른 거", 인사처럼 주제 없는 말은 앞 요청을 이어가는 말이다. 최근 대화까지 빼는 것은, 빈 spec 이어도
+    최근 대화에 있는 앞 가격과 앞 주제를 모델이 다시 옮겨 적었기 때문이다(평가 104번 6턴의 재현). 다시 뽑다
+    LLM 이 실패해도 None 이다. 앞 조건을 남기는 쪽이 고치기 전과 같은 동작이다.
+    """
+    try:
+        patch = await _ask_spec_patch(message, fresh, [])
+    except LLMUnavailableError:
+        logger.warning("빈 조건에서 다시 뽑기 실패 — 앞 조건을 남긴다", exc_info=True)
+        return None
+    return patch if topic_switch.has_topic(patch) else None
 
 
 async def update_spec(
@@ -365,9 +377,10 @@ async def update_spec(
     메시지가 뭘 가리키는지 판단하는 데만 쓴다. 서버는 대화를 저장하지 않으므로
     (명세) 이번 호출이 끝나면 버려지고, 다음 턴에도 호출자가 다시 실어 보낸다.
 
-    patch 가 앞 요청과 상관없는 새 주제를 냈으면 앞 조건을 비운 spec 위에 겹쳐 쓴다(#513). 주제가 바뀌었는지
-    판단은 코드가 한다(app/chat/topic_switch.py). 새 요청인데 첫 답이 제목·저자를 골랐으면 옛 spec 과 앞 대화가
-    판단을 흔든 것일 수 있어, 조건도 앞 대화도 없이 같은 메시지로 한 번 더 뽑는다(_restart_patch).
+    새 요청이면 patch 를 앞 spec 위에 겹쳐 쓰지 않는다(#513). 앞 요청에 주제가 있으면 새 요청인지 판정하는 호출을
+    1단계 호출과 나란히 보내고(지연이 늘지 않는다), 새 요청으로 판정되고 빈 조건으로 다시 뽑은 patch 가 스스로 주제를
+    담고 있으면 그 patch 를 앞 조건을 비운 spec 위에 쓴다. 옛 spec 이 프롬프트에 있어 흔들린 첫 patch 는 버린다
+    (app/chat/topic_switch.py).
 
     실패(LLM 장애, 또는 병합한 값이 Spec 모양이 아님)하면 원래 spec을 그대로
     돌려주고 두 번째 값을 True로 준다. 명세: "LLM 장애면 1과 3을 건너뛰고
@@ -375,11 +388,21 @@ async def update_spec(
     신호를 보고 3단계(카드 생성)를 건너뛴다.
     """
     try:
-        patch = await _ask_spec_patch(message, spec, recent_turns)
-        base = spec
-        if topic_switch.starts_new_request(spec, patch):
-            base = topic_switch.fresh_spec(spec)
-            patch = await _restart_patch(message, base, patch)
+        previous = topic_switch.previous_request(spec)
+        base, new_request = spec, False
+        if previous is None:
+            patch = await _ask_spec_patch(message, spec, recent_turns)
+        else:
+            new_request, patch = await asyncio.gather(
+                _asks_new_request(message, previous),
+                _ask_spec_patch(message, spec, recent_turns),
+            )
+        if new_request:
+            fresh = topic_switch.fresh_spec(spec)
+            restarted = await _restart_patch(message, fresh)
+            if restarted is not None:
+                logger.info("주제가 바뀌어 앞 조건을 비웠다")
+                base, patch = fresh, restarted
         return Spec.model_validate(_merge_spec_patch(base, patch)), False
     except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
