@@ -5,10 +5,11 @@
 """
 
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationError,
@@ -86,13 +87,28 @@ class UserContext(_Strict):
     logged_in: bool
 
 
+def _whole_won(value: object) -> object:
+    """소수 부분이 0 인 가격을 정수로 바꾼다. 나머지는 그대로 두어 아래의 엄격한 정수 검사가 판단한다.
+
+    BE 가격 열이 DECIMAL(19,2)라서 BigDecimal 이 12000.00 으로 나가고, JSON 으로 읽으면 12000.0 이다. 원 단위라서
+    소수 부분이 0 이 아닌 값(12000.5)은 계약과 다른 값으로 보고 400 이다. 불리언은 float 가 아니라 그대로 막힌다.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+# 원 단위 가격. 정수와, 소수 부분이 0 인 수(12000.00)를 받는다
+Won = Annotated[int, BeforeValidator(_whole_won)]
+
+
 class CartItemIn(_Strict):
     """BE 가 실어 보낸 지금 장바구니 한 줄(#489). BE 장바구니 조회와 같은 칸이다."""
 
     isbn: Isbn13
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     # 판매 중지·삭제된 상품은 가격이 없다
-    price: int | None = Field(ge=0)
+    price: Won | None = Field(ge=0)
     quantity: int = Field(ge=1, le=MAX_QUANTITY)
     # 구매할 수 있나(재고가 담은 수량 이상이고 판매 중)
     available: bool
@@ -103,7 +119,7 @@ class OfferIn(_Strict):
 
     isbn: Isbn13
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
-    price: int = Field(ge=0)
+    price: Won = Field(ge=0)
     in_stock: bool
 
 
