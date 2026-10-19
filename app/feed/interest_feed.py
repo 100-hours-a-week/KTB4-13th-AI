@@ -20,9 +20,12 @@ from app.feed.interest_picks import Pick
 from app.profile import interests, labels
 
 # 관심사마다 받은 자리의 두 배를 뽑는다. 가진 책·판본·다른 관심사와 겹친 책을 빼도 자리가 비지 않게 한다.
-# 자리가 적은 관심사도 PICK_MIN 권은 뽑는다
+# 자리가 적은 관심사도 PICK_MIN 권은 뽑고, 많은 관심사도 PICK_MAX 권까지만 뽑는다. 관심사가 하나뿐이면 자리
+# 200개를 다 받아 400권을 찾았는데, 운영에서 200권보다 0.5–4.8초가 더 들었다(#492). 덜 찬 자리는 다른 관심사나
+# 인기 있는 책이 채운다
 PICK_FACTOR = 2
 PICK_MIN = 20
+PICK_MAX = 200
 
 # 서버 안에서 목록 뽑기는 한 번에 하나만 한다. 운영에서 10명을 동시에 뽑으니 한 사람이 12초까지 늘었다(#399).
 # 서버는 프로세스 하나로 돈다(Dockerfile 의 uvicorn)
@@ -85,7 +88,7 @@ def jobs(
     """
     out = []
     for name, count in sorted(seats.items(), key=lambda item: -item[1]):
-        limit = max(count * PICK_FACTOR, PICK_MIN)
+        limit = min(max(count * PICK_FACTOR, PICK_MIN), PICK_MAX)
         if name.startswith(interests.AUTHOR):
             out.append(Job(name, limit))
         elif name.startswith(interests.KEYWORD):
