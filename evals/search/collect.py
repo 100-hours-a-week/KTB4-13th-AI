@@ -13,7 +13,10 @@
 import asyncio
 import json
 import logging
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from time import perf_counter
 
@@ -61,6 +64,21 @@ async def collect(requests: list[dict]) -> list[dict]:
             if done % PROGRESS_EVERY == 0:
                 print(f"검색 {done}/{len(requests)}", file=sys.stderr, flush=True)
     return results
+
+
+def collect_with(code: Path, requests: list[dict]) -> list[dict]:
+    """`code` 폴더의 코드로 따로 띄운 파이썬에서 collect 를 돌린다.
+
+    `-P` 로 이 파일이 있는 폴더를 import 경로에서 빼서 `app` 은 PYTHONPATH 의 `code` 에서만 찾는다. 설정(.env)은
+    지금 폴더에서 읽으므로 어느 코드로 돌려도 같은 DB 에 붙는다.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        sent, got = Path(tmp, "requests.json"), Path(tmp, "results.json")
+        sent.write_text(json.dumps(requests, ensure_ascii=False), encoding="utf-8")
+        env = {**os.environ, "PYTHONPATH": str(code.resolve())}
+        command = [sys.executable, "-P", __file__, str(sent), str(got)]
+        subprocess.run(command, env=env, check=True)
+        return json.loads(got.read_text(encoding="utf-8"))
 
 
 def main(argv: list[str]) -> int:
