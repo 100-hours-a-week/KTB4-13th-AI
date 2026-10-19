@@ -22,11 +22,7 @@ from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
 from app.core.config import get_settings
-from app.gateway.commerce_provider import (
-    CommerceNotConfigured,
-    get_catalog,
-    get_commerce,
-)
+from app.gateway.commerce_provider import get_catalog, get_commerce
 from app.gateway.llm import LLMUnavailableError, get_chat_model
 
 logger = logging.getLogger(__name__)
@@ -123,7 +119,7 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         return ShopTurn(message=stored["message"], data=stored["data"])
 
     try:
-        gateway = get_commerce(req.user_id)
+        gateway = get_commerce(req)
         catalog = get_catalog()
         model = agent_model()
         # 비교는 소개글을 읽는 별도 호출이다. 도구를 고르는 호출과 메시지를 섞지 않는다
@@ -134,13 +130,9 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
             run = await run_agent(req, model=model, gateway=gateway, comparer=comparer)
         finished = finish(run)
     except TimeoutError:
-        # 끊기 전에 쓰기가 성공했을 수 있다. 같은 키로 다시 오면 "이미 담겨 있어요"로 사실대로 답한다
+        # AI 는 장바구니를 바꾸지 않으므로(actions 만 돌려준다) 끊겨도 바뀐 것이 없다
         logger.warning("⑦ 턴 시간 제한을 넘었다")
         return ShopTurn(error=responses.error(504, "generation_timeout"))
-    except CommerceNotConfigured:
-        # 진짜 BE 장바구니는 11단계에서 연결한다. 그 전에 가짜로 답하지 않는다
-        logger.warning("⑦ 장바구니가 연결되지 않았다(COMMERCE_MOCK 꺼짐)")
-        return ShopTurn(error=_unavailable())
     except GroundingFailed as e:
         logger.warning("⑦ 답변 검사로 답이 남지 않았다 removed=%s", e.removed)
         return ShopTurn(error=responses.error(422, "grounding_failed"))
@@ -167,7 +159,7 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         "message": "agent_success",
         "data": finished.data.model_dump(mode="json"),
     }
-    # 장바구니를 바꾼 턴만 저장한다(명세: 읽기만 하는 턴에서는 키를 무시). 거절된 쓰기와 오류 응답은 저장하지 않아
+    # 장바구니 변경(actions)을 낸 턴만 저장한다(명세: 읽기만 하는 턴에서는 키를 무시). 거절된 쓰기와 오류 응답은 저장하지 않아
     # 재시도하면 다시 처리한다
     if any(
         c.name in guard.WRITE_TOOLS and c.result.get("ok") is True

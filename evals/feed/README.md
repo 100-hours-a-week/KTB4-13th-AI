@@ -32,6 +32,19 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed
 - 묶음을 만든 책 표와 권수가 다른 DB에 돌리면 결과 위에 주의가 찍힙니다.
 - `--out`으로 사용자마다의 결과를 파일로 남깁니다. `evals/feed/results/` 아래에 두면 저장소에 섞이지 않습니다.
 
+### ⑥ 시간 재기 (운영 서버)
+
+이 실행기의 시간은 로컬 값이라 판단에 쓰지 않습니다. ⑥ 한 번이 몇 초 걸리는지는 `profile_timing.py`로 운영(또는 운영과 같은 크기·사양) 서버의 AI 컨테이너 안에서 잽니다([#492](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/492)).
+
+```
+curl -fsSL https://raw.githubusercontent.com/100-hours-a-week/KTB4-13th-AI/<커밋>/evals/feed/profile_timing.py | sudo docker exec -i bookjeok-ai python - https://raw.githubusercontent.com/100-hours-a-week/KTB4-13th-AI/<커밋>/evals/feed/cases.json
+```
+
+- 이 묶음의 가상 사용자로 플래그를 켠 것처럼 ⑥을 계산하고, 저장만 건너뜁니다. 읽기 전용 트랜잭션이라 DB에 남는 것이 없습니다.
+- 임베딩은 같은 컨테이너의 서버에 묻습니다. 모델을 한 번 더 올리지 않습니다.
+- 뒤에 사용자 수와 건너뛸 수를 붙이면 나눠 돌립니다(예: `… cases.json 48 96`).
+- 마지막 줄 `SUMMARY`에 가운데값, 90%, 최대, 3초·5초를 넘은 수, 대신 채운 관심사가 있던 사용자 수, 목록이 빈 사용자 수가 나옵니다.
+
 ## 결과 읽는 법
 
 종류마다 한 줄입니다.

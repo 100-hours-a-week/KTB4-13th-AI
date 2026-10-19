@@ -4,6 +4,11 @@
 않는지를 주로 본다.
 """
 
+import json
+from pathlib import Path
+
+import pytest
+
 from evals.chat import grade
 
 _BOOKS = {
@@ -32,6 +37,25 @@ _BOOKS = {
         "publisher": "마로니에북스",
         "pub_year": 2012,
         "price": 18000,
+        "has_description": True,
+    },
+    # 같은 작품의 다른 권. 제목이 달라 distinct_titles 로는 안 잡힌다(#504, dev 에서 실제로 나온 책).
+    "4": {
+        "isbn": "9790000000004",
+        "title": "오래된 골동품 상점 1",
+        "author": "찰스 디킨스",
+        "publisher": "가짜",
+        "pub_year": 2008,
+        "price": 12000,
+        "has_description": True,
+    },
+    "5": {
+        "isbn": "9790000000005",
+        "title": "오래된 골동품 상점 2",
+        "author": "찰스 디킨스",
+        "publisher": "가짜",
+        "pub_year": 2008,
+        "price": 12000,
         "has_description": True,
     },
 }
@@ -125,6 +149,49 @@ def test_제목이_같은_카드가_둘이면_같은_책_중복이다() -> None:
     assert grade.grade_case(case, [_turn(cards=[_card(2), _card(3)])], _BOOKS) == [
         "같은 책 중복"
     ]
+
+
+@pytest.mark.parametrize(
+    ("title", "key"),
+    [
+        ("오래된 골동품 상점 1", "오래된골동품상점"),
+        ("오래된 골동품 상점", "오래된골동품상점"),
+        ("토지 제2권", "토지"),
+        ("토지 1 (개정판)", "토지"),
+        ("삼국지 하권", "삼국지"),
+        ("Clean Code Vol. 2", "cleancode"),
+        # 숫자가 제목인 책과 해마다 나오는 책은 떼지 않는다.
+        ("1984", "1984"),
+        ("1Q84 1", "1q84"),
+        ("트렌드 코리아 2025", "트렌드코리아2025"),
+        ("(1)", "1"),
+    ],
+)
+def test_제목_끝의_권_판본_표기를_떼어_같은_작품으로_본다(title: str, key: str) -> None:
+    assert grade.work_key(title) == key
+
+
+def test_같은_작품의_다른_권이_둘이면_작품_중복이다() -> None:
+    # 제목이 달라 같은 책 중복으로는 안 잡히는 경우다.
+    cards = [_card(4), _card(5)]
+
+    assert (
+        grade.grade_case(
+            _case(cards={"distinct_titles": True}), [_turn(cards=cards)], _BOOKS
+        )
+        == []
+    )
+    assert grade.grade_case(
+        _case(cards={"distinct_works": True}), [_turn(cards=cards)], _BOOKS
+    ) == ["같은 작품 권·판본 중복"]
+    assert (
+        grade.grade_case(
+            _case(cards={"distinct_works": True}),
+            [_turn(cards=[_card(1), _card(4)])],
+            _BOOKS,
+        )
+        == []
+    )
 
 
 def test_앞_턴에서_본_책이_마지막_턴에_다시_나오면_실패다() -> None:
@@ -300,3 +367,83 @@ def test_LLM을_안_부른_턴은_분위기_지표의_분모에서_뺀다() -> N
 
     assert common["llm_turns"] == 0
     assert common["degraded_turns_per_run"] == [0, 1]
+
+
+def test_종류마다_회차별로_가장_낮은_통과율과_가장_낮은_종류를_낸다() -> None:
+    lookup = {**_case(), "no": 1, "kind": "lookup"}
+    multi = {**_case(), "no": 2, "kind": "multi"}
+    cases_file = {
+        "version": 4,
+        "kinds": {"lookup": {"about": "가짜"}, "multi": {"about": "가짜"}},
+        "cases": [lookup, multi],
+    }
+    ok, empty = [_turn(cards=[_card(1)])], [_turn()]
+    raw = {
+        "meta": {},
+        "books": _BOOKS,
+        "runs": [{"1": ok, "2": ok}, {"1": ok, "2": empty}, {"1": empty, "2": empty}],
+    }
+
+    summary = grade.summarize(cases_file, raw)
+
+    assert summary["by_kind"]["lookup"]["rate"] == 66.7
+    assert summary["by_kind"]["lookup"]["min_rate"] == 0.0
+    assert summary["lowest_kind"]["kind"] == "multi"
+    assert summary["lowest_kind"]["rate"] == 33.3
+    assert "가장 낮은 종류 multi 33.3%" in grade.render(summary, cases_file)
+
+
+def test_긴_이유가_빈_카드가_낀_턴을_질문별로_센다() -> None:
+    # BE 표가 NOT NULL 이라 BE 를 거치면 500 이 되는 턴이다. LLM 장애 턴도 긴 이유가 비므로 센다.
+    turns = [
+        _turn(cards=[_card(1), _card(2, reason_long=None)]),
+        _turn(cards=[_card(3)]),
+        _turn(cards=[_card(1, reason_long=None)], degraded=True),
+    ]
+
+    summary = grade.summarize(_cases_file(_case(turns=3)), _raw([turns]))
+
+    assert summary["common"]["turns_with_null_reason_long"] == 2
+    assert summary["common"]["null_reason_long_by_case"] == {"1": 2}
+    assert "BE 를 거치면 이 턴은 500" in grade.render(summary, _cases_file(_case()))
+
+
+def test_매칭_점수_분포는_LLM을_부른_턴의_카드를_의도별로_낸다() -> None:
+    def scored(score: int) -> dict:
+        return {**_card(1), "match_score": score}
+
+    exact = _turn(
+        cards=[scored(0), scored(10)],
+        spec={"intent": "exact", "filters": {}, "semantic": None},
+    )
+    semantic = _turn(cards=[scored(60), scored(80), scored(70)])
+    down = _turn(cards=[scored(99)], degraded=True)
+
+    score = grade.summarize(
+        _cases_file(_case(turns=3)), _raw([[exact, semantic, down]])
+    )["common"]["match_score"]
+
+    assert score["all"] == {
+        "cards": 5,
+        "zero": 1,
+        "min": 0,
+        "p25": 10,
+        "median": 60,
+        "p75": 70,
+        "max": 80,
+    }
+    assert score["by_intent"]["exact"]["median"] == 10
+    assert score["by_intent"]["semantic"]["cards"] == 3
+
+
+def test_v4_전에_저장한_요약과도_견줄_수_있다() -> None:
+    baseline = Path(grade.__file__).with_name("baselines") / (
+        "2026-10-14_main-60fc64c-103.json"
+    )
+    old = json.loads(baseline.read_text(encoding="utf-8"))
+    new = grade.summarize(_cases_file(_case()), _raw([[_turn(cards=[_card(1)])]]))
+
+    text = grade.compare(old, new)
+
+    assert "가장 낮은 종류: ?  →  situation 100.0%" in text
+    assert "긴 이유가 빈 카드가 낀 턴(BE 500): ?  →  0" in text

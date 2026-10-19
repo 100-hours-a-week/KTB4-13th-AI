@@ -123,6 +123,7 @@ def _pick(
     by_name: bool = True,
     limit: int = 3,
     left=lambda: 1.0,
+    anchors: list[int] | None = None,
 ) -> list[interest_picks.Pick]:
     return asyncio.run(
         interest_picks.pick(
@@ -132,6 +133,7 @@ def _pick(
             by_name=by_name,
             limit=limit,
             left=left,
+            anchors=anchors or (),
         )
     )
 
@@ -191,6 +193,27 @@ def test_책_벡터_평균이면_코사인에_평균의_길이를_곱해_편다(
     picks = _pick(_FakeConn(rows=[_row(1, 0.1)]), vector=[0.95, 0.0], by_name=False)
 
     assert picks[0].part == pytest.approx(0.4375)
+
+
+def test_내_책을_주면_가장_비슷한_내_책과의_유사도로_편다() -> None:
+    # 내 책 가운데 가장 비슷한 책과 0.86 → 책 벡터 평균 구간(0.82–0.90)의 가운데(#483)
+    conn = _FakeConn(rows=[{**_row(1, 0.1), "nearest_own": 0.86}])
+
+    picks = _pick(conn, vector=[0.95, 0.0], by_name=False, anchors=[11, 12])
+
+    assert picks[0].part == pytest.approx(0.5)
+    assert "own AS MATERIALIZED" in conn.sqls[-1]
+    assert conn.args[-1][-1] == [11, 12]
+
+
+def test_가장_비슷한_내_책을_모르면_책_벡터_평균과의_내적으로_편다() -> None:
+    # 내 책을 주지 않으면 그 칸은 NULL 이다. 코사인 0.9 × 길이 0.95 = 0.855 → 0.4375
+    conn = _FakeConn(rows=[{**_row(1, 0.1), "nearest_own": None}])
+
+    picks = _pick(conn, vector=[0.95, 0.0], by_name=False)
+
+    assert picks[0].part == pytest.approx(0.4375)
+    assert "own AS" not in conn.sqls[-1]
 
 
 def test_시간을_다_쓰면_질의를_보내지_않고_실패한다() -> None:
@@ -373,6 +396,20 @@ def test_분류로_좁힐_수_없는_관심사는_대신할_책이_없다() -> N
     assert conn.sqls == []
 
 
+def test_대신할_책도_내_책을_주면_가장_비슷한_내_책과의_유사도로_편다() -> None:
+    conn = _FakeConn(rows=[{**_row(1, 0.1), "nearest_own": 0.86}])
+
+    picks = asyncio.run(
+        interest_picks.pick_popular(
+            conn, "요리", [0.95, 0.0], by_name=False, limit=5, timeout=1.0, anchors=[11]
+        )
+    )
+
+    assert picks[0].part == pytest.approx(0.5)
+    assert "own AS MATERIALIZED" in conn.sqls[-1]
+    assert conn.args[-1][-1] == [11]
+
+
 # --- 실제 DB ---
 
 
@@ -468,6 +505,39 @@ def test_분류_안에서_가까운_책을_뽑고_번호가_이어지는_책을_
     assert [p.book_id for p in picks] == [9100302, 9100301, 9100303]
     assert [p.part for p in picks] == pytest.approx([1.0, 1.0, 0.5])
     assert picks[0].category == "생활과학"
+
+
+@_needs_db
+def test_내_책을_주면_뽑은_책마다_가장_비슷한_내_책과의_유사도를_매긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 실제 분류에는 실제 책이 많다. 테스트 책만 든 분류를 이 관심사의 분류로 친다
+    monkeypatch.setattr(interest_picks, "classes_of", lambda _name: ("쀍분류",))
+    books = [
+        _Book(9100351, category="쀍분류", cosine=1.0),  # 내 책
+        _Book(9100352, category="쀍분류", cosine=0.0),  # 내 책(0번 축과 직각)
+        _Book(9100353, category="쀍분류", cosine=0.86),
+    ]
+    # 두 내 책의 벡터 평균. 9100353 과의 내적(유사도 평균)은 0.685 라 구간 밖이다
+    mean = [0.5, 0.5] + [0.0] * (DIM - 2)
+
+    async def check(conn):
+        return await interest_picks.pick(
+            conn,
+            "요리",
+            mean,
+            by_name=False,
+            limit=3,
+            left=lambda: 5.0,
+            anchors=[9100351, 9100352],
+        )
+
+    picks = asyncio.run(_with_books(books, check))
+
+    parts = {p.book_id: p.part for p in picks}
+    # 9100353 은 9100351 과 0.86 이라 구간의 가운데다
+    assert parts[9100353] == pytest.approx(0.5)
+    assert parts[9100351] == parts[9100352] == pytest.approx(1.0)
 
 
 @_needs_db

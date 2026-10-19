@@ -42,13 +42,15 @@ class Job:
     """관심사 하나를 뽑는 일. limit 은 뽑을 권수이고 vector 는 그 관심사의 검색어다.
 
     검색어는 그 관심사의 책 벡터 평균, 책이 없으면 이름 벡터(by_name)다. 키워드 관심사는 핵심어의 이름
-    벡터이고, 작가 관심사는 검색어를 쓰지 않는다.
+    벡터이고, 작가 관심사는 검색어를 쓰지 않는다. anchors 는 그 관심사의 내 책 번호이고, 매칭 점수를 그
+    가운데 가장 비슷한 책과의 유사도로 매길 때 쓴다(#483).
     """
 
     name: str
     limit: int
     vector: Sequence[float] | None = None
     by_name: bool = False
+    anchors: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,13 @@ async def _pick(
             conn, job.name, job.vector, limit=job.limit, left=left
         )
     return await interest_picks.pick(
-        conn, job.name, job.vector, by_name=job.by_name, limit=job.limit, left=left
+        conn,
+        job.name,
+        job.vector,
+        by_name=job.by_name,
+        limit=job.limit,
+        left=left,
+        anchors=job.anchors,
     )
 
 
@@ -117,6 +125,7 @@ async def _substitute(conn: asyncpg.Connection, job: Job) -> list[Pick]:
                 by_name=job.by_name,
                 limit=job.limit,
                 timeout=FALLBACK_SECONDS,
+                anchors=job.anchors,
             )
     except TimeoutError:
         return []

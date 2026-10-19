@@ -1,13 +1,12 @@
-"""⑦ 쇼핑 에이전트가 BE의 장바구니·상품을 부르는 경계(#344 3단계, #347).
+"""⑦ 쇼핑 에이전트가 장바구니·상품을 다루는 경계(#344 3단계, #347, #489).
 
-도구(app/agent/tools)는 이 Protocol에만 기대고, 진짜 BE 클라이언트(11단계)와 메모리 가짜
-(commerce_fake.py)가 같은 모양을 따른다. 그래서 가짜로 만든 평가 숫자가 진짜 BE에서도 같은
-의미를 갖는다.
+도구(app/agent/tools)는 이 Protocol에만 기대고, 요청으로 받은 장바구니의 복사본(commerce_snapshot.py)과
+메모리 가짜 BE(commerce_fake.py)가 같은 모양을 따른다. AI 는 BE 를 부르지 않는다. 복사본에서 바뀐 것을
+actions 로 돌려주면 BE 가 검증해 반영한다(A안, #489).
 
 동작 기준은 BE 코드(KTB4-13th-BE main 8faa0c1, core/cart)다. 위키 정책 문서와 어긋나는 곳이
 있어 코드를 따랐다(#347). 책은 ISBN으로만 가리킨다(#307). BE 코드는 상품 번호와 장바구니 항목
-번호 기준이라, ISBN을 그 번호로 바꾸는 일은 BE의 내부 입구가 맡는 것으로 가정한다(계약 단계에서
-확정).
+번호 기준이라, ISBN을 그 번호로 바꾸는 일은 BE가 actions 를 반영할 때 한다.
 """
 
 from collections.abc import Sequence
@@ -93,4 +92,17 @@ class CommerceGateway(Protocol):
 
     async def get_offers(self, isbns: Sequence[str]) -> list[BookOffer]:
         """ISBN마다 가격·재고를 돌려준다. 모르는 책은 결과에서 빠진다."""
+        ...
+
+
+@runtime_checkable
+class Restorable(Protocol):
+    """한 번에 시킨 쓰기를 되돌릴 수 있는 장바구니(#489). 요청으로 받은 복사본과 가짜 BE 가 따른다."""
+
+    def checkpoint(self) -> object:
+        """지금 상태. restore 에 그대로 넘긴다."""
+        ...
+
+    def restore(self, point: object) -> None:
+        """checkpoint 때의 상태로 되돌린다."""
         ...

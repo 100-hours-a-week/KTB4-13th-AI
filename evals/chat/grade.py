@@ -3,6 +3,8 @@
 DB·LLM 없이 돈다. 책 정보(출판사, 출간연도, 가격, 책소개 유무)는 run.py 가 원본에 같이 저장한다.
 코드로 볼 수 있는 것만 채점한다 — 추천한 책이 질문에 맞는지, 이유가 책소개에 근거하는지는
 여기서 보지 않는다(cases.json 의 `ungraded`). 그래서 통과율은 실제 품질보다 높게 나온다.
+BE 를 거치지 않으므로 BE 에서만 나는 실패(긴 이유가 빈 카드를 저장하다 500)는 통과율에 안 들어가고
+공통 지표로만 센다(#504). dev 에서는 smoke_be.py 로 본다.
 
 사용:
     uv run python -m evals.chat.grade 원본.json
@@ -44,6 +46,16 @@ LEAK_WORD = "잔잔"
 LLM_TURN_MIN_SECONDS = 0.5
 
 _NON_WORD = re.compile(r"[\W_]+")
+# 제목 끝의 권·판본 표기("… 1", "… 제2권", "… 상", "…(양장)"). 같은 작품의 다른 권을 한 작품으로 본다(#504).
+# 숫자는 띄어쓰기 뒤의 1~3자리만 뗀다 — "1984", "1Q84"는 제목이고 "트렌드 코리아 2025"는 해마다 다른 책이다.
+# 어림이다 — "개정판"처럼 괄호 없이 붙은 말이나 로마 숫자는 못 뗀다.
+_VOLUME_SUFFIX = re.compile(
+    r"(?:\s+(?:제|vol\.?)?\s*\d{1,3}\s*(?:권|부|편|판)?"
+    r"|\s*[(\[][^)\]]*[)\]]"
+    r"|\s+(?:상|중|하)권?"
+    r"|\s*[:\-]\s*\d{1,3})\s*$",
+    re.IGNORECASE,
+)
 
 
 def load_cases(path: Path = CASES_PATH) -> dict[str, Any]:
@@ -53,6 +65,20 @@ def load_cases(path: Path = CASES_PATH) -> dict[str, Any]:
 def normalize(text: str | None) -> str:
     """제목 비교용. 띄어쓰기와 기호를 지우고 소문자로 바꾼다."""
     return _NON_WORD.sub("", (text or "").lower())
+
+
+def work_key(title: str | None) -> str:
+    """같은 작품의 다른 권·판본을 한 키로. 끝의 권 표기를 다 뗀 뒤 normalize 한다.
+
+    다 떼면 남는 게 없을 때("(1)"처럼)는 원래 제목을 쓴다.
+    """
+    text = (title or "").strip()
+    while True:
+        trimmed = _VOLUME_SUFFIX.sub("", text).strip()
+        if trimmed == text or not trimmed:
+            break
+        text = trimmed
+    return normalize(text)
 
 
 def _semantic(turn: dict) -> str:
@@ -124,6 +150,9 @@ def grade_case(case: dict, turns: list[dict], books: dict) -> list[str]:
             fails.append("빼 달라는 저자가 나옴")
     if want.get("distinct_titles") and len(titles) != len(set(titles)):
         fails.append("같은 책 중복")
+    works = [work_key(i.get("title")) for i in infos]
+    if want.get("distinct_works") and len(works) != len(set(works)):
+        fails.append("같은 작품 권·판본 중복")
     if "max_cards" in want and len(cards) > want["max_cards"]:
         fails.append("권수 초과")
     if "price_max" in want and any(
@@ -176,6 +205,26 @@ def _percent(part: int, whole: int) -> float:
     return round(100 * part / whole, 1) if whole else 0.0
 
 
+def _score_summary(values: list[int]) -> dict:
+    """카드 매칭 점수(0~100)의 분포. 사분위는 정렬한 목록의 자리로 어림한다."""
+    if not values:
+        return {"cards": 0}
+    ordered = sorted(values)
+
+    def at(q: float) -> int:
+        return ordered[min(len(ordered) - 1, int(len(ordered) * q))]
+
+    return {
+        "cards": len(ordered),
+        "zero": ordered.count(0),
+        "min": ordered[0],
+        "p25": at(0.25),
+        "median": at(0.5),
+        "p75": at(0.75),
+        "max": ordered[-1],
+    }
+
+
 def summarize(
     cases_file: dict, raw: dict, skip_runs: frozenset[int] = frozenset()
 ) -> dict:
@@ -210,19 +259,31 @@ def summarize(
         for name in names:
             group = [c for c in covered if c.get(field) == name]
             ok = sum(not f for c in group for f in per_case[str(c["no"])])
+            # 회차마다 따로 낸 통과율 중 가장 낮은 것. 평균이 괜찮아도 한 회차에서 크게 떨어지는 종류를 본다.
+            per_run = [
+                _percent(sum(not per_case[str(c["no"])][i] for c in group), len(group))
+                for i in range(len(runs))
+            ]
             out[name] = {
                 "passed": ok,
                 "total": len(group) * len(runs),
                 "rate": _percent(ok, len(group) * len(runs)),
+                "min_rate": min(per_run) if group and per_run else 0.0,
             }
         return out
 
     by_kind = tally("kind", cases_file["kinds"])
     # 출처별로 따로 본다. 버그를 다시 일으키는 질문의 결과가 실사용 품질처럼 읽히지 않게.
     by_source = tally("source", cases_file.get("sources", {}))
+    # 전체 통과율이 가리는 약한 종류(#504). 문항이 있는 종류 가운데 통과율이 가장 낮은 것.
+    graded_kinds = {k: v for k, v in by_kind.items() if v["total"]}
+    lowest = min(graded_kinds, key=lambda k: graded_kinds[k]["rate"], default=None)
+    lowest_kind = {"kind": lowest, **graded_kinds[lowest]} if lowest else None
 
     # 공통 지표. 질문과 상관없이 모든 턴에서 본다.
-    llm_turns = unsaid_mood = leaked = no_description = same_title = 0
+    llm_turns = unsaid_mood = leaked = no_description = same_title = same_work = 0
+    null_reason_long: Counter[str] = Counter()
+    scores: dict[str, list[int]] = {}
     degraded_per_run = []
     seconds: list[float] = []
     appearances: Counter[str] = Counter()
@@ -239,10 +300,24 @@ def summarize(
                 no_description += any(not i.get("has_description") for i in infos)
                 titles = [normalize(i.get("title")) for i in infos]
                 same_title += len(titles) != len(set(titles))
+                works = [work_key(i.get("title")) for i in infos]
+                same_work += len(works) != len(set(works))
+                # 명세는 책소개 없는 책과 LLM 장애 턴의 긴 이유를 null 로 두지만, BE 의
+                # recommendation_cards.reason_long 은 NOT NULL 이라 BE 를 거치면 이 턴은 500 이다(#504).
+                if any(not c.get("reason_long") for c in turn["cards"]):
+                    null_reason_long[str(case["no"])] += 1
                 if turn.get("degraded") or turn["sec"] <= LLM_TURN_MIN_SECONDS:
                     continue
                 llm_turns += 1
                 seconds.append(turn["sec"])
+                card_scores = [
+                    c["match_score"]
+                    for c in turn["cards"]
+                    if c.get("match_score") is not None
+                ]
+                if card_scores:
+                    intent = _spec_value(turn, "intent") or "?"
+                    scores.setdefault(intent, []).extend(card_scores)
                 semantic = _semantic(turn)
                 unsaid_mood += any(
                     w in semantic and w not in user_said for w in MOOD_WORDS
@@ -278,6 +353,7 @@ def summarize(
         ),
         "zero_cards_by_case": dict(sorted(zero_cards.items(), key=lambda x: int(x[0]))),
         "by_kind": by_kind,
+        "lowest_kind": lowest_kind,
         "by_source": by_source,
         "observed": observed,
         "fail_reasons": dict(
@@ -293,6 +369,17 @@ def summarize(
             "leak_word_rate": _percent(leaked, llm_turns),
             "turns_with_card_without_description": no_description,
             "turns_with_same_title_cards": same_title,
+            "turns_with_same_work_cards": same_work,
+            "turns_with_null_reason_long": sum(null_reason_long.values()),
+            "null_reason_long_by_case": dict(
+                sorted(null_reason_long.items(), key=lambda x: int(x[0]))
+            ),
+            # LLM 을 부른 턴의 카드만. 제목 찾기(exact) 카드가 0점으로 나온 적이 있어(10/11 시험 실행)
+            # 의도별로도 나눠 본다.
+            "match_score": {
+                "all": _score_summary([s for v in scores.values() for s in v]),
+                "by_intent": {k: _score_summary(v) for k, v in sorted(scores.items())},
+            },
             "degraded_turns_per_run": degraded_per_run,
             # 쏠림: 한 책이 (질문, 회차) 쌍 가운데 몇 %에 나왔나. 상위 5권.
             "most_shown_books": [
@@ -307,35 +394,48 @@ def summarize(
     }
 
 
+def _render_scores(part: dict) -> str:
+    if not part["cards"]:
+        return "카드 없음"
+    return (
+        f"{part['cards']}장 · 0점 {part['zero']}장 · 최소 {part['min']} · 25% {part['p25']}"
+        f" · 중앙 {part['median']} · 75% {part['p75']} · 최대 {part['max']}"
+    )
+
+
 def render(summary: dict, cases_file: dict) -> str:
     """사람이 읽는 요약."""
     s, c = summary, summary["common"]
     meta = s["meta"]
+    low = s["lowest_kind"]
     lines = [
         f"질문 묶음 v{s['cases_version']} · {s['cases']}문항 × {s['runs']}회"
         + (f" (뺀 회차: {s['skipped_runs']})" if s["skipped_runs"] else ""),
         f"서버 {meta.get('server_version', '?')} · 모델 {meta.get('model', '?')} · {meta.get('started_at', '?')}",
         "",
-        f"통과 {s['passed']}/{s['total']} ({s['pass_rate']}%) · 회차별 {s['passed_per_run']}",
+        f"통과 {s['passed']}/{s['total']} ({s['pass_rate']}%) · 회차별 {s['passed_per_run']}"
+        + (f" · 가장 낮은 종류 {low['kind']} {low['rate']}%" if low else ""),
         f"카드 0장 {s['zero_cards']}/{s['zero_cards_total']} ({s['zero_cards_rate']}%) · 질문별 {s['zero_cards_by_case']}",
         "",
-        "종류별 통과율",
+        "종류별 통과율 (괄호 안 = 회차별로 냈을 때 가장 낮은 회차)",
     ]
+
+    def group_line(name: str, k: dict, about: str) -> str:
+        return (
+            f"  {name:<10} {k['passed']}/{k['total']} ({k['rate']}%, 최저 {k['min_rate']}%)"
+            f"  {about}"
+        )
+
     for kind, about in cases_file["kinds"].items():
         k = s["by_kind"][kind]
-        if not k["total"]:
-            continue
-        lines.append(
-            f"  {kind:<10} {k['passed']}/{k['total']} ({k['rate']}%)  {about['about']}"
-        )
+        if k["total"]:
+            lines.append(group_line(kind, k, about["about"]))
     if s.get("by_source"):
         lines += ["", "출처별 통과율"]
         for source, about in cases_file.get("sources", {}).items():
             k = s["by_source"][source]
             if k["total"]:
-                lines.append(
-                    f"  {source:<10} {k['passed']}/{k['total']} ({k['rate']}%)  {about['about']}"
-                )
+                lines.append(group_line(source, k, about["about"]))
     if s.get("observed"):
         lines.append(
             "기록만 한 질문(통과율에서 뺌): "
@@ -350,6 +450,21 @@ def render(summary: dict, cases_file: dict) -> str:
         f"  말하지 않은 분위기가 조건 문장에 붙음 {c['unsaid_mood_turns']} ({c['unsaid_mood_rate']}%)",
         f"  답·이유에 '{c['leak_word']}' {c['leak_word_turns']} ({c['leak_word_rate']}%)",
         f"책소개 없는 카드가 낀 턴 {c['turns_with_card_without_description']} · 제목이 같은 카드가 낀 턴 {c['turns_with_same_title_cards']}",
+        f"같은 작품의 다른 권·판본이 낀 턴 {c['turns_with_same_work_cards']}",
+        f"긴 이유가 빈 카드가 낀 턴 {c['turns_with_null_reason_long']} · 질문별 {c['null_reason_long_by_case']}",
+    ]
+    if c["turns_with_null_reason_long"]:
+        lines.append(
+            "  ! BE 의 recommendation_cards.reason_long 이 NOT NULL 이라 BE 를 거치면 이 턴은 500 이다(#504)."
+            " AI 단독으로는 200 이라 통과율에 안 보인다. smoke_be.py 로 dev 에서 확인한다."
+        )
+    score = c["match_score"]
+    lines.append(f"매칭 점수 (LLM 을 부른 턴의 카드) {_render_scores(score['all'])}")
+    lines += [
+        f"  {intent:<9} {_render_scores(part)}"
+        for intent, part in score["by_intent"].items()
+    ]
+    lines += [
         "가장 많이 나온 책: "
         + ", ".join(f"{b['title']} {b['rate']}%" for b in c["most_shown_books"]),
         f"응답 시간 중앙 {c['seconds_median']}초 · 90% {c['seconds_p90']}초 (측정 환경에 따라 다름)",
@@ -372,9 +487,18 @@ def render(summary: dict, cases_file: dict) -> str:
 
 
 def compare(before: dict, after: dict) -> str:
-    """요약 두 개를 나란히. 버전이나 문항 수가 다르면 숫자를 견줄 수 없다고 알린다."""
+    """요약 두 개를 나란히. 버전이나 문항 수가 다르면 숫자를 견줄 수 없다고 알린다.
+
+    v4(#504) 전에 저장한 요약에는 가장 낮은 종류와 긴 이유가 빈 턴이 없어 "?"로 둔다.
+    """
+
+    def lowest(s: dict) -> str:
+        low = s.get("lowest_kind")
+        return f"{low['kind']} {low['rate']}%" if low else "?"
+
     rows = [
         ("통과율", f"{before['pass_rate']}%", f"{after['pass_rate']}%"),
+        ("가장 낮은 종류", lowest(before), lowest(after)),
         ("회차별 통과 수", before["passed_per_run"], after["passed_per_run"]),
         (
             "카드 0장",
@@ -390,6 +514,11 @@ def compare(before: dict, after: dict) -> str:
             f"'{LEAK_WORD}' 누출",
             f"{before['common']['leak_word_rate']}%",
             f"{after['common']['leak_word_rate']}%",
+        ),
+        (
+            "긴 이유가 빈 카드가 낀 턴(BE 500)",
+            before["common"].get("turns_with_null_reason_long", "?"),
+            after["common"].get("turns_with_null_reason_long", "?"),
         ),
     ]
     lines = []
