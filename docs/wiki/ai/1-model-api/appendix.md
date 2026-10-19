@@ -67,7 +67,7 @@ curl -X POST https://ai.internal.bookjeok.com/embeddings \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":"퇴근길에 읽을 짧은 소설","anchor_book":null,"exclude":[]},"message":"유머 있으면 좋겠어","recent_turns":[],"exclude_book_ids":[],"image_ref":null}'
+  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":"퇴근길에 읽을 짧은 소설","anchor_book":null,"exclude":[]},"message":"유머 있으면 좋겠어","recent_turns":[],"exclude_book_ids":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":null}'
 ```
 
 ```json
@@ -78,7 +78,7 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
     "spec": {
       "intent": "semantic",
       "exact": { "title": null, "author": null, "publisher": null },
-      "filters": { "in_stock_only": true },
+      "filters": {},
       "semantic": "퇴근길에 읽을 짧고 유머 있는 소설",
       "anchor_book": null,
       "exclude": []
@@ -87,6 +87,7 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
     "cards": [
       {
         "book_id": 1088,
+        "isbn": "9788900000011",
         "rank": 1,
         "match_score": 87,
         "title": "…",
@@ -113,7 +114,7 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":null,"anchor_book":null,"exclude":[]},"recent_turns":[],"exclude_book_ids":[],"image_ref":"<https://s3>.…/up_20260903_abc?X-Amz-Signature=…"}'
+  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":null,"anchor_book":null,"exclude":[]},"recent_turns":[],"exclude_book_ids":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":"<https://s3>.…/up_20260903_abc?X-Amz-Signature=…"}'
 ```
 
 응답. 한 권으로 특정한 경우:
@@ -135,6 +136,7 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
     "cards": [
       {
         "book_id": 4021,
+        "isbn": "9788900000042",
         "rank": 1,
         "match_score": 79,
         "title": "…",
@@ -315,12 +317,6 @@ curl -X POST https://ai.internal.bookjeok.com/agent/act \
     "not_shopping": false,
     "tool_calls": [
       {
-        "name": "cart.view",
-        "arguments": {},
-        "result": { "items": [] },
-        "grounded": true
-      },
-      {
         "name": "cart.add",
         "arguments": { "isbn": "9788900000011", "quantity": 1 },
         "result": { "ok": true },
@@ -339,7 +335,7 @@ curl -X POST https://ai.internal.bookjeok.com/agent/act \
 }
 ```
 
-담기 전에 장바구니를 조회해 이미 담긴 책인지 확인한다. 담기가 요청 수량으로 바꾸는 방식이라서, 이미 담긴 책을 담으면 수량이 줄 수 있기 때문이다.
+담기 전에 BE의 장바구니를 다시 읽어 이미 담긴 책인지 확인한다(`cart.add` 안에서 하며 `tool_calls`에는 따로 남지 않는다). 담기가 요청 수량으로 바꾸는 방식이라서, 이미 담긴 책을 담으면 수량이 줄 수 있기 때문이다.
 
 ### 예시 9: 서버 상태 점검 `GET /health`
 

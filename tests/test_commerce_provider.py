@@ -1,29 +1,26 @@
-"""⑦ 장바구니·카탈로그를 고르는 곳(app/gateway/commerce_provider.py) 테스트(#358, #363).
+"""⑦ 장바구니·카탈로그를 고르는 곳(app/gateway/commerce_provider.py) 테스트(#358, #363, #489).
 
-진짜 BE 가 연결되기 전에는 COMMERCE_MOCK 이 켜져 있을 때만 가짜를 준다. 꺼져 있는데 가짜로 답하면 배포
-환경에서 "담았어요"가 거짓이 된다.
+장바구니는 BE 를 부르지 않고 요청에 실린 장바구니와 가격·재고로 만든 복사본이다. 그래서 COMMERCE_MOCK 과
+상관없이 운영에서도 돈다. 카탈로그는 COMMERCE_MOCK 이 켜지면 개발용 서가, 아니면 AI DB 다.
 """
 
 import asyncio
 
 import pytest
 
+from app.agent.schemas import parse_request
 from app.core.config import get_settings
-from app.gateway import commerce_provider
 from app.gateway.catalog import CatalogGateway
+from app.gateway.catalog_db import DbCatalog
 from app.gateway.commerce import CommerceGateway
-from app.gateway.commerce_provider import (
-    CommerceNotConfigured,
-    get_catalog,
-    get_commerce,
-)
+from app.gateway.commerce_provider import get_catalog, get_commerce
+
+A, B = "9788900000011", "9788900000028"
 
 
 @pytest.fixture(autouse=True)
-def _fresh(monkeypatch):
-    commerce_provider.reset_dev_commerce()
+def _fresh():
     yield
-    commerce_provider.reset_dev_commerce()
     get_settings.cache_clear()
 
 
@@ -32,26 +29,71 @@ def _mock(monkeypatch, on: bool) -> None:
     get_settings.cache_clear()
 
 
-def test_COMMERCE_MOCK이_꺼져_있으면_장바구니도_카탈로그도_연결되지_않은_것이다(
-    monkeypatch,
+def _request(**fields):
+    body = {
+        "user_id": 1,
+        "message": "1번 담아줘",
+        "user_context": {"logged_in": True},
+        "idempotency_key": "k",
+        **fields,
+    }
+    req = parse_request(body)
+    assert req is not None
+    return req
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_장바구니는_COMMERCE_MOCK과_상관없이_요청에_실린_값으로_만든다(
+    monkeypatch, on: bool
 ) -> None:
-    _mock(monkeypatch, False)
+    _mock(monkeypatch, on)
+    req = _request(
+        cart=[
+            {
+                "isbn": A,
+                "title": "책1",
+                "price": 15000,
+                "quantity": 2,
+                "available": True,
+            }
+        ],
+        offers=[{"isbn": B, "title": "책2", "price": 22000, "in_stock": True}],
+    )
 
-    with pytest.raises(CommerceNotConfigured):
-        get_commerce(1)
-    with pytest.raises(CommerceNotConfigured):
-        get_catalog()
-
-
-def test_켜져_있으면_같은_개발용_서가를_장바구니와_카탈로그로_쓴다(monkeypatch) -> None:
-    _mock(monkeypatch, True)
-
-    commerce = get_commerce(1)
-    catalog = get_catalog()
+    commerce = get_commerce(req)
 
     assert isinstance(commerce, CommerceGateway)
-    assert isinstance(catalog, CatalogGateway)
-    assert commerce is catalog  # 같은 서가여야 담은 책과 소개글이 어긋나지 않는다
+    lines = asyncio.run(commerce.get_cart(1))
+    assert [(line.isbn, line.quantity) for line in lines] == [(A, 2)]
+    offers = asyncio.run(commerce.get_offers([B]))
+    assert [(o.isbn, o.price, o.in_stock) for o in offers] == [(B, 22000, True)]
+
+
+def test_요청마다_새_복사본이라_앞_요청의_변경이_남지_않는다() -> None:
+    req = _request(
+        cart=[
+            {
+                "isbn": A,
+                "title": "책1",
+                "price": 15000,
+                "quantity": 1,
+                "available": True,
+            }
+        ]
+    )
+    first = get_commerce(req)
+    asyncio.run(first.remove_item(1, A))
+
+    second = get_commerce(req)
+
+    assert asyncio.run(first.get_cart(1)) == []
+    assert [line.isbn for line in asyncio.run(second.get_cart(1))] == [A]
+
+
+def test_COMMERCE_MOCK이_꺼져_있으면_카탈로그는_AI_DB다(monkeypatch) -> None:
+    _mock(monkeypatch, False)
+
+    assert isinstance(get_catalog(), DbCatalog)
 
 
 def test_개발용_서가에는_소개글이_있는_책이_둘_이상_있다(monkeypatch) -> None:
@@ -59,7 +101,9 @@ def test_개발용_서가에는_소개글이_있는_책이_둘_이상_있다(mon
     _mock(monkeypatch, True)
     isbns = ["9788900001001", "9788900001018"]
 
-    texts = asyncio.run(get_catalog().get_texts(isbns))
+    catalog = get_catalog()
+    texts = asyncio.run(catalog.get_texts(isbns))
 
+    assert isinstance(catalog, CatalogGateway)
     assert [t.isbn for t in texts] == isbns
     assert all(t.description for t in texts)
