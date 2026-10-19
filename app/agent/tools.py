@@ -127,13 +127,27 @@ def _fail(code: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error": code, **extra}
 
 
-async def _write(arguments: dict[str, Any], call: Awaitable[None]) -> _Done:
+async def _write(
+    ctx: TurnContext, arguments: dict[str, Any], call: Awaitable[None]
+) -> _Done:
     """쓰기 호출을 하고 BE 가 거절하면 이유를 결과에 적는다. 장바구니는 바뀌지 않았다."""
     try:
         await call
     except CommerceError as e:
         return arguments, _fail(e.code.value)
+    ctx.changed_cart = True
     return arguments, {"ok": True}
+
+
+def _separate(ctx: TurnContext) -> dict[str, Any] | None:
+    """이번 턴에 조합을 골랐으면 장바구니를 바꾸지 않는 결과, 아니면 None.
+
+    고른 조합(selection)은 확인 버튼으로 담고, 장바구니 변경(actions)은 이미 했다고 말한 것이라 BE 가 한 응답에
+    같이 받지 않는다(#489). 고른 책 자체를 담으려 하면 그 전에 CONFIRMATION_REQUIRED 로 막힌다.
+    """
+    if ctx.picked:
+        return _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
+    return None
 
 
 def _total(lines: list[CartLine]) -> int:
@@ -203,6 +217,8 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
     # 프롬프트로 부탁하는 것으로는 못 막아서 장바구니를 바꾸기 전에 코드가 막는다
     if isbn in ctx.picked:
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
+    if (separate := _separate(ctx)) is not None:
+        return arguments, separate
     if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
         return arguments, blocked
     # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
@@ -219,7 +235,7 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
         )
         return arguments, failure
     arguments, result = await _write(
-        arguments, gateway.add_item(ctx.user_id, isbn, quantity)
+        ctx, arguments, gateway.add_item(ctx.user_id, isbn, quantity)
     )
     if existing is not None and result.get("ok") is True:
         # 결과 문장이 "담았어요"가 아니라 "수량을 N권으로 바꿨어요"가 되게 알린다
@@ -232,10 +248,12 @@ async def _update(
 ) -> _Done:
     isbn = resolve(ctx, args.book)
     arguments = {"isbn": isbn, "quantity": args.quantity}
+    if (separate := _separate(ctx)) is not None:
+        return arguments, separate
     if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
         return arguments, blocked
     return await _write(
-        arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
+        ctx, arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
     )
 
 
@@ -243,9 +261,11 @@ async def _remove(
     ctx: TurnContext, gateway: CommerceGateway, args: RemoveArgs
 ) -> _Done:
     isbn = resolve(ctx, args.book)
+    if (separate := _separate(ctx)) is not None:
+        return {"isbn": isbn}, separate
     if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
         return {"isbn": isbn}, blocked
-    return await _write({"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
+    return await _write(ctx, {"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
 
 
 async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) -> _Done:
@@ -274,8 +294,13 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
     가격과 재고는 LLM 이 읽어 오게 하지 않고 여기서 BE 에서 직접 읽는다(LLM 이 틀린 값을 넘길 수 없다).
     이미 장바구니에 있는 책은 고르지 않는다. 확인 버튼으로 담을 때 BE 의 담기가 "요청 수량으로 바꾸기"라서
     2권 담긴 책이 1권이 될 수 있기 때문이다.
+
+    이번 턴에 장바구니를 이미 바꿨으면 고르지 않는다. 고른 조합(selection)과 장바구니 변경(actions)을 BE 가 한
+    응답에 같이 받지 않는다(#489).
     """
     arguments = {"budget_total": args.budget_total, "count": args.count}
+    if ctx.changed_cart:
+        return arguments, _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
     ordered = sorted(ctx.cards, key=lambda card: card.rank)
     in_cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
     offers = {o.isbn: o for o in await gateway.get_offers([c.isbn for c in ordered])}

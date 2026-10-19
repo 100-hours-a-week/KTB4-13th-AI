@@ -827,14 +827,16 @@ def test_지목한_책으로_담으려_해도_고른_책이면_막는다() -> No
     assert fake.cart_state(UID) == {}
 
 
-def test_고르지_않은_책은_사용자가_말한_대로_담긴다() -> None:
+def test_조합을_골랐으면_고르지_않은_책도_이번_턴에는_담지_않는다() -> None:
+    # 고른 조합(selection)과 장바구니 변경(actions)을 BE 가 한 응답에 같이 받지 않는다(#489). #363 에서는
+    # 담았다
     spy, fake, ctx = _pick_setup(THREE)
     _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
 
     call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})  # 2번은 고르지 않았다
 
-    assert call.result == {"ok": True}
-    assert fake.cart_state(UID) == {B: 1}
+    assert call.result == {"ok": False, "error": "SEPARATE_TURN_REQUIRED"}
+    assert fake.cart_state(UID) == {}
 
 
 def test_조합을_못_골랐으면_담기가_막히지_않는다() -> None:
@@ -851,9 +853,12 @@ def test_조합을_고르기_전에_담은_것은_그대로다() -> None:
     spy, fake, ctx = _pick_setup(THREE)
     _run(ctx, spy, ToolName.CART_ADD, {"book": card(2)})
 
-    _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
 
     assert fake.cart_state(UID) == {B: 1}
+    # 장바구니를 바꾼 턴에는 고르지 않는다(#489)
+    assert call.result["error"] == "SEPARATE_TURN_REQUIRED"
+    assert not ctx.picked
 
 
 def test_고른_책은_다음_요청으로_이어지지_않는다() -> None:

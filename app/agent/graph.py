@@ -235,6 +235,11 @@ def build_graph(
             recorded = await _rolled_back(ctx, gateway, recorded)
             for (at, call_id, call_name), call in zip(slots, recorded, strict=True):
                 replies[at] = _reply(ctx, call, call_id, call_name)
+            # 되돌린 쓰기는 바꾼 것이 아니다. 앞 묶음에서 성공한 쓰기만 남았으면 그것으로 다시 정한다
+            ctx.changed_cart = any(
+                c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
+                for c in state["tool_calls"]
+            )
         # JSON 이 깨진 호출. 실행하지 않고 이유만 돌려준다
         for index, broken in enumerate(getattr(ai, "invalid_tool_calls", None) or []):
             replies.append(
