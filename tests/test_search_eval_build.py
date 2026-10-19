@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections import Counter
 
 import pytest
 
@@ -86,16 +87,27 @@ def test_저자는_사람_이름이고_이름이_통째로_든_책이_충분한_
     assert [(c["query"], c["expect"]["author"]) for c in authors] == [("한강", "한강")]
 
 
-def test_필터는_낱말마다_조건_넷이고_없는_말은_다섯이다() -> None:
+def test_필터는_낱말마다_조건_넷이고_없는_말은_다섯이고_서술형은_마흔이다() -> None:
     cases = build.fixed_cases()
+    assert Counter(c["kind"] for c in cases) == {
+        "filter": 20,
+        "nonsense": 5,
+        "descriptive": 40,
+    }
     filters = [c["filters"] for c in cases if c["kind"] == "filter"]
-    assert len(filters) == 20 and len(cases) == 25
     assert filters[:4] == [
         {"category": "소설"},
         {"pub_year_from": 2020},
         {"price_max": 12000},
         {"category": "소설", "pub_year_from": 2020, "price_max": 12000},
     ]
+    assert cases[-1] == {
+        "id": "descriptive-40",
+        "kind": "descriptive",
+        "query": "아이와 함께 읽는 공룡 그림책",
+        "facet": "mixed",
+        "source": "written",
+    }
 
 
 def test_묶음_파일은_사례를_한_줄에_하나씩_쓴다() -> None:
