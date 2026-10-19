@@ -416,3 +416,26 @@ def test_일부_질문만_골라_센다() -> None:
     summary = grade.summarize(cases_file, raw, only=frozenset({1}))
 
     assert (summary["cases"], summary["passed"], summary["only"]) == (1, 1, [1])
+
+
+def test_긴_이유에_말하지_않았고_책_소개에도_없는_분위기를_센다() -> None:
+    # 조건 문장의 "가벼운"은 사용자가 말하지 않은 말이다(1단계가 지어 넣음).
+    spec = {"filters": {}, "semantic": "가벼운 에세이"}
+    echoed = _turn(
+        msg="에세이 추천해줘",
+        spec=spec,
+        cards=[_card(1, reason_long="가벼운 에세이를 찾는 분께 잘 어울리는 책이에요.")],
+    )
+    said = _turn(
+        msg="가벼운 에세이 추천해줘",
+        spec=spec,
+        cards=[
+            _card(1, reason_long="가벼운 에세이를 찾으셨죠. 퇴근 후 그림 이야기예요.")
+        ],
+    )
+
+    common = grade.summarize(_cases_file(_case()), _described_raw([[echoed], [said]]))[
+        "common"
+    ]
+
+    assert (common["reason_long_cards"], common["reason_long_unsaid_mood"]) == (2, 1)

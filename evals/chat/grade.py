@@ -214,10 +214,8 @@ def _percent(part: int, whole: int) -> float:
     return round(100 * part / whole, 1) if whole else 0.0
 
 
-def _reason_long_metrics(
-    turns: list[tuple[dict, list[dict]]], books: dict
-) -> dict[str, Any]:
-    """긴 이유가 책 소개를 옮겼는지, 요청을 짚었는지(#503). turns 는 LLM 을 부른 (턴, 그 턴의 카드) 목록이다.
+def _reason_long_metrics(turns: list[tuple[dict, str]], books: dict) -> dict[str, Any]:
+    """긴 이유가 책 소개를 옮겼는지, 요청을 짚었는지(#503). turns 는 LLM 을 부른 (턴, 그 턴까지 사용자가 한 말) 목록이다.
 
     책 소개가 있는 책의 카드만 본다(책 소개가 없는 책의 긴 이유는 #407 로 늘 비어 있다). 원본에 책 소개가 없으면
     (run.py 가 책 소개를 저장하기 전의 원본) 모두 None 이다 — `run.py --refill-books`로 채운다.
@@ -225,11 +223,12 @@ def _reason_long_metrics(
     if not books or any("description" not in b for b in books.values()):
         return {"reason_long_measured": False}
     cards = missing = copied = asked = mentioned = own_asked = own_mentioned = 0
+    unsaid_mood = 0
     shares: list[float] = []
     lengths: list[int] = []
-    for turn, turn_cards in turns:
+    for turn, user_said in turns:
         words = request_words(_semantic(turn))
-        for card in turn_cards:
+        for card in turn["cards"]:
             description = _book(books, card).get("description") or ""
             if not description.strip():
                 continue
@@ -242,6 +241,12 @@ def _reason_long_metrics(
             share = copied_share(reason, description)
             shares.append(share)
             copied += share >= COPIED_SHARE_MIN
+            # 사용자가 말하지 않았고 책 소개에도 없는 분위기를 이 책에 붙였나. 1단계가 조건 문장에 지어 넣은 분위기를
+            # 긴 이유가 "…를 찾는 분께 어울린다"고 되받으면 여기 걸린다. MOOD_WORDS 의 어림이다.
+            unsaid_mood += any(
+                w in reason and w not in description and w not in user_said
+                for w in MOOD_WORDS
+            )
             if words:
                 asked += 1
                 mentioned += any(w in reason.lower() for w in words)
@@ -265,6 +270,8 @@ def _reason_long_metrics(
         "reason_long_own_word_cards": own_asked,
         "reason_long_mentions_own_word": own_mentioned,
         "reason_long_mentions_own_word_rate": _percent(own_mentioned, own_asked),
+        "reason_long_unsaid_mood": unsaid_mood,
+        "reason_long_unsaid_mood_rate": _percent(unsaid_mood, cards),
         "reason_long_chars_median": statistics.median(lengths) if lengths else None,
         "reason_long_chars_max": max(lengths) if lengths else None,
     }
@@ -323,7 +330,7 @@ def summarize(
 
     # 공통 지표. 질문과 상관없이 모든 턴에서 본다.
     llm_turns = unsaid_mood = leaked = no_description = same_title = 0
-    llm_turn_cards: list[tuple[dict, list[dict]]] = []
+    llm_turn_said: list[tuple[dict, str]] = []
     degraded_per_run = []
     seconds: list[float] = []
     appearances: Counter[str] = Counter()
@@ -343,7 +350,7 @@ def summarize(
                 if turn.get("degraded") or turn["sec"] <= LLM_TURN_MIN_SECONDS:
                     continue
                 llm_turns += 1
-                llm_turn_cards.append((turn, turn["cards"]))
+                llm_turn_said.append((turn, user_said))
                 seconds.append(turn["sec"])
                 semantic = _semantic(turn)
                 unsaid_mood += any(
@@ -406,7 +413,7 @@ def summarize(
             "seconds_p90": round(seconds[int(len(seconds) * 0.9)], 1)
             if seconds
             else None,
-            **_reason_long_metrics(llm_turn_cards, books),
+            **_reason_long_metrics(llm_turn_said, books),
         },
     }
 
@@ -494,6 +501,8 @@ def _render_reason_long(c: dict) -> list[str]:
         f"  책 소개를 옮김(8글자 묶음의 {COPIED_SHARE_MIN:.0%} 이상) {copied}"
         + f" · 옮긴 몫 중앙 {c['reason_long_copy_share_median']}",
         f"  요청 낱말을 짚음 {mentioned} · 책 소개에 없는 요청 낱말을 짚음 {own}",
+        f"  말하지 않았고 책 소개에도 없는 분위기를 붙임 {c['reason_long_unsaid_mood']}"
+        + f" ({c['reason_long_unsaid_mood_rate']}%)",
         f"  긴 이유가 빈 카드 {c['reason_long_missing']}"
         + f" · 길이 중앙 {c['reason_long_chars_median']}자"
         + f" · 가장 긴 것 {c['reason_long_chars_max']}자(명세 상한 300자)",
@@ -524,6 +533,11 @@ def _reason_long_rows(before: dict, after: dict) -> list[tuple[str, str, str]]:
             "  책 소개에 없는 요청 낱말을 짚음",
             f"{b['reason_long_mentions_own_word_rate']}%",
             f"{a['reason_long_mentions_own_word_rate']}%",
+        ),
+        (
+            "긴 이유에 말하지 않은 분위기(책 소개에도 없음)",
+            f"{b['reason_long_unsaid_mood_rate']}%",
+            f"{a['reason_long_unsaid_mood_rate']}%",
         ),
         (
             "책 소개가 있는데 긴 이유가 빈 카드",
