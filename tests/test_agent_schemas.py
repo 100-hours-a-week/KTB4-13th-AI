@@ -504,6 +504,8 @@ def test_판매_중지된_장바구니_줄은_가격이_null이다() -> None:
         pytest.param({"cart": [{**LINE, "quantity": 501}]}, id="수량_501"),
         pytest.param({"cart": [{**LINE, "title": ""}]}, id="빈_제목"),
         pytest.param({"cart": [{**LINE, "price": -1}]}, id="음수_가격"),
+        pytest.param({"cart": [{**LINE, "price": 12800.5}]}, id="원_아래_소수_가격"),
+        pytest.param({"cart": [{**LINE, "price": True}]}, id="가격이_불리언"),
         pytest.param({"cart": [LINE, LINE]}, id="같은_책_두_줄"),
         pytest.param(
             {"cart": [{**LINE, "isbn": f"97889{n:08d}"[:13]} for n in range(31)]},
@@ -523,10 +525,36 @@ def test_판매_중지된_장바구니_줄은_가격이_null이다() -> None:
             },
             id="가격이_문자열",
         ),
+        pytest.param(
+            {
+                "offers": [
+                    {
+                        "isbn": "9788900000011",
+                        "title": "책",
+                        "price": 13500.5,
+                        "in_stock": True,
+                    }
+                ]
+            },
+            id="가격_칸_원_아래_소수",
+        ),
     ],
 )
 def test_장바구니와_가격_칸이_계약에_안_맞으면_400이다(overrides: dict) -> None:
     assert parse_request(_request(**overrides)) is None
+
+
+def test_소수점이_붙은_가격도_원_단위_정수로_읽는다() -> None:
+    # BE 가격 열이 DECIMAL(19,2)라서 BigDecimal 이 12800.00 으로 나간다(BE 스택 6f98aae). JSON 으로 읽으면
+    # 12800.0 이다. 정수만 받으면 쇼핑 턴이 전부 400 이다
+    offer = {"isbn": "9788900000011", "title": "책", "price": 13500.0, "in_stock": True}
+    req = parse_request(_request(cart=[{**LINE, "price": 12800.0}], offers=[offer]))
+
+    assert req is not None
+    assert req.cart[0].price == 12800
+    assert type(req.cart[0].price) is int
+    assert req.offers[0].price == 13500
+    assert type(req.offers[0].price) is int
 
 
 def test_바꿀_것은_set이면_수량이_있고_remove면_수량_칸이_없다() -> None:
