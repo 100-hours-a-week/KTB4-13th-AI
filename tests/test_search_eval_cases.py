@@ -1,4 +1,4 @@
-"""① 검색 평가 묶음(evals/search/cases.json)의 형식 검사(#495). DB 없이 돈다.
+"""① 검색 평가 묶음(evals/search/cases.json)의 형식 검사(#495, #502). DB 없이 돈다.
 
 묶음을 돌려 채점하는 것은 책 211만 권이 든 평가 DB 가 있어야 해서 CI 에서 하지 않는다. 여기서는 묶음 자체가
 깨지지 않았는지만 본다. 형식이 어긋나면 실행기가 그 사례를 틀리게 채점한다.
@@ -19,7 +19,16 @@ _PATH = Path(__file__).resolve().parents[1] / "evals" / "search" / "cases.json"
 _DATA = json.loads(_PATH.read_text(encoding="utf-8"))
 _CASES = _DATA["cases"]
 _BY_ID = {case["id"]: case for case in _CASES}
-COUNTS = {"title": 300, "title-variant": 100, "author": 30, "filter": 20, "nonsense": 5}
+COUNTS = {
+    "title": 300,
+    "title-variant": 100,
+    "author": 30,
+    "filter": 20,
+    "nonsense": 5,
+    "descriptive": 40,
+}
+# 서술형 검색어의 소분류(#502). long 은 조건이 여럿인 긴 검색어다
+FACETS = {"topic": 7, "mood": 7, "audience": 6, "situation": 6, "long": 8, "mixed": 6}
 
 
 def _of(kind: str) -> list[dict]:
@@ -94,3 +103,15 @@ def test_필터_사례는_검색이_받는_조건을_건다() -> None:
         assert case["filters"] and set(case["filters"]) <= fields, case["id"]
     for case in _of("nonsense"):
         assert "filters" not in case and "expect" not in case
+
+
+def test_서술형_사례는_소분류와_출처가_있고_점수는_라벨_파일에_둔다() -> None:
+    cases = _of("descriptive")
+    assert Counter(case["facet"] for case in cases) == FACETS
+    assert {case["source"] for case in cases} <= {"handoff", "chat-eval", "written"}
+    assert len({case["query"] for case in cases}) == len(cases)
+    for case in cases:
+        # 맞는 책이 여럿이라 사례에 정답을 적지 않는다. 책마다 매긴 점수는 labels.json 에 있다
+        assert "expect" not in case and "filters" not in case, case["id"]
+        if case["facet"] == "long":
+            assert len(case["query"]) >= 20, case["id"]
