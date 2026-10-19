@@ -211,21 +211,30 @@ def _row(items: Sequence[Score]) -> dict[str, Any]:
     elif kind == "filter":
         row["violations"] = sum(s.violations for s in measured)
         row["violating_cases"] = sum(s.violations > 0 for s in measured)
+    elif kind == "descriptive":
+        row["ndcg_mean"] = _mean([s.ndcg for s in measured])
+        row["relevant_mean"] = _mean([s.relevant for s in measured], 1)
+        row["irrelevant_mean"] = _mean([s.irrelevant for s in measured], 1)
+        row["unlabeled"] = sum(s.unlabeled for s in measured)
     return row
 
 
 def summarize(scores: Sequence[Score]) -> dict[str, Any]:
-    """종류별로 모은다. 표기 변형은 바꾼 방법별로도 낸다. 종류를 섞은 전체 숫자는 내지 않는다.
+    """종류별로 모은다. 표기 변형은 바꾼 방법별로, 서술형은 소분류별로도 낸다. 종류를 섞은 전체 숫자는 내지 않는다.
 
     재지 못한 사례(200 이 아니거나 줄여 답함)는 평균에서 빼고, `cases` 와 `measured` 의 차이로 드러낸다.
     """
     kinds: dict[str, list[Score]] = {}
     changes: dict[str, list[Score]] = {}
+    facets: dict[str, list[Score]] = {}
     for s in scores:
         kinds.setdefault(s.kind, []).append(s)
         if s.change:
             changes.setdefault(s.change, []).append(s)
+        if s.facet:
+            facets.setdefault(s.facet, []).append(s)
     return {
         "kinds": {kind: _row(items) for kind, items in kinds.items()},
         "changes": {change: _row(items) for change, items in changes.items()},
+        "facets": {facet: _row(items) for facet, items in facets.items()},
     }
