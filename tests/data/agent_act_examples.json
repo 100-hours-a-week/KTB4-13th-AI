@@ -26,7 +26,28 @@
       "logged_in": true
     },
     "allow_tools": null,
-    "idempotency_key": "idem_…"
+    "idempotency_key": "idem_…",
+    "cart": [],
+    "offers": [
+      {
+        "isbn": "9788900000011",
+        "title": "달러구트 꿈 백화점",
+        "price": 13500,
+        "in_stock": true
+      },
+      {
+        "isbn": "9788900000028",
+        "title": "밤의 도서관",
+        "price": 14000,
+        "in_stock": true
+      },
+      {
+        "isbn": "9788900000035",
+        "title": "아무튼, 산",
+        "price": 12800,
+        "in_stock": true
+      }
+    ]
   },
   "responses": {
     "pick": {
@@ -34,6 +55,7 @@
       "data": {
         "reply": "《달러구트 꿈 백화점》 + 《아무튼, 산》 = 26,300원. 이 둘 담을까요?",
         "not_shopping": false,
+        "actions": [],
         "tool_calls": [
           {
             "name": "book.offer",
@@ -131,6 +153,13 @@
       "data": {
         "reply": "《달러구트 꿈 백화점》을 장바구니에 담았어요.",
         "not_shopping": false,
+        "actions": [
+          {
+            "op": "set",
+            "isbn": "9788900000011",
+            "quantity": 1
+          }
+        ],
         "tool_calls": [
           {
             "name": "cart.view",
@@ -181,6 +210,7 @@
       "data": {
         "reply": "《달러구트 꿈 백화점》은 이미 장바구니에 2권 담겨 있어요. 수량을 바꾸시려면 알려 주세요.",
         "not_shopping": false,
+        "actions": [],
         "tool_calls": [
           {
             "name": "cart.view",
@@ -220,6 +250,7 @@
       "data": {
         "reply": "어떤 책 말씀이실까요? 방금 추천한 1번 《달러구트 꿈 백화점》이 맞을까요?",
         "not_shopping": false,
+        "actions": [],
         "tool_calls": [],
         "resolved_reference": {
           "ref": "그 책",
@@ -244,6 +275,7 @@
       "data": {
         "reply": "1번은 문장이 담백해 부담이 적고, 3번은 화제작인데 호흡이 무거워요. 가격은 700원 차이(1번 13,500 / 3번 12,800)예요.",
         "not_shopping": false,
+        "actions": [],
         "tool_calls": [
           {
             "name": "book.offer",
@@ -305,6 +337,7 @@
       "data": {
         "reply": "주문 상태는 주문내역에서 확인하실 수 있어요.",
         "not_shopping": false,
+        "actions": [],
         "tool_calls": [
           {
             "name": "ui.guide",
@@ -333,6 +366,7 @@
       "data": {
         "reply": "",
         "not_shopping": true,
+        "actions": [],
         "tool_calls": [],
         "resolved_reference": null,
         "selection": null,
