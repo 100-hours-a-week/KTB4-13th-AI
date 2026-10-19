@@ -9,6 +9,7 @@ BE 를 거치지 않으므로 BE 에서만 나는 실패(긴 이유가 빈 카�
 사용:
     uv run python -m evals.chat.grade 원본.json
     uv run python -m evals.chat.grade 원본.json --skip-runs 4,5 --save evals/chat/results/이름.json
+    uv run python -m evals.chat.grade 원본.json --only 8,43     # 일부 질문만(다른 원본과 같은 질문으로 견줄 때)
     uv run python -m evals.chat.grade --compare 전.json 후.json
 """
 
@@ -19,6 +20,8 @@ import statistics
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from evals.chat import reason_long
 
 CASES_PATH = Path(__file__).with_name("cases.json")
 
@@ -226,10 +229,16 @@ def _score_summary(values: list[int]) -> dict:
 
 
 def summarize(
-    cases_file: dict, raw: dict, skip_runs: frozenset[int] = frozenset()
+    cases_file: dict,
+    raw: dict,
+    skip_runs: frozenset[int] = frozenset(),
+    only: frozenset[int] = frozenset(),
 ) -> dict:
-    """원본 하나를 채점해 요약한다. skip_runs 는 1부터 세는 회차 번호다(끊긴 회차를 뺄 때)."""
-    cases = cases_file["cases"]
+    """원본 하나를 채점해 요약한다. skip_runs 는 1부터 세는 회차 번호다(끊긴 회차를 뺄 때).
+
+    only 를 주면 그 번호의 질문만 센다. 일부 질문만 돌린 원본을 전체를 돌린 원본과 같은 질문으로 견줄 때 쓴다.
+    """
+    cases = [c for c in cases_file["cases"] if not only or c["no"] in only]
     books = raw.get("books") or {}
     runs = [r for i, r in enumerate(raw["runs"], start=1) if i not in skip_runs]
     ran = [c for c in cases if all(str(c["no"]) in r for r in runs)]
@@ -284,6 +293,7 @@ def summarize(
     llm_turns = unsaid_mood = leaked = no_description = same_title = same_work = 0
     null_reason_long: Counter[str] = Counter()
     scores: dict[str, list[int]] = {}
+    llm_turn_said: list[tuple[dict, str]] = []  # 긴 이유 지표(#503)에 넘긴다
     degraded_per_run = []
     seconds: list[float] = []
     appearances: Counter[str] = Counter()
@@ -309,6 +319,7 @@ def summarize(
                 if turn.get("degraded") or turn["sec"] <= LLM_TURN_MIN_SECONDS:
                     continue
                 llm_turns += 1
+                llm_turn_said.append((turn, user_said))
                 seconds.append(turn["sec"])
                 card_scores = [
                     c["match_score"]
@@ -341,6 +352,7 @@ def summarize(
         "cases_version": cases_file["version"],
         "runs": len(runs),
         "skipped_runs": sorted(skip_runs),
+        "only": sorted(only),
         "cases": len(covered),
         "passed": passed,
         "total": total,
@@ -390,6 +402,7 @@ def summarize(
             "seconds_p90": round(seconds[int(len(seconds) * 0.9)], 1)
             if seconds
             else None,
+            **reason_long.metrics(llm_turn_said, books, MOOD_WORDS),
         },
     }
 
@@ -410,7 +423,8 @@ def render(summary: dict, cases_file: dict) -> str:
     low = s["lowest_kind"]
     lines = [
         f"질문 묶음 v{s['cases_version']} · {s['cases']}문항 × {s['runs']}회"
-        + (f" (뺀 회차: {s['skipped_runs']})" if s["skipped_runs"] else ""),
+        + (f" (뺀 회차: {s['skipped_runs']})" if s["skipped_runs"] else "")
+        + (f" (질문 {len(s['only'])}개만)" if s.get("only") else ""),
         f"서버 {meta.get('server_version', '?')} · 모델 {meta.get('model', '?')} · {meta.get('started_at', '?')}",
         "",
         f"통과 {s['passed']}/{s['total']} ({s['pass_rate']}%) · 회차별 {s['passed_per_run']}"
@@ -465,6 +479,7 @@ def render(summary: dict, cases_file: dict) -> str:
         for intent, part in score["by_intent"].items()
     ]
     lines += [
+        *reason_long.render(c),
         "가장 많이 나온 책: "
         + ", ".join(f"{b['title']} {b['rate']}%" for b in c["most_shown_books"]),
         f"응답 시간 중앙 {c['seconds_median']}초 · 90% {c['seconds_p90']}초 (측정 환경에 따라 다름)",
@@ -520,6 +535,7 @@ def compare(before: dict, after: dict) -> str:
             before["common"].get("turns_with_null_reason_long", "?"),
             after["common"].get("turns_with_null_reason_long", "?"),
         ),
+        *reason_long.compare_rows(before["common"], after["common"]),
     ]
     lines = []
     if (before["cases_version"], before["cases"]) != (
@@ -540,6 +556,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="③ 챗봇 평가 채점")
     parser.add_argument("raw", nargs="?", help="run.py 가 저장한 원본")
     parser.add_argument("--skip-runs", default="", help="뺄 회차 번호(1부터). 예: 4,5")
+    parser.add_argument("--only", default="", help="이 번호의 질문만 센다. 예: 8,43")
     parser.add_argument("--save", help="요약을 저장할 JSON 경로")
     parser.add_argument(
         "--compare", nargs=2, metavar=("전", "후"), help="저장한 요약 둘을 견준다"
@@ -558,7 +575,8 @@ def main() -> None:
     cases_file = load_cases()
     raw = json.loads(Path(args.raw).read_text(encoding="utf-8"))
     skip = frozenset(int(n) for n in args.skip_runs.split(",") if n.strip())
-    summary = summarize(cases_file, raw, skip)
+    only = frozenset(int(n) for n in args.only.split(",") if n.strip())
+    summary = summarize(cases_file, raw, skip, only)
     print(render(summary, cases_file))
     if args.save:
         Path(args.save).write_text(
