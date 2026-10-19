@@ -25,6 +25,7 @@ from app.chat import topic_switch
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, history, isbn, popularity, responses
+from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
 from app.feed import personalized, scoring
@@ -47,6 +48,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 CANDIDATE_LIMIT = 10
+# 새 요청 판정은 1단계와 나란히 가서 보통 시간이 안 늘어난다. 판정만 느려져도 응답이 그만큼 늦어지지 않게, 1단계가
+# 끝난 뒤 이만큼만 더 기다리고 못 받으면 이어가는 말로 본다(#513). 업계도 다시 쓰기 호출에 0.3~1초 한도를 둔다.
+RELATION_GRACE_SECONDS = 0.5
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
@@ -339,13 +343,27 @@ async def _asks_new_request(message: str, previous: str) -> bool:
 
     spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
     """
-    chain = RELATION_PROMPT | get_chat_model() | message_text | parse_json_response
+    model_id = get_settings().relation_llm_model_id
+    model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
+    chain = RELATION_PROMPT | model | message_text | parse_json_response
     try:
         answer = await invoke_chain(chain, {"previous": previous, "message": message})
     except LLMUnavailableError:
         logger.warning("새 요청 판정 실패 — 이어가는 말로 본다", exc_info=True)
         return False
     return answer.get("relation") == "new"
+
+
+async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
+    """판정 결과를 받는다. 1단계가 끝난 뒤 RELATION_GRACE_SECONDS 안에 못 받으면 포기하고 아니라고 본다."""
+    try:
+        return await asyncio.wait_for(relation, timeout=RELATION_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "새 요청 판정이 1단계보다 %.1f초 넘게 늦어 이어가는 말로 본다",
+            RELATION_GRACE_SECONDS,
+        )
+        return False
 
 
 async def _restart_patch(message: str, fresh: Spec) -> dict | None:
@@ -393,10 +411,13 @@ async def update_spec(
         if previous is None:
             patch = await _ask_spec_patch(message, spec, recent_turns)
         else:
-            new_request, patch = await asyncio.gather(
-                _asks_new_request(message, previous),
-                _ask_spec_patch(message, spec, recent_turns),
-            )
+            relation = asyncio.create_task(_asks_new_request(message, previous))
+            try:
+                patch = await _ask_spec_patch(message, spec, recent_turns)
+            except BaseException:
+                relation.cancel()
+                raise
+            new_request = await _relation_within_grace(relation)
         if new_request:
             fresh = topic_switch.fresh_spec(spec)
             restarted = await _restart_patch(message, fresh)

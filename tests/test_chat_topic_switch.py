@@ -12,6 +12,7 @@ LLM 과 DB 는 가짜로 끼운다. 한 요청에서 LLM 이 "새 요청 판정"
 가려 그 호출 몫의 답을 순서대로 돌려준다.
 """
 
+import asyncio
 import json
 import time
 
@@ -620,7 +621,7 @@ def test_판정_모델을_안_정하면_기본_모델이다(monkeypatch: pytest.
 
 
 class _SlowRelation(_Llm):
-    """판정 호출만 일정 시간 뒤에 답하는 가짜 모델."""
+    """판정 호출만 일정 시간 뒤에 답하는 가짜 모델. 진짜 호출처럼 기다리는 동안 취소할 수 있게 비동기로 기다린다."""
 
     def __init__(self, delay: float, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -629,9 +630,9 @@ class _SlowRelation(_Llm):
     def model(self) -> RunnableLambda:
         fast = super().model()
 
-        def _answer(prompt) -> AIMessage:
+        async def _answer(prompt) -> AIMessage:
             if self._kind(prompt.to_string()) == "relation":
-                time.sleep(self._delay)
+                await asyncio.sleep(self._delay)
             return fast.invoke(prompt)
 
         return RunnableLambda(_answer)
