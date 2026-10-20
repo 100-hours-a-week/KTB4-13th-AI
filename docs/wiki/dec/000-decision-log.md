@@ -4,22 +4,27 @@ type: decision-log
 group: dec-000
 owner: 김세훈
 status: 작성중
-updated: 2026-10-16
+updated: 2026-10-20
 ---
 **요약** 프로젝트의 모든 기술 결정을 한 줄씩 모은 입구. 상세는 링크를 따라간다.
 
 | 날짜 | 파트 | 결정 | 영향 파트 | 상세 |
 |---|---|---|---|---|
+| 10-18 | AI | ⑦은 BE를 부르지 않고 바꿀 것 목록(`actions`)만 돌려준다(AI #489, BE #284) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
+| 10-18 | AI | ⑦ 담긴 책은 수량을 말할 때만 바꾸고, 한 번에 시킨 쓰기는 모두 되거나 모두 안 된다(AI #489) | AI, BE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
+| 10-18 | AI | ③도 `recent_turns`의 200자 초과 줄은 400 대신 뒤쪽 200자만 쓴다(AI #490) | AI, BE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
 | 10-16 | AI | ⑤ 신뢰도를 세기로 바꾸고 어디에·핵심어를 더한다(AI #395) | AI, BE | [모델 API 명세 ⑤](../ai/1-model-api/spec.md) |
 | 10-16 | AI | ⑥ 요청의 취향 기억에 세기·어디에·핵심어·저장한 때를 싣는다(AI #395) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 10-16 | AI | ⑨ 대체 자리 다시 뽑기를 BE 밤 배치 맨 끝에 부른다(AI #395) | AI, BE | [모델 API 명세 ⑨](../ai/1-model-api/spec.md) |
 | 10-15 | AI | 추천과 쇼핑을 가르는 일은 AI 서버가 하고 BE는 ③ 챗봇 입구만 부른다. 응답의 `route`로 구분한다(AI #413) | AI, BE, FE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
 | 10-14 | AI | ⑦ 확인 버튼은 FE가 BE 장바구니 API로 직접 담는다(FE, BE 확인 대기, AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-14 | AI | ⑦ `context_cards`는 가장 최근에 카드가 보인 묶음을 보낸다(AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
-| 10-14 | AI | ⑦ `recent_turns`의 200자 초과 줄은 400 대신 뒤쪽 200자만 쓴다(구현 예정, AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
+| 10-14 | AI | ⑦ `recent_turns`의 200자 초과 줄은 400 대신 뒤쪽 200자만 쓴다(AI #396, #402에서 구현) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-14 | AI | ⑦ 되묻기·비교의 버튼은 만들지 않고 되물음의 `resolved_reference`는 `null`(AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-12 | AI | ⑤는 추천을 부탁하기만 한 내용도 취향으로 뽑고, 문장은 200자 이하(AI #341) | AI | [모델 API 명세 ⑤](../ai/1-model-api/spec.md) |
 | 10-12 | AI | ⑦ 골라 담기는 직전 카드 안에서만 고르고, 이미 담긴 책은 담지 않고 알려 준다(AI #344) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
+| 10-11 | AI | ①④ 응답에 `isbn`을 싣고 ④는 가진 책의 ISBN을 받는다. ① 재고 조건(`in_stock_only`)은 없앤다(AI #307) | AI, BE | [모델 API 명세 ①④](../ai/1-model-api/spec.md) |
+| 10-11 | AI | ⑥은 이력을 `history`로 받고 고칠 때는 `PUT`으로 부른다. 멱등 키는 확인하지 않는다(AI #307, #303) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 09-30 | AI | ③⑤ `consented`는 온보딩의 개인화 추천 동의와 같은 값 | AI, BE, FE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
 | 09-30 | AI | 저장된 취향 벡터가 없으면 이력이 있어도 ③④가 개인화하지 않음(AI #246 되돌림, AI #266) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 09-28 | AI | ③ 챗봇 스트리밍(SSE)은 V2. V1은 JSON envelope 한 번으로 응답(AI #236) | AI, BE, FE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
