@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableLambda
 
 from app.chat import branches, shown
 from app.chat.schemas import Spec, Turn
+from app.core.config import get_settings
 from app.gate import rules as gate_rules
 from app.main import app
 from app.routers import chat
@@ -112,6 +113,15 @@ class _Recorder:
             return AIMessage(content=next(self._replies))
 
         return RunnableLambda(_call)
+
+
+@pytest.fixture(autouse=True)
+def narrowing_on(monkeypatch: pytest.MonkeyPatch):
+    """좁히기는 설정으로 켠다(기본은 끔). 이 파일은 켠 상태를 본다."""
+    monkeypatch.setenv("CHAT_NARROWING", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -483,3 +493,11 @@ def test_갈래_질문은_한_대화에서_한_번만_한다() -> None:
     spec = Spec.model_validate({**INITIAL_SPEC, "semantic": "위로가 되는 에세이"})
 
     assert chat._may_narrow(spec, ASKED, None) is False
+
+
+def test_설정을_끄면_좁히지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHAT_NARROWING", "false")
+    get_settings.cache_clear()
+    spec = Spec.model_validate({**INITIAL_SPEC, "semantic": "위로가 되는 책"})
+
+    assert chat._may_narrow(spec, [], None) is False

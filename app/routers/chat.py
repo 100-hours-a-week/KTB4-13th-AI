@@ -1695,6 +1695,8 @@ def _may_narrow(
     spec: Spec, recent_turns: list[Turn], slot_question: str | None
 ) -> bool:
     """이번 턴에 좁히기 질문을 해도 되는가."""
+    if not get_settings().chat_narrowing:
+        return False
     if slot_question:
         # 나이·예산처럼 정말 빠진 정보를 묻는 턴이다. 질문은 한 번에 하나만 한다.
         return False
