@@ -328,7 +328,7 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
 # 뜻을 확인할 수 없으므로 이 길로 풀지 않는다(모델이 그 책을 짚어 묻는다). "그거", "이 책" 같은 지시어는 꾸밈이 아니다.
 _OTHER_BOOK = re.compile(r"다른|딴\s*(?:거|것|책)")
 _CART_ACTION = re.compile(
-    r"담|넣|추가|빼|뺄|지워|지우|삭제|제거|취소|바꿔|바꾸|늘려|늘리|줄여|줄이|변경"
+    r"담|넣|추가|빼|뺄|지워|지우|지울|삭제|제거|취소|바꿔|바꾸|바꿀|늘려|늘리|줄여|줄이|변경"
 )
 _DESCRIBED = re.compile(r"[가-힣]\s*(?:거|것|책)")
 
@@ -389,6 +389,47 @@ _QUANTITY = re.compile(
 def states_quantity(ctx: TurnContext) -> bool:
     """사용자의 이번 말이 수량을 말했는가. 말을 모르면(message 가 None) 말하지 않은 것으로 본다."""
     return ctx.message is not None and bool(_QUANTITY.search(normalize(ctx.message)))
+
+
+# --- 행동 (#531) ---
+# 위의 근거 검사는 어느 책인지만 본다. "1번이 마음에 들어"에는 "1번"이 있어서 책은 정해지지만 담으라는 말은 없다.
+# 실제 모델로 재 보니(#530 대화 평가) 모델이 이런 관심 표현을 담기로 읽어, 대화 30개 중 23개에서 시키지 않은 책을
+# 담았다. 그래서 장바구니를 바꾸는 도구는 사용자가 행동을 말했을 때만 실행한다. 행동을 말한 것으로 보는 것은 셋이다.
+# - 이번 말의 행동 낱말(담기, 빼기, 수량 바꾸기, 사기)이나 "하나 주세요", "이거 줘" 같은 달라는 말
+# - 이번 말의 수량("3권으로 해줘"). 수량을 말한 것은 그 수량으로 담거나 바꾸라는 말이다
+# - 직전 에이전트의 말이 행동을 물은 문장("어느 책을 담을까요?", "카드 1번 《…》을 뺄까요?")이고 이번 말이 그 답인 것.
+#   알림 뒤의 물음("담았어요. 다른 도와드릴 일이 있으신가요?")은 행동을 묻지 않았으므로 문장 단위로 본다
+# 어느 행동인지(담기인지 빼기인지)는 맞춰 보지 않는다. 시킨 적이 없는 행동을 막는 것만 한다.
+# "1번으로 할게요"처럼 행동이 애매한 말은 받지 않는다. 막히면 그 책을 짚어 "담을까요?"라고 한 번 묻는다.
+_BUY = re.compile(r"살게|살래|사\s*갈게|사고\s*싶|(?:구매|구입|주문)\s*(?:할|하고|해)")
+_GIVE = re.compile(
+    r"(?:하나|한\s*(?:권|개)|거|걸로|것|번|책)\s*(?:주세요|줘|주실래요|줄래|주시겠어요)"
+)
+_SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
+
+
+def _asks_action(text: str) -> bool:
+    """에이전트의 말에 장바구니 행동을 묻는 문장이 있는가."""
+    return any(
+        _PROPOSAL.search(sentence) and _CART_ACTION.search(sentence)
+        for sentence in _SENTENCE.findall(normalize(text))
+    )
+
+
+def states_action(ctx: TurnContext) -> bool:
+    """사용자가 장바구니를 바꾸라고 말했는가. 말을 모르면(message 가 None) 검사하지 않는다."""
+    if ctx.message is None:
+        return True
+    message = normalize(ctx.message)
+    if any(
+        pattern.search(message) for pattern in (_CART_ACTION, _BUY, _GIVE, _QUANTITY)
+    ):
+        return True
+    return (
+        bool(ctx.turns)
+        and ctx.turns[-1].role == "assistant"
+        and _asks_action(ctx.turns[-1].text)
+    )
 
 
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
