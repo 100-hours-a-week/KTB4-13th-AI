@@ -203,7 +203,9 @@ def test_세_테이블을_user_id로_읽어_모은다() -> None:
                 [(9100101, "책1", "에세이"), (9100102, "책2", "한국소설")],
             )
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)", _USER, _T0
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2, 'PAID')",
+                _USER,
+                _T0,
             )
             await conn.execute(
                 "INSERT INTO v_user_library VALUES ($1, 9100102, $2)",
@@ -217,7 +219,7 @@ def test_세_테이블을_user_id로_읽어_모은다() -> None:
             )
             # 다른 사용자의 이력은 섞이지 않는다
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100102, $2)",
+                "INSERT INTO v_user_purchases VALUES ($1, 9100102, $2, 'PAID')",
                 _OTHER_USER,
                 _T0 + timedelta(days=30),
             )
@@ -251,7 +253,7 @@ def test_until을_주면_그_시각까지의_이력만_읽는다() -> None:
             )
             # until 뒤의 구매는 빠진다
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)",
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2, 'PAID')",
                 _USER,
                 _T0 + timedelta(days=2),
             )
@@ -281,7 +283,7 @@ def test_프로필_이후_이력이_바꾼_카테고리_점수만_낸다() -> No
                 [(9100101, "책1", "에세이"), (9100102, "책2", "한국소설")],
             )
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)",
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2, 'PAID')",
                 _USER,
                 _T0 + timedelta(days=1),
             )
@@ -337,7 +339,9 @@ def test_요청으로_받은_이력은_복제_표에서_읽은_것과_같은_결
             )
             # 같은 이력을 복제 표에도 넣는다: 1번은 사고 1점, 2번은 담고 4.5점, 3번은 담기만.
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2)", _USER, _T0
+                "INSERT INTO v_user_purchases VALUES ($1, 9100101, $2, 'PAID')",
+                _USER,
+                _T0,
             )
             await conn.executemany(
                 "INSERT INTO v_user_library VALUES ($1, $2, $3)",

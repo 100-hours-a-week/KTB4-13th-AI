@@ -104,7 +104,7 @@ async def _row(conn: asyncpg.Connection) -> asyncpg.Record:
 def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다() -> None:
     async def check(conn):
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
         )
         result = await service.rebuild_on(conn, _request())
         return result, await _row(conn)
@@ -170,7 +170,7 @@ def test_책_표에_없는_ISBN은_건너뛰고_나머지로_만든다() -> None
 def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
     async def check(conn):
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
         )
         onboarding = {"categories": ["소설"], "liked_book_ids": [9100201]}
         await service.rebuild_on(conn, _request(onboarding=onboarding))
@@ -313,7 +313,7 @@ def test_history가_오면_복제_표가_아니라_요청의_이력으로_계산
     async def check(conn):
         # 복제 표에는 한국소설(9100202)을 산 것으로 남아 있지만, 요청은 에세이(9100201)를 샀다고 한다.
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
         )
         return await _rebuilt(
             conn,
@@ -331,7 +331,7 @@ def test_history가_오면_복제_표가_아니라_요청의_이력으로_계산
 def test_history가_없으면_지금처럼_복제_표의_이력으로_계산한다() -> None:
     async def check(conn):
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
         )
         return await _rebuilt(conn, onboarding={})
 
@@ -346,7 +346,7 @@ def test_빈_history는_이력이_없다는_뜻이라_복제_표를_읽지_않�
 ) -> None:
     async def check(conn):
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
         )
         return await _rebuilt(conn, history={})
 
@@ -377,7 +377,7 @@ def test_같은_이력이면_요청으로_받아도_복제_표에서_읽어도_�
     # 9100201 은 사고 1점을 줬고, 9100202 는 담고 4.5점을 줬다.
     async def check(conn):
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100201, $2)", _USER, _T0
+            "INSERT INTO v_user_purchases VALUES ($1, 9100201, $2, 'PAID')", _USER, _T0
         )
         await conn.execute(
             "INSERT INTO v_user_library VALUES ($1, 9100202, $2)", _USER, _T0
