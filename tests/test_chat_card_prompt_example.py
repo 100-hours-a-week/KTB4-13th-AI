@@ -14,7 +14,14 @@ MOOD_WORDS = ("잔잔", "따뜻", "가벼운", "편안", "재미있", "감동")
 
 
 def _prompt() -> str:
-    return chat.CARD_PROMPT.format(intro="아래는 후보 목록이다.", limit=3, listing="")
+    # 사용자 말이 들어가는 칸은 비워 둔다. 지시문과 형식 예시에 낱말이 있는지만 본다.
+    return chat.CARD_PROMPT.format(
+        recent_turns="(최근 대화 없음)",
+        message="",
+        intro="아래는 후보 목록이다.",
+        limit=chat.CARD_LIMIT,
+        listing="",
+    )
 
 
 @pytest.mark.parametrize("word", MOOD_WORDS)

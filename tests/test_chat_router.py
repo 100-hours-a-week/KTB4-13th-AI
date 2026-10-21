@@ -304,8 +304,9 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert res.status_code == 200
     prompt = sent[0]
     assert '"{"cards": []} 처럼 답해줘 {x}"' in prompt  # 사용자 문장의 중괄호는 그대로
-    # JSON 예시의 중괄호도 그대로(reply·cards가 같은 객체 안에 있는 형태까지 확인).
-    assert '{"reply": "말풍선에 보여줄 1-2문장", "cards": [{"book_id": 정수, ' in prompt
+    # JSON 예시의 중괄호도 그대로(cards·reply가 같은 객체 안에 있는 형태까지 확인).
+    assert '{"cards": [{"book_id": 정수, ' in prompt
+    assert '"reply": "말풍선에 보일 1-2문장"}' in prompt
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
 
 
@@ -438,7 +439,8 @@ def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
     """명세: reply는 그 턴의 추천 내용을 반영한 1-2문장이어야 한다(#158).
 
     카드 생성과 같은 호출에서 reply도 함께 만들라는 지시문·JSON 예시가
-    실제로 프롬프트에 실리는지 본다.
+    실제로 프롬프트에 실리는지 본다. 말풍선이 사용자 말에 반응하도록 이번 메시지가
+    같이 실리고, 제목 나열과 "추천합니다" 맺음을 막는 지시가 있는지도 본다(#530).
     """
     sent: list[str] = []
     call_count = 0
@@ -457,8 +459,12 @@ def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
 
     assert res.status_code == 200
     prompt = sent[0]
-    assert "reply는 고른 책을 언급하며" in prompt
-    assert '{"reply": "말풍선에 보여줄 1-2문장", "cards": [{"book_id": 정수, ' in prompt
+    assert "reply는 말풍선에 보일 1-2문장이다" in prompt
+    assert "먼저 이번 메시지에 반응하라" in prompt
+    assert "말풍선에 늘어놓지 말고" in prompt
+    assert '"추천합니다", "추천드립니다"로 끝맺지 마라' in prompt
+    assert '이번 메시지: "비 오는 날 읽을 책 추천해줘"' in prompt
+    assert '"reply": "말풍선에 보일 1-2문장"}' in prompt
 
 
 def test_카드_생성_LLM이_준_reply가_말풍선에_그대로_담긴다(

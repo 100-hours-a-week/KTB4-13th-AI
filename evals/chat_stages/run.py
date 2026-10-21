@@ -112,9 +112,8 @@ async def _case(chat, case: dict, runs: int, order: Sequence[str]) -> dict:
         return row
 
     started = perf_counter()
-    spec, spec_degraded = await chat.update_spec(
-        req.message, req.spec, req.recent_turns
-    )
+    update = await chat.update_spec(req.message, req.spec, req.recent_turns)
+    spec, spec_degraded = update.spec, update.degraded
     spec = await chat._settle_category(spec)
     spec = chat._recover_topic(spec, req.message)
     row.update(
@@ -143,7 +142,8 @@ async def _case(chat, case: dict, runs: int, order: Sequence[str]) -> dict:
             cards = []
             for _ in range(runs):
                 started = perf_counter()
-                got, _, degraded = await chat.generate_cards(kept, spec)
+                result = await chat.generate_cards(kept, spec)
+                got, degraded = result.cards, result.degraded
                 cards.append(
                     {
                         "book_ids": [c["book_id"] for c in got],
