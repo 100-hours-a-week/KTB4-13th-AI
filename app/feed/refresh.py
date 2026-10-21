@@ -50,7 +50,8 @@ WHERE feed_partial AND coalesce(feed->>'retried_on', '') <> $1
 """
 _PROFILE_SQL = """
 SELECT interest_scores::text, interest_vectors::text, conditions::text,
-       book_first_seen::text, (feed->'substituted')::text AS substituted
+       book_first_seen::text, (feed->'substituted')::text AS substituted,
+       (feed->'owned')::text AS owned, (feed->'disliked')::text AS disliked
 FROM taste_profile WHERE user_id = $1
 """
 # ⑥ 과 같이 판 번호를 올리고 바로 앞 판을 남긴다
@@ -96,7 +97,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
 
     대신 채운 관심사가 저장된 목록의 것의 일부일 때만 바꾼다. ⑥ 때 잘 뽑힌 관심사가 이번에 시간을 넘기면 바꾸지
     않아, 저장된 목록의 잘 뽑힌 자리를 잃지 않는다(#482). 바꾸지 않으면 오늘 밤 시도한 표시만 남아 다음 밤에 다시
-    한다. 가진 책은 복제 표의 이력으로 뺀다(요청이 없어서).
+    한다. 가진 책은 ⑥ 이 목록과 함께 저장해 둔 것으로 뺀다(_owned).
     """
     async with conn.transaction():
         # ⑥ 과 같은 사용자별 잠금이라 같은 사용자의 ⑥ 과 겹치지 않는다
@@ -105,10 +106,10 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         )
         row = await conn.fetchrow(_PROFILE_SQL, user_id)
         vectors = json.loads(row["interest_vectors"])
-        hist = await history.read(conn, user_id)
+        owned, disliked = await _owned(conn, user_id, row)
         # 매칭 점수에 쓰는 내 책은 ⑥ 처럼 관심사마다 다시 가른다. 저장된 칸을 늘리지 않으려는 것이다(#483)
         anchors = await profile_service.book_anchors(
-            conn, json.loads(row["book_first_seen"] or "{}"), hist.disliked_book_ids
+            conn, json.loads(row["book_first_seen"] or "{}"), disliked
         )
         feed = await interest_feed.build(
             conn,
@@ -116,7 +117,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
             {k: v for k, v in vectors.items() if not k.startswith(interests.KEYWORD)},
             {k: v for k, v in vectors.items() if k.startswith(interests.KEYWORD)},
             json.loads(row["conditions"]),
-            set(hist.weights) | hist.disliked_book_ids,
+            owned,
             seconds=LIST_BUDGET_SECONDS,
             book_anchors=anchors,
         )
@@ -127,14 +128,23 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
             _SAVE_SQL,
             user_id,
             json.dumps(
-                {
-                    **feed.stored(
-                        set(hist.weights) | hist.disliked_book_ids,
-                        hist.disliked_book_ids,
-                    ),
-                    "retried_on": night,
-                },
+                {**feed.stored(owned, disliked), "retried_on": night},
                 ensure_ascii=False,
             ),
             bool(feed.substituted),
         )
+
+
+async def _owned(
+    conn: asyncpg.Connection, user_id: int, row: asyncpg.Record
+) -> tuple[set[int], set[int]]:
+    """목록에서 뺄 가진 책과 그중 2점 이하 리뷰를 단 책. ⑥ 이 목록과 함께 저장해 둔 것이다(#537).
+
+    ⑨ 는 요청이 없어 이력을 받지 못한다. 밤 배치는 이력이 바뀐 사용자의 ⑥ 을 먼저 부르므로 저장된 값에 그날
+    이력까지 들어 있다. 이 값이 생기기 전에 저장된 목록만 복제 표의 이력으로 뺀다. 복제 표를 읽는 길을 지울 때
+    (#307) 같이 지운다.
+    """
+    if row["owned"] is None:
+        hist = await history.read(conn, user_id)
+        return set(hist.weights) | hist.disliked_book_ids, hist.disliked_book_ids
+    return set(json.loads(row["owned"])), set(json.loads(row["disliked"] or "[]"))
