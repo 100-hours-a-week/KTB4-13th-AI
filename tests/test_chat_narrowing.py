@@ -156,6 +156,7 @@ BROAD = {
     "scope": "broad",
     "reply": "위로가 필요하시군요.",
     "question": "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요.",
+    "options": ["회사 일로 지쳤어요", "관계 때문에 힘들어요", "이유 없이 무기력해요"],
 }
 ASKED_TURNS = [
     {"role": "user", "text": "위로되는 책 추천해줘"},
@@ -189,6 +190,16 @@ def test_넓은_첫_요청은_찾기_전에_카드_없이_한_번_묻는다(
     assert data["followup"] == (
         "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요. " + asking.TAIL
     )
+    # 답 보기는 followup 아래 버튼이 된다. 끝에 코드가 건너뛰기 보기를 붙인다(#505)
+    assert data["followup_options"] == [
+        "회사 일로 지쳤어요",
+        "관계 때문에 힘들어요",
+        "이유 없이 무기력해요",
+        asking.SKIP_OPTION,
+    ]
+    assert (
+        data["buttons"] == []
+    )  # BE 는 ③ 의 buttons 에 navigate 밖의 버튼이 오면 턴을 실패로 본다
     # 메시지에서 알게 된 조건은 spec 에 남겨 다음 턴에 넘긴다
     assert data["spec"]["semantic"] == "위로가 되는 책"
     assert data["degraded"] is False
@@ -248,7 +259,7 @@ def test_판정이_1단계보다_한참_늦으면_묻지_않고_찾는다(
 ) -> None:
     async def _slow(_message: str):
         await asyncio.sleep(1)
-        return ("늦은 답", "늦은 질문")
+        return asking.Ask("늦은 답", "늦은 질문")
 
     monkeypatch.setattr(chat, "_judge_scope", _slow)
     monkeypatch.setattr(chat, "SCOPE_GRACE_SECONDS", 0.01)
@@ -407,6 +418,7 @@ def test_판정_프롬프트는_중괄호가_깨지지_않고_채워진다() -> 
 
     assert '첫 요청: "여행 {x}"' in text
     assert '{"scope": "clear"}' in text
+    assert '"options": ["…", "…"]}' in text
 
 
 @pytest.mark.parametrize(
@@ -440,14 +452,95 @@ def test_직전_챗봇_말이_묻기였는지_고정_문장으로_본다(turns, 
 
 def test_긴_질문은_뒷_문장부터_덜어_낸다() -> None:
     long = "가" * 70 + "? " + "나" * 50 + "."
-    reply, question = asking.parse(
-        {"scope": "broad", "reply": "다" * 80, "question": long}
-    )
+    ask = asking.parse({"scope": "broad", "reply": "다" * 80, "question": long})
 
-    assert question == "가" * 70 + "?"
-    assert len(reply) == asking.REPLY_MAX_CHARS
+    assert ask.question == "가" * 70 + "?"
+    assert len(ask.reply) == asking.REPLY_MAX_CHARS
+    assert ask.options == ()  # 보기를 안 줬으면 질문만 한다
     assert asking.parse({"scope": "clear", "question": "q"}) is None
     assert asking.parse({"semantic": "x"}) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "options"),
+    [
+        pytest.param(
+            ["국내 여행 코스", "해외 배낭여행"],
+            ("국내 여행 코스", "해외 배낭여행", asking.SKIP_OPTION),
+            id="그대로_두고_건너뛰기를_붙인다",
+        ),
+        pytest.param(
+            ["  국내   여행 ", "국내 여행", "", 3, None, "가" * 21, "해외 배낭여행"],
+            ("국내 여행", "해외 배낭여행", asking.SKIP_OPTION),
+            id="공백_정리_겹침_빈칸_글자아님_너무김을_버린다",
+        ),
+        pytest.param(
+            ["국내 여행", "상관없어요", "아무거나 좋아요", "해외 여행"],
+            ("국내 여행", "해외 여행", asking.SKIP_OPTION),
+            id="건너뛰기_뜻은_코드가_붙이니_버린다",
+        ),
+        pytest.param(
+            ["가", "나", "다", "라", "마"],
+            ("가", "나", "다", "라", asking.SKIP_OPTION),
+            id="넷까지만",
+        ),
+        pytest.param(["국내 여행"], (), id="하나뿐이면_고를_게_없다"),
+        pytest.param("국내 여행, 해외 여행", (), id="목록이_아님"),
+        pytest.param(None, (), id="없음"),
+    ],
+)
+def test_답_보기는_버튼에_실을_수_있는_것만_남긴다(raw, options) -> None:
+    answer = {"scope": "broad", "reply": "좋아요.", "question": "어떤 여행이세요?"}
+    if raw is not None:
+        answer["options"] = raw
+
+    assert asking.parse(answer).options == options
+
+
+def test_보기를_못_만들어도_질문은_한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _Recorder(
+        json.dumps({"semantic": "위로가 되는 책"}), scope=_broad(options=["하나뿐"])
+    )
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post("/recommendations/chat", json=_request()).json()["data"]
+
+    assert data["cards"] == []
+    assert data["followup"].endswith(asking.TAIL)
+    assert data["followup_options"] == []
+
+
+def test_보기를_누른_답은_직전_질문의_답으로_받는다(
+    monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
+) -> None:
+    """보기를 누르면 FE 가 그 글자를 메시지로 보낸다. 직접 쓴 답과 같은 길(답 규칙)로 간다."""
+    rec = _Recorder(
+        json.dumps({"semantic": "회사 일로 지친 직장인을 위로하는 책"}),
+        _cards_json(),
+    )
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+    turns = [
+        {"role": "user", "text": "위로되는 책 추천해줘"},
+        # BE 는 챗봇 줄을 reply + 줄바꿈 + followup 으로 싣는다. 보기는 싣지 않는다
+        {
+            "role": "assistant",
+            "text": BROAD["reply"] + "\n" + asking.followup(BROAD["question"]),
+        },
+    ]
+
+    data = client.post(
+        "/recommendations/chat",
+        json=_request(
+            message=BROAD["options"][0],
+            recent_turns=turns,
+            spec={**INITIAL_SPEC, "semantic": "위로가 되는 책"},
+        ),
+    ).json()["data"]
+
+    assert "이번 메시지는 그 답이다" in rec.prompts[0]
+    assert rec.scope_calls == 0
+    assert data["cards"]
+    assert data["followup_options"] == []
 
 
 def test_카드_프롬프트에_이번_메시지와_최근_대화와_걸린_조건이_실린다(
