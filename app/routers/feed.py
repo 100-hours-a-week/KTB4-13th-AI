@@ -12,8 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.core import categories, db, responses
-from app.core.config import get_settings
-from app.feed import cursor, refresh, service
+from app.feed import cursor, flag, refresh, service
 from app.feed.schemas import parse_query
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,7 @@ async def refresh_feed() -> JSONResponse:
 
     기능 플래그(interest_feed)가 꺼져 있으면 저장된 목록이 없으니 다시 뽑을 것도 없다. 새 칸을 읽지 않는다.
     """
-    if not get_settings().interest_feed:
+    if not flag.on():
         return responses.success("refresh_success", {"refreshed": 0, "remaining": 0})
     try:
         async with db.get_pool().acquire() as conn:

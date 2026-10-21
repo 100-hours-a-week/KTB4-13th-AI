@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
+from app.feed import flag
 from app.gateway import embedding, llm
 from app.profile import labels
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI):
     # 색인이 빠지면 에러 없이 검색·피드만 느려진다. 배포 로그에서 바로 보이게 한다.
     async with db.get_pool().acquire() as conn:
         await db.report_missing_indexes(conn)
+        # 관심사별 홈 추천이 설정으로 켜져 있어도 새 표·칸이 없으면 끈다(#420). 배포 로그에 남는다.
+        await flag.check(conn)
     # 임베딩 모델을 미리 읽어 둔다. 첫 요청에서 읽으면 그 요청만 수 초 걸리고,
     # 모델 파일이 없거나 차원이 어긋난 것도 첫 호출에서야 드러난다.
     try:

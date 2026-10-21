@@ -7,9 +7,11 @@ import asyncio
 import logging
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.feed import flag
+from app.main import app
 
 
 class _Conn:
@@ -92,3 +94,15 @@ def test_확인이_실패해도_끄고_서버는_그대로_뜬다() -> None:
     asyncio.run(flag.check(_Broken()))
 
     assert flag.on() is False
+
+
+@pytest.mark.usefixtures("settings_on")
+def test_꺼진_채로_돌면_밤_배치의_다시_뽑기도_건너뛴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(flag, "_schema_ready", False)
+
+    res = TestClient(app).post("/recommendations/feed/refresh", json={})
+
+    assert res.status_code == 200
+    assert res.json()["data"] == {"refreshed": 0, "remaining": 0}

@@ -14,7 +14,7 @@ import asyncpg
 from app.core import db, history, isbn
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
-from app.feed import interest_feed
+from app.feed import flag, interest_feed
 from app.profile import compute, interests, labels
 from app.profile.compute import Profile
 from app.profile.schemas import USED_LIKED_BOOKS, Memory, Onboarding, ProfileRequest
@@ -175,7 +175,7 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
     version = compute.next_version(await _stored(conn, req.user_id), profile)
     await _save(conn, req.user_id, profile, version, hist.computed_at)
-    if get_settings().interest_feed:
+    if flag.on():
         owned = set(hist.weights) | hist.disliked_book_ids
         await _save_interests(conn, req, weights, vectors, owned)
     return profile.cold_start, version

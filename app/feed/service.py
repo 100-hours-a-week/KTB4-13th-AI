@@ -14,11 +14,11 @@ from typing import Any
 import asyncpg
 
 from app.core import db, history, isbn
-from app.core.config import get_settings
 from app.feed import (
     cold_start,
     cursor,
     exclusion,
+    flag,
     interest_page,
     personalized,
     rule_only,
@@ -123,7 +123,7 @@ async def feed(req: FeedRequest) -> FeedOutcome:
         # 저장된 관심사별 목록은 취향 벡터가 없는 프로필(어린이 분야만 고름 등)에도 있을 수 있어, 개인화를
         # 끌지 정하기 전에 본다(#473). 지금 방식으로 시작한 스크롤은 지금 방식으로 잇는다. 도중에 목록이
         # 생겨도 끊지 않는다
-        if get_settings().interest_feed and page.mode in (None, INTEREST):
+        if flag.on() and page.mode in (None, INTEREST):
             saved = await interest_page.stored(conn, req.user_id)
             if saved is not None:
                 outcome = await _from_saved(conn, req, page, excluded, saved)
