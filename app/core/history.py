@@ -36,6 +36,18 @@ LIKED_MIN_RATING = Decimal("4.0")
 DISLIKED_MAX_RATING = Decimal("2.0")
 
 
+# 복제 표에서 이력으로 치는 줄(#296). 복제는 BE 에서 취소·삭제된 줄을 지우지 않고 표시만 남긴다.
+# 구매는 결제가 끝난 주문만 친다(BE 인기 집계와 같은 기준). order_status 는 주문 전체의 상태라서
+# 일부만 취소된 주문(PARTIAL_CANCELED)은 남긴 책까지 빠진다. 품목 상태는 복제되지 않아 가를 수 없다.
+# 이 조건을 쓰는 곳은 여기와 ④ 의 제외 조건(app/feed/exclusion.py) 둘이다.
+def paid_purchase(alias: str) -> str:
+    return f"{alias}.order_status = 'PAID' AND {alias}.deleted_at IS NULL"
+
+
+def live_review(alias: str) -> str:
+    return f"{alias}.active_flag AND {alias}.deleted_at IS NULL"
+
+
 def review_weight(rating: Decimal) -> int:
     if rating >= LIKED_MIN_RATING:
         return LIKED_REVIEW
@@ -94,15 +106,16 @@ def summarize(rows: list[dict[str, Any]]) -> History:
     return history
 
 
-_SQL = """
+_SQL = f"""
 SELECT h.book_id, h.kind, h.rating, h.at, b.category
 FROM (
     SELECT book_id, 'purchase' AS kind, NULL::numeric AS rating, purchased_at AS at
-    FROM v_user_purchases WHERE user_id = $1
+    FROM v_user_purchases p WHERE p.user_id = $1 AND {paid_purchase("p")}
     UNION ALL
     SELECT book_id, 'library', NULL, added_at FROM v_user_library WHERE user_id = $1
     UNION ALL
-    SELECT book_id, 'review', rating, created_at FROM v_user_reviews WHERE user_id = $1
+    SELECT book_id, 'review', rating, created_at
+    FROM v_user_reviews r WHERE r.user_id = $1 AND {live_review("r")}
 ) h
 LEFT JOIN v_books b USING (book_id)
 WHERE $2::timestamptz IS NULL OR h.at <= $2

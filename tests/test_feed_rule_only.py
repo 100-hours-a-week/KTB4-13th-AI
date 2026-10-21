@@ -66,7 +66,9 @@ def _run(check):
                     book_id,
                 )
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100804, $2)", _USER, _T0
+                "INSERT INTO v_user_purchases VALUES ($1, 9100804, $2, 'PAID')",
+                _USER,
+                _T0,
             )
             return await check(conn)
         finally:

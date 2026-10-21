@@ -27,17 +27,20 @@ class Exclusion:
 
 # 이미 산 책, 나의 도서관에 담은 책, 2.0점 이하 리뷰를 단 책은 뺀다(명세 ④).
 # 좋은 리뷰만 단 책(사지도 담지도 않음)은 명세의 제외 대상이 아니라 남긴다.
-_REPLICATED = """
+# 산 책은 결제가 끝난 주문만, 리뷰는 지우지 않은 것만 본다(#296). 이력을 읽는 곳과 같은 기준이다.
+# {{0}} 같은 겹 중괄호는 이 f-string 을 지나 Exclusion.sql 의 자리 표시로 남는다.
+_REPLICATED = f"""
 NOT EXISTS (
         SELECT 1 FROM v_user_purchases x
-        WHERE x.user_id = {0} AND x.book_id = b.book_id AND x.purchased_at <= {2})
+        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.purchased_at <= {{2}}
+          AND {history.paid_purchase("x")})
   AND NOT EXISTS (
         SELECT 1 FROM v_user_library x
-        WHERE x.user_id = {0} AND x.book_id = b.book_id AND x.added_at <= {2})
+        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.added_at <= {{2}})
   AND NOT EXISTS (
         SELECT 1 FROM v_user_reviews x
-        WHERE x.user_id = {0} AND x.book_id = b.book_id AND x.rating <= {1}
-          AND x.created_at <= {2})
+        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.rating <= {{1}}
+          AND x.created_at <= {{2}} AND {history.live_review("x")})
 """
 
 
