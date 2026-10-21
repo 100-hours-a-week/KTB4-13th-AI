@@ -53,8 +53,9 @@ ON CONFLICT (id) DO NOTHING;
 -- 아무것도 넣지 않는다. cold_start 테스트가 목적이므로 비워두는 것 자체가 데이터다.
 
 -- ── 유저 9002 (B) — 구매 + 선호 리뷰 + 담기 ─────────────────────────────────
-INSERT INTO v_user_purchases (user_id, book_id, purchased_at)
-VALUES (9002, 9000001, now() - interval '20 days');
+-- 결제가 끝난 주문만 산 책으로 친다(#296). 20261021_replica_state_columns.sql 을 먼저 적용한다.
+INSERT INTO v_user_purchases (user_id, book_id, purchased_at, order_status)
+VALUES (9002, 9000001, now() - interval '20 days', 'PAID');
 
 INSERT INTO v_user_reviews (user_id, book_id, rating, created_at)
 VALUES (9002, 9000002, 4.5, now() - interval '15 days');
