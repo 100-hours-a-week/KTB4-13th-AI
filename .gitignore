@@ -24,3 +24,6 @@ evals/feed/results/
 evals/chat/results/
 # ① 평가 실행 결과(--out). 책 표가 PC 마다 달라 저장소에 올리지 않는다. 기준선만 evals/search/baseline.json 에 둔다
 evals/search/results/
+
+# ③ 단계별 측정 원본·채점 중간 파일(evals/chat_stages). 모델 호출 기록이라 올리지 않는다
+evals/chat_stages/results/
