@@ -102,6 +102,11 @@ def test_직전_챗봇_말이_갈래_질문인지_본다(turns, asked) -> None:
     [
         ("1번 책이 흥미로워 보여요!", False, "recommend"),
         ("2번이 마음에 들어", False, "recommend"),
+        ("1번 책이 정말 따뜻해 보여요!", False, "recommend"),
+        ("1번은 그림책이라서 좀 다를 것 같아.", False, "recommend"),
+        # 번호 없이 제목으로 말해도 같다
+        ("『번 아웃 탈출기』가 정말 좋을 것 같아!", False, "recommend"),
+        ("1번 보여줘", False, "cart"),
         # ⑦이 "담을까요?"라고 물은 뒤의 관심은 그 답이다
         ("1번 책이 좋을 것 같아!", True, "cart"),
         # 관심 낱말이 없거나 장바구니 낱말이 있으면 그대로 ⑦
@@ -109,7 +114,9 @@ def test_직전_챗봇_말이_갈래_질문인지_본다(turns, asked) -> None:
         ("1번 좋아 보여 담아줘", False, "cart"),
     ],
 )
-def test_카드를_가리키며_관심만_말하면_추천이다(message, after_action, kind) -> None:
+def test_카드가_보일_때_책을_평가하는_말은_추천이다(
+    message, after_action, kind
+) -> None:
     assert rules.classify(message, True, after_action=after_action) == kind
 
 
