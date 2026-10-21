@@ -13,13 +13,23 @@ from app.routers import chat
 MOOD_WORDS = ("잔잔", "따뜻", "가벼운", "편안", "재미있", "감동")
 
 
-def _prompt() -> str:
-    return chat.CARD_PROMPT.format(intro="아래는 후보 목록이다.", limit=3, listing="")
+def _prompt(narrow: bool = False) -> str:
+    # 사용자 말이 들어가는 칸은 비워 둔다. 지시문과 형식 예시에 낱말이 있는지만 본다.
+    return chat.CARD_PROMPT.format(
+        recent_turns="(최근 대화 없음)",
+        message="",
+        intro="아래는 후보 목록이다.",
+        pick=chat._PICK_NARROW if narrow else chat._PICK,
+        question_rule=chat._QUESTION_NARROW if narrow else chat._QUESTION_NONE,
+        listing="",
+    )
 
 
+@pytest.mark.parametrize("narrow", [False, True])
 @pytest.mark.parametrize("word", MOOD_WORDS)
-def test_카드_프롬프트에_분위기_낱말_예시가_없다(word: str) -> None:
-    assert word not in _prompt()
+def test_카드_프롬프트에_분위기_낱말_예시가_없다(word: str, narrow: bool) -> None:
+    # 좁히기 지시문(#530)의 질문 형식 예시도 갈래를 "…"로 비워 둔다.
+    assert word not in _prompt(narrow)
 
 
 def test_match_basis_형식_예시는_설명으로_적는다() -> None:
