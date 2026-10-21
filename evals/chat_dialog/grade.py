@@ -62,6 +62,22 @@ def ends_with_recommend(turn: dict) -> bool:
     return bool(_RECOMMEND_ENDING.search(turn.get("reply") or ""))
 
 
+def reached_turn(
+    result: dict, verdicts: dict[tuple[int, int], dict], must_count: int
+) -> int | None:
+    """챗봇이 must 를 모두 맞는 책을 처음 보여 준 응답 차례(1부터). 못 보여 줬으면 None. reach.py 판정이 있어야 한다."""
+    for number, turn in enumerate(result["turns"], start=1):
+        for card in turn["cards"]:
+            met = verdicts.get((result["scenario"], card["book_id"]), {}).get("met")
+            if (
+                isinstance(met, list)
+                and len(met) == must_count
+                and all(m is True for m in met)
+            ):
+                return number
+    return None
+
+
 def summarize(raw: dict) -> dict:
     must_counts = {s["no"]: len(s["must"]) for s in load_scenarios()}
     results = raw["results"]
@@ -91,7 +107,30 @@ def summarize(raw: dict) -> dict:
         if t["status"] == 200 and not t["cards"] and t.get("route") != "shop"
     )
     secs = [t["sec"] for t in turns]
+    reach = {}
+    if raw.get("reach"):
+        verdicts = {(v["scenario"], v["book_id"]): v for v in raw["reach"]["verdicts"]}
+        reached = [
+            reached_turn(r, verdicts, must_counts[r["scenario"]]) for r in results
+        ]
+        hit = [n for n in reached if n is not None]
+        reach_by_run = {
+            run: sum(1 for r, n in zip(results, reached) if r["run"] == run and n)
+            for run in runs
+        }
+        reach_by_scenario: Counter = Counter()
+        for r, n in zip(results, reached):
+            reach_by_scenario[r["scenario"]] += n is not None
+        reach = {
+            "reached": len(hit),
+            "reach_rate": round(100 * len(hit) / len(results), 1) if results else 0.0,
+            "reach_by_run": reach_by_run,
+            "reach_by_scenario": dict(sorted(reach_by_scenario.items())),
+            "turns_to_reach_mean": round(statistics.mean(hit), 2) if hit else None,
+            "reached_on_first_turn": sum(1 for n in hit if n == 1),
+        }
     return {
+        **reach,
         "meta": raw.get("meta"),
         "conversations": len(results),
         "success": sum(ok),
