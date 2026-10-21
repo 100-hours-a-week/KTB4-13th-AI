@@ -49,16 +49,7 @@ CARD_REPLY = (
     '{"reply": "골라봤어요.", "cards": [{"book_id": 1088, '
     '"reason_short": "잔잔해요.", "reason_long": "비 오는 날과 어울려요."}]}'
 )
-CHAT_KEYS = {
-    "reply",
-    "spec",
-    "recognition",
-    "cards",
-    "followup",
-    "followup_options",
-    "buttons",
-    "degraded",
-}
+CHAT_KEYS = {"reply", "spec", "recognition", "cards", "followup", "buttons", "degraded"}
 SHOP_KEYS = {
     "actions",
     "reply",

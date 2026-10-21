@@ -1900,7 +1900,6 @@ async def _answer_response(
                 "recognition": None,
                 "cards": [],
                 "followup": followup,
-                "followup_options": [],
                 "buttons": [],
                 "degraded": degraded,
             },
@@ -1940,7 +1939,6 @@ async def _recommend(
                     "recognition": None,
                     "cards": [],
                     "followup": followup,
-                    "followup_options": [],
                     "buttons": [],
                     "degraded": False,
                 },
@@ -1963,7 +1961,7 @@ async def _recommend(
     )
     if update.ask is not None:
         # 넓은 첫 요청이다. 찾기 전에 한 번 묻는다. spec 은 메시지에서 알게 된 조건까지 갱신해 다음 턴에 넘긴다.
-        # 답 보기는 followup 아래 버튼이 된다. 누르면 그 글자가 다음 메시지로 온다(#505).
+        # 답 보기는 질문 뒤에 문장으로 붙는다(#505). 사용자가 그중 하나를 따라 말하면 다음 턴이 답으로 받는다.
         ask = update.ask
         logger.info("넓은 첫 요청이라 찾기 전에 물었다(보기 %d개)", len(ask.options))
         return responses.success(
@@ -1974,8 +1972,7 @@ async def _recommend(
                     "spec": update.spec.model_dump(),
                     "recognition": None,
                     "cards": [],
-                    "followup": asking.followup(ask.question),
-                    "followup_options": list(ask.options),
+                    "followup": asking.followup(ask.question, ask.options),
                     "buttons": [],
                     "degraded": False,
                 },
@@ -2051,7 +2048,6 @@ async def _recommend(
                 "recognition": None,
                 "cards": cards,
                 "followup": followup,
-                "followup_options": [],
                 "buttons": [],
                 "degraded": degraded,
             },

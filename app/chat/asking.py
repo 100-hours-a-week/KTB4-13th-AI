@@ -16,15 +16,14 @@
 질문 끝에는 코드가 고정 문장(TAIL)을 붙인다. 서버는 대화를 저장하지 않아서, 다음 턴에 최근 대화 글자만 보고 "직전
 챗봇 말이 이 질문이었다"를 알아야 하기 때문이다. 문지기는 이것으로 그 답을 ⑦에 들르지 않고 ③으로 보낸다.
 
-질문과 함께 답 보기(options)도 만든다(#505). 사용자가 말한 주제를 더 좁히는 갈래 2~4개이고, 화면은 이것을 질문 아래
-버튼으로 보여 주고 누르면 그 글자를 다음 메시지로 보낸다. 보기는 질문과 같은 판정 호출에서 같이 받는다 — 질문을
+질문과 함께 답 보기(options)도 만든다(#505). 사용자가 말한 주제를 더 좁히는 갈래 2~4개이고, 질문 뒤에
+'"A", "B" 중에 고르시거나 직접 말씀해 주세요.'로 붙인다. 보기는 질문과 같은 판정 호출에서 같이 받는다 — 질문을
 이해한 모델이 그 질문의 답을 같이 써야 둘이 어긋나지 않고, 호출도 늘지 않는다. 위의 갈래 메뉴와 다른 점은 둘이다.
-보기는 검색한 10권이 아니라 사용자의 말에서 나오고, 보기에 없으면 지금처럼 자기 말로 답하면 된다(질문은 열린 질문
-그대로다). 끝에는 코드가 "아무거나"를 붙인다. 고정 문장이 안내하는 말과 같아서 누르면 답 규칙이 그대로 받는다.
+보기는 검색한 10권이 아니라 사용자의 말에서 나오고, 보기에 없으면 자기 말로 답하면 된다.
 
-보기는 명세의 buttons 가 아니라 followup_options 칸에 싣는다. BE 는 ③ 응답의 buttons 에 navigate 밖의 버튼이 오면
-턴 전체를 AI 장애로 처리한다(AgentChatExternalMapper). 새 칸은 BE 가 모르는 칸이라 무시되니, AI 가 먼저 배포되어도
-챗봇이 깨지지 않는다.
+보기를 버튼(명세의 buttons)이나 새 응답 칸이 아니라 followup 문장에 넣는 것은 BE·FE 를 바꾸지 않으려서다. BE 는 ③ 응답의
+buttons 에 navigate 밖의 버튼이 오면 턴 전체를 AI 장애로 처리하고(AgentChatExternalMapper), 모르는 칸은 FE 에 넘기지
+않는다. FE 는 followup 을 글자 그대로 보여 준다.
 """
 
 import re
@@ -45,14 +44,15 @@ _TAIL_MARK = re.compile(r"아무거나[\"”']?\s*라고\s*해\s*주세요")
 REPLY_FALLBACK = "딱 맞는 책을 찾으려고 하나만 여쭤볼게요."
 REPLY_MAX_CHARS = 60
 QUESTION_MAX_CHARS = 100
-# 보기는 버튼 한 칸에 들어가고, 누르면 그대로 사용자 말이 된다. 길면 자르지 않고 버린다 — 잘린 글자를 보내면 말이 안 된다.
+# 보기는 사용자가 그대로 따라 말할 말이다. 길면 자르지 않고 버린다 — 잘린 말은 따라 할 수 없다.
 OPTION_MAX_CHARS = 20
 MIN_OPTIONS = 2
 MAX_OPTIONS = 4
-# 보기 끝에 코드가 붙이는 건너뛰기 보기. TAIL 이 안내하는 말과 같다.
-SKIP_OPTION = "아무거나"
-# 모델이 건너뛰기 보기를 스스로 만들면 SKIP_OPTION 과 겹친다. 그런 보기는 버린다.
+# 챗봇 줄은 BE 가 reply + 줄바꿈 + followup 으로 싣고 다음 턴에 뒤쪽 200자만 온다. followup 이 이보다 짧아야 질문까지 보인다.
+FOLLOWUP_MAX_CHARS = 190
+# 건너뛰기는 고정 문장이 안내한다. 모델이 그런 보기를 쓰면 겹쳐서 버린다.
 _SKIP_LIKE = re.compile(r"(아무거나|상관\s?없|다\s?좋아|잘\s?모르겠)")
+_QUOTES = "\"'“”‘’"
 
 # {message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다.
 # 예시는 평가 시나리오(evals/chat_dialog/scenarios.json)와 겹치지 않는 주제로 고른다. 평가 질문을 예로 쓰면 그 질문만 맞힌다.
@@ -69,7 +69,7 @@ SCOPE_PROMPT = ChatPromptTemplate.from_template(
     f"options 는 question 에 대한 답 보기 {MIN_OPTIONS}~{MAX_OPTIONS}개다. question 이 물은 것에 그대로 답하는 "
     "말이어야 한다(누구에게 줄지 물었으면 보기도 받는 사람이다). 사용자가 말한 주제 안에서 맞는 책이 크게 갈리는 "
     '갈래로 나누고, 서로 겹치지 않게 하라. "감정적 지지"처럼 뜻이 넓은 말 대신 서점에서 책을 고를 때 쓰는 구체적인 '
-    f"말로, 사용자가 그대로 눌러 보낼 짧은 말(최대 {OPTION_MAX_CHARS}자)로 써라. 사용자가 이미 말한 것을 되묻는 "
+    f"말로, 사용자가 그대로 따라 말할 짧은 말(최대 {OPTION_MAX_CHARS}자)로 써라. 사용자가 이미 말한 것을 되묻는 "
     '보기, 첫 요청에 없는 주제로 넘어가는 보기, "상관없어요"·"아무거나" 같은 보기는 넣지 마라.\n'
     '예) 첫 요청 "여행 책 추천해줘" → question "어떤 여행을 준비하고 계세요?", '
     'options ["국내 여행 코스", "해외 배낭여행", "읽는 여행 에세이"]\n'
@@ -88,7 +88,7 @@ ANSWERED_RULE = (
 
 @dataclass(frozen=True)
 class Ask:
-    """묻는 턴에 할 말. options 는 질문 아래 보일 답 보기이고, 못 만들었으면 비어 있다(질문만 한다)."""
+    """묻는 턴에 할 말. options 는 질문 뒤에 붙일 답 보기이고, 못 만들었으면 비어 있다(질문만 한다)."""
 
     reply: str
     question: str
@@ -133,10 +133,10 @@ def parse(answer: dict) -> Ask | None:
 
 
 def _options(raw: object) -> tuple[str, ...]:
-    """모델이 쓴 보기를 버튼에 실을 수 있게 거른다. 쓸 보기가 둘이 안 되면 고를 게 없으니 보기 없이 묻는다.
+    """모델이 쓴 보기를 문장에 넣을 수 있게 거른다. 쓸 보기가 둘이 안 되면 고를 게 없으니 보기 없이 묻는다.
 
     목록이 아니거나, 글자가 아니거나, 비었거나, 너무 길거나, 앞 보기와 같거나, 건너뛰기 뜻인 보기는 버린다.
-    남은 보기 끝에 SKIP_OPTION 을 붙인다.
+    따옴표로 감싸 넣으니 보기 양끝의 따옴표는 떼어 낸다.
     """
     if not isinstance(raw, list):
         return ()
@@ -144,7 +144,7 @@ def _options(raw: object) -> tuple[str, ...]:
     for item in raw:
         if not isinstance(item, str):
             continue
-        option = " ".join(item.split())
+        option = " ".join(item.split()).strip(_QUOTES).strip()
         if (
             not option
             or len(option) > OPTION_MAX_CHARS
@@ -155,11 +155,19 @@ def _options(raw: object) -> tuple[str, ...]:
         kept.append(option)
     if len(kept) < MIN_OPTIONS:
         return ()
-    return (*kept[:MAX_OPTIONS], SKIP_OPTION)
+    return tuple(kept[:MAX_OPTIONS])
 
 
-def followup(question: str) -> str:
-    """묻는 턴의 followup. 질문 끝에 고정 문장을 붙인다."""
+def followup(question: str, options: Sequence[str] = ()) -> str:
+    """묻는 턴의 followup. 질문 뒤에 답 보기 문장을, 맨 끝에 고정 문장을 붙인다.
+
+    FOLLOWUP_MAX_CHARS 를 넘으면 뒤 보기부터 뺀다. 보기가 둘도 안 들어가면 보기 없이 묻는다.
+    """
+    for count in range(len(options), MIN_OPTIONS - 1, -1):
+        listed = ", ".join(f'"{option}"' for option in options[:count])
+        text = f"{question} {listed} 중에 고르시거나 직접 말씀해 주세요. {TAIL}"
+        if len(text) <= FOLLOWUP_MAX_CHARS:
+            return text
     return f"{question} {TAIL}"
 
 

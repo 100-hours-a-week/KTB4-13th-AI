@@ -121,18 +121,16 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
     assert body["message"] == "recommend_success"
     data = body["data"]
     # 명세: 6개 필드(reply·spec·recognition·cards·followup·buttons)와 degraded가
-    # 항상 존재해야 한다. followup_options 도 항상 있고 묻는 턴 밖에서는 비어 있다(#505).
+    # 항상 존재해야 한다.
     assert data.keys() == {
         "reply",
         "spec",
         "recognition",
         "cards",
         "followup",
-        "followup_options",
         "buttons",
         "degraded",
     }
-    assert data["followup_options"] == []
     assert data["spec"].keys() == INITIAL_SPEC.keys()
     assert data["degraded"] is False
     # reply는 LLM이 이 턴에 만든 문장 그대로다 — 고정 문구가 아니다(#158).

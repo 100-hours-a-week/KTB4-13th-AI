@@ -186,20 +186,15 @@ def test_넓은_첫_요청은_찾기_전에_카드_없이_한_번_묻는다(
     assert fake_db == []  # 후보 검색을 부르지 않았다
     assert data["cards"] == []
     assert data["reply"] == "위로가 필요하시군요."
-    # 명세: 카드가 없으면 followup 에 되묻는 문장. 끝에 코드가 고정 문장을 붙인다
+    # 명세: 카드가 없으면 followup 에 되묻는 문장. 질문 뒤에 답 보기를, 끝에 코드가 고정 문장을 붙인다(#505)
     assert data["followup"] == (
-        "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요. " + asking.TAIL
+        "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요. "
+        '"회사 일로 지쳤어요", "관계 때문에 힘들어요", "이유 없이 무기력해요" 중에 '
+        "고르시거나 직접 말씀해 주세요. " + asking.TAIL
     )
-    # 답 보기는 followup 아래 버튼이 된다. 끝에 코드가 건너뛰기 보기를 붙인다(#505)
-    assert data["followup_options"] == [
-        "회사 일로 지쳤어요",
-        "관계 때문에 힘들어요",
-        "이유 없이 무기력해요",
-        asking.SKIP_OPTION,
-    ]
-    assert (
-        data["buttons"] == []
-    )  # BE 는 ③ 의 buttons 에 navigate 밖의 버튼이 오면 턴을 실패로 본다
+    # BE·FE 를 바꾸지 않는다. 보기는 버튼이나 새 칸이 아니라 문장에만 있다
+    assert data["buttons"] == []
+    assert "followup_options" not in data
     # 메시지에서 알게 된 조건은 spec 에 남겨 다음 턴에 넘긴다
     assert data["spec"]["semantic"] == "위로가 되는 책"
     assert data["degraded"] is False
@@ -466,30 +461,35 @@ def test_긴_질문은_뒷_문장부터_덜어_낸다() -> None:
     [
         pytest.param(
             ["국내 여행 코스", "해외 배낭여행"],
-            ("국내 여행 코스", "해외 배낭여행", asking.SKIP_OPTION),
-            id="그대로_두고_건너뛰기를_붙인다",
+            ("국내 여행 코스", "해외 배낭여행"),
+            id="그대로_둔다",
         ),
         pytest.param(
             ["  국내   여행 ", "국내 여행", "", 3, None, "가" * 21, "해외 배낭여행"],
-            ("국내 여행", "해외 배낭여행", asking.SKIP_OPTION),
+            ("국내 여행", "해외 배낭여행"),
             id="공백_정리_겹침_빈칸_글자아님_너무김을_버린다",
         ),
         pytest.param(
             ["국내 여행", "상관없어요", "아무거나 좋아요", "해외 여행"],
-            ("국내 여행", "해외 여행", asking.SKIP_OPTION),
-            id="건너뛰기_뜻은_코드가_붙이니_버린다",
+            ("국내 여행", "해외 여행"),
+            id="건너뛰기_뜻은_고정_문장과_겹치니_버린다",
         ),
         pytest.param(
             ["가", "나", "다", "라", "마"],
-            ("가", "나", "다", "라", asking.SKIP_OPTION),
+            ("가", "나", "다", "라"),
             id="넷까지만",
+        ),
+        pytest.param(
+            ['"국내 여행"', "“해외 여행”"],
+            ("국내 여행", "해외 여행"),
+            id="따옴표로_감싸_넣으니_양끝_따옴표를_뗀다",
         ),
         pytest.param(["국내 여행"], (), id="하나뿐이면_고를_게_없다"),
         pytest.param("국내 여행, 해외 여행", (), id="목록이_아님"),
         pytest.param(None, (), id="없음"),
     ],
 )
-def test_답_보기는_버튼에_실을_수_있는_것만_남긴다(raw, options) -> None:
+def test_답_보기는_문장에_넣을_수_있는_것만_남긴다(raw, options) -> None:
     answer = {"scope": "broad", "reply": "좋아요.", "question": "어떤 여행이세요?"}
     if raw is not None:
         answer["options"] = raw
@@ -506,14 +506,28 @@ def test_보기를_못_만들어도_질문은_한다(monkeypatch: pytest.MonkeyP
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
 
     assert data["cards"] == []
-    assert data["followup"].endswith(asking.TAIL)
-    assert data["followup_options"] == []
+    assert data["followup"] == BROAD["question"] + " " + asking.TAIL
 
 
-def test_보기를_누른_답은_직전_질문의_답으로_받는다(
+def test_보기가_길어_넘치면_뒤_보기부터_빼고_둘도_안_되면_질문만_한다() -> None:
+    question = "가" * 80
+    options = ("나" * 20, "다" * 20, "라" * 20)
+
+    fitted = asking.followup(question, options)
+    assert len(fitted) <= asking.FOLLOWUP_MAX_CHARS
+    assert f'"{"나" * 20}", "{"다" * 20}" 중에' in fitted
+    assert "라" * 20 not in fitted
+    assert fitted.endswith(asking.TAIL)
+    assert asking.followup(question + "가" * 50, options) == (
+        question + "가" * 50 + " " + asking.TAIL
+    )
+    assert asking.followup("어떤 여행이세요?") == "어떤 여행이세요? " + asking.TAIL
+
+
+def test_보기를_따라_말한_답은_직전_질문의_답으로_받는다(
     monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
 ) -> None:
-    """보기를 누르면 FE 가 그 글자를 메시지로 보낸다. 직접 쓴 답과 같은 길(답 규칙)로 간다."""
+    """보기 중 하나를 그대로 말해도 직접 쓴 답과 같은 길(답 규칙)로 간다."""
     rec = _Recorder(
         json.dumps({"semantic": "회사 일로 지친 직장인을 위로하는 책"}),
         _cards_json(),
@@ -521,10 +535,12 @@ def test_보기를_누른_답은_직전_질문의_답으로_받는다(
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
     turns = [
         {"role": "user", "text": "위로되는 책 추천해줘"},
-        # BE 는 챗봇 줄을 reply + 줄바꿈 + followup 으로 싣는다. 보기는 싣지 않는다
+        # BE 는 챗봇 줄을 reply + 줄바꿈 + followup 으로 싣는다. 보기는 followup 안에 있다
         {
             "role": "assistant",
-            "text": BROAD["reply"] + "\n" + asking.followup(BROAD["question"]),
+            "text": BROAD["reply"]
+            + "\n"
+            + asking.followup(BROAD["question"], tuple(BROAD["options"])),
         },
     ]
 
@@ -540,7 +556,6 @@ def test_보기를_누른_답은_직전_질문의_답으로_받는다(
     assert "이번 메시지는 그 답이다" in rec.prompts[0]
     assert rec.scope_calls == 0
     assert data["cards"]
-    assert data["followup_options"] == []
 
 
 def test_카드_프롬프트에_이번_메시지와_최근_대화와_걸린_조건이_실린다(
