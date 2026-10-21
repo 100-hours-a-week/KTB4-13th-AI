@@ -949,6 +949,9 @@ def test_모델에게_보여_준_대화만_본다() -> None:
         "2번으로 살게요",
         "1번 사고 싶어요",
         "2번 구매할게",
+        "1번 담고 싶어",
+        "2번 담어줘",
+        "1번 장바구니에 추가해줘",
     ],
 )
 def test_행동이나_수량을_말하면_행동을_시킨_것이다(message: str) -> None:
@@ -968,6 +971,12 @@ def test_행동이나_수량을_말하면_행동을_시킨_것이다(message: st
         "1번으로 할게요",
         # 도움을 청하는 "주세요"는 달라는 말이 아니다
         "1번 가격 알려 주세요",
+        # "담", "추가"가 들었지만 행동이 아닌 말(#530 대화 평가에서 담기의 근거가 됐다)
+        "이 책은 일상을 담담하게 적어서 좋을 것 같아!",
+        "2번이 일상이 잘 담겨있어 좋아!",
+        "1번은 여행의 기억을 담고 있어서 좋네",
+        "삶을 담아낸 문장이 좋아 보여",
+        "추가로 궁금한 게 있어",
     ],
 )
 def test_관심만_말하면_행동을_시킨_것이_아니다(message: str) -> None:
@@ -1002,12 +1011,34 @@ def test_에이전트가_행동을_물었으면_그_답은_행동을_시킨_것�
         ("assistant", "카드 1번은 15,000원이에요. 더 궁금한 게 있으세요?"),
         # 직전 말이 사용자 것이면 물은 것이 없다
         ("user", "어느 책을 담을까요?"),
+        # "추가로"는 행동을 묻는 말이 아니다
+        (
+            "assistant",
+            "《처음 만나는 파이썬》을 담았어요. 추가로 다른 책이 필요하신가요?",
+        ),
     ],
 )
 def test_행동을_묻지_않은_말_뒤의_관심은_행동을_시킨_것이_아니다(said) -> None:
     ctx = _history(_ctx("2번도 좋아 보여", cards=[PY, DB]), said)
 
     assert not evidence.states_action(ctx)
+
+
+def test_행동을_물은_말에_되물으면_답이_아니다() -> None:
+    ctx = _history(
+        _ctx("1번 책이 마음에 든다! 더 궁금한 내용 있어?", cards=[PY, DB]),
+        ("assistant", "이 책을 장바구니에 담을까요?"),
+    )
+
+    assert not evidence.states_action(ctx)
+
+
+def test_에이전트가_담으시겠어요로_물어도_행동을_물은_것이다() -> None:
+    ctx = _history(
+        _ctx("네", cards=[PY, DB]), ("assistant", "카드 1번을 담으시겠어요?")
+    )
+
+    assert evidence.states_action(ctx)
 
 
 @pytest.mark.parametrize("case", _EXECUTED, ids=[c["id"] for c in _EXECUTED])
