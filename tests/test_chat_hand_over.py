@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
+from app.agent import prompts as agent_prompts
 from app.chat.schemas import Turn
+from app.core import voice
 from app.main import app
 from app.routers import chat
 
@@ -132,3 +134,23 @@ def test_첫_턴에_코드가_질문을_붙이면_말풍선은_묻지_않는다(
 )
 def test_직전_챗봇_말이_질문인지_본다(turns: list[Turn], asked: bool) -> None:
     assert chat._bot_asked_last(turns) is asked
+
+
+def test_카드_대답_쇼핑_프롬프트가_같은_말투_규칙을_쓴다() -> None:
+    # 한 대화 안에서 목소리가 여럿이었다(#545). 세 프롬프트에 같은 글이 들어간다
+    card = chat.CARD_PROMPT.format(
+        recent_turns="", message="", intro="", limit=3, listing="", turn_end=""
+    )
+    answer = chat.ANSWER_PROMPT.format(recent_turns="", shown="", message="")
+
+    assert voice.RULES in card
+    assert voice.RULES in answer
+    assert voice.RULES in agent_prompts.SYSTEM_PROMPT
+    assert "한국어 존댓말로" not in agent_prompts.SYSTEM_PROMPT
+
+
+def test_말투_규칙에_베낄_값이_없다() -> None:
+    # 예시에 낱말·값을 적으면 모델이 베낀다(#410). 분위기 낱말도, 가격 같은 숫자도 적지 않는다
+    for word in ("잔잔", "따뜻", "가벼", "편안", "재미", "감동"):
+        assert word not in voice.RULES
+    assert not any(ch.isdigit() for ch in voice.RULES)

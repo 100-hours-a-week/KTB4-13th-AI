@@ -26,7 +26,7 @@ from app.chat import asking, shown, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, history, isbn, popularity, responses
+from app.core import body, categories, db, history, isbn, popularity, responses, voice
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -1258,6 +1258,9 @@ MAX_REASON_SHORT_CHARS = 80
 # 같은 질문보다 최대 5배 눌림), 한 권을 짚어 의견을 말한다(INSPIRED, EMNLP 2020: 사람 추천자가 의견을 말한 추천이 더
 # 받아들여짐). 연달아 물으면 설문지가 되니 직전 챗봇 말이 질문이었으면 의견만 말한다. 예시는 낱말이 아니라 설명으로
 # 적는다(#410 — 낱말을 적으면 베낀다).
+#
+# 말투는 ⑦ 과 같은 규칙(app/core/voice.py)을 붙인다. "조건을 바꿨으면 받았다고 짧게 말하고"는 지웠다. 모델이 글자
+# 그대로 따라 해 "조건을 바꿨군요!"를 "다른 거 보여줘"에도 붙였다(#545). 바뀐 조건은 고른 책을 말하는 문장에 녹인다.
 _HAND_OVER = (
     "마지막 문장은 사용자에게 차례를 넘긴다. 고른 책들이 서로 갈리는 점 하나(수준, 형식, 다루는 범위처럼 책 소개에서 "
     "드러나는 차이)를 짚어 어느 쪽이 맞는지 한 가지만 묻거나, 사용자가 말한 것에 가장 맞는 한 권을 화면 번호로 짚고 "
@@ -1283,11 +1286,11 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "줄여 쓰지 말고, 사용자가 찾은 것(위 조건)과 이 책 소개의 어떤 점이 맞는지 이어서 "
     "2-4문장으로 써라(최대 300자). 근거는 그 책의 소개에 있는 것만 쓴다.\n"
     "reply는 말풍선에 보일 1-2문장이다(최대 150자). 먼저 이번 메시지에 반응하라 — "
-    "조건을 바꿨으면 받았다고 짧게 말하고, 사정을 털어놓았으면 한마디 답한다. 책 제목은 "
+    "사정을 털어놓았으면 한마디 답하고, 바뀐 조건은 이번에 고른 책을 말하는 문장에 녹여라. 책 제목은 "
     "카드에 보이니 말풍선에 늘어놓지 말고, 이번에 고른 책들이 어떤 결인지 한마디로 말하라. "
-    "{turn_end}"
-    '"추천합니다", "추천드립니다"로 끝맺지 마라.\n'
-    '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
+    "{turn_end}\n"
+    + voice.RULES
+    + '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
@@ -1758,17 +1761,18 @@ ANSWER_PROMPT = ChatPromptTemplate.from_template(
     "고르지 말고 답하라.\n"
     "- 보여 준 책에 대해 물으면 그 책 소개에 있는 내용으로만 답하라. 소개에 없는 것은 "
     "모른다고 말하라.\n"
-    "- 보여 준 책이 좋다거나 별로라고 하면, 그 책 소개에서 사용자가 말한 것과 맞는 점이나 "
-    "다른 점을 짧게 말하라.\n"
+    "- 보여 준 책을 두고 한 말(좋다, 별로다, 표지가 마음에 든다 등)에는 먼저 그 말에 짧게 반응하고, "
+    "필요하면 그 책 소개에서 사용자가 말한 것과 맞는 점이나 다른 점을 한마디 덧붙여라.\n"
     "- 보여 준 책 중에서 골라 달라면, 최근 대화에서 사용자가 말한 것에 가장 맞는 한 권을 "
     "번호로 고르고 이유를 짧게 말하라.\n"
     "- 챗봇이 무엇을 하는지 물으면, 원하는 책을 대화로 함께 좁혀 찾아 준다고 답하라. "
     "추천에 무엇을 쓰는지 물으면 대화에서 말한 내용을 바탕으로 찾는다고만 답하고, 그 밖의 "
     "것은 지어내지 마라.\n"
     "- 인사에는 짧게 인사하라.\n"
-    "reply는 1-3문장(최대 200자)이다. followup은 대화를 이어 갈 짧은 질문 한 문장"
-    "(최대 80자)이다.\n"
-    '다음 JSON 형식으로만 답하라: {{"reply": "질문에 대한 답", "followup": "이어 갈 질문"}}'
+    "reply는 1-3문장(최대 200자)이다. followup은 지금 이야기에서 이어지는 구체적인 질문 한 문장"
+    '(최대 80자)이다. "더 궁금한 점이 있으신가요?"처럼 어느 대화에나 붙는 질문은 쓰지 마라.\n'
+    + voice.RULES
+    + '다음 JSON 형식으로만 답하라: {{"reply": "질문에 대한 답", "followup": "이어 갈 질문"}}'
 )
 
 
