@@ -154,3 +154,68 @@ def test_말투_규칙에_베낄_값이_없다() -> None:
     for word in ("잔잔", "따뜻", "가벼", "편안", "재미", "감동"):
         assert word not in voice.RULES
     assert not any(ch.isdigit() for ch in voice.RULES)
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (
+            "2만원 이하의 추리 소설을 찾으셨군요. 그중 『지워진 일주일』이 제일 맞아 보여요.",
+            "그중 『지워진 일주일』이 제일 맞아 보여요.",
+        ),
+        (
+            "추리 소설을 원하셨군요! 입문 쪽이 좋으세요, 정통 쪽이 좋으세요?",
+            "입문 쪽이 좋으세요, 정통 쪽이 좋으세요?",
+        ),
+        (
+            "주식 입문서를 찾으셨네요. 처음이면 1권부터 보세요.",
+            "처음이면 1권부터 보세요.",
+        ),
+        # 사정에 답하는 말은 되풀이가 아니다
+        (
+            "요즘 많이 지치셨군요. 쉬어 가며 읽을 책으로 골랐어요.",
+            "요즘 많이 지치셨군요. 쉬어 가며 읽을 책으로 골랐어요.",
+        ),
+        # 그 문장뿐이면 남긴다. 말풍선이 비면 안 된다
+        ("파이썬 입문서를 찾으셨군요.", "파이썬 입문서를 찾으셨군요."),
+        # 가정하는 말은 되풀이가 아니다
+        (
+            "입문서를 원하신다면 이 책들이 좋아요.",
+            "입문서를 원하신다면 이 책들이 좋아요.",
+        ),
+    ],
+)
+def test_요청을_되풀이하는_첫_문장은_뺀다(reply: str, expected: str) -> None:
+    assert voice.without_echo(reply) == expected
+
+
+def test_카드_말풍선에서_되풀이_문장을_뺀다(monkeypatch: pytest.MonkeyPatch) -> None:
+    card_reply = json.dumps(
+        {
+            "cards": [{"book_id": 1088, "reason_short": "꿈을 사고파는 이야기예요."}],
+            "reply": "비 오는 날 읽을 책을 찾으셨군요. 『달러구트 꿈 백화점』이 제일 맞아 보여요.",
+        },
+        ensure_ascii=False,
+    )
+
+    def _dispatch(prompt_value) -> AIMessage:
+        content = prompt_value.to_messages()[0].content
+        if "reply는 말풍선에 보일" in content:
+            return AIMessage(content=card_reply)
+        return AIMessage(content=json.dumps({"semantic": "비 오는 날 읽을 책"}))
+
+    monkeypatch.setattr(chat, "get_chat_model", lambda: RunnableLambda(_dispatch))
+    res = client.post(
+        "/recommendations/chat",
+        json={
+            "user_id": 123,
+            "consented": True,
+            "spec": INITIAL_SPEC,
+            "message": "비 오는 날 읽을 책 추천해줘",
+            "recent_turns": [],
+            "exclude_book_ids": [],
+            "image_ref": None,
+        },
+    )
+
+    assert res.json()["data"]["reply"] == "『달러구트 꿈 백화점』이 제일 맞아 보여요."
