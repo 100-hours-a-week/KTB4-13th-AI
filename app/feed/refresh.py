@@ -126,6 +126,15 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         await conn.execute(
             _SAVE_SQL,
             user_id,
-            json.dumps({**feed.stored(), "retried_on": night}, ensure_ascii=False),
+            json.dumps(
+                {
+                    **feed.stored(
+                        set(hist.weights) | hist.disliked_book_ids,
+                        hist.disliked_book_ids,
+                    ),
+                    "retried_on": night,
+                },
+                ensure_ascii=False,
+            ),
             bool(feed.substituted),
         )

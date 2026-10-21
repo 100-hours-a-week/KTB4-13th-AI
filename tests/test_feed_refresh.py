@@ -185,6 +185,8 @@ def test_대체_자리가_표시된_목록을_저장된_프로필로_다시_뽑�
     assert json.loads(rows[_A]["feed"]) == {
         "books": [{"book_id": 2, "interest": "요리", "match_score": 80}],
         "substituted": [],
+        "owned": [],
+        "disliked": [],
         "retried_on": _NIGHT,
     }
     assert json.loads(rows[_A]["feed_prev"])["books"] == _OLD_BOOKS
