@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat import shown, topic_switch
+from app.chat import branches, shown, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
@@ -730,6 +730,26 @@ def _is_topic_word(word: str) -> bool:
     return word not in _NOT_TOPIC and _TRAILING_PARTICLE.sub("", word) not in _NOT_TOPIC
 
 
+def _apply_branch_choice(spec: Spec, message: str, recent_turns: list[Turn]) -> Spec:
+    """직전 갈래 질문에서 사용자가 갈래 하나를 골랐으면 그 이름을 검색어에 붙인다(#530).
+
+    1단계가 "3번"을 갈래 이름으로 바꿔 넣는 일이 드물어서 코드가 넣는다. 이미 들어 있으면 그대로 둔다.
+    """
+    names = branches.asked(recent_turns)
+    if not names:
+        return spec
+    name = branches.chosen(message, names)
+    if name is None:
+        return spec
+    current = spec.semantic or ""
+    if re.sub(r"\s+", "", name) in re.sub(r"\s+", "", current):
+        return spec
+    logger.info("갈래를 골라서 검색어에 붙였다")
+    return spec.model_copy(
+        update={"semantic": f"{current}, {name}" if current else name}
+    )
+
+
 def _recover_topic(spec: Spec, message: str) -> Spec:
     """1단계가 조건만 뽑고 주제를 빠뜨렸으면 메시지에서 주제를 되찾는다(#359 원인 2).
 
@@ -1190,7 +1210,7 @@ MAX_REASON_SHORT_CHARS = 80
 #
 # 좁히기({pick}·{question_rule})는 _may_narrow() 가 허락한 턴에만 켠다. 요청이 넓어 후보가 여러 갈래로 흩어지면
 # 갈래마다 한 권씩 고르고, 어느 쪽이 끌리는지 카드 번호로 묻는다. 버튼(칩)은 명세에 없어서 카드가 그 자리를 한다.
-# 모델은 카드마다 갈래 이름(branches)만 내고 질문 문장은 코드가 만든다(_branch_question).
+# 모델은 카드마다 갈래 이름(branches)만 내고 질문 문장은 코드가 만든다(app/chat/branches.py).
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
@@ -1225,38 +1245,13 @@ _PICK_NARROW = (
     "맞는 책들이 서로 다른 갈래(형식, 분위기, 난이도, 다루는 면 등)로 나뉘면, 갈래마다 "
     "가장 맞는 책을 한 권씩 골라 갈래가 겹치지 않게 하라."
 )
-# 갈래 이름의 최대 글자 수. 질문이 길면 말풍선 200자 안에 못 붙인다
-BRANCH_NAME_MAX = 15
 _QUESTION_NONE = "branches는 null로 둬라."
 _QUESTION_NARROW = (
     "branches: 갈래마다 한 권씩 골랐으면 cards 차례대로 각 책이 어느 갈래인지 짧은 말"
-    f"({BRANCH_NAME_MAX}자 이내)로 적은 목록이다. 사용자가 고를 수 있게 갈래끼리 뚜렷이 다른 말로 "
+    f"({branches.NAME_MAX}자 이내)로 적은 목록이다. 사용자가 고를 수 있게 갈래끼리 뚜렷이 다른 말로 "
     "쓰고 책 제목은 쓰지 마라. 질문 문장은 쓰지 마라. 갈래로 나뉘지 않았거나 요청이 이미 "
     "구체적이면 null로 둬라. 최근 대화에서 이미 고른 갈래를 다시 나누지 마라."
 )
-# 갈래 질문 끝에 붙이는 "다른 쪽" 길. 보여 준 갈래에 원하는 것이 없으면 사용자가 거기서 벗어나 엉뚱한 쪽을 고르게
-# 된다(#530 평가: "과학책"에 우주 갈래가 없어 가짜 사용자가 원하던 책에서 멀어졌다)
-_NONE_OF_THEM = {2: "둘 다", 3: "셋 다"}
-
-
-def _branch_question(branches: list[str]) -> str:
-    """갈래 질문. 꼴을 코드가 정한다. 모델에게 쓰게 했더니 40번 중 22번이 "어느 쪽" 꼴을 벗어나 문지기가 갈래
-    질문인지 알아보지 못했고, 그 답("1번이 좋아 보여")이 ⑦로 갔다(#530 평가)."""
-    options = ", ".join(f"{name}({n}번)" for n, name in enumerate(branches, 1))
-    rest = _NONE_OF_THEM.get(len(branches), "모두")
-    return f"{options} 중 어느 쪽이 끌리세요? {rest} 아니면 원하는 쪽을 말씀해 주세요."
-
-
-def _parse_branches(raw: object, card_count: int) -> list[str] | None:
-    """카드마다 하나씩, 서로 다른 갈래 이름이면 그 목록. 아니면 None(질문하지 않는다)."""
-    if not isinstance(raw, list) or len(raw) != card_count or card_count < 2:
-        return None
-    names = [item.strip() if isinstance(item, str) else "" for item in raw]
-    if not all(0 < len(name) <= BRANCH_NAME_MAX for name in names):
-        return None
-    if len(set(names)) != len(names):
-        return None
-    return names
 
 
 def _format_listing(candidates: list[dict]) -> str:
@@ -1467,14 +1462,14 @@ async def generate_cards(
                 "match_basis": match_basis,
             }
         )
-    branches = None
+    names = None
     if narrow and parsed.get("branches") is not None:
         if len(cards) != len(raw_cards[:CARD_LIMIT]):
             # 질문은 카드를 번호로 가리킨다. 고른 항목이 하나라도 빠지면 화면 번호와 어긋난다.
             logger.info("카드가 빠져 번호가 밀려 좁히기 질문을 버렸다")
         else:
-            branches = _parse_branches(parsed.get("branches"), len(cards))
-    question = _branch_question(branches) if branches else None
+            names = branches.parse_names(parsed.get("branches"), len(cards))
+    question = branches.question(names) if names else None
     return CardResult(cards, reply, False, question)
 
 
@@ -1708,6 +1703,9 @@ def _may_narrow(
         return False
     if not spec.semantic:
         return False
+    if branches.ever_asked(recent_turns):
+        # 한 대화에서 한 번만 묻는다. 고르자마자 또 쪼개 물으면 설문지가 된다(#530 평가: 27개 대화 중 15개)
+        return False
     prior = sum(1 for turn in recent_turns if turn.role == "user")
     return prior < MAX_NARROW_PRIOR_USER_TURNS
 
@@ -1888,6 +1886,7 @@ async def _recommend(
         # 후보 검색 실패와 같은 500이다.
         spec = await _settle_category(spec)
         spec = _recover_topic(spec, req.message)
+        spec = _apply_branch_choice(spec, req.message, req.recent_turns)
         shown_ids = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(

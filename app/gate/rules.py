@@ -42,7 +42,7 @@ _REC_WORDS = re.compile(
     r"추천|찾아|읽을|읽고 싶|비슷한|같은 책|입문서|필독서|있을까|없을까|책 있|소설|에세이"
     r"|같은 거|같은 걸|같은 느낌|같은 결|쪽으로|쪽이요|쪽이 좋|쪽이 끌|끌려"
 )
-# ③의 갈래 질문(app/routers/chat.py _branch_question: "… 중 어느 쪽이 끌리세요?"). 꼴은 코드가 만든다
+# ③의 갈래 질문(app/chat/branches.py question: "… 중 어느 쪽이 끌리세요?"). 꼴은 코드가 만든다
 _BRANCH_QUESTION = re.compile(r"(어느|어떤)\s?쪽")
 
 

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from app.chat import shown
+from app.chat import branches, shown
 from app.chat.schemas import Spec, Turn
 from app.gate import rules as gate_rules
 from app.main import app
@@ -413,20 +413,20 @@ def test_보여_준_책_목록은_번호_제목_저자_소개_앞부분이다() 
         ["짧은 글", "에세이"],  # 카드 수와 다르다
         ["짧은 글", "짧은 글", "소설"],  # 갈래가 겹친다
         ["짧은 글", "", "소설"],
-        ["짧은 글", "에세이", "가" * (chat.BRANCH_NAME_MAX + 1)],
+        ["짧은 글", "에세이", "가" * (branches.NAME_MAX + 1)],
         ["짧은 글", 2, "소설"],
     ],
 )
 def test_갈래_이름이_카드마다_하나씩_다르지_않으면_묻지_않는다(raw) -> None:
-    assert chat._parse_branches(raw, 3) is None
+    assert branches.parse_names(raw, 3) is None
 
 
 def test_카드가_한_장이면_갈래를_묻지_않는다() -> None:
-    assert chat._parse_branches(["에세이"], 1) is None
+    assert branches.parse_names(["에세이"], 1) is None
 
 
 def test_갈래_질문은_코드가_어느_쪽_꼴로_만들고_다른_쪽_길을_연다() -> None:
-    two = chat._branch_question(["시", "에세이"])
+    two = branches.question(["시", "에세이"])
 
     assert (
         two
@@ -436,3 +436,49 @@ def test_갈래_질문은_코드가_어느_쪽_꼴로_만들고_다른_쪽_길�
     assert gate_rules.asked_branch(
         [Turn(role="assistant", text="두 권이에요.\n\n" + two)]
     )
+
+
+ASKED = [
+    Turn(role="user", text="위로되는 에세이"),
+    Turn(
+        role="assistant",
+        text="결이 다른 세 권이에요.\n\n"
+        + branches.question(["전문가의 위로", "심리학 에세이", "감성 에세이"]),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("message", "picked"),
+    [
+        ("3번", "감성 에세이"),
+        ("3번이 좋을 것 같아!", "감성 에세이"),
+        ("두 번째 쪽이요", "심리학 에세이"),
+        ("감성 쪽으로", "감성 에세이"),
+        ("3번은 별로야", None),
+        ("1번은 초보도 볼 수 있어?", None),
+        ("1번이랑 3번", None),
+        ("에세이 쪽", None),  # 두 갈래에 다 있는 낱말
+    ],
+)
+def test_직전_갈래_질문에서_고른_갈래_하나를_찾는다(message: str, picked) -> None:
+    names = branches.asked(ASKED)
+
+    assert names == ["전문가의 위로", "심리학 에세이", "감성 에세이"]
+    assert branches.chosen(message, names) == picked
+
+
+def test_고른_갈래를_검색어에_붙이고_이미_있으면_두_번_붙이지_않는다() -> None:
+    spec = Spec.model_validate({**INITIAL_SPEC, "semantic": "위로가 되는 에세이"})
+
+    applied = chat._apply_branch_choice(spec, "3번", ASKED)
+    assert applied.semantic == "위로가 되는 에세이, 감성 에세이"
+    assert chat._apply_branch_choice(applied, "3번", ASKED).semantic == applied.semantic
+    # 직전 말이 갈래 질문이 아니면 그대로다
+    assert chat._apply_branch_choice(spec, "3번", ASKED[:1]) == spec
+
+
+def test_갈래_질문은_한_대화에서_한_번만_한다() -> None:
+    spec = Spec.model_validate({**INITIAL_SPEC, "semantic": "위로가 되는 에세이"})
+
+    assert chat._may_narrow(spec, ASKED, None) is False
