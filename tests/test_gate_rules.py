@@ -75,8 +75,6 @@ def test_묻기_뒤의_답은_장바구니_말이_없으면_추천이다(message
         ("2번이 마음에 들어", False, "recommend"),
         ("1번 책이 정말 따뜻해 보여요!", False, "recommend"),
         ("1번은 그림책이라서 좀 다를 것 같아.", False, "recommend"),
-        # 번호 없이 제목으로 말해도 같다
-        ("『번 아웃 탈출기』가 정말 좋을 것 같아!", False, "recommend"),
         ("1번 보여줘", False, "cart"),
         # ⑦이 "담을까요?"라고 물은 뒤의 관심은 그 답이다
         ("1번 책이 좋을 것 같아!", True, "cart"),
@@ -89,6 +87,69 @@ def test_카드가_보일_때_책을_평가하는_말은_추천이다(
     message, after_action, kind
 ) -> None:
     assert rules.classify(message, True, after_action=after_action) == kind
+
+
+@pytest.mark.parametrize(
+    ("message", "lane", "sure"),
+    [
+        # 번호로 카드를 가리켜 평가하면 새로 찾지 않고 그 책 소개로 답한다(대답 턴). 찾으면 카드가 갈아 끼워진다
+        ("1번 책이 흥미로워 보여요!", "card", True),
+        ("2번이 마음에 들어", "card", True),
+        ("1번 책이 정말 따뜻해 보여요!", "card", True),
+        ("1번은 그림책이라서 좀 다를 것 같아.", "card", True),
+        # 번호 없이 제목으로 말했거나 다른 책과 견주는 말은, 보인 책에 대한 말인지 조건을 바꾸는 말인지
+        # 낱말로는 모른다. 애매하다 — 판정 호출이 가르고, 판정이 실패하면 ⑦로 간다
+        ("『번 아웃 탈출기』가 정말 좋을 것 같아!", "shop", False),
+        ("1번보다 쉬워 보이는 걸로", "shop", False),
+        ("좀 더 밝아 보이는 걸로", "shop", False),
+        # 평가에 새 책을 찾는 말이 같이 있으면 찾는다
+        ("1번 같은 책이 좋아 보여요 더 찾아줘", "recommend", True),
+    ],
+)
+def test_카드_평가_말은_대답_턴으로_보내고_낱말로_못_가르면_애매하다(
+    message, lane, sure
+) -> None:
+    decision = rules.decide(message, True)
+
+    assert (decision.lane, decision.sure) == (lane, sure)
+
+
+# 카드가 보일 때 사겠다는 말은 책을 칭찬하는 낱말이 같이 있어도 ⑦이다. ③이 새로 찾으면 카드가 갈아 끼워져
+# 담을 수 없다. 장바구니 낱말에 없던 말이라 칭찬 낱말에 먼저 걸렸다(#530 리뷰)
+BUY_WITH_PRAISE = [
+    "1번 담으면 될 것 같아",
+    "2번 사면 될 것 같아",
+    "1번 구매할게요 마음에 들어서",
+    "2번으로 주세요 좋아 보여요",
+    "이걸로 살게요 흥미로워 보여서",
+    "1번 사고 싶어요 끌리네요",
+    "이거 주세요 따뜻해 보여요",
+]
+
+
+@pytest.mark.parametrize("message", BUY_WITH_PRAISE)
+def test_사겠다는_말은_책을_칭찬하는_낱말이_같이_있어도_쇼핑이다(message) -> None:
+    decision = rules.decide(message, True)
+
+    assert (decision.kind, decision.sure, decision.lane) == ("cart", True, "shop")
+    assert rules.route(message, True) == "shop"
+
+
+def test_사겠다는_낱말도_새_책을_찾는_말이_같이_있으면_찾는다() -> None:
+    decision = rules.decide("2번 사면 될 것 같은데 비슷한 책도 추천해줘", True)
+
+    assert (decision.lane, decision.sure) == ("recommend", True)
+
+
+def test_카드가_없으면_사겠다는_낱말이_추천을_가로채지_않는다() -> None:
+    assert rules.classify("구매할 책 추천해줘", False) == "recommend"
+
+
+def test_알려_달라는_주세요는_사겠다는_말이_아니다() -> None:
+    # "알려주세요"의 "주세요"를 사겠다는 말로 읽으면 카드 질문이 ⑦로 간다
+    decision = rules.decide("1번 줄거리 알려주세요 좋아 보여요", True)
+
+    assert decision.lane == "card"
 
 
 class _T:

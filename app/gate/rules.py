@@ -19,9 +19,15 @@
 2. 직전 챗봇 말이 ③의 묻기(넓은 첫 요청에 원하는 것을 물은 말, app/chat/asking.py)면, 장바구니 낱말이 없는
    답("비전공자인데 처음 배워 보려고", "아무거나")은 추천이다. 이런 답엔 추천 낱말이 없어 v1 은 ⑦에 들렀다가
    되돌아왔다. 최근 대화에서 직전 챗봇 말만 본다.
-3. 카드가 보일 때 책을 평가하는 말("1번 책이 흥미로워 보여요", "『번 아웃 탈출기』가 좋을 것 같아", "1번은 좀
-   다를 것 같아")은 추천이다. 번호 없이 제목으로 말해도 같다. ⑦로 가면 "담을까요?"만 되풀이했다(#530 대화 평가:
-   10개 중 8개 대화). 직전 챗봇 말이 담기·빼기를 물었으면("카드 1번을 담을까요?") 그 답이라 ⑦로 보낸다.
+3. 카드가 보일 때 책을 평가하는 말("1번 책이 흥미로워 보여요", "1번은 좀 다를 것 같아")은 ③이 받는다. ⑦로 가면
+   "담을까요?"만 되풀이했다(#530 대화 평가: 10개 중 8개 대화). 직전 챗봇 말이 담기·빼기를 물었으면("카드 1번을
+   담을까요?") 그 답이라 ⑦로 보낸다.
+   - 번호로 카드를 가리킨 평가 말은 **대답 턴**(``card``)이다. 새로 찾으면 칭찬한 책이 화면에서 사라진다.
+   - 번호 없이 제목으로 말했거나("『번 아웃 탈출기』가 좋을 것 같아") 다른 책과 견주는 말("1번보다 쉬워 보이는
+     걸로")은 보인 책에 대한 말인지 조건을 바꾸는 말인지 낱말로 모른다. 애매하다.
+4. 카드가 보일 때 사겠다는 말("1번 구매할게요 마음에 들어서", "2번으로 주세요 좋아 보여요")은 책을 칭찬하는
+   낱말이 같이 있어도 ⑦이다. 3번보다 먼저 본다. ③이 새로 찾으면 카드가 갈아 끼워져 담을 수 없다. 사겠다는
+   낱말은 장바구니 낱말에 넣지 않고 카드가 보일 때만 본다 — "구매할 책 추천해줘"는 카드가 없으면 추천이다.
 
 **확실한 가름과 애매한 가름(#530).** ``decide`` 는 갈래와 함께 그 갈래가 낱말 근거로 정해졌는지(sure)를 준다.
 낱말 근거 없이 기본값으로 정한 경우 — 아무 신호도 없는 말, 카드 번호만 있고 행동·추천 낱말이 없는 말 — 는
@@ -38,6 +44,8 @@ from typing import Literal, Protocol
 RULES_VERSION = 2
 
 Lane = Literal["recommend", "shop"]
+# 문지기가 말을 보내는 곳. ``card`` 는 ③ 대답 턴(새로 찾지 않고 보인 책 소개로 답한다)
+Target = Literal["recommend", "shop", "card"]
 # 기준선의 네 갈래. 문지기는 ``recommend`` 만 ③으로 보내고 나머지는 ⑦로 보낸다
 Kind = Literal["recommend", "cart", "both", "neither"]
 
@@ -56,6 +64,13 @@ _REC_WORDS = re.compile(
 # 책을 평가하는 말("좋아 보여", "따뜻해 보여요", "괜찮을 것 같아", "마음에 들어"). "1번 보여줘"는 아니다
 _INTEREST = re.compile(
     r"(?:아|어|해|워)\s*보(?:여|이|인다)(?!\s*줘|\s*주)|것\s*같|마음에\s*들|흥미로|끌리"
+)
+# 다른 책과 견주는 말. 평가가 아니라 조건을 바꾸는 말일 수 있다("1번보다 쉬워 보이는 걸로")
+_COMPARISON = re.compile(r"보다|대신|말고")
+# 고른 책을 사겠다는 말. 장바구니 낱말(_CART_WORDS)에 없던 꼴이다. "알려주세요"의 "주세요"는 아니라서 앞 글자를 본다
+_BUY_WORDS = re.compile(
+    r"담으면|담자|넣으면|사면|살게|살래|살까|사고\s*싶|사야|사려고|사요|구매|구입"
+    r"|(?:번|로|거|걸|책)\s*(?:주세요|줘요?)"
 )
 # ⑦이 담기·빼기·수량 변경을 물은 문장("카드 1번을 담을까요?")
 _ACTION_QUESTION = re.compile(r"(?:담|넣|뺄|빼|바꿀)[^.!?\n]*(?:\?|까요)")
@@ -78,11 +93,22 @@ def asked_action(recent_turns: Sequence[_Turn]) -> bool:
 
 @dataclass(frozen=True)
 class Decision:
-    """규칙이 가른 갈래와, 그것이 낱말 근거로 정해졌는지(sure). basis 는 로그에 남길 근거다."""
+    """규칙이 가른 갈래와, 그것이 낱말 근거로 정해졌는지(sure). basis 는 로그에 남길 근거다.
+
+    card 는 ``recommend`` 중에서도 새로 찾지 않고 화면 카드의 책 소개로 답할 말(③ 대답 턴)이다.
+    """
 
     kind: Kind
     sure: bool
     basis: str
+    card: bool = False
+
+    @property
+    def lane(self) -> Target:
+        """판정 호출이 없을 때 이 말이 가는 곳."""
+        if self.card:
+            return "card"
+        return "recommend" if self.kind == "recommend" else "shop"
 
 
 def decide(
@@ -95,10 +121,13 @@ def decide(
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
     2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2)
-    3. 카드가 보일 때 책을 평가하는 말은 추천이다. 직전에 담기를 물었으면 그 답이라 아니다(v2)
-    4. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2). 행동 낱말도 추천 낱말도
+    3. 카드가 보일 때 사겠다는 말은 장바구니 신호다. 책을 칭찬하는 낱말이 같이 있어도 그렇다. 새 책을 찾는 낱말이
+       같이 있으면 아래로 내려간다(v2)
+    4. 카드가 보일 때 책을 평가하는 말 중 번호로 카드를 가리킨 말은 ③ 대답 턴이다. 번호가 없거나 견주는 말은 애매하다.
+       직전에 담기를 물었으면 그 답이라 아니다(v2)
+    5. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2). 행동 낱말도 추천 낱말도
        없으면 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라 확실하다
-    5. 추천 낱말만 있으면 추천. 아무 신호도 없으면 ``neither`` 이고 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라
+    6. 추천 낱말만 있으면 추천. 아무 신호도 없으면 ``neither`` 이고 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라
        확실하다
     """
     text = message.strip()
@@ -109,8 +138,13 @@ def decide(
         return Decision("both" if recommend else "cart", True, "장바구니 낱말")
     if after_ask:
         return Decision("recommend", True, "묻기의 답")
-    if cards_shown and not after_action and _INTEREST.search(text):
-        return Decision("recommend", True, "카드 평가 말")
+    if cards_shown and not recommend and _BUY_WORDS.search(text):
+        return Decision("cart", True, "사겠다는 낱말")
+    if cards_shown and not after_action and not recommend and _INTEREST.search(text):
+        if pointer and not _COMPARISON.search(text):
+            return Decision("recommend", True, "카드 평가 말", card=True)
+        # 보인 책에 대한 말인지 조건을 바꾸는 말인지 낱말로 모른다. 판정이 실패하면 ⑦로 간다(카드가 남는다)
+        return Decision("neither", False, "카드 평가 말인지 낱말로 모름")
     if pointer:
         if recommend:
             return Decision("recommend", True, "카드와 추천 낱말")

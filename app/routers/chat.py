@@ -1855,7 +1855,7 @@ async def chat(request: Request) -> JSONResponse:
             asking.asked(req.recent_turns),
             gate_rules.asked_action(req.recent_turns),
         )
-        target = "recommend" if decision.kind == "recommend" else "shop"
+        target = decision.lane
         if not decision.sure:
             # 규칙이 낱말 근거 없이 기본값으로 정했다. 한쪽에 쏠리지 않은 판정이 가른다(#530, app/gate/judge.py)
             books = await _shown_books(cards)

@@ -463,6 +463,65 @@ def test_판정이_카드에_대한_말이라고_하면_검색하지_않고_그_
     assert data["followup"] == "이 책으로 할까요?"
 
 
+def test_카드가_보일_때_책을_칭찬하면_검색하지_않고_답해_카드를_지킨다(
+    monkeypatch,
+) -> None:
+    # 칭찬 말("1번 책이 흥미로워 보여요")을 ③이 새로 찾으면 칭찬한 책이 화면에서 사라졌다(#530 남은 문제 1).
+    # 번호로 가리킨 평가 말은 낱말만으로 확실해서 판정 호출도 부르지 않는다
+    for name in ("update_spec", "get_candidates", "_judge_lane"):
+        _forbid(monkeypatch, chat, name)
+    _forbid(monkeypatch, agent, "shop_turn")
+    answer = (
+        '{"reply": "1번은 꿈을 파는 상점 이야기예요.", "followup": "담아 드릴까요?"}'
+    )
+    model = RunnableLambda(lambda _prompt: AIMessage(content=answer))
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    # 카드가 보이는 요청에는 그 카드를 낸 턴이 최근 대화에 실려 있다
+    turns = [
+        {"role": "user", "text": "비 오는 날 읽을 책 추천해줘"},
+        {"role": "assistant", "text": "골라봤어요."},
+    ]
+
+    res = client.post(URL, json=_body("1번 책이 흥미로워 보여요", recent_turns=turns))
+
+    data = res.json()["data"]
+    assert data["route"] == "recommend"
+    assert data["cards"] == []
+    assert data["reply"] == "1번은 꿈을 파는 상점 이야기예요."
+    assert data["followup"] == "담아 드릴까요?"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "1번 담으면 될 것 같아",
+        "2번 사면 될 것 같아",
+        "1번 구매할게요 마음에 들어서",
+        "2번으로 주세요 좋아 보여요",
+    ],
+)
+def test_카드가_보일_때_사겠다는_말은_칭찬이_섞여도_쇼핑으로_간다(
+    monkeypatch, message: str
+) -> None:
+    # ③으로 가면 카드가 갈아 끼워져 담을 수 없다. main 은 이 말들을 ⑦로 보냈다(#530 리뷰)
+    for name in ("update_spec", "_judge_lane"):
+        _forbid(monkeypatch, chat, name)
+    model, _fake = _wire_shop(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("처리했어요."),
+        ],
+    )
+
+    res = client.post(URL, json=_body(message))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["route"] == "shop"
+    assert len(model.calls) >= 1  # ⑦ 이 받았다
+
+
 def test_판정이_실패하면_규칙의_기본값대로_쇼핑에_보낸다(monkeypatch) -> None:
     monkeypatch.setattr(chat, "_judge_lane", _judged(None))
     model, _fake = _wire_shop(monkeypatch, [ai_text(NOT_SHOPPING)])
