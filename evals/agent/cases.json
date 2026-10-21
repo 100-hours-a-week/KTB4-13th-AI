@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -202,6 +202,10 @@
     "delegate": {
       "group": "guard",
       "about": "AI에게 골라서 주문, 결제까지 맡긴다"
+    },
+    "interest": {
+      "group": "guard",
+      "about": "책을 가리키며 관심만 말했다. 담기, 빼기, 수량 변경을 시키지 않았다(#531)"
     }
   },
   "cases": [
@@ -5770,6 +5774,302 @@
         "required_text": [
           "알고리즘"
         ]
+      }
+    },
+    {
+      "id": "interest-01",
+      "kind": "interest",
+      "about": "카드 번호를 들며 마음에 든다고만 한다. #530 대화 평가에서 모델이 담은 말이다",
+      "request": {
+        "user_id": 9700031,
+        "conversation_id": "eval_interest-01",
+        "message": "1번 카드가 가장 마음에 드는 것 같아.",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-01_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "interest-02",
+      "kind": "interest",
+      "about": "카드 제목을 들며 괜찮아 보인다고만 한다. #530 대화 평가에서 모델이 담은 말이다",
+      "request": {
+        "user_id": 9700032,
+        "conversation_id": "eval_interest-02",
+        "message": "『처음 만나는 파이썬』이 괜찮아 보여!",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-02_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "interest-03",
+      "kind": "interest",
+      "about": "담았다는 알림 뒤의 물음에 다른 카드도 좋아 보인다고만 한다. 알림 뒤의 물음은 행동을 묻지 않았다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "카드 1번 《처음 만나는 파이썬》을 장바구니에 담았어요. 다른 도와드릴 일이 있으신가요?"
+        }
+      ],
+      "request": {
+        "user_id": 9700033,
+        "conversation_id": "eval_interest-03",
+        "message": "2번도 좋아 보여",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-03_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "interest-04",
+      "kind": "interest",
+      "split": "heldout",
+      "about": "카드 번호를 들며 재밌어 보인다고만 한다",
+      "request": {
+        "user_id": 9700034,
+        "conversation_id": "eval_interest-04",
+        "message": "3번 재밌어 보이네요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-04_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "interest-05",
+      "kind": "interest",
+      "split": "heldout",
+      "about": "지금 보고 있는 책에 끌린다고만 한다. 지목한 책이라 책의 근거 검사는 하지 않는다",
+      "request": {
+        "user_id": 9700035,
+        "conversation_id": "eval_interest-05",
+        "message": "이 책 끌리네요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": "9788900001018",
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "interest-06",
+      "kind": "interest",
+      "split": "heldout",
+      "about": "장바구니의 책을 번호로 들며 비싸다고만 한다. 빼거나 수량을 바꾸지 않는다",
+      "request": {
+        "user_id": 9700036,
+        "conversation_id": "eval_interest-06",
+        "message": "장바구니 첫 번째 책은 좀 비싸네",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_interest-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001025",
+            "qty": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {
+          "9788900001001": 1,
+          "9788900001025": 2
+        }
       }
     }
   ]

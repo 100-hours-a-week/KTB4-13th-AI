@@ -29,6 +29,8 @@ class ToolErrorCode(StrEnum):
     AMBIGUOUS_BOOK = "AMBIGUOUS_BOOK"
     # 사용자의 말에 그 책을 가리키는 번호·제목·"전부" 같은 근거가 없는데 LLM 이 골랐다(짐작해서 실행하지 않는다)
     REFERENCE_NOT_STATED = "REFERENCE_NOT_STATED"
+    # 책은 정해졌지만 사용자가 담기, 빼기, 수량 변경을 시키지 않았다("1번이 마음에 들어", #531)
+    ACTION_NOT_STATED = "ACTION_NOT_STATED"
 
     # 도구가 일부러 안 한 것
     ALREADY_IN_CART = (

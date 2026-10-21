@@ -176,7 +176,7 @@ async def _view(ctx: TurnContext, gateway: CommerceGateway, args: ViewArgs) -> _
 
 
 async def _unstated(
-    ctx: TurnContext, gateway: CommerceGateway, ref: BookRef, isbn: str
+    ctx: TurnContext, gateway: CommerceGateway, ref: BookRef, isbn: str, verb: str
 ) -> dict[str, Any] | None:
     """사용자의 말에 이 책의 근거가 없으면 막는 결과, 있으면 None.
 
@@ -204,7 +204,41 @@ async def _unstated(
             ToolErrorCode.AMBIGUOUS_BOOK.value,
             books=[_named(ctx, card_ref, card.isbn), _named(ctx, ref, isbn)],
         )
-    return _fail(ToolErrorCode.REFERENCE_NOT_STATED.value, book=_named(ctx, ref, isbn))
+    return _held(ToolErrorCode.REFERENCE_NOT_STATED, ctx, ref, isbn, verb)
+
+
+def _unrequested(
+    ctx: TurnContext, ref: BookRef, isbn: str, verb: str
+) -> dict[str, Any] | None:
+    """사용자가 장바구니를 바꾸라고 말하지 않았으면 막는 결과, 말했으면 None(#531).
+
+    책의 근거(_unstated)를 본 뒤에 본다. 막히면 REFERENCE_NOT_STATED 처럼 모델이 고른 책을 결과에 적어, 그 책을
+    짚어 "담을까요?"라고 묻게 한다. 사용자가 "네"라고 하면 행동을 물은 말에 대한 답이라 통과한다.
+    """
+    if evidence.states_action(ctx):
+        return None
+    return _held(ToolErrorCode.ACTION_NOT_STATED, ctx, ref, isbn, verb)
+
+
+def _held(
+    code: ToolErrorCode, ctx: TurnContext, ref: BookRef, isbn: str, verb: str
+) -> dict[str, Any]:
+    """막은 쓰기의 결과. 모델이 그대로 물을 문장(ask)을 코드가 만든다(#531).
+
+    물을 말을 모델에게 맡겼더니 막힌 9번 중 7번이 "이미 담긴 책이라 담을 수 없어요"처럼 틀리거나 "'담아줘'라고
+    말씀해 주세요"처럼 다시 말하게 했다(gpt-4o-mini). verb 는 도구마다 "담을까요?", "뺄까요?"처럼 준다.
+    """
+    book = _named(ctx, ref, isbn)
+    return _fail(code.value, book=book, ask=f"{book}{_object_particle(book)} {verb}")
+
+
+def _object_particle(name: str) -> str:
+    """이름 뒤의 을/를. 끝 글자에 받침이 있으면 을이다. 제목을 감싼 》는 건너뛴다.
+    끝이 한글이 아니면(영문, 숫자) 읽는 법을 몰라 을로 둔다."""
+    last = name.rstrip("》 ")[-1:]
+    if "가" <= last <= "힣":
+        return "을" if (ord(last) - ord("가")) % 28 else "를"
+    return "을"
 
 
 def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
@@ -214,6 +248,9 @@ def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
         title = next(
             (line.title for line in ctx.cart_snapshot or [] if line.isbn == isbn), None
         )
+    elif ref.source == "focused":
+        where = "지금 보고 계신 책"
+        title = ctx.titles.get(isbn)
     else:
         where = f"카드 {ref.n}번"
         title = ctx.titles.get(isbn)
@@ -230,7 +267,10 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
     if (separate := _separate(ctx)) is not None:
         return arguments, separate
-    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+    verb = "담을까요?"
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn, verb)) is not None:
+        return arguments, blocked
+    if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return arguments, blocked
     # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
     # 담기 전에 장바구니를 다시 읽어 확인한다. 사용자가 수량을 말했으면("2권 담아줘") 그 수량으로 바꾼다(#489).
@@ -261,7 +301,10 @@ async def _update(
     arguments = {"isbn": isbn, "quantity": args.quantity}
     if (separate := _separate(ctx)) is not None:
         return arguments, separate
-    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+    verb = f"{args.quantity}권으로 바꿀까요?"
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn, verb)) is not None:
+        return arguments, blocked
+    if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return arguments, blocked
     return await _write(
         ctx, arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
@@ -274,7 +317,10 @@ async def _remove(
     isbn = resolve(ctx, args.book)
     if (separate := _separate(ctx)) is not None:
         return {"isbn": isbn}, separate
-    if (blocked := await _unstated(ctx, gateway, args.book, isbn)) is not None:
+    verb = "뺄까요?"
+    if (blocked := await _unstated(ctx, gateway, args.book, isbn, verb)) is not None:
+        return {"isbn": isbn}, blocked
+    if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return {"isbn": isbn}, blocked
     return await _write(ctx, {"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
 
