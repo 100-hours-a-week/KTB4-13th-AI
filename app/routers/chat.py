@@ -31,6 +31,7 @@ from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
 from app.feed import personalized, scoring
+from app.gate import judge as gate_judge
 from app.gate import rules as gate_rules
 from app.gate import shopping
 from app.gateway import embedding
@@ -1728,9 +1729,12 @@ ANSWER_PROMPT = ChatPromptTemplate.from_template(
     "최근 대화:\n{recent_turns}\n\n"
     "마지막으로 보여 준 책(번호는 화면의 카드 순서, 모두 이 서점에서 파는 책이다):\n{shown}\n\n"
     '이번 메시지: "{message}"\n\n'
-    "이번 메시지는 새 책을 찾는 말이 아니라 질문이다. 책을 새로 고르지 말고 답하라.\n"
+    "이번 메시지는 새 책을 찾는 말이 아니라 질문이거나 보여 준 책에 대한 말이다. 책을 새로 "
+    "고르지 말고 답하라.\n"
     "- 보여 준 책에 대해 물으면 그 책 소개에 있는 내용으로만 답하라. 소개에 없는 것은 "
     "모른다고 말하라.\n"
+    "- 보여 준 책이 좋다거나 별로라고 하면, 그 책 소개에서 사용자가 말한 것과 맞는 점이나 "
+    "다른 점을 짧게 말하라.\n"
     "- 보여 준 책 중에서 골라 달라면, 최근 대화에서 사용자가 말한 것에 가장 맞는 한 권을 "
     "번호로 고르고 이유를 짧게 말하라.\n"
     "- 챗봇이 무엇을 하는지 물으면, 원하는 책을 대화로 함께 좁혀 찾아 준다고 답하라. "
@@ -1741,6 +1745,42 @@ ANSWER_PROMPT = ChatPromptTemplate.from_template(
     "(최대 80자)이다.\n"
     '다음 JSON 형식으로만 답하라: {{"reply": "질문에 대한 답", "followup": "이어 갈 질문"}}'
 )
+
+
+# 문지기 판정(#530)을 이만큼만 기다린다. 넘으면 규칙의 기본값(⑦에 보내 쇼핑이 아니면 되돌리기)으로 간다.
+GATE_JUDGE_TIMEOUT_SECONDS = 3.0
+
+
+async def _judge_lane(
+    req: ChatRequest,
+    cards: list[tuple[int, str]],
+    books: list[shown.ShownBook],
+) -> gate_judge.Judged | None:
+    """규칙이 애매하다고 본 말을 판정 호출로 가른다. 실패·시간 초과·모르는 답이면 None 이다(규칙의 기본값으로 간다).
+
+    직전 챗봇 말은 최근 대화의 마지막 줄이 챗봇 말일 때만 쓴다. 사용자 말만 싣는 호출자도 있다.
+    """
+    last = req.recent_turns[-1] if req.recent_turns else None
+    last_bot = last.text if last is not None and last.role == "assistant" else ""
+    chain = (
+        gate_judge.LANE_PROMPT | get_chat_model() | message_text | parse_json_response
+    )
+    try:
+        answer = await asyncio.wait_for(
+            invoke_chain(
+                chain,
+                {
+                    "last_bot": last_bot[-gate_judge.LAST_BOT_CHARS :] or "(없음)",
+                    "cards": gate_judge.card_lines(books, [rank for rank, _ in cards]),
+                    "message": req.message or "",
+                },
+            ),
+            timeout=GATE_JUDGE_TIMEOUT_SECONDS,
+        )
+    except (LLMUnavailableError, TimeoutError):
+        logger.warning("문지기 판정 실패 — 규칙의 기본값으로 간다", exc_info=True)
+        return None
+    return gate_judge.parse(answer)
 
 
 async def _shown_books(cards: list[tuple[int, str]]) -> list[shown.ShownBook]:
@@ -1804,19 +1844,31 @@ async def chat(request: Request) -> JSONResponse:
     # 쇼핑 칸(idempotency_key)을 보낸 요청이면 문지기가 ③과 ⑦ 중 어디로 보낼지 정한다(#413).
     # 칸이 없으면 이 변경 전과 똑같이 ③만 하고 응답에 route 도 없다.
     lane = None
+    cards = shown.parse(payload)
+    books: list[shown.ShownBook] | None = None
+    target: gate_judge.Judged = "recommend"
     if shopping.enabled(payload):
         lane = "recommend"
-        after_ask = asking.asked(req.recent_turns)
-        after_action = gate_rules.asked_action(req.recent_turns)
-        if (
-            gate_rules.route(
-                req.message or "",
-                shopping.cards_shown(payload),
-                after_ask,
-                after_action,
-            )
-            == "shop"
-        ):
+        decision = gate_rules.decide(
+            req.message or "",
+            shopping.cards_shown(payload),
+            asking.asked(req.recent_turns),
+            gate_rules.asked_action(req.recent_turns),
+        )
+        target = "recommend" if decision.kind == "recommend" else "shop"
+        if not decision.sure:
+            # 규칙이 낱말 근거 없이 기본값으로 정했다. 한쪽에 쏠리지 않은 판정이 가른다(#530, app/gate/judge.py)
+            books = await _shown_books(cards)
+            judged = await _judge_lane(req, cards, books)
+            if judged is not None:
+                target = judged
+        logger.info(
+            "문지기: %s(%s) → %s",
+            "확실" if decision.sure else "애매",
+            decision.basis,
+            target,
+        )
+        if target == "shop":
             shop_req = shopping.to_agent_request(payload)
             if shop_req is None:
                 return responses.error(400, "invalid_request")
@@ -1828,7 +1880,32 @@ async def chat(request: Request) -> JSONResponse:
                 logger.info("문지기: 쇼핑으로 처리했다")
                 return responses.success(turn.message, {**turn.data, "route": "shop"})
             logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
-    return await _recommend(req, lane, shown.parse(payload))
+            target = "recommend"
+    return await _recommend(
+        req, lane, cards, answer_only=target == "card", shown_books=books
+    )
+
+
+async def _answer_response(
+    req: ChatRequest, lane: str | None, shown_books: list[shown.ShownBook]
+) -> JSONResponse:
+    """대답 턴의 응답. 새 책을 찾는 말이 아니라 검색하지 않는다. spec 은 요청에 실린 그대로 돌려준다."""
+    reply, followup, degraded = await _answer(req, shown_books)
+    return responses.success(
+        "recommend_success",
+        _with_lane(
+            {
+                "reply": reply,
+                "spec": req.spec.model_dump(),
+                "recognition": None,
+                "cards": [],
+                "followup": followup,
+                "buttons": [],
+                "degraded": degraded,
+            },
+            lane,
+        ),
+    )
 
 
 def _with_lane(data: dict, lane: str | None) -> dict:
@@ -1837,9 +1914,18 @@ def _with_lane(data: dict, lane: str | None) -> dict:
 
 
 async def _recommend(
-    req: ChatRequest, lane: str | None, shown_cards: list[tuple[int, str]] | None = None
+    req: ChatRequest,
+    lane: str | None,
+    shown_cards: list[tuple[int, str]] | None = None,
+    *,
+    answer_only: bool = False,
+    shown_books: list[shown.ShownBook] | None = None,
 ) -> JSONResponse:
-    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성. 질문이면 조건 갱신 → 대답, 넓은 첫 요청이면 조건 갱신 → 묻기(#530)."""
+    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성. 질문이면 조건 갱신 → 대답, 넓은 첫 요청이면 조건 갱신 → 묻기(#530).
+
+    answer_only 는 문지기 판정이 화면 카드에 대한 말이라고 본 턴이다. 조건을 갱신하지 않고 바로 대답한다.
+    shown_books 는 문지기가 이미 읽은 보여 준 카드다. 없으면 여기서 읽는다.
+    """
     unanswerable = _unanswerable_request(req.message, req.spec, req.recent_turns)
     if unanswerable:
         # LLM도 검색도 부르지 않는다. spec은 요청에 실린 그대로 돌려준다(6키 계약 유지).
@@ -1860,7 +1946,12 @@ async def _recommend(
             ),
         )
 
-    shown_books = await _shown_books(shown_cards or [])
+    if shown_books is None:
+        shown_books = await _shown_books(shown_cards or [])
+    if answer_only:
+        # 새로 찾으면 사용자가 가리킨 책이 화면에서 사라진다. 그 책 소개로 답하고 카드는 그대로 둔다
+        logger.info("대답 턴: 문지기가 카드에 대한 말이라고 해서 검색하지 않고 답했다")
+        return await _answer_response(req, lane, shown_books)
     update = await update_spec(
         req.message,
         req.spec,
@@ -1888,24 +1979,8 @@ async def _recommend(
             ),
         )
     if update.answer:
-        # 새 책을 찾는 말이 아니다. 검색하지 않고 답한다. spec 은 요청에 실린 그대로 돌려준다.
-        reply, followup, degraded = await _answer(req, shown_books)
         logger.info("대답 턴: 검색하지 않고 답했다")
-        return responses.success(
-            "recommend_success",
-            _with_lane(
-                {
-                    "reply": reply,
-                    "spec": req.spec.model_dump(),
-                    "recognition": None,
-                    "cards": [],
-                    "followup": followup,
-                    "buttons": [],
-                    "degraded": degraded,
-                },
-                lane,
-            ),
-        )
+        return await _answer_response(req, lane, shown_books)
     spec, spec_degraded = update.spec, update.degraded
     try:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도

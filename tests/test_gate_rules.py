@@ -159,3 +159,44 @@ def test_쇼핑_에이전트_요청_검사를_그대로_거친다() -> None:
         shopping.to_agent_request({k: v for k, v in ok.items() if k != "user_context"})
         is None
     )
+
+
+# --- 확실한 가름과 애매한 가름(#530) ---
+
+
+@pytest.mark.parametrize(
+    ("message", "cards_shown", "flags", "kind", "sure"),
+    [
+        pytest.param("2번 담아줘", True, {}, "cart", True, id="장바구니_낱말"),
+        pytest.param(
+            "파이썬 책 추천해줘", False, {}, "recommend", True, id="추천_낱말"
+        ),
+        pytest.param("2번 같은 거", True, {}, "recommend", True, id="카드와_추천_낱말"),
+        pytest.param(
+            "1번이 흥미로워 보여", True, {}, "recommend", True, id="카드_평가"
+        ),
+        pytest.param(
+            "아무거나", False, {"after_ask": True}, "recommend", True, id="묻기의_답"
+        ),
+        pytest.param(
+            "2번", True, {"after_action": True}, "cart", True, id="담기_질문_뒤_번호"
+        ),
+        pytest.param(
+            "응", True, {"after_action": True}, "neither", True, id="담기_질문의_답"
+        ),
+        # 낱말 근거 없이 기본값으로 정한 말은 애매하다. 머지 전 점검에서 틀린 말들이다
+        pytest.param("1만5천원 이하로", True, {}, "neither", False, id="조건만"),
+        pytest.param("다른 거 보여줘", True, {}, "neither", False, id="다른_거"),
+        pytest.param("2번은 어떤 내용이야?", True, {}, "cart", False, id="카드_번호만"),
+        pytest.param("2번", True, {}, "cart", False, id="번호만"),
+        pytest.param("안녕", False, {}, "neither", False, id="인사"),
+    ],
+)
+def test_낱말_근거가_있으면_확실하고_기본값으로_정했으면_애매하다(
+    message, cards_shown, flags, kind, sure
+) -> None:
+    decision = rules.decide(message, cards_shown, **flags)
+
+    assert (decision.kind, decision.sure) == (kind, sure)
+    # 갈래는 classify 와 같다. 낱말 규칙은 v2 그대로다
+    assert rules.classify(message, cards_shown, **flags) == kind

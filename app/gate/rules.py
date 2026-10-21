@@ -22,10 +22,17 @@
 3. 카드가 보일 때 책을 평가하는 말("1번 책이 흥미로워 보여요", "『번 아웃 탈출기』가 좋을 것 같아", "1번은 좀
    다를 것 같아")은 추천이다. 번호 없이 제목으로 말해도 같다. ⑦로 가면 "담을까요?"만 되풀이했다(#530 대화 평가:
    10개 중 8개 대화). 직전 챗봇 말이 담기·빼기를 물었으면("카드 1번을 담을까요?") 그 답이라 ⑦로 보낸다.
+
+**확실한 가름과 애매한 가름(#530).** ``decide`` 는 갈래와 함께 그 갈래가 낱말 근거로 정해졌는지(sure)를 준다.
+낱말 근거 없이 기본값으로 정한 경우 — 아무 신호도 없는 말, 카드 번호만 있고 행동·추천 낱말이 없는 말 — 는
+애매하다. 문지기는 애매한 말만 작은 판정 호출(app/gate/judge.py)에 맡긴다. 머지 전 점검 45턴에서 갈래가 틀린 7턴이
+모두 애매한 쪽이었고("1만5천원 이하로", "다른 거 보여줘", "2번은 어떤 내용이야?" 등, ⑦이 예산 골라 담기나 카드
+되읊기로 받음), 확실한 쪽 34턴은 하나도 틀리지 않았다. 갈래를 가르는 낱말 규칙 자체는 v2 그대로다.
 """
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 RULES_VERSION = 2
@@ -69,35 +76,62 @@ def asked_action(recent_turns: Sequence[_Turn]) -> bool:
     return False
 
 
-def classify(
+@dataclass(frozen=True)
+class Decision:
+    """규칙이 가른 갈래와, 그것이 낱말 근거로 정해졌는지(sure). basis 는 로그에 남길 근거다."""
+
+    kind: Kind
+    sure: bool
+    basis: str
+
+
+def decide(
     message: str,
     cards_shown: bool,
     after_ask: bool = False,
     after_action: bool = False,
-) -> Kind:
-    """말 하나를 네 갈래 중 하나로 가른다.
+) -> Decision:
+    """말 하나를 네 갈래 중 하나로 가르고, 그 갈래가 확실한지 함께 준다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
     2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2)
     3. 카드가 보일 때 책을 평가하는 말은 추천이다. 직전에 담기를 물었으면 그 답이라 아니다(v2)
-    4. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2)
-    5. 추천 낱말만 있으면 추천, 아무 신호도 없으면 ``neither``
+    4. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2). 행동 낱말도 추천 낱말도
+       없으면 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라 확실하다
+    5. 추천 낱말만 있으면 추천. 아무 신호도 없으면 ``neither`` 이고 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라
+       확실하다
     """
     text = message.strip()
     cart_words = bool(_CART_WORDS.search(text))
     pointer = cards_shown and bool(_POINTER.search(text))
     recommend = bool(_REC_WORDS.search(text))
     if cart_words:
-        return "both" if recommend else "cart"
+        return Decision("both" if recommend else "cart", True, "장바구니 낱말")
     if after_ask:
-        return "recommend"
+        return Decision("recommend", True, "묻기의 답")
     if cards_shown and not after_action and _INTEREST.search(text):
-        return "recommend"
+        return Decision("recommend", True, "카드 평가 말")
     if pointer:
-        return "recommend" if recommend else "cart"
+        if recommend:
+            return Decision("recommend", True, "카드와 추천 낱말")
+        return Decision(
+            "cart", after_action, "⑦ 질문의 답" if after_action else "카드 번호만"
+        )
     if recommend:
-        return "recommend"
-    return "neither"
+        return Decision("recommend", True, "추천 낱말")
+    return Decision(
+        "neither", after_action, "⑦ 질문의 답" if after_action else "낱말 근거 없음"
+    )
+
+
+def classify(
+    message: str,
+    cards_shown: bool,
+    after_ask: bool = False,
+    after_action: bool = False,
+) -> Kind:
+    """말 하나를 네 갈래 중 하나로 가른다(``decide`` 의 갈래만)."""
+    return decide(message, cards_shown, after_ask, after_action).kind
 
 
 def route(
