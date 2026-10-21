@@ -236,6 +236,47 @@ def test_세_테이블을_user_id로_읽어_모은다() -> None:
 
 
 @needs_db
+def test_결제가_끝난_구매와_지우지_않은_리뷰만_이력으로_친다() -> None:
+    # 복제는 취소·삭제된 줄을 지우지 않고 표시만 남긴다(#296). 결제 화면에서 멈춘 주문이 대부분이다.
+    purchases = [
+        (9100101, "PAID", None),
+        (9100102, "CREATED", None),
+        (9100103, "EXPIRED", None),
+        (9100104, "CANCELED", None),
+        (9100105, "PARTIAL_CANCELED", None),
+        (9100106, "PAID", _T0),
+        (9100107, None, None),
+    ]
+    reviews = [(9100108, True, None), (9100109, False, None), (9100110, True, _T0)]
+
+    async def _go() -> history.History:
+        conn = await asyncpg.connect(_DB_URL)
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.executemany(
+                "INSERT INTO v_user_purchases"
+                " (user_id, book_id, purchased_at, order_status, deleted_at)"
+                " VALUES ($1, $2, $3, $4, $5)",
+                [(_USER, b, _T0, s, d) for b, s, d in purchases],
+            )
+            await conn.executemany(
+                "INSERT INTO v_user_reviews"
+                " (user_id, book_id, rating, created_at, active_flag, deleted_at)"
+                " VALUES ($1, $2, 4.5, $3, $4, $5)",
+                [(_USER, b, _T0, active, d) for b, active, d in reviews],
+            )
+            return await history.read(conn, _USER)
+        finally:
+            await tx.rollback()
+            await conn.close()
+
+    h = asyncio.run(_go())
+
+    assert h.weights == {9100101: 3, 9100108: 2}
+
+
+@needs_db
 def test_until을_주면_그_시각까지의_이력만_읽는다() -> None:
     async def _go() -> history.History:
         conn = await asyncpg.connect(_DB_URL)
