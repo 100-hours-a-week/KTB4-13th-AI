@@ -53,6 +53,9 @@ CANDIDATE_LIMIT = 10
 # 새 요청 판정은 1단계와 나란히 가서 보통 시간이 안 늘어난다. 판정만 느려져도 응답이 그만큼 늦어지지 않게, 1단계가
 # 끝난 뒤 이만큼만 더 기다리고 못 받으면 이어가는 말로 본다(#513). 업계도 다시 쓰기 호출에 0.3~1초 한도를 둔다.
 RELATION_GRACE_SECONDS = 0.5
+# 넓은 첫 요청 판정(#530)도 1단계와 나란히 간다. 넓으면 검색·카드 생성을 건너뛰어 그보다 훨씬 빨리 끝나므로, 새 요청
+# 판정보다 길게 기다린다. 판정은 질문 문장까지 쓰느라 1단계보다 늦게 끝나기도 한다.
+SCOPE_GRACE_SECONDS = 2.0
 # ①에 없는 exclude, 소개글 없는 책을 검색 결과에서 사후 필터링하므로, 걸러지고도
 # CANDIDATE_LIMIT이 남을 만큼 넉넉히 받는다. SearchRequest.size 상한(50) 안쪽.
 SEARCH_SIZE = 30
@@ -157,8 +160,8 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 지금까지는 이런 말도 검색해 새 책 3권을 냈다(10/19 평가: 질문 4종 모두 새 카드). 호출을 늘리지 않으려고 판단을
 # 이 호출에 얹는다.
 #
-# {ask_rule}은 넓은 첫 요청에 한 번 묻는 규칙(app/chat/asking.py)이다. 묻지 않는 턴에는 빈 문자열이라 프롬프트가 그 전과
-# 같다.
+# {ask_rule}은 이번 말이 넓은 첫 요청에 물은 질문의 답일 때 싣는 규칙(app/chat/asking.py)이다. 그 밖의 턴에는 빈 문자열이라
+# 프롬프트가 그 전과 같다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -396,6 +399,31 @@ async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
         return False
 
 
+async def _judge_scope(message: str) -> tuple[str, str] | None:
+    """넓은 첫 요청인지 판정한다(#530). 넓으면 물을 (reply, question), 아니면 None. 호출이 실패하면 묻지 않는다."""
+    chain = asking.SCOPE_PROMPT | get_chat_model() | message_text | parse_json_response
+    try:
+        answer = await invoke_chain(chain, {"message": message})
+    except LLMUnavailableError:
+        logger.warning("넓은 요청 판정 실패 — 묻지 않고 찾는다", exc_info=True)
+        return None
+    return asking.parse(answer)
+
+
+async def _scope_within_grace(
+    scope: "asyncio.Task[tuple[str, str] | None]",
+) -> tuple[str, str] | None:
+    """판정 결과를 받는다. 1단계가 끝난 뒤 SCOPE_GRACE_SECONDS 안에 못 받으면 포기하고 묻지 않는다."""
+    try:
+        return await asyncio.wait_for(scope, timeout=SCOPE_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "넓은 요청 판정이 1단계보다 %.1f초 넘게 늦어 묻지 않고 찾는다",
+            SCOPE_GRACE_SECONDS,
+        )
+        return None
+
+
 async def _restart_patch(message: str, fresh: Spec) -> dict | None:
     """새 요청이라는 판정을 확인하려고, 조건도 앞 대화도 없이 같은 메시지로 다시 뽑은 patch.
 
@@ -456,9 +484,13 @@ async def update_spec(
     모델이 대답할 질문이라고 하면(turn: answer) spec 을 바꾸지 않고 answer 를 True 로 준다(#530). 새 요청 판정은
     기다리지 않는다. 질문은 새 주제가 아니다.
 
-    ask_stage 는 넓은 첫 요청에 한 번 묻기(app/chat/asking.py)의 단계다. may_ask 면 모델이 묻자고 할 수 있고(제목·저자를
-    콕 집은 요청이면 무시한다), answered 면 이번 말은 직전 질문의 답이라 새 요청 판정을 하지 않는다.
+    ask_stage 는 넓은 첫 요청에 한 번 묻기(app/chat/asking.py)의 단계다. may_ask 면 넓은지 판정하는 호출을 1단계와
+    나란히 보내고, 넓으면 ask 에 물을 말을 준다(1단계가 제목·저자를 콕 집었으면 묻지 않는다). answered 면 이번 말은
+    직전 질문의 답이라 1단계에 답을 더하라는 규칙을 싣고 새 요청 판정은 하지 않는다.
     """
+    scope = (
+        asyncio.create_task(_judge_scope(message)) if ask_stage == "may_ask" else None
+    )
     try:
         previous = topic_switch.previous_request(spec)
         if ask_stage == "answered":
@@ -490,7 +522,7 @@ async def update_spec(
                 logger.info("주제가 바뀌어 앞 조건을 비웠다")
                 base, patch = fresh, restarted
         updated = Spec.model_validate(_merge_spec_patch(base, patch))
-        ask = asking.parse(patch) if ask_stage == "may_ask" else None
+        ask = await _scope_within_grace(scope) if scope is not None else None
         if ask is not None and _is_pinned(updated):
             ask = None
         return SpecUpdate(updated, degraded=False, ask=ask)
@@ -508,6 +540,10 @@ async def update_spec(
             [(err["loc"], err["type"]) for err in exc.errors()],
         )
         return SpecUpdate(spec, degraded=True)
+    finally:
+        # 대답 턴으로 일찍 돌아가거나 1단계가 실패하면 판정은 쓰지 않는다
+        if scope is not None and not scope.done():
+            scope.cancel()
 
 
 def _query_text(spec: Spec) -> str:

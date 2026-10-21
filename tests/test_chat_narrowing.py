@@ -3,6 +3,7 @@
 DB(후보 검색·보여 준 카드 조회)와 LLM 은 가짜로 바꿔 끼운다. 여기서는 라우터가 어느 길로 가는지와 응답 모양만 본다.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -90,17 +91,24 @@ def _cards_json(
     )
 
 
+# 넓은 첫 요청 판정 프롬프트의 첫머리. 가짜 모델이 이것으로 판정 호출을 알아본다
+SCOPE_PREFIX = "너는 책 추천 챗봇이다. 사용자의 첫 요청을 보고"
+
+
 class _Recorder:
     """호출마다 정해진 답을 차례로 돌려주고, 받은 프롬프트를 남긴다.
 
     앞 요청에 주제가 있으면 새 요청 판정 호출이 1단계와 나란히 간다(#513). 그 호출은 차례를 쓰지 않고 늘 이어가는
-    말(same)로 답한다.
+    말(same)로 답한다. 대화의 첫 요청이면 넓은지 판정하는 호출도 나란히 간다(#530). 그 호출은 차례를 쓰지 않고
+    scope 로 답한다(기본은 분명하다).
     """
 
-    def __init__(self, *replies: str) -> None:
+    def __init__(self, *replies: str, scope: str = '{"scope": "clear"}') -> None:
         self._replies = iter(replies)
+        self._scope = scope
         self.prompts: list[str] = []
         self.relation_calls = 0
+        self.scope_calls = 0
 
     def model(self) -> RunnableLambda:
         def _call(prompt_value) -> AIMessage:
@@ -108,6 +116,9 @@ class _Recorder:
             if text.startswith("너는 책 추천 챗봇의 대화 분석기다"):
                 self.relation_calls += 1
                 return AIMessage(content='{"relation": "same"}')
+            if text.startswith(SCOPE_PREFIX):
+                self.scope_calls += 1
+                return AIMessage(content=self._scope)
             self.prompts.append(text)
             return AIMessage(content=next(self._replies))
 
@@ -141,9 +152,8 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> list[list]:
     return searched
 
 
-ASK_PATCH = {
-    "semantic": "위로가 되는 책",
-    "turn": "ask",
+BROAD = {
+    "scope": "broad",
     "reply": "위로가 필요하시군요.",
     "question": "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요.",
 }
@@ -157,10 +167,17 @@ ASKED_TURNS = [
 ]
 
 
+def _broad(**changes) -> str:
+    answer = {**BROAD, **changes}
+    return json.dumps(
+        {k: v for k, v in answer.items() if v is not None}, ensure_ascii=False
+    )
+
+
 def test_넓은_첫_요청은_찾기_전에_카드_없이_한_번_묻는다(
     monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
 ) -> None:
-    rec = _Recorder(json.dumps(ASK_PATCH, ensure_ascii=False))
+    rec = _Recorder(json.dumps({"semantic": "위로가 되는 책"}), scope=_broad())
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
@@ -175,13 +192,29 @@ def test_넓은_첫_요청은_찾기_전에_카드_없이_한_번_묻는다(
     # 메시지에서 알게 된 조건은 spec 에 남겨 다음 턴에 넘긴다
     assert data["spec"]["semantic"] == "위로가 되는 책"
     assert data["degraded"] is False
-    assert len(rec.prompts) == 1  # 호출은 1단계 한 번
-    assert "이번 메시지는 대화의 첫 요청이다" in rec.prompts[0]
+    # 호출은 1단계와 판정 두 번이다. 판정은 1단계 프롬프트를 바꾸지 않는다
+    assert len(rec.prompts) == 1
+    assert rec.scope_calls == 1
+    assert "이번 메시지는 그 답이다" not in rec.prompts[0]
+
+
+def test_분명한_첫_요청은_묻지_않고_찾는다(
+    monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
+) -> None:
+    rec = _Recorder(json.dumps({"semantic": "위로가 되는 책"}), _cards_json())
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post("/recommendations/chat", json=_request()).json()["data"]
+
+    assert rec.scope_calls == 1
+    assert len(fake_db) == 1
+    assert [card["book_id"] for card in data["cards"]] == [1, 2, 3]
 
 
 def test_묻기의_reply가_비면_기본_문장을_쓴다(monkeypatch: pytest.MonkeyPatch) -> None:
-    patch = {key: value for key, value in ASK_PATCH.items() if key != "reply"}
-    rec = _Recorder(json.dumps(patch, ensure_ascii=False))
+    rec = _Recorder(
+        json.dumps({"semantic": "위로가 되는 책"}), scope=_broad(reply=None)
+    )
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
@@ -189,11 +222,19 @@ def test_묻기의_reply가_비면_기본_문장을_쓴다(monkeypatch: pytest.M
     assert data["reply"] == asking.REPLY_FALLBACK
 
 
-def test_묻자고_했어도_질문이_비면_묻지_않고_찾는다(
-    monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
+@pytest.mark.parametrize(
+    "scope",
+    [
+        pytest.param(_broad(question="  "), id="질문이_빔"),
+        pytest.param("JSON 아님", id="판정_실패"),
+    ],
+)
+def test_판정이_넓다고_했어도_물을_말이_없으면_묻지_않고_찾는다(
+    monkeypatch: pytest.MonkeyPatch, fake_db: list[list], scope: str
 ) -> None:
-    patch = {"semantic": "위로가 되는 책", "turn": "ask", "question": "  "}
-    rec = _Recorder(json.dumps(patch, ensure_ascii=False), _cards_json())
+    rec = _Recorder(
+        json.dumps({"semantic": "위로가 되는 책"}), _cards_json(), scope=scope
+    )
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
@@ -202,16 +243,32 @@ def test_묻자고_했어도_질문이_비면_묻지_않고_찾는다(
     assert [card["book_id"] for card in data["cards"]] == [1, 2, 3]
 
 
-def test_제목을_콕_집은_요청은_모델이_묻자고_해도_찾는다(
+def test_판정이_1단계보다_한참_늦으면_묻지_않고_찾는다(
     monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
 ) -> None:
-    patch = {
-        "intent": "exact",
-        "exact": {"title": "데미안"},
-        "turn": "ask",
-        "question": "어떤 판을 찾으세요?",
-    }
-    rec = _Recorder(json.dumps(patch, ensure_ascii=False), _cards_json())
+    async def _slow(_message: str):
+        await asyncio.sleep(1)
+        return ("늦은 답", "늦은 질문")
+
+    monkeypatch.setattr(chat, "_judge_scope", _slow)
+    monkeypatch.setattr(chat, "SCOPE_GRACE_SECONDS", 0.01)
+    rec = _Recorder(json.dumps({"semantic": "위로가 되는 책"}), _cards_json())
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post("/recommendations/chat", json=_request()).json()["data"]
+
+    assert len(fake_db) == 1
+    assert data["cards"]
+
+
+def test_제목을_콕_집은_요청은_판정이_넓다고_해도_찾는다(
+    monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
+) -> None:
+    rec = _Recorder(
+        json.dumps({"intent": "exact", "exact": {"title": "데미안"}}),
+        _cards_json(),
+        scope=_broad(),
+    )
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post(
@@ -222,21 +279,21 @@ def test_제목을_콕_집은_요청은_모델이_묻자고_해도_찾는다(
     assert data["cards"]
 
 
-def test_첫_요청이_아니면_묻기_규칙을_싣지_않고_묻자고_해도_찾는다(
+def test_첫_요청이_아니면_판정하지_않는다(
     monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
 ) -> None:
     turns = [
         {"role": "user", "text": "퇴근길에 읽을 소설"},
         {"role": "assistant", "text": "세 권이에요."},
     ]
-    rec = _Recorder(json.dumps(ASK_PATCH, ensure_ascii=False), _cards_json())
+    rec = _Recorder("{}", _cards_json(), scope=_broad())
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post(
         "/recommendations/chat", json=_request(message="다른 거", recent_turns=turns)
     ).json()["data"]
 
-    assert "이번 메시지는 대화의 첫 요청이다" not in rec.prompts[0]
+    assert rec.scope_calls == 0
     assert len(fake_db) == 1
     assert data["cards"]
 
@@ -261,8 +318,8 @@ def test_직전_질문의_답이면_답_규칙을_싣고_새_요청_판정은_�
     ).json()["data"]
 
     assert "이번 메시지는 그 답이다" in rec.prompts[0]
-    assert "이번 메시지는 대화의 첫 요청이다" not in rec.prompts[0]
     assert rec.relation_calls == 0  # 답은 새 요청이 아니다
+    assert rec.scope_calls == 0  # 한 대화에서 한 번만 묻는다
     assert fake_db[0][0].semantic == "회사 일로 지친 직장인을 위한 담담한 에세이"
     assert data["cards"]
 
@@ -311,22 +368,24 @@ def test_묻기_뒤의_답은_문지기가_쇼핑에_들르지_않고_추천으�
     assert data["cards"]
 
 
-def test_설정을_끄면_묻기_규칙이_실리지_않고_묻자고_해도_찾는다(
+def test_설정을_끄면_판정하지_않고_찾는다(
     monkeypatch: pytest.MonkeyPatch, fake_db: list[list]
 ) -> None:
     monkeypatch.setenv("CHAT_NARROWING", "false")
     get_settings.cache_clear()
-    rec = _Recorder(json.dumps(ASK_PATCH, ensure_ascii=False), _cards_json())
+    rec = _Recorder(
+        json.dumps({"semantic": "위로가 되는 책"}), _cards_json(), scope=_broad()
+    )
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
 
-    assert "이번 메시지는 대화의 첫 요청이다" not in rec.prompts[0]
+    assert rec.scope_calls == 0
     assert len(fake_db) == 1
     assert data["cards"]
 
 
-def test_묻기_규칙이_없으면_1단계_프롬프트는_이_기능_전과_같다() -> None:
+def test_답_규칙이_없으면_1단계_프롬프트는_이_기능_전과_같다() -> None:
     def _prompt(rule: str) -> str:
         return chat.SPEC_PROMPT.format_messages(
             recent_turns="(최근 대화 없음)",
@@ -339,8 +398,15 @@ def test_묻기_규칙이_없으면_1단계_프롬프트는_이_기능_전과_�
     without = _prompt("")
     assert "{ask_rule}" not in without
     assert '{"turn": "answer"}로만 답하라.\n\n이번 메시지로 바뀌는 게 없으면' in without
-    assert asking.rule("none") == ""
-    assert asking.MAY_ASK_RULE in _prompt(asking.rule("may_ask"))
+    assert asking.rule("none") == "" and asking.rule("may_ask") == ""
+    assert asking.ANSWERED_RULE in _prompt(asking.rule("answered"))
+
+
+def test_판정_프롬프트는_중괄호가_깨지지_않고_채워진다() -> None:
+    text = asking.SCOPE_PROMPT.format_messages(message="여행 {x}")[0].content
+
+    assert '첫 요청: "여행 {x}"' in text
+    assert '{"scope": "clear"}' in text
 
 
 @pytest.mark.parametrize(
@@ -375,12 +441,12 @@ def test_직전_챗봇_말이_묻기였는지_고정_문장으로_본다(turns, 
 def test_긴_질문은_뒷_문장부터_덜어_낸다() -> None:
     long = "가" * 70 + "? " + "나" * 50 + "."
     reply, question = asking.parse(
-        {"turn": "ask", "reply": "다" * 80, "question": long}
+        {"scope": "broad", "reply": "다" * 80, "question": long}
     )
 
     assert question == "가" * 70 + "?"
     assert len(reply) == asking.REPLY_MAX_CHARS
-    assert asking.parse({"turn": "answer", "question": "q"}) is None
+    assert asking.parse({"scope": "clear", "question": "q"}) is None
     assert asking.parse({"semantic": "x"}) is None
 
 
@@ -495,8 +561,10 @@ def test_대답_LLM이_실패하면_고정_안내와_degraded를_준다(
 ) -> None:
     calls = 0
 
-    def _call(_prompt) -> AIMessage:
+    def _call(prompt_value) -> AIMessage:
         nonlocal calls
+        if prompt_value.to_messages()[0].content.startswith(SCOPE_PREFIX):
+            return AIMessage(content='{"scope": "clear"}')
         calls += 1
         if calls == 1:
             return AIMessage(content=json.dumps({"turn": "answer"}))
