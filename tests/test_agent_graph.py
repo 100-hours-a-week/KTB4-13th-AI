@@ -128,6 +128,8 @@ def test_조회한_뒤_번호로_뺀다() -> None:
             ai_calls((ToolName.CART_REMOVE, {"book": cart(1)})),
             ai_text("뺐어요."),
         ],
+        # 카드가 보일 때 숫자만 말한 번호는 카드 번호라서 장바구니를 말해야 장바구니 번호의 근거다(#528)
+        req=_request("장바구니 1번째 빼줘"),
         fake=_fake(seed=[(A, 1), (B, 1)]),
     )
 
