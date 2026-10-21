@@ -46,55 +46,26 @@ def test_앞뒤_공백은_결과를_바꾸지_않는다() -> None:
 
 def test_규칙_버전은_2다() -> None:
     # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다.
-    # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·갈래 질문의 답을 ③으로(#530)
+    # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·③ 묻기의 답·카드 평가 말을 ③으로(#530)
     assert rules.RULES_VERSION == 2
 
 
-# 직전 챗봇 말이 갈래 질문이면, 장바구니 낱말이 없는 답은 추천이다(#530)
-AFTER_BRANCH = [
-    pytest.param("2번", "recommend", id="번호만"),
-    pytest.param("두 번째", "recommend", id="몇_번째"),
-    pytest.param("담담한 거", "recommend", id="신호_없는_말"),
-    pytest.param("2번 담아줘", "cart", id="담기는_그대로"),
-    pytest.param("2번이 좋은데 얼마야?", "cart", id="가격은_그대로"),
+# 직전 챗봇 말이 ③의 묻기(넓은 첫 요청에 원하는 것을 물은 말)면, 장바구니 낱말이 없는 답은 추천이다(#530)
+AFTER_ASK = [
+    pytest.param("비전공자인데 처음 배워 보려고", "recommend", id="추천_낱말_없는_답"),
+    pytest.param("아무거나", "recommend", id="건너뛰기"),
+    pytest.param("요즘 너무 지쳐서", "recommend", id="사정만_말함"),
+    pytest.param("그냥 장바구니 보여줘", "cart", id="장바구니는_그대로"),
+    pytest.param("얼마 정도 해?", "cart", id="가격은_그대로"),
 ]
 
 
-@pytest.mark.parametrize(("message", "kind"), AFTER_BRANCH)
-def test_갈래_질문_뒤의_답은_장바구니_말이_없으면_추천이다(message, kind) -> None:
-    assert rules.classify(message, True, after_branch=True) == kind
-
-
-class _T:
-    def __init__(self, role: str, text: str) -> None:
-        self.role, self.text = role, text
-
-
-@pytest.mark.parametrize(
-    ("turns", "asked"),
-    [
-        (
-            [
-                _T("user", "위로되는 책"),
-                _T("assistant", "1번처럼 시, 2번처럼 에세이 중 어느 쪽이 끌리세요?"),
-            ],
-            True,
-        ),
-        ([_T("assistant", "어떤 쪽이 좋으세요?")], True),
-        (
-            [
-                _T("assistant", "어느 쪽이 끌리세요?"),
-                _T("user", "2번"),
-                _T("assistant", "에세이로 골랐어요."),
-            ],
-            False,
-        ),
-        ([_T("assistant", "어느 쪽이 끌리세요?"), _T("user", "2번")], False),
-        ([], False),
-    ],
-)
-def test_직전_챗봇_말이_갈래_질문인지_본다(turns, asked) -> None:
-    assert rules.asked_branch(turns) is asked
+@pytest.mark.parametrize(("message", "kind"), AFTER_ASK)
+def test_묻기_뒤의_답은_장바구니_말이_없으면_추천이다(message, kind) -> None:
+    assert rules.classify(message, False, after_ask=True) == kind
+    # 묻기가 아니었으면 v1 처럼 신호 없는 말은 ⑦로 간다
+    if kind == "recommend" and message != "아무거나":
+        assert rules.classify(message, False) == "neither"
 
 
 @pytest.mark.parametrize(
@@ -118,6 +89,11 @@ def test_카드가_보일_때_책을_평가하는_말은_추천이다(
     message, after_action, kind
 ) -> None:
     assert rules.classify(message, True, after_action=after_action) == kind
+
+
+class _T:
+    def __init__(self, role: str, text: str) -> None:
+        self.role, self.text = role, text
 
 
 def test_직전_챗봇_말이_담기를_물었는지_본다() -> None:

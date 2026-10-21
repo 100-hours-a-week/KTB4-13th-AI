@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat import branches, shown, topic_switch
+from app.chat import asking, shown, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
@@ -156,6 +156,9 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 # 새 책을 찾는 말이 아닌 질문("2번 초보도 읽을 수 있어?", "너는 뭐 할 수 있어?")은 turn 을 answer 로 받는다(#530).
 # 지금까지는 이런 말도 검색해 새 책 3권을 냈다(10/19 평가: 질문 4종 모두 새 카드). 호출을 늘리지 않으려고 판단을
 # 이 호출에 얹는다.
+#
+# {ask_rule}은 넓은 첫 요청에 한 번 묻는 규칙(app/chat/asking.py)이다. 묻지 않는 턴에는 빈 문자열이라 프롬프트가 그 전과
+# 같다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -195,6 +198,7 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "대해 묻거나(내용, 난이도, 누구에게 맞는지, 실제로 있는 책인지), 보여 준 책 중에서 "
     "골라 달라거나, 챗봇에게 묻거나 인사하는 말이면 — 조건은 넣지 말고 "
     '{{"turn": "answer"}}로만 답하라.\n\n'
+    "{ask_rule}"
     "이번 메시지로 바뀌는 게 없으면 빈 객체 {{}}로 답하라. 숫자는 따옴표 "
     "없이 써라. 아래는 형식 예시일 뿐 실제 값이 아니다 — 그대로 베끼지 "
     "말고 실제로 바뀌는 값만 채워라:\n"
@@ -345,7 +349,11 @@ def _merge_spec_patch(current: Spec, patch: dict) -> dict:
 
 
 async def _ask_spec_patch(
-    message: str, spec: Spec, recent_turns: list[Turn], shown_listing: str = "(없음)"
+    message: str,
+    spec: Spec,
+    recent_turns: list[Turn],
+    shown_listing: str = "(없음)",
+    ask_stage: asking.Stage = "none",
 ) -> dict:
     chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
     return await invoke_chain(
@@ -355,6 +363,7 @@ async def _ask_spec_patch(
             "shown": shown_listing,
             "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
             "message": message,
+            "ask_rule": asking.rule(ask_stage),
         },
     )
 
@@ -405,15 +414,24 @@ async def _restart_patch(message: str, fresh: Spec) -> dict | None:
 
 @dataclass(frozen=True)
 class SpecUpdate:
-    """1단계 결과. answer 는 새 책을 찾는 말이 아니라 대답할 질문이라는 뜻이다(#530). 그때 spec 은 바꾸지 않는다."""
+    """1단계 결과. answer 는 새 책을 찾는 말이 아니라 대답할 질문이라는 뜻이다(#530). 그때 spec 은 바꾸지 않는다.
+
+    ask 는 넓은 첫 요청이라 찾기 전에 물을 (reply, question) 이다(#530). 그때 spec 은 메시지에서 알게 된 조건까지
+    갱신한다. 다음 턴이 그 위에서 답을 더한다.
+    """
 
     spec: Spec
     degraded: bool
     answer: bool = False
+    ask: tuple[str, str] | None = None
 
 
 async def update_spec(
-    message: str, spec: Spec, recent_turns: list[Turn], shown_listing: str = "(없음)"
+    message: str,
+    spec: Spec,
+    recent_turns: list[Turn],
+    shown_listing: str = "(없음)",
+    ask_stage: asking.Stage = "none",
 ) -> SpecUpdate:
     """1단계 — 메시지로 spec을 갱신한다. 명세대로 LLM이 한다.
 
@@ -437,17 +455,24 @@ async def update_spec(
 
     모델이 대답할 질문이라고 하면(turn: answer) spec 을 바꾸지 않고 answer 를 True 로 준다(#530). 새 요청 판정은
     기다리지 않는다. 질문은 새 주제가 아니다.
+
+    ask_stage 는 넓은 첫 요청에 한 번 묻기(app/chat/asking.py)의 단계다. may_ask 면 모델이 묻자고 할 수 있고(제목·저자를
+    콕 집은 요청이면 무시한다), answered 면 이번 말은 직전 질문의 답이라 새 요청 판정을 하지 않는다.
     """
     try:
         previous = topic_switch.previous_request(spec)
+        if ask_stage == "answered":
+            previous = None
         base, new_request = spec, False
         if previous is None:
-            patch = await _ask_spec_patch(message, spec, recent_turns, shown_listing)
+            patch = await _ask_spec_patch(
+                message, spec, recent_turns, shown_listing, ask_stage
+            )
         else:
             relation = asyncio.create_task(_asks_new_request(message, previous))
             try:
                 patch = await _ask_spec_patch(
-                    message, spec, recent_turns, shown_listing
+                    message, spec, recent_turns, shown_listing, ask_stage
                 )
             except BaseException:
                 relation.cancel()
@@ -464,9 +489,11 @@ async def update_spec(
             if restarted is not None:
                 logger.info("주제가 바뀌어 앞 조건을 비웠다")
                 base, patch = fresh, restarted
-        return SpecUpdate(
-            Spec.model_validate(_merge_spec_patch(base, patch)), degraded=False
-        )
+        updated = Spec.model_validate(_merge_spec_patch(base, patch))
+        ask = asking.parse(patch) if ask_stage == "may_ask" else None
+        if ask is not None and _is_pinned(updated):
+            ask = None
+        return SpecUpdate(updated, degraded=False, ask=ask)
     except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
         return SpecUpdate(spec, degraded=True)
@@ -728,26 +755,6 @@ def _is_topic_word(word: str) -> bool:
     if word.startswith("추천"):
         return False
     return word not in _NOT_TOPIC and _TRAILING_PARTICLE.sub("", word) not in _NOT_TOPIC
-
-
-def _apply_branch_choice(spec: Spec, message: str, recent_turns: list[Turn]) -> Spec:
-    """직전 갈래 질문에서 사용자가 갈래 하나를 골랐으면 그 이름을 검색어에 붙인다(#530).
-
-    1단계가 "3번"을 갈래 이름으로 바꿔 넣는 일이 드물어서 코드가 넣는다. 이미 들어 있으면 그대로 둔다.
-    """
-    names = branches.asked(recent_turns)
-    if not names:
-        return spec
-    name = branches.chosen(message, names)
-    if name is None:
-        return spec
-    current = spec.semantic or ""
-    if re.sub(r"\s+", "", name) in re.sub(r"\s+", "", current):
-        return spec
-    logger.info("갈래를 골라서 검색어에 붙였다")
-    return spec.model_copy(
-        update={"semantic": f"{current}, {name}" if current else name}
-    )
 
 
 def _recover_topic(spec: Spec, message: str) -> Spec:
@@ -1205,18 +1212,14 @@ MAX_REASON_SHORT_CHARS = 80
 # 사용자 말에 반응하지 못하고 검색 문장을 되읊었다. 10/19 평가 417턴에서 말풍선의 88%가 카드에 보이는 제목을
 # 다시 늘어놓았고 70%가 "추천합니다"로 끝났다. 그래서 이번 메시지와 최근 대화를 넣고, 제목 나열과 그 맺음말을 막는다.
 #
-# JSON 에서 cards 를 reply 보다 먼저 쓰게 한다. 말풍선과 질문이 카드를 번호로 가리키는데, 답 칸을 먼저 쓰면 모델이
-# 말한 책과 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유 칸보다 먼저 나오면 추론이 나빠짐).
-#
-# 좁히기({pick}·{question_rule})는 _may_narrow() 가 허락한 턴에만 켠다. 요청이 넓어 후보가 여러 갈래로 흩어지면
-# 갈래마다 한 권씩 고르고, 어느 쪽이 끌리는지 카드 번호로 묻는다. 버튼(칩)은 명세에 없어서 카드가 그 자리를 한다.
-# 모델은 카드마다 갈래 이름(branches)만 내고 질문 문장은 코드가 만든다(app/chat/branches.py).
+# JSON 에서 cards 를 reply 보다 먼저 쓰게 한다. 말풍선이 고른 책을 말하는데, 답 칸을 먼저 쓰면 모델이 말한 책과
+# 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유 칸보다 먼저 나오면 추론이 나빠짐).
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
     '이번 메시지: "{message}"\n\n'
     "{intro}\n\n"
-    "{pick}\n"
+    "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. "
     "cards에 적은 차례가 화면의 1번, 2번, 3번이다.\n"
@@ -1230,27 +1233,12 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "조건을 바꿨으면 받았다고 짧게 말하고, 사정을 털어놓았으면 한마디 답한다. 책 제목은 "
     "카드에 보이니 말풍선에 늘어놓지 말고, 이번에 고른 책들이 어떤 결인지 한마디로 말하라. "
     '"추천합니다", "추천드립니다"로 끝맺지 마라.\n'
-    "{question_rule}\n"
     '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
-    '"reply": "말풍선에 보일 1-2문장", "branches": ["카드 차례대로 갈래 이름"] 또는 null}}\n\n'
+    '"reply": "말풍선에 보일 1-2문장"}}\n\n'
     "책 목록:\n{listing}"
-)
-
-_PICK = f"아래 책 목록 중 위 조건에 맞는 책을 최대 {CARD_LIMIT}권 골라라."
-_PICK_NARROW = (
-    f"아래 책 목록에서 사용자에게 맞는 책을 최대 {CARD_LIMIT}권 골라라. 요청이 아직 넓어서 "
-    "맞는 책들이 서로 다른 갈래(형식, 분위기, 난이도, 다루는 면 등)로 나뉘면, 갈래마다 "
-    "가장 맞는 책을 한 권씩 골라 갈래가 겹치지 않게 하라."
-)
-_QUESTION_NONE = "branches는 null로 둬라."
-_QUESTION_NARROW = (
-    "branches: 갈래마다 한 권씩 골랐으면 cards 차례대로 각 책이 어느 갈래인지 짧은 말"
-    f"({branches.NAME_MAX}자 이내)로 적은 목록이다. 사용자가 고를 수 있게 갈래끼리 뚜렷이 다른 말로 "
-    "쓰고 책 제목은 쓰지 마라. 질문 문장은 쓰지 마라. 갈래로 나뉘지 않았거나 요청이 이미 "
-    "구체적이면 null로 둬라. 최근 대화에서 이미 고른 갈래를 다시 나누지 마라."
 )
 
 
@@ -1354,8 +1342,6 @@ class CardResult:
     cards: list[dict]
     reply: str | None
     degraded: bool
-    # 좁히기 질문(#530). 좁히기를 허락한 턴에 모델이 갈래를 나눠 골랐을 때만 있다.
-    question: str | None = None
 
 
 def _card_prompt_conditions(spec: Spec) -> str:
@@ -1370,7 +1356,6 @@ async def generate_cards(
     *,
     message: str = "",
     recent_turns: list[Turn] | None = None,
-    narrow: bool = False,
 ) -> CardResult:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
@@ -1382,9 +1367,6 @@ async def generate_cards(
     호출부(chat())가 이 경우들을 규칙 기반 문구로 채운다. LLM 장애 시
     degraded로 match_score 상위 카드를 대신 돌려준다(명세: reason_short는
     규칙, reason_long은 null. #129).
-
-    좁히기를 허락한 턴(narrow)에는 모델이 갈래마다 한 권씩 고르고 question 을 낼 수 있다(#530). question 은 카드를
-    번호로 가리키므로, 모델이 고른 항목 중 하나라도 카드에서 빠져 번호가 밀리면 버린다.
     """
     if not candidates:
         return CardResult([], None, False)
@@ -1400,8 +1382,7 @@ async def generate_cards(
                 "recent_turns": _format_recent_turns(recent_turns or []),
                 "message": message,
                 "intro": _card_prompt_intro(spec) + _card_prompt_conditions(spec),
-                "pick": _PICK_NARROW if narrow else _PICK,
-                "question_rule": _QUESTION_NARROW if narrow else _QUESTION_NONE,
+                "limit": CARD_LIMIT,
                 "listing": _format_listing(candidates),
             },
         )
@@ -1462,15 +1443,7 @@ async def generate_cards(
                 "match_basis": match_basis,
             }
         )
-    names = None
-    if narrow and parsed.get("branches") is not None:
-        if len(cards) != len(raw_cards[:CARD_LIMIT]):
-            # 질문은 카드를 번호로 가리킨다. 고른 항목이 하나라도 빠지면 화면 번호와 어긋난다.
-            logger.info("카드가 빠져 번호가 밀려 좁히기 질문을 버렸다")
-        else:
-            names = branches.parse_names(parsed.get("branches"), len(cards))
-    question = branches.question(names) if names else None
-    return CardResult(cards, reply, False, question)
+    return CardResult(cards, reply, False)
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
@@ -1685,31 +1658,22 @@ def _fit_reply(reply: str) -> str:
     return fitted[: _REPLY_MAX_CHARS - 1] + "…"
 
 
-# 좁히기(#530) — 넓은 요청이면 갈래마다 한 권씩 보여 주고 어느 쪽인지 묻는다. 대화 처음 두 번의 답에서만 묻는다.
-# 그 뒤로도 계속 물으면 설문지가 된다. 서버는 대화를 저장하지 않아 몇 번 물었는지 따로 모른다. 그래서 최근 대화에
-# 실린 사용자 말의 수로 센다(BE 대화방 경로는 챗봇 답도 싣지만, 사용자 말만 싣는 호출자도 있다).
-MAX_NARROW_PRIOR_USER_TURNS = 2
-
-
-def _may_narrow(
-    spec: Spec, recent_turns: list[Turn], slot_question: str | None
-) -> bool:
-    """이번 턴에 좁히기 질문을 해도 되는가."""
+# 넓은 첫 요청에 한 번 묻기(#530, app/chat/asking.py). 대화의 첫 요청에서만 묻는다. 그 뒤로도 물으면 설문지가 된다.
+# 서버는 대화를 저장하지 않아 첫 요청인지 따로 모른다. 그래서 최근 대화에 사용자 말이 있는지로 본다.
+def _ask_stage(req: ChatRequest) -> asking.Stage:
+    """이번 턴이 묻기의 어느 단계인가. 직전 질문의 답이면 스위치와 상관없이 answered 다(그 사이 스위치를 꺼도 답은 받는다)."""
+    if asking.asked(req.recent_turns):
+        return "answered"
     if not get_settings().chat_narrowing:
-        return False
-    if slot_question:
-        # 나이·예산처럼 정말 빠진 정보를 묻는 턴이다. 질문은 한 번에 하나만 한다.
-        return False
-    if spec.intent != "semantic" or spec.exact.title or spec.exact.author:
-        # 제목·저자를 콕 집은 요청은 좁힐 게 없다.
-        return False
-    if not spec.semantic:
-        return False
-    if branches.ever_asked(recent_turns):
-        # 한 대화에서 한 번만 묻는다. 고르자마자 또 쪼개 물으면 설문지가 된다(#530 평가: 27개 대화 중 15개)
-        return False
-    prior = sum(1 for turn in recent_turns if turn.role == "user")
-    return prior < MAX_NARROW_PRIOR_USER_TURNS
+        return "none"
+    if any(turn.role == "user" for turn in req.recent_turns):
+        return "none"
+    return "may_ask"
+
+
+def _is_pinned(spec: Spec) -> bool:
+    """제목·저자를 콕 집은 요청인가. 이런 요청은 물을 게 없다."""
+    return spec.intent == "exact" or bool(spec.exact.title or spec.exact.author)
 
 
 # 대답 턴(#530) — 새 책을 찾는 말이 아닌 질문에는 검색하지 않고 답한다. 1단계가 turn: answer 로 가려 준다.
@@ -1806,13 +1770,13 @@ async def chat(request: Request) -> JSONResponse:
     lane = None
     if shopping.enabled(payload):
         lane = "recommend"
-        after_branch = gate_rules.asked_branch(req.recent_turns)
+        after_ask = asking.asked(req.recent_turns)
         after_action = gate_rules.asked_action(req.recent_turns)
         if (
             gate_rules.route(
                 req.message or "",
                 shopping.cards_shown(payload),
-                after_branch,
+                after_ask,
                 after_action,
             )
             == "shop"
@@ -1839,7 +1803,7 @@ def _with_lane(data: dict, lane: str | None) -> dict:
 async def _recommend(
     req: ChatRequest, lane: str | None, shown_cards: list[tuple[int, str]] | None = None
 ) -> JSONResponse:
-    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성. 질문이면 조건 갱신 → 대답(#530)."""
+    """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성. 질문이면 조건 갱신 → 대답, 넓은 첫 요청이면 조건 갱신 → 묻기(#530)."""
     unanswerable = _unanswerable_request(req.message, req.spec, req.recent_turns)
     if unanswerable:
         # LLM도 검색도 부르지 않는다. spec은 요청에 실린 그대로 돌려준다(6키 계약 유지).
@@ -1866,7 +1830,27 @@ async def _recommend(
         req.spec,
         req.recent_turns,
         shown.listing(shown_books, SPEC_SHOWN_DESCRIPTION_CHARS),
+        ask_stage=_ask_stage(req),
     )
+    if update.ask is not None:
+        # 넓은 첫 요청이다. 찾기 전에 한 번 묻는다. spec 은 메시지에서 알게 된 조건까지 갱신해 다음 턴에 넘긴다.
+        reply, question = update.ask
+        logger.info("넓은 첫 요청이라 찾기 전에 물었다")
+        return responses.success(
+            "recommend_success",
+            _with_lane(
+                {
+                    "reply": reply,
+                    "spec": update.spec.model_dump(),
+                    "recognition": None,
+                    "cards": [],
+                    "followup": asking.followup(question),
+                    "buttons": [],
+                    "degraded": False,
+                },
+                lane,
+            ),
+        )
     if update.answer:
         # 새 책을 찾는 말이 아니다. 검색하지 않고 답한다. spec 은 요청에 실린 그대로 돌려준다.
         reply, followup, degraded = await _answer(req, shown_books)
@@ -1892,7 +1876,6 @@ async def _recommend(
         # 후보 검색 실패와 같은 500이다.
         spec = await _settle_category(spec)
         spec = _recover_topic(spec, req.message)
-        spec = _apply_branch_choice(spec, req.message, req.recent_turns)
         shown_ids = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
         candidates = await get_candidates(
@@ -1915,7 +1898,6 @@ async def _recommend(
             spec,
             message=req.message,
             recent_turns=req.recent_turns,
-            narrow=_may_narrow(spec, req.recent_turns, slot_question),
         )
     cards, llm_reply, degraded = result.cards, result.reply, result.degraded
 
@@ -1941,12 +1923,8 @@ async def _recommend(
     else:
         reply = no_card_reply
 
-    if cards and not degraded:
-        question = slot_question or result.question
-        if question:
-            if question is result.question:
-                logger.info("좁히기 질문을 붙였다")
-            reply = _append_question(_fit_reply(reply), question)
+    if cards and slot_question and not degraded:
+        reply = _append_question(_fit_reply(reply), slot_question)
     reply = _fit_reply(reply)
 
     return responses.success(

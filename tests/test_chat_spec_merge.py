@@ -77,7 +77,11 @@ def test_이전_턴의_제목이_남아_있어도_이번_patch가_안_건드리�
 
 def test_SPEC_PROMPT는_중괄호가_깨지지_않고_채워지며_exact_규칙이_들어_있다() -> None:
     messages = chat.SPEC_PROMPT.format_messages(
-        recent_turns="(없음)", shown="(없음)", spec_json="{}", message="어린왕자"
+        recent_turns="(없음)",
+        shown="(없음)",
+        spec_json="{}",
+        message="어린왕자",
+        ask_rule="",
     )
     text = messages[0].content
 
@@ -91,7 +95,11 @@ def test_SPEC_PROMPT는_중괄호가_깨지지_않고_채워지며_exact_규칙�
 def test_SPEC_PROMPT에_재고_조건이_실리지_않는다() -> None:
     # 챗봇은 재고 조건을 쓰지 않는다(#319). 예시에 있으면 모델이 말하지 않은 재고 조건을 지어낸다.
     messages = chat.SPEC_PROMPT.format_messages(
-        recent_turns="(없음)", shown="(없음)", spec_json="{}", message="어린왕자"
+        recent_turns="(없음)",
+        shown="(없음)",
+        spec_json="{}",
+        message="어린왕자",
+        ask_rule="",
     )
     text = messages[0].content
 

@@ -12,12 +12,13 @@
 서버는 대화를 저장하지 않아서 기준선이 쓰던 "직전 턴의 갈래를 따라가기"는 없다. 낱말 신호가 없는 짧은 말
 ("네", "다른 거")은 ⑦로 갔다가 되돌려진다.
 
-**v2(#530).** ③이 넓은 요청에 갈래마다 한 권씩 보여 주고 "…(1번), …(2번) 중 어느 쪽이 끌리세요?"라고 묻게
-되면서 두 가지를 바꿨다. v1 의 측정값(갈래 80.3%, 경계 사례 51.7%)은 v1 의 숫자다.
+**v2(#530).** ③이 대화로 원하는 책을 좁혀 가게 되면서 세 가지를 바꿨다. v1 의 측정값(갈래 80.3%, 경계 사례
+51.7%)은 v1 의 숫자다.
 1. 카드를 가리키는 말에 추천 낱말이 같이 있고 장바구니 낱말이 없으면("2번 같은 거") 추천이다. v1 은 ``both`` 로
    ⑦에 보냈고, ⑦이 쇼핑이 아니라고 돌려보내 결과는 같았지만 LLM 호출이 한 번 더 들었다.
-2. 직전 챗봇 말이 갈래 질문이면, 장바구니 낱말이 없는 답("2번", "두 번째 쪽", "담담한 거")은 추천이다. 이 답이
-   ⑦로 가면 "2번"을 담을 책으로 읽을 수 있다. 최근 대화에서 직전 챗봇 말만 본다.
+2. 직전 챗봇 말이 ③의 묻기(넓은 첫 요청에 원하는 것을 물은 말, app/chat/asking.py)면, 장바구니 낱말이 없는
+   답("비전공자인데 처음 배워 보려고", "아무거나")은 추천이다. 이런 답엔 추천 낱말이 없어 v1 은 ⑦에 들렀다가
+   되돌아왔다. 최근 대화에서 직전 챗봇 말만 본다.
 3. 카드가 보일 때 책을 평가하는 말("1번 책이 흥미로워 보여요", "『번 아웃 탈출기』가 좋을 것 같아", "1번은 좀
    다를 것 같아")은 추천이다. 번호 없이 제목으로 말해도 같다. ⑦로 가면 "담을까요?"만 되풀이했다(#530 대화 평가:
    10개 중 8개 대화). 직전 챗봇 말이 담기·빼기를 물었으면("카드 1번을 담을까요?") 그 답이라 ⑦로 보낸다.
@@ -51,23 +52,11 @@ _INTEREST = re.compile(
 )
 # ⑦이 담기·빼기·수량 변경을 물은 문장("카드 1번을 담을까요?")
 _ACTION_QUESTION = re.compile(r"(?:담|넣|뺄|빼|바꿀)[^.!?\n]*(?:\?|까요)")
-# ③의 갈래 질문(app/chat/branches.py question: "… 중 어느 쪽이 끌리세요?"). 꼴은 코드가 만든다
-_BRANCH_QUESTION = re.compile(r"(어느|어떤)\s?쪽")
 
 
 class _Turn(Protocol):
     role: str
     text: str
-
-
-def asked_branch(recent_turns: Sequence[_Turn]) -> bool:
-    """직전 챗봇 말이 ③의 갈래 질문이었나."""
-    for turn in reversed(recent_turns):
-        if turn.role == "assistant":
-            return bool(_BRANCH_QUESTION.search(turn.text))
-        if turn.role == "user":
-            return False
-    return False
 
 
 def asked_action(recent_turns: Sequence[_Turn]) -> bool:
@@ -83,13 +72,13 @@ def asked_action(recent_turns: Sequence[_Turn]) -> bool:
 def classify(
     message: str,
     cards_shown: bool,
-    after_branch: bool = False,
+    after_ask: bool = False,
     after_action: bool = False,
 ) -> Kind:
     """말 하나를 네 갈래 중 하나로 가른다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
-    2. 직전 챗봇 말이 갈래 질문이면(after_branch) 나머지는 추천(v2)
+    2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2)
     3. 카드가 보일 때 책을 평가하는 말은 추천이다. 직전에 담기를 물었으면 그 답이라 아니다(v2)
     4. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2)
     5. 추천 낱말만 있으면 추천, 아무 신호도 없으면 ``neither``
@@ -100,7 +89,7 @@ def classify(
     recommend = bool(_REC_WORDS.search(text))
     if cart_words:
         return "both" if recommend else "cart"
-    if after_branch:
+    if after_ask:
         return "recommend"
     if cards_shown and not after_action and _INTEREST.search(text):
         return "recommend"
@@ -114,9 +103,9 @@ def classify(
 def route(
     message: str,
     cards_shown: bool,
-    after_branch: bool = False,
+    after_ask: bool = False,
     after_action: bool = False,
 ) -> Lane:
     """③으로 바로 보낼지(``recommend``), ⑦로 보낼지(``shop``)."""
-    kind = classify(message, cards_shown, after_branch, after_action)
+    kind = classify(message, cards_shown, after_ask, after_action)
     return "recommend" if kind == "recommend" else "shop"

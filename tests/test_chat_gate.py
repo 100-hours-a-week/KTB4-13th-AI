@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableLambda
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
 from app.agent.prompts import NOT_SHOPPING
 from app.agent.schemas import ToolName
+from app.chat import asking
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.llm import LLMUnavailableError
 from app.main import app
@@ -170,21 +171,22 @@ def test_추천_말이면_쇼핑을_부르지_않고_추천으로_처리하며_r
     assert body["data"]["cards"]
 
 
-def test_갈래_질문에_번호로_답하면_쇼핑을_거치지_않고_추천으로_간다(
-    monkeypatch,
-) -> None:
-    # ③이 "어느 쪽이 끌리세요?"라고 물은 뒤의 "2번"은 담을 책이 아니라 갈래 고르기다(#530)
+def test_묻기에_답하면_쇼핑을_거치지_않고_추천으로_간다(monkeypatch) -> None:
+    # ③이 넓은 첫 요청에 원하는 것을 물은 뒤의 답("요즘 너무 지쳐서")에는 추천 낱말이 없다.
+    # v1 은 ⑦에 들렀다가 되돌아왔다(#530)
     _forbid(monkeypatch, agent, "shop_turn")
     _wire_recommend(monkeypatch)
     turns = [
         {"role": "user", "text": "위로되는 책"},
         {
             "role": "assistant",
-            "text": "1번처럼 시, 2번처럼 에세이 중 어느 쪽이 끌리세요?",
+            "text": "위로가 필요하시군요.\n" + asking.followup("어떤 일로 지치셨어요?"),
         },
     ]
 
-    res = client.post(URL, json=_body("2번", recent_turns=turns))
+    res = client.post(
+        URL, json=_body("요즘 너무 지쳐서", recent_turns=turns, context_cards=[])
+    )
 
     assert res.status_code == 200
     assert res.json()["data"]["route"] == "recommend"
