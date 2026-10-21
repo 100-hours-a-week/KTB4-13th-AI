@@ -1251,6 +1251,22 @@ MAX_REASON_SHORT_CHARS = 80
 #
 # JSON 에서 cards 를 reply 보다 먼저 쓰게 한다. 말풍선이 고른 책을 말하는데, 답 칸을 먼저 쓰면 모델이 말한 책과
 # 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유 칸보다 먼저 나오면 추론이 나빠짐).
+#
+# 말풍선의 마지막 문장이 사용자에게 차례를 넘긴다({turn_end}, #545). 10/21 평가 원본에서 카드 턴 말풍선이 다음 말을
+# 건넨 적이 0/39였다. 명세상 카드가 있으면 followup 이 null 이라 매 턴 사용자가 다시 말을 꺼내야 했고, 대화가 아니라
+# 검색창처럼 느껴졌다. 고른 책들이 갈리는 점을 하나 짚어 묻거나(Bing 되묻기 연구: 구체적인 질문이 "무엇이 궁금하세요?"
+# 같은 질문보다 최대 5배 눌림), 한 권을 짚어 의견을 말한다(INSPIRED, EMNLP 2020: 사람 추천자가 의견을 말한 추천이 더
+# 받아들여짐). 연달아 물으면 설문지가 되니 직전 챗봇 말이 질문이었으면 의견만 말한다. 예시는 낱말이 아니라 설명으로
+# 적는다(#410 — 낱말을 적으면 베낀다).
+_HAND_OVER = (
+    "마지막 문장은 사용자에게 차례를 넘긴다. 고른 책들이 서로 갈리는 점 하나(수준, 형식, 다루는 범위처럼 책 소개에서 "
+    "드러나는 차이)를 짚어 어느 쪽이 맞는지 한 가지만 묻거나, 사용자가 말한 것에 가장 맞는 한 권을 화면 번호로 짚고 "
+    "그 까닭을 책 소개에 있는 것으로 한마디 하라. "
+)
+_POINT_ONE = (
+    "이번에는 묻지 말고, 사용자가 말한 것에 가장 맞는 한 권을 화면 번호로 짚고 그 까닭을 책 소개에 있는 것으로 "
+    "한마디 하라. "
+)
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
@@ -1266,9 +1282,10 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "reason_long은 도서 상세 페이지에서 책 소개와 함께 보인다. 책 소개 문장을 옮기거나 "
     "줄여 쓰지 말고, 사용자가 찾은 것(위 조건)과 이 책 소개의 어떤 점이 맞는지 이어서 "
     "2-4문장으로 써라(최대 300자). 근거는 그 책의 소개에 있는 것만 쓴다.\n"
-    "reply는 말풍선에 보일 1-2문장이다(최대 100자). 먼저 이번 메시지에 반응하라 — "
+    "reply는 말풍선에 보일 1-2문장이다(최대 150자). 먼저 이번 메시지에 반응하라 — "
     "조건을 바꿨으면 받았다고 짧게 말하고, 사정을 털어놓았으면 한마디 답한다. 책 제목은 "
     "카드에 보이니 말풍선에 늘어놓지 말고, 이번에 고른 책들이 어떤 결인지 한마디로 말하라. "
+    "{turn_end}"
     '"추천합니다", "추천드립니다"로 끝맺지 마라.\n'
     '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", '
@@ -1393,6 +1410,7 @@ async def generate_cards(
     *,
     message: str = "",
     recent_turns: list[Turn] | None = None,
+    may_ask: bool = True,
 ) -> CardResult:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
@@ -1421,6 +1439,7 @@ async def generate_cards(
                 "intro": _card_prompt_intro(spec) + _card_prompt_conditions(spec),
                 "limit": CARD_LIMIT,
                 "listing": _format_listing(candidates),
+                "turn_end": _HAND_OVER if may_ask else _POINT_ONE,
             },
         )
     except LLMUnavailableError:
@@ -1706,6 +1725,12 @@ def _ask_stage(req: ChatRequest) -> asking.Stage:
     if any(turn.role == "user" for turn in req.recent_turns):
         return "none"
     return "may_ask"
+
+
+def _bot_asked_last(turns: list[Turn]) -> bool:
+    """직전 챗봇 말이 질문이었나(#545). BE 는 챗봇 줄에 reply 와 followup 을 같이 싣는다."""
+    last = turns[-1] if turns else None
+    return last is not None and last.role == "assistant" and "?" in last.text
 
 
 def _is_pinned(spec: Spec) -> bool:
@@ -2009,6 +2034,8 @@ async def _recommend(
             spec,
             message=req.message,
             recent_turns=req.recent_turns,
+            # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
+            may_ask=slot_question is None and not _bot_asked_last(req.recent_turns),
         )
     cards, llm_reply, degraded = result.cards, result.reply, result.degraded
 

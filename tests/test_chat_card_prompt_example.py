@@ -13,7 +13,7 @@ from app.routers import chat
 MOOD_WORDS = ("잔잔", "따뜻", "가벼운", "편안", "재미있", "감동")
 
 
-def _prompt() -> str:
+def _prompt(turn_end: str = chat._HAND_OVER) -> str:
     # 사용자 말이 들어가는 칸은 비워 둔다. 지시문과 형식 예시에 낱말이 있는지만 본다.
     return chat.CARD_PROMPT.format(
         recent_turns="(최근 대화 없음)",
@@ -21,12 +21,14 @@ def _prompt() -> str:
         intro="아래는 후보 목록이다.",
         limit=chat.CARD_LIMIT,
         listing="",
+        turn_end=turn_end,
     )
 
 
+@pytest.mark.parametrize("turn_end", [chat._HAND_OVER, chat._POINT_ONE])
 @pytest.mark.parametrize("word", MOOD_WORDS)
-def test_카드_프롬프트에_분위기_낱말_예시가_없다(word: str) -> None:
-    assert word not in _prompt()
+def test_카드_프롬프트에_분위기_낱말_예시가_없다(word: str, turn_end: str) -> None:
+    assert word not in _prompt(turn_end)
 
 
 def test_match_basis_형식_예시는_설명으로_적는다() -> None:
