@@ -14,11 +14,15 @@ KINDS = [
     pytest.param("추천해 주고 담아줘", True, "both", id="둘_다"),
     pytest.param("안녕", False, "neither", id="아님"),
     pytest.param("네", True, "neither", id="짧은_동의"),
-    # 카드를 가리키는 말은 카드가 보일 때만 장바구니 신호다
-    pytest.param("2번 같은 책 추천해줘", True, "both", id="번호와_추천_카드_있음"),
+    # 카드를 가리키는 말은 카드가 보일 때만 장바구니 신호다. 추천 낱말이 같이 있으면 추천이다(v2, #530)
+    pytest.param("2번 같은 책 추천해줘", True, "recommend", id="번호와_추천_카드_있음"),
     pytest.param(
         "2번 같은 책 추천해줘", False, "recommend", id="번호와_추천_카드_없음"
     ),
+    pytest.param("2번 같은 거 더", True, "recommend", id="번호와_같은_거"),
+    pytest.param("1번 쪽으로", True, "recommend", id="번호와_쪽으로"),
+    pytest.param("2번 같은 거 담아줘", True, "both", id="번호와_추천과_담기"),
+    pytest.param("2번 줄거리 알려줘", True, "cart", id="번호만"),
 ]
 
 
@@ -40,9 +44,57 @@ def test_앞뒤_공백은_결과를_바꾸지_않는다() -> None:
     assert rules.classify("  1번 담아줘  ", True) == rules.classify("1번 담아줘", True)
 
 
-def test_규칙_버전은_기준선과_같은_1이다() -> None:
-    # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다
-    assert rules.RULES_VERSION == 1
+def test_규칙_버전은_2다() -> None:
+    # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다.
+    # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·갈래 질문의 답을 ③으로(#530)
+    assert rules.RULES_VERSION == 2
+
+
+# 직전 챗봇 말이 갈래 질문이면, 장바구니 낱말이 없는 답은 추천이다(#530)
+AFTER_BRANCH = [
+    pytest.param("2번", "recommend", id="번호만"),
+    pytest.param("두 번째", "recommend", id="몇_번째"),
+    pytest.param("담담한 거", "recommend", id="신호_없는_말"),
+    pytest.param("2번 담아줘", "cart", id="담기는_그대로"),
+    pytest.param("2번이 좋은데 얼마야?", "cart", id="가격은_그대로"),
+]
+
+
+@pytest.mark.parametrize(("message", "kind"), AFTER_BRANCH)
+def test_갈래_질문_뒤의_답은_장바구니_말이_없으면_추천이다(message, kind) -> None:
+    assert rules.classify(message, True, after_branch=True) == kind
+
+
+class _T:
+    def __init__(self, role: str, text: str) -> None:
+        self.role, self.text = role, text
+
+
+@pytest.mark.parametrize(
+    ("turns", "asked"),
+    [
+        (
+            [
+                _T("user", "위로되는 책"),
+                _T("assistant", "1번처럼 시, 2번처럼 에세이 중 어느 쪽이 끌리세요?"),
+            ],
+            True,
+        ),
+        ([_T("assistant", "어떤 쪽이 좋으세요?")], True),
+        (
+            [
+                _T("assistant", "어느 쪽이 끌리세요?"),
+                _T("user", "2번"),
+                _T("assistant", "에세이로 골랐어요."),
+            ],
+            False,
+        ),
+        ([_T("assistant", "어느 쪽이 끌리세요?"), _T("user", "2번")], False),
+        ([], False),
+    ],
+)
+def test_직전_챗봇_말이_갈래_질문인지_본다(turns, asked) -> None:
+    assert rules.asked_branch(turns) is asked
 
 
 # --- 쇼핑 칸 ---

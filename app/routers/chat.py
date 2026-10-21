@@ -1779,7 +1779,13 @@ async def chat(request: Request) -> JSONResponse:
     lane = None
     if shopping.enabled(payload):
         lane = "recommend"
-        if gate_rules.route(req.message or "", shopping.cards_shown(payload)) == "shop":
+        after_branch = gate_rules.asked_branch(req.recent_turns)
+        if (
+            gate_rules.route(
+                req.message or "", shopping.cards_shown(payload), after_branch
+            )
+            == "shop"
+        ):
             shop_req = shopping.to_agent_request(payload)
             if shop_req is None:
                 return responses.error(400, "invalid_request")

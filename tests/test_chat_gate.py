@@ -170,6 +170,26 @@ def test_추천_말이면_쇼핑을_부르지_않고_추천으로_처리하며_r
     assert body["data"]["cards"]
 
 
+def test_갈래_질문에_번호로_답하면_쇼핑을_거치지_않고_추천으로_간다(
+    monkeypatch,
+) -> None:
+    # ③이 "어느 쪽이 끌리세요?"라고 물은 뒤의 "2번"은 담을 책이 아니라 갈래 고르기다(#530)
+    _forbid(monkeypatch, agent, "shop_turn")
+    _wire_recommend(monkeypatch)
+    turns = [
+        {"role": "user", "text": "위로되는 책"},
+        {
+            "role": "assistant",
+            "text": "1번처럼 시, 2번처럼 에세이 중 어느 쪽이 끌리세요?",
+        },
+    ]
+
+    res = client.post(URL, json=_body("2번", recent_turns=turns))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["route"] == "recommend"
+
+
 def test_직전_쇼핑_답이_200자를_넘어도_다음_턴은_400이_아니다(monkeypatch) -> None:
     # 쇼핑 답에는 길이 상한이 없다. ③ 검사가 먼저라 400 이면 갈래와 상관없이 다음 턴 전체가 실패한다(#490)
     _forbid(monkeypatch, agent, "shop_turn")
