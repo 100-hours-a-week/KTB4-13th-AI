@@ -193,6 +193,17 @@ async def _unstated(
         ctx.titles.update({offer.isbn: offer.title for offer in offers})
         if evidence.has_evidence(ctx, ref, isbn):
             return None
+    card = evidence.card_for_bare_number(ctx, ref, isbn)
+    if card is not None:
+        # 숫자만 말한 "2번"을 모델이 장바구니 2번째로 읽었다. 카드 2번일 수도 있어 두 책을 짚어 묻게 한다(#528)
+        if card.isbn not in ctx.titles:
+            offers = await gateway.get_offers([card.isbn])
+            ctx.titles.update({offer.isbn: offer.title for offer in offers})
+        card_ref = BookRef(source="card", n=card.rank)
+        return _fail(
+            ToolErrorCode.AMBIGUOUS_BOOK.value,
+            books=[_named(ctx, card_ref, card.isbn), _named(ctx, ref, isbn)],
+        )
     return _held(ToolErrorCode.REFERENCE_NOT_STATED, ctx, ref, isbn, verb)
 
 

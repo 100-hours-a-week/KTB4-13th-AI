@@ -1242,6 +1242,39 @@ def test_번호나_제목을_말했으면_쓰기가_실행된다() -> None:
     assert B not in fake.cart_state(UID)
 
 
+def test_카드가_보일_때_2번_빼줘를_장바구니_2번째로_읽으면_빼지_않고_두_책을_짚어_묻게_한다() -> (
+    None
+):
+    # dev QA AGENT-005(#528). 카드는 A, B, C 이고 장바구니는 E, D(최근에 담은 E 가 1번)다.
+    # 카드 2번 B 는 장바구니에 없는데, 모델이 "2번"을 장바구니 2번째 D 로 읽었다
+    spy, fake, ctx = _setup(seed=[(D, 4), (E, 1)])
+    _see_cart(ctx, spy)
+    spy.calls.clear()
+    before = fake.cart_state(UID)
+
+    call = _run(_words(ctx, "2번 빼줘"), spy, ToolName.CART_REMOVE, {"book": cart(2)})
+
+    assert call.result["ok"] is False
+    assert call.result["error"] == "AMBIGUOUS_BOOK"
+    assert call.result["books"][0].startswith("카드 2번 《")
+    assert call.result["books"][1].startswith("장바구니 2번째 《")
+    assert "remove_item" not in spy.calls
+    assert fake.cart_state(UID) == before
+
+
+def test_카드가_보일_때_2번_빼줘를_카드_2번으로_읽으면_그_책이_장바구니에_없다고_알린다() -> (
+    None
+):
+    spy, fake, ctx = _setup(seed=[(D, 4), (E, 1)])
+    _see_cart(ctx, spy)
+    before = fake.cart_state(UID)
+
+    call = _run(_words(ctx, "2번 빼줘"), spy, ToolName.CART_REMOVE, {"book": card(2)})
+
+    assert call.result == {"ok": False, "error": "CART_ITEM_NOT_FOUND"}
+    assert fake.cart_state(UID) == before
+
+
 def test_말한_번호와_다른_책을_고르면_막힌다() -> None:
     spy, fake, ctx = _setup()
     before = fake.cart_state(UID)
