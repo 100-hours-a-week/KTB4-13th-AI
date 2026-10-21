@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableLambda
 
 from app.chat import shown
 from app.chat.schemas import Spec, Turn
+from app.gate import rules as gate_rules
 from app.main import app
 from app.routers import chat
 
@@ -76,7 +77,7 @@ def _request(**overrides) -> dict:
 
 
 def _cards_json(
-    question: str | None,
+    branches: list[str] | None,
     reply: str = "위로하는 방식이 달라서 결이 다른 세 권을 골랐어요.",
 ) -> str:
     return json.dumps(
@@ -85,7 +86,7 @@ def _cards_json(
                 {"book_id": book["book_id"], "reason_short": "이유"} for book in BOOKS
             ],
             "reply": reply,
-            "question": question,
+            "branches": branches,
         },
         ensure_ascii=False,
     )
@@ -131,13 +132,18 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> list[list]:
     return searched
 
 
-QUESTION = "1번처럼 짧은 글, 2번처럼 에세이, 3번처럼 소설 중 어느 쪽이 끌리세요?"
+BRANCHES = ["짧은 글", "에세이", "소설"]
+# 질문 문장은 코드가 만든다. 모델은 갈래 이름만 낸다
+QUESTION = (
+    "짧은 글(1번), 에세이(2번), 소설(3번) 중 어느 쪽이 끌리세요? "
+    "셋 다 아니면 원하는 쪽을 말씀해 주세요."
+)
 
 
 def test_넓은_첫_요청은_갈래_질문을_말풍선_끝에_붙인다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rec = _Recorder(json.dumps({"semantic": "위로가 되는 책"}), _cards_json(QUESTION))
+    rec = _Recorder(json.dumps({"semantic": "위로가 되는 책"}), _cards_json(BRANCHES))
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
@@ -162,7 +168,7 @@ def test_사용자가_두_번_답한_뒤에는_모델이_질문을_내도_붙이
         {"role": "assistant", "text": "에세이로 좁혔어요."},
     ]
     spec = {**INITIAL_SPEC, "semantic": "위로가 되는 에세이"}
-    rec = _Recorder("{}", _cards_json(QUESTION))
+    rec = _Recorder("{}", _cards_json(BRANCHES))
     monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
 
     data = client.post(
@@ -171,7 +177,7 @@ def test_사용자가_두_번_답한_뒤에는_모델이_질문을_내도_붙이
     ).json()["data"]
 
     assert QUESTION not in data["reply"]
-    assert "question은 null로 둬라." in rec.prompts[-1]
+    assert "branches는 null로 둬라." in rec.prompts[-1]
 
 
 def test_제목을_콕_집은_요청은_좁히지_않는다() -> None:
@@ -210,7 +216,7 @@ def test_고른_카드가_빠져_번호가_밀리면_질문을_버린다(
                 {"book_id": 3, "reason_short": "이유"},
             ],
             "reply": "결이 다른 책을 골랐어요.",
-            "question": QUESTION,
+            "branches": BRANCHES,
         },
         ensure_ascii=False,
     )
@@ -397,3 +403,36 @@ def test_보여_준_책_목록은_번호_제목_저자_소개_앞부분이다() 
         == "1번: 『제목』 - 저자 - 가나다 라\n2번: 『소개 없는 책』 - (소개 없음)"
     )
     assert shown.listing([], 5) == "(없음)"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "짧은 글, 에세이, 소설",  # 목록이 아니다
+        ["짧은 글", "에세이"],  # 카드 수와 다르다
+        ["짧은 글", "짧은 글", "소설"],  # 갈래가 겹친다
+        ["짧은 글", "", "소설"],
+        ["짧은 글", "에세이", "가" * (chat.BRANCH_NAME_MAX + 1)],
+        ["짧은 글", 2, "소설"],
+    ],
+)
+def test_갈래_이름이_카드마다_하나씩_다르지_않으면_묻지_않는다(raw) -> None:
+    assert chat._parse_branches(raw, 3) is None
+
+
+def test_카드가_한_장이면_갈래를_묻지_않는다() -> None:
+    assert chat._parse_branches(["에세이"], 1) is None
+
+
+def test_갈래_질문은_코드가_어느_쪽_꼴로_만들고_다른_쪽_길을_연다() -> None:
+    two = chat._branch_question(["시", "에세이"])
+
+    assert (
+        two
+        == "시(1번), 에세이(2번) 중 어느 쪽이 끌리세요? 둘 다 아니면 원하는 쪽을 말씀해 주세요."
+    )
+    # 문지기가 이 꼴을 갈래 질문으로 알아본다
+    assert gate_rules.asked_branch(
+        [Turn(role="assistant", text="두 권이에요.\n\n" + two)]
+    )

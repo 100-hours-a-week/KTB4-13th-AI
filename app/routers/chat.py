@@ -1190,6 +1190,7 @@ MAX_REASON_SHORT_CHARS = 80
 #
 # 좁히기({pick}·{question_rule})는 _may_narrow() 가 허락한 턴에만 켠다. 요청이 넓어 후보가 여러 갈래로 흩어지면
 # 갈래마다 한 권씩 고르고, 어느 쪽이 끌리는지 카드 번호로 묻는다. 버튼(칩)은 명세에 없어서 카드가 그 자리를 한다.
+# 모델은 카드마다 갈래 이름(branches)만 내고 질문 문장은 코드가 만든다(_branch_question).
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
@@ -1214,7 +1215,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     '"reason_short": "한 줄 이유(80자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
-    '"reply": "말풍선에 보일 1-2문장", "question": "묻는 한 문장 또는 null"}}\n\n'
+    '"reply": "말풍선에 보일 1-2문장", "branches": ["카드 차례대로 갈래 이름"] 또는 null}}\n\n'
     "책 목록:\n{listing}"
 )
 
@@ -1224,13 +1225,38 @@ _PICK_NARROW = (
     "맞는 책들이 서로 다른 갈래(형식, 분위기, 난이도, 다루는 면 등)로 나뉘면, 갈래마다 "
     "가장 맞는 책을 한 권씩 골라 갈래가 겹치지 않게 하라."
 )
-_QUESTION_NONE = "question은 null로 둬라."
+# 갈래 이름의 최대 글자 수. 질문이 길면 말풍선 200자 안에 못 붙인다
+BRANCH_NAME_MAX = 15
+_QUESTION_NONE = "branches는 null로 둬라."
 _QUESTION_NARROW = (
-    "question: 갈래마다 한 권씩 골랐으면 사용자가 어느 쪽에 가까운지 카드 번호를 들어 묻는 "
-    '한 문장을 써라(최대 100자, 형식: "1번처럼 …, 2번처럼 … 중 어느 쪽이 끌리세요?"). '
-    "갈래는 짧은 말로 부르고 책 제목은 쓰지 마라. 갈래로 나뉘지 않았거나 요청이 이미 "
-    "구체적이면 null로 둬라. 최근 대화에서 이미 물은 것은 다시 묻지 마라."
+    "branches: 갈래마다 한 권씩 골랐으면 cards 차례대로 각 책이 어느 갈래인지 짧은 말"
+    f"({BRANCH_NAME_MAX}자 이내)로 적은 목록이다. 사용자가 고를 수 있게 갈래끼리 뚜렷이 다른 말로 "
+    "쓰고 책 제목은 쓰지 마라. 질문 문장은 쓰지 마라. 갈래로 나뉘지 않았거나 요청이 이미 "
+    "구체적이면 null로 둬라. 최근 대화에서 이미 고른 갈래를 다시 나누지 마라."
 )
+# 갈래 질문 끝에 붙이는 "다른 쪽" 길. 보여 준 갈래에 원하는 것이 없으면 사용자가 거기서 벗어나 엉뚱한 쪽을 고르게
+# 된다(#530 평가: "과학책"에 우주 갈래가 없어 가짜 사용자가 원하던 책에서 멀어졌다)
+_NONE_OF_THEM = {2: "둘 다", 3: "셋 다"}
+
+
+def _branch_question(branches: list[str]) -> str:
+    """갈래 질문. 꼴을 코드가 정한다. 모델에게 쓰게 했더니 40번 중 22번이 "어느 쪽" 꼴을 벗어나 문지기가 갈래
+    질문인지 알아보지 못했고, 그 답("1번이 좋아 보여")이 ⑦로 갔다(#530 평가)."""
+    options = ", ".join(f"{name}({n}번)" for n, name in enumerate(branches, 1))
+    rest = _NONE_OF_THEM.get(len(branches), "모두")
+    return f"{options} 중 어느 쪽이 끌리세요? {rest} 아니면 원하는 쪽을 말씀해 주세요."
+
+
+def _parse_branches(raw: object, card_count: int) -> list[str] | None:
+    """카드마다 하나씩, 서로 다른 갈래 이름이면 그 목록. 아니면 None(질문하지 않는다)."""
+    if not isinstance(raw, list) or len(raw) != card_count or card_count < 2:
+        return None
+    names = [item.strip() if isinstance(item, str) else "" for item in raw]
+    if not all(0 < len(name) <= BRANCH_NAME_MAX for name in names):
+        return None
+    if len(set(names)) != len(names):
+        return None
+    return names
 
 
 def _format_listing(candidates: list[dict]) -> str:
@@ -1441,14 +1467,15 @@ async def generate_cards(
                 "match_basis": match_basis,
             }
         )
-    question = parsed.get("question") if narrow else None
-    if not isinstance(question, str) or not question.strip():
-        question = None
-    elif len(cards) != len(raw_cards[:CARD_LIMIT]):
-        # 질문은 카드를 번호로 가리킨다. 고른 항목이 하나라도 빠지면 화면 번호와 어긋난다.
-        logger.info("카드가 빠져 번호가 밀려 좁히기 질문을 버렸다")
-        question = None
-    return CardResult(cards, reply, False, question.strip() if question else None)
+    branches = None
+    if narrow and parsed.get("branches") is not None:
+        if len(cards) != len(raw_cards[:CARD_LIMIT]):
+            # 질문은 카드를 번호로 가리킨다. 고른 항목이 하나라도 빠지면 화면 번호와 어긋난다.
+            logger.info("카드가 빠져 번호가 밀려 좁히기 질문을 버렸다")
+        else:
+            branches = _parse_branches(parsed.get("branches"), len(cards))
+    question = _branch_question(branches) if branches else None
+    return CardResult(cards, reply, False, question)
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.

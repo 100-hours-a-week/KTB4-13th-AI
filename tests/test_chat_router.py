@@ -307,7 +307,7 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     # JSON 예시의 중괄호도 그대로(cards·reply·question이 같은 객체 안에 있는 형태까지 확인).
     assert '{"cards": [{"book_id": 정수, ' in prompt
     assert (
-        '"reply": "말풍선에 보일 1-2문장", "question": "묻는 한 문장 또는 null"}'
+        '"reply": "말풍선에 보일 1-2문장", "branches": ["카드 차례대로 갈래 이름"] 또는 null}'
         in prompt
     )
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
@@ -468,7 +468,7 @@ def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
     assert '"추천합니다", "추천드립니다"로 끝맺지 마라' in prompt
     assert '이번 메시지: "비 오는 날 읽을 책 추천해줘"' in prompt
     assert (
-        '"reply": "말풍선에 보일 1-2문장", "question": "묻는 한 문장 또는 null"}'
+        '"reply": "말풍선에 보일 1-2문장", "branches": ["카드 차례대로 갈래 이름"] 또는 null}'
         in prompt
     )
 
