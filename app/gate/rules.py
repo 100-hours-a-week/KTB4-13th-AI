@@ -18,6 +18,8 @@
    ⑦에 보냈고, ⑦이 쇼핑이 아니라고 돌려보내 결과는 같았지만 LLM 호출이 한 번 더 들었다.
 2. 직전 챗봇 말이 갈래 질문이면, 장바구니 낱말이 없는 답("2번", "두 번째 쪽", "담담한 거")은 추천이다. 이 답이
    ⑦로 가면 "2번"을 담을 책으로 읽을 수 있다. 최근 대화에서 직전 챗봇 말만 본다.
+3. 카드를 가리키며 관심만 말하면("1번 책이 흥미로워 보여요") 추천이다. ⑦로 가면 "담을까요?"만 되풀이했다(#530
+   대화 평가: 10개 중 8개 대화). 직전 챗봇 말이 담기·빼기를 물었으면("카드 1번을 담을까요?") 그 답이라 ⑦로 보낸다.
 """
 
 import re
@@ -42,6 +44,13 @@ _REC_WORDS = re.compile(
     r"추천|찾아|읽을|읽고 싶|비슷한|같은 책|입문서|필독서|있을까|없을까|책 있|소설|에세이"
     r"|같은 거|같은 걸|같은 느낌|같은 결|쪽으로|쪽이요|쪽이 좋|쪽이 끌|끌려"
 )
+# 카드를 가리키며 관심만 말하는 낱말("1번이 좋아 보여", "마음에 들어")
+_INTEREST = re.compile(
+    r"좋아\s*보|좋을\s*것\s*같|괜찮아\s*보|괜찮을\s*것\s*같|마음에\s*들|흥미로|끌리"
+    r"|재밌어\s*보|재미있어\s*보|맞는\s*것\s*같|맞을\s*것\s*같"
+)
+# ⑦이 담기·빼기·수량 변경을 물은 문장("카드 1번을 담을까요?")
+_ACTION_QUESTION = re.compile(r"(?:담|넣|뺄|빼|바꿀)[^.!?\n]*(?:\?|까요)")
 # ③의 갈래 질문(app/chat/branches.py question: "… 중 어느 쪽이 끌리세요?"). 꼴은 코드가 만든다
 _BRANCH_QUESTION = re.compile(r"(어느|어떤)\s?쪽")
 
@@ -61,12 +70,28 @@ def asked_branch(recent_turns: Sequence[_Turn]) -> bool:
     return False
 
 
-def classify(message: str, cards_shown: bool, after_branch: bool = False) -> Kind:
+def asked_action(recent_turns: Sequence[_Turn]) -> bool:
+    """직전 챗봇 말이 담기·빼기·수량 변경을 물었나."""
+    for turn in reversed(recent_turns):
+        if turn.role == "assistant":
+            return bool(_ACTION_QUESTION.search(turn.text))
+        if turn.role == "user":
+            return False
+    return False
+
+
+def classify(
+    message: str,
+    cards_shown: bool,
+    after_branch: bool = False,
+    after_action: bool = False,
+) -> Kind:
     """말 하나를 네 갈래 중 하나로 가른다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
     2. 직전 챗봇 말이 갈래 질문이면(after_branch) 나머지는 추천(v2)
-    3. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2)
+    3. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말이나, 담기를 묻지 않았을 때의 관심 낱말이
+       있으면 추천(v2)
     4. 추천 낱말만 있으면 추천, 아무 신호도 없으면 ``neither``
     """
     text = message.strip()
@@ -78,13 +103,19 @@ def classify(message: str, cards_shown: bool, after_branch: bool = False) -> Kin
     if after_branch:
         return "recommend"
     if pointer:
-        return "recommend" if recommend else "cart"
+        interest = bool(_INTEREST.search(text)) and not after_action
+        return "recommend" if recommend or interest else "cart"
     if recommend:
         return "recommend"
     return "neither"
 
 
-def route(message: str, cards_shown: bool, after_branch: bool = False) -> Lane:
+def route(
+    message: str,
+    cards_shown: bool,
+    after_branch: bool = False,
+    after_action: bool = False,
+) -> Lane:
     """③으로 바로 보낼지(``recommend``), ⑦로 보낼지(``shop``)."""
-    kind = classify(message, cards_shown, after_branch)
+    kind = classify(message, cards_shown, after_branch, after_action)
     return "recommend" if kind == "recommend" else "shop"

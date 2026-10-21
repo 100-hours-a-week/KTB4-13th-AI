@@ -1805,9 +1805,13 @@ async def chat(request: Request) -> JSONResponse:
     if shopping.enabled(payload):
         lane = "recommend"
         after_branch = gate_rules.asked_branch(req.recent_turns)
+        after_action = gate_rules.asked_action(req.recent_turns)
         if (
             gate_rules.route(
-                req.message or "", shopping.cards_shown(payload), after_branch
+                req.message or "",
+                shopping.cards_shown(payload),
+                after_branch,
+                after_action,
             )
             == "shop"
         ):
