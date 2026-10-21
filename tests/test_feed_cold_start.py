@@ -87,7 +87,9 @@ def _fetch(
                     sales,
                 )
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100605, $2)", _USER, _T0
+                "INSERT INTO v_user_purchases VALUES ($1, 9100605, $2, 'PAID')",
+                _USER,
+                _T0,
             )
             await conn.execute(
                 "INSERT INTO v_user_library VALUES ($1, 9100606, $2)", _USER, _T0

@@ -375,7 +375,7 @@ def test_저장된_취향_벡터가_없으면_구매_이력이_있어도_취향�
                 _USER,
             )
         await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100920, now())", _USER
+            "INSERT INTO v_user_purchases VALUES ($1, 9100920, now(), 'PAID')", _USER
         )
         candidates = _candidates(9100921)
         await chat._attach_match_scores(conn, candidates, _USER, _spec())

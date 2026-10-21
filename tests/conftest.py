@@ -15,6 +15,9 @@ import pytest
 # import 시점에 넣는다 — 테스트 모듈이 app.main 을 import 하면서
 # 곧바로 Settings() 를 만들기 때문에 fixture 로는 늦다.
 os.environ.setdefault("DATABASE_URL", "postgresql://test@127.0.0.1:5432/test")
+# 관심사별 홈 추천(#395)은 설정 기본값이 켜져 있다. 테스트는 꺼진 경로를 기본으로 보고, 켠 동작을 보는
+# 테스트만 직접 켠다. 켜 두면 DB 테스트가 그 마이그레이션이 없는 로컬 DB에서 새 표를 찾다 깨진다.
+os.environ.setdefault("INTEREST_FEED", "false")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
 from app.core import db

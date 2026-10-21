@@ -85,7 +85,9 @@ def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = No
                     DIM,
                 )
             await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100704, $2)", _USER, _T0
+                "INSERT INTO v_user_purchases VALUES ($1, 9100704, $2, 'PAID')",
+                _USER,
+                _T0,
             )
             return await check(conn)
         finally:
