@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat import asking, shown, topic_switch
+from app.chat import asking, invented_mood, shown, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
@@ -820,6 +820,24 @@ def _recover_topic(spec: Spec, message: str) -> Spec:
     if not topic:
         return spec
     return spec.model_copy(update={"semantic": topic[:MAX_QUERY_CHARS]})
+
+
+def _without_invented_mood(
+    spec: Spec, req: ChatRequest, shown_books: list[shown.ShownBook]
+) -> Spec:
+    """검색 문장에서 사용자가 말하지 않은 분위기 낱말을 뺀다(#543, app/chat/invented_mood.py).
+
+    말풍선은 검색 문장을 보고 쓰므로, 여기서 빼야 "가벼운 에세이를 찾으신다면"처럼 사용자가 안 한 말을 되읊지 않는다.
+    고친 spec 은 응답에 실려 다음 턴으로 이어진다.
+    """
+    grounds = invented_mood.evidence(
+        req.message or "", req.recent_turns, req.spec.semantic, shown_books
+    )
+    semantic, removed = invented_mood.strip(spec.semantic, grounds)
+    if not removed:
+        return spec
+    logger.info("검색 문장에서 사용자가 말하지 않은 분위기 말 %d개를 뺐다", removed)
+    return spec.model_copy(update={"semantic": semantic})
 
 
 def _topic_before_book_word(words: list[str]) -> str:
@@ -1985,6 +2003,7 @@ async def _recommend(
     try:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
         # 후보 검색 실패와 같은 500이다.
+        spec = _without_invented_mood(spec, req, shown_books)
         spec = await _settle_category(spec)
         spec = _recover_topic(spec, req.message)
         shown_ids = await _shown_book_ids(req)
