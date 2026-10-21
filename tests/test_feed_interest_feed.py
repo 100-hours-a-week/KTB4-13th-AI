@@ -160,12 +160,17 @@ def test_목록_뽑기의_시간_예산을_넘겨받는다(monkeypatch: pytest.M
     assert seen == [9.0, interest_fetch.BUDGET_SECONDS]
 
 
-def test_저장하는_모양은_책마다_관심사와_점수_그리고_대신한_관심사다() -> None:
+def test_저장하는_모양은_책마다_관심사와_점수_대신한_관심사_그리고_뺀_가진_책이다() -> (
+    None
+):
     feed = interest_feed.Feed([Placed(1, "요리", 80)], ("작가:한강",))
 
-    assert feed.stored() == {
+    assert feed.stored({9, 3}, {3}) == {
         "books": [{"book_id": 1, "interest": "요리", "match_score": 80}],
         "substituted": ["작가:한강"],
+        # 밤에 다시 뽑는 ⑨ 가 복제 표 대신 읽는다(#537)
+        "owned": [3, 9],
+        "disliked": [3],
     }
 
 

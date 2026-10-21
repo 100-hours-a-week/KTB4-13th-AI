@@ -678,16 +678,16 @@ def test_기능_플래그가_켜지면_추천_목록을_뽑아_판_번호를_올
     once, twice = _run_with_interest_tables(check)
 
     assert once == {
-        "feed": first.stored(),
+        "feed": first.stored((), ()),
         "feed_version": 1,
         "feed_prev": None,
         "feed_partial": False,
     }
     # 시간 예산을 넘겨 대신한 관심사가 있으면 표시해 밤에 다시 뽑는다
     assert twice == {
-        "feed": second.stored(),
+        "feed": second.stored((), ()),
         "feed_version": 2,
-        "feed_prev": first.stored(),
+        "feed_prev": first.stored((), ()),
         "feed_partial": True,
     }
 
@@ -712,6 +712,26 @@ def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가�
     assert call["conditions"] == ["300쪽 이하"]
     # 산 책은 빼고, 좋아한다고만 한 책(9100201)은 빼지 않는다
     assert call["owned"] == {9100202}
+
+
+def test_목록을_뽑을_때_뺀_가진_책과_싫어한_책을_목록과_함께_남긴다(
+    interest_feed,
+) -> None:
+    # 밤에 목록을 다시 뽑는 ⑨ 는 요청이 없어 이력을 받지 못한다. 복제 표 대신 이것을 읽는다(#537)
+    async def check(conn):
+        req = _request(
+            history={
+                "purchased_isbns": [_isbn(9100201)],
+                "reviews": [{"isbn": _isbn(9100202), "rating": 1.0}],
+            },
+        )
+        await service.rebuild_on(conn, req)
+        return await _feed_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert row["feed"]["owned"] == [9100201, 9100202]
+    assert row["feed"]["disliked"] == [9100202]
 
 
 def test_목록_뽑기에_관심사마다_매칭_점수에_쓸_내_책을_넘긴다(interest_feed) -> None:

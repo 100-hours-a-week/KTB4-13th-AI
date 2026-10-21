@@ -61,8 +61,14 @@ class Feed:
     books: list[Placed]
     substituted: tuple[str, ...]
 
-    def stored(self) -> dict[str, Any]:
-        """프로필에 저장하는 모양(taste_profile.feed). 대신했지만 채울 책이 없던 관심사도 남겨 밤에 다시 뽑는다."""
+    def stored(
+        self, owned: Collection[int], disliked: Collection[int]
+    ) -> dict[str, Any]:
+        """프로필에 저장하는 모양(taste_profile.feed). 대신했지만 채울 책이 없던 관심사도 남겨 밤에 다시 뽑는다.
+
+        밤에 다시 뽑는 ⑨ 는 요청이 없어 이력을 받지 못한다. 그래서 이 목록을 뽑을 때 뺀 가진 책(owned)과 그중
+        2점 이하 리뷰를 단 책(disliked)을 함께 남겨, ⑨ 가 복제 표 대신 이것을 읽는다(#537).
+        """
         return {
             "books": [
                 {
@@ -73,6 +79,8 @@ class Feed:
                 for b in self.books
             ],
             "substituted": list(self.substituted),
+            "owned": sorted(owned),
+            "disliked": sorted(disliked),
         }
 
 

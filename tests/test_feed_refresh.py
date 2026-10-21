@@ -93,10 +93,12 @@ _MIGRATION = (
 _NOW = datetime(2026, 10, 16, 23, 30, tzinfo=_KST)
 _NIGHT = "2026-10-16"
 _OLD_BOOKS = [{"book_id": 1, "interest": "요리", "match_score": 40}]
+# ⑥ 이 목록과 함께 남긴 가진 책과 그중 2점 이하 리뷰를 단 책(#537)
+_OWNED = {"owned": [9_100_031, 9_100_032], "disliked": [9_100_032]}
 
 
 def _feed(**extra) -> str:
-    return json.dumps({"books": _OLD_BOOKS, "substituted": ["요리"], **extra})
+    return json.dumps({"books": _OLD_BOOKS, "substituted": ["요리"], **_OWNED, **extra})
 
 
 class _FakeBuild:
@@ -117,20 +119,29 @@ class _FakeBuild:
         book_anchors=None,
     ):
         self.calls.append(
-            {"book_vectors": book_vectors, "keyword_vectors": keyword_vectors}
+            {
+                "book_vectors": book_vectors,
+                "keyword_vectors": keyword_vectors,
+                "owned": rest[1],
+            }
         )
         self.anchors = book_anchors
         return self.feeds.pop(0)
 
 
-async def _no_history(conn, user_id, until=None):
-    return history.History()
+async def _no_replica(conn, user_id, until=None):
+    raise AssertionError("⑥ 이 남긴 가진 책이 있으면 복제 표를 읽지 않는다(#537)")
 
 
-def _run_refresh(monkeypatch, build: _FakeBuild, profiles: dict, clock=None):
-    """profiles: user_id → (feed_partial, feed). 바깥 트랜잭션을 되돌려 남기지 않는다."""
+def _run_refresh(
+    monkeypatch, build: _FakeBuild, profiles: dict, clock=None, replica=_no_replica
+):
+    """profiles: user_id → (feed_partial, feed). 바깥 트랜잭션을 되돌려 남기지 않는다.
+
+    replica 는 복제 표의 이력 읽기 대신 쓸 함수다. 기본은 읽으면 실패한다.
+    """
     monkeypatch.setattr(interest_feed, "build", build)
-    monkeypatch.setattr(history, "read", _no_history)
+    monkeypatch.setattr(history, "read", replica)
 
     async def go():
         conn = await asyncpg.connect(_DB_URL)
@@ -182,16 +193,23 @@ def test_대체_자리가_표시된_목록을_저장된_프로필로_다시_뽑�
     result, rows = _run_refresh(monkeypatch, build, profiles)
 
     assert result == {"refreshed": 1, "remaining": 0}
+    # 가진 책은 다음 밤을 위해 새 목록에도 그대로 남긴다
     assert json.loads(rows[_A]["feed"]) == {
         "books": [{"book_id": 2, "interest": "요리", "match_score": 80}],
         "substituted": [],
+        **_OWNED,
         "retried_on": _NIGHT,
     }
     assert json.loads(rows[_A]["feed_prev"])["books"] == _OLD_BOOKS
     assert (rows[_A]["feed_version"], rows[_A]["feed_partial"]) == (2, False)
     # 키워드 관심사의 핵심어 벡터는 따로 넘긴다
+    # ⑥ 이 남긴 가진 책을 뺀다
     assert build.calls == [
-        {"book_vectors": {"요리": [0.1]}, "keyword_vectors": {"키워드:고양이": [0.2]}}
+        {
+            "book_vectors": {"요리": [0.1]},
+            "keyword_vectors": {"키워드:고양이": [0.2]},
+            "owned": {9_100_031, 9_100_032},
+        }
     ]
     assert rows[_B]["feed_version"] == rows[_C]["feed_version"] == 1
 
@@ -211,6 +229,7 @@ def test_또_넘기면_저장된_목록을_두고_표시만_남겨_그_밤에는
     assert json.loads(rows[_A]["feed"]) == {
         "books": _OLD_BOOKS,
         "substituted": ["요리"],
+        **_OWNED,
         "retried_on": _NIGHT,
     }
 
@@ -260,11 +279,7 @@ def test_매칭_점수에_쓸_내_책은_저장된_처음_본_날의_책을_다�
     books = {9_100_021: "9780009100021", 9_100_022: "9780009100022"}
     build = _FakeBuild(Feed([], ()))
     monkeypatch.setattr(interest_feed, "build", build)
-
-    async def disliked(conn, user_id, until=None):
-        return history.History(disliked_book_ids={9_100_022})
-
-    monkeypatch.setattr(history, "read", disliked)
+    monkeypatch.setattr(history, "read", _no_replica)
 
     async def go():
         conn = await asyncpg.connect(_DB_URL)
@@ -300,7 +315,7 @@ def test_매칭_점수에_쓸_내_책은_저장된_처음_본_날의_책을_다�
                 _A,
                 json.dumps({"요리": {"books": 3.0}}),
                 json.dumps({isbn13: "2026-10-01" for isbn13 in books.values()}),
-                _feed(),
+                _feed(owned=[9_100_022], disliked=[9_100_022]),
             )
             await refresh.refresh(conn, now=_NOW)
         finally:
@@ -310,3 +325,26 @@ def test_매칭_점수에_쓸_내_책은_저장된_처음_본_날의_책을_다�
     asyncio.run(go())
 
     assert build.anchors == {"요리": (9_100_021,)}
+
+
+async def _replica_stub(conn, user_id, until=None):
+    return history.History(weights={9_100_041: 3}, disliked_book_ids={9_100_042})
+
+
+@_needs_db
+def test_가진_책을_남기기_전에_저장된_목록이면_복제_표의_이력으로_뺀다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 이 칸이 생기기 전에 ⑥ 이 저장한 목록이다. 복제 표를 읽는 길을 지울 때(#307) 같이 지운다
+    build = _FakeBuild(Feed([Placed(2, "요리", 80)], ()))
+    old = json.dumps({"books": _OLD_BOOKS, "substituted": ["요리"]})
+
+    _, rows = _run_refresh(monkeypatch, build, {_A: (True, old)}, replica=_replica_stub)
+
+    assert build.calls[0]["owned"] == {9_100_041, 9_100_042}
+    # 다시 뽑아 저장할 때 남겨, 다음 밤부터는 복제 표를 읽지 않는다
+    stored = json.loads(rows[_A]["feed"])
+    assert (stored["owned"], stored["disliked"]) == (
+        [9_100_041, 9_100_042],
+        [9_100_042],
+    )

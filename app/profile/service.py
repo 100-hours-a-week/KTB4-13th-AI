@@ -177,7 +177,9 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
     await _save(conn, req.user_id, profile, version, hist.computed_at)
     if get_settings().interest_feed:
         owned = set(hist.weights) | hist.disliked_book_ids
-        await _save_interests(conn, req, weights, vectors, owned)
+        await _save_interests(
+            conn, req, weights, vectors, owned, hist.disliked_book_ids
+        )
     return profile.cold_start, version
 
 
@@ -187,12 +189,13 @@ async def _save_interests(
     weights: dict[int, float],
     vectors: dict[int, list[float]],
     owned: set[int],
+    disliked: set[int],
 ) -> None:
     """관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날과 추천 목록을 저장한다(#440, #453).
 
     책은 취향 벡터에 쓴 것과 같다(좋아한 책과 이력, 2점 이하 리뷰를 단 책은 뺌). 벡터가 없는 책은 지금처럼
     쓰지 않는다. 챗봇이 쓰는 지금 칸(centroid, tag_weights)은 위에서 따로 저장했다. 추천 목록에서는 가진
-    책(owned: 이력의 책)을 뺀다.
+    책(owned: 이력의 책)을 빼고, 밤에 다시 뽑는 ⑨ 가 쓰도록 목록과 함께 남긴다(#537).
     """
     rows = await conn.fetch(_BOOK_INFO_SQL, list(weights)) if weights else []
     isbns = [row["isbn13"] for row in rows if row["isbn13"]]
@@ -232,7 +235,7 @@ async def _save_interests(
         json.dumps({**interest_vectors, **keyword_vectors}, ensure_ascii=False),
         json.dumps(conditions, ensure_ascii=False),
         json.dumps(first_seen),
-        json.dumps(feed.stored(), ensure_ascii=False),
+        json.dumps(feed.stored(owned, disliked), ensure_ascii=False),
         bool(feed.substituted),
     )
 
