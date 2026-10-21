@@ -48,6 +48,7 @@ EXPECTED_COUNTS = {
     "long": 2,
     "multiturn": 3,
     "delegate": 2,
+    "interest": 3,
 }
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
 # 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다. 근거 검사를 고치기 전에 쓴 사례(#418)를 더했다.
@@ -66,9 +67,10 @@ HELDOUT_COUNTS = {
     "notshop": 1,
     "outofscope": 1,
     "delivery": 1,
+    "interest": 3,
 }
-# 이번 말 앞의 대화(history)를 가질 수 있는 종류. followup 은 반드시 가진다
-HISTORY_KINDS = {"followup", "short", "multiturn"}
+# 이번 말 앞의 대화(history)를 가질 수 있는 종류. followup 은 반드시 가진다. interest 는 알림 뒤의 말을 본다(#531)
+HISTORY_KINDS = {"followup", "short", "multiturn", "interest"}
 SPLITS = {"dev", "heldout"}
 POISON_MARK = "[AI 지시]"
 
@@ -204,7 +206,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 66, "guard": 26}
+    assert dict(by_group) == {"typical": 66, "guard": 29}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:
