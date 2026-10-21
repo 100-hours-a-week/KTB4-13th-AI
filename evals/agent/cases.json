@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -3210,6 +3210,110 @@
         "cart": {
           "9788900001056": 1,
           "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "remove-09",
+      "kind": "remove",
+      "about": "카드가 보일 때 '2번'은 카드 2번이다. 카드 2번 책은 장바구니에 없으니 장바구니 2번째 책(4권)을 빼지 않는다(#528, dev QA AGENT-005)",
+      "request": {
+        "user_id": 9100060,
+        "conversation_id": "eval_remove-09",
+        "message": "2번 빼줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001087",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001094",
+            "rank": 2,
+            "match_score": 85
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-09_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 4
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": [
+          "ask_back",
+          "informed"
+        ],
+        "cart": {
+          "9788900001018": 4,
+          "9788900001001": 1
+        },
+        "forbidden_text": [
+          "뺐어요"
+        ]
+      }
+    },
+    {
+      "id": "remove-10",
+      "kind": "remove",
+      "about": "카드가 보일 때 '2번'은 카드 2번이다. 장바구니 2번째가 아니라 장바구니 3번째에 있는 카드 2번 책을 뺀다(#528)",
+      "request": {
+        "user_id": 9100061,
+        "conversation_id": "eval_remove-10",
+        "message": "2번 빼줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001087",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 2,
+            "match_score": 85
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-10_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001018": 1
         }
       }
     },

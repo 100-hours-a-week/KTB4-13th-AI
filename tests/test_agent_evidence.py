@@ -138,6 +138,91 @@ def test_장바구니_번호도_같은_규칙이다() -> None:
     assert not evidence.has_evidence(ctx, _cart(1), SW)
 
 
+# --- 숫자만 말한 번호는 카드 번호다 (#528) ---
+
+
+@pytest.mark.parametrize(
+    ("message", "in_cart", "bare"),
+    [
+        ("2번 빼줘", set(), {2}),
+        ("장바구니 2번째 빼줘", {2}, set()),
+        ("장바구니에서 두 번째 빼줘", {2}, set()),
+        ("장바구니에 있는 거 3번 빼줘", {3}, set()),
+        ("장바구니 중에 첫 번째 거", {1}, set()),
+        ("장바구니 두 번째랑 세 번째 빼줘", {2, 3}, set()),
+        ("장바구니 첫 번째 빼고 2번 두 권 담아줘", {1}, {2}),
+        # 번호가 장바구니 앞에 오면 카드 번호를 장바구니에 담으라는 말이다
+        ("1번 장바구니에 담아줘", set(), {1}),
+        ("장바구니에 2번 넣어줘", set(), {2}),
+    ],
+)
+def test_번호를_장바구니를_말한_번호와_숫자만_말한_번호로_나눈다(
+    message: str, in_cart: set[int], bare: set[int]
+) -> None:
+    assert evidence.numbers(message) == (in_cart, bare)
+
+
+def test_카드가_보일_때_숫자만_말한_번호는_장바구니_줄의_근거가_아니다() -> None:
+    # dev QA AGENT-005: 카드 2번(K8S)은 장바구니에 없고 장바구니 2번째는 DB 다
+    ctx = _ctx("2번 빼줘", cart=[SW, DB, PY], cards=[PY, K8S])
+
+    assert not evidence.has_evidence(ctx, _cart(2), DB)
+    assert evidence.has_evidence(ctx, _card(2), K8S)
+
+
+def test_장바구니를_말한_번호는_카드_번호의_근거가_아니다() -> None:
+    ctx = _ctx("장바구니 2번째 빼줘", cart=[SW, DB, PY], cards=[PY, K8S])
+
+    assert evidence.has_evidence(ctx, _cart(2), DB)
+    assert not evidence.has_evidence(ctx, _card(2), K8S)
+
+
+def test_같은_번호의_카드가_없으면_숫자만_말한_번호를_장바구니_번호로_본다() -> None:
+    # 카드가 없다
+    assert evidence.has_evidence(_ctx("2번 빼줘", cart=[SW, DB]), _cart(2), DB)
+    # 카드는 있지만 2번까지 없다
+    assert evidence.has_evidence(
+        _ctx("2번 빼줘", cart=[SW, DB], cards=[PY]), _cart(2), DB
+    )
+
+
+def test_같은_번호의_카드가_같은_책이면_어느_목록으로_읽든_근거다() -> None:
+    ctx = _ctx("2번 빼줘", cart=[SW, DB], cards=[PY, DB])
+
+    assert evidence.has_evidence(ctx, _cart(2), DB)
+    assert evidence.has_evidence(ctx, _card(2), DB)
+
+
+def test_숫자만_말한_번호를_장바구니로_읽어_막히면_같은_번호의_카드를_알려_준다() -> (
+    None
+):
+    ctx = _ctx("2번 빼줘", cart=[SW, DB, PY], cards=[PY, K8S])
+
+    card = evidence.card_for_bare_number(ctx, _cart(2), DB)
+    assert card is not None and (card.rank, card.isbn) == (2, K8S)
+    # 장바구니를 말했거나, 그 번호의 카드가 없거나, 같은 책이면 둘 중 무엇인지 헷갈리지 않는다
+    assert (
+        evidence.card_for_bare_number(
+            _ctx("장바구니 2번째 빼줘", cart=[SW, DB], cards=[PY, K8S]), _cart(2), DB
+        )
+        is None
+    )
+    assert (
+        evidence.card_for_bare_number(
+            _ctx("2번 빼줘", cart=[SW, DB], cards=[PY]), _cart(2), DB
+        )
+        is None
+    )
+    assert (
+        evidence.card_for_bare_number(
+            _ctx("2번 빼줘", cart=[SW, DB], cards=[PY, DB]), _cart(2), DB
+        )
+        is None
+    )
+    # 카드를 고른 것은 헷갈린 것이 아니다
+    assert evidence.card_for_bare_number(ctx, _card(2), K8S) is None
+
+
 def test_맨_위는_1번_맨_아래는_마지막_번호다() -> None:
     cart = [SW, DB, PY]  # 최근에 담은 SW 가 맨 위
 
