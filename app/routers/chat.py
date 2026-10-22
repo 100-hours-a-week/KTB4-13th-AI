@@ -400,8 +400,8 @@ async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
         return False
 
 
-async def _judge_scope(message: str) -> tuple[str, str] | None:
-    """넓은 첫 요청인지 판정한다(#530). 넓으면 물을 (reply, question), 아니면 None. 호출이 실패하면 묻지 않는다."""
+async def _judge_scope(message: str) -> asking.Ask | None:
+    """넓은 첫 요청인지 판정한다(#530). 넓으면 물을 말과 답 보기, 아니면 None. 호출이 실패하면 묻지 않는다."""
     chain = asking.SCOPE_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
         answer = await invoke_chain(chain, {"message": message})
@@ -412,8 +412,8 @@ async def _judge_scope(message: str) -> tuple[str, str] | None:
 
 
 async def _scope_within_grace(
-    scope: "asyncio.Task[tuple[str, str] | None]",
-) -> tuple[str, str] | None:
+    scope: "asyncio.Task[asking.Ask | None]",
+) -> asking.Ask | None:
     """판정 결과를 받는다. 1단계가 끝난 뒤 SCOPE_GRACE_SECONDS 안에 못 받으면 포기하고 묻지 않는다."""
     try:
         return await asyncio.wait_for(scope, timeout=SCOPE_GRACE_SECONDS)
@@ -445,14 +445,14 @@ async def _restart_patch(message: str, fresh: Spec) -> dict | None:
 class SpecUpdate:
     """1단계 결과. answer 는 새 책을 찾는 말이 아니라 대답할 질문이라는 뜻이다(#530). 그때 spec 은 바꾸지 않는다.
 
-    ask 는 넓은 첫 요청이라 찾기 전에 물을 (reply, question) 이다(#530). 그때 spec 은 메시지에서 알게 된 조건까지
+    ask 는 넓은 첫 요청이라 찾기 전에 물을 말과 답 보기다(#530, #505). 그때 spec 은 메시지에서 알게 된 조건까지
     갱신한다. 다음 턴이 그 위에서 답을 더한다.
     """
 
     spec: Spec
     degraded: bool
     answer: bool = False
-    ask: tuple[str, str] | None = None
+    ask: asking.Ask | None = None
 
 
 async def update_spec(
@@ -1961,17 +1961,18 @@ async def _recommend(
     )
     if update.ask is not None:
         # 넓은 첫 요청이다. 찾기 전에 한 번 묻는다. spec 은 메시지에서 알게 된 조건까지 갱신해 다음 턴에 넘긴다.
-        reply, question = update.ask
-        logger.info("넓은 첫 요청이라 찾기 전에 물었다")
+        # 답 보기는 질문 뒤에 문장으로 붙는다(#505). 사용자가 그중 하나를 따라 말하면 다음 턴이 답으로 받는다.
+        ask = update.ask
+        logger.info("넓은 첫 요청이라 찾기 전에 물었다(보기 %d개)", len(ask.options))
         return responses.success(
             "recommend_success",
             _with_lane(
                 {
-                    "reply": reply,
+                    "reply": ask.reply,
                     "spec": update.spec.model_dump(),
                     "recognition": None,
                     "cards": [],
-                    "followup": asking.followup(question),
+                    "followup": asking.followup(ask.question, ask.options),
                     "buttons": [],
                     "degraded": False,
                 },
