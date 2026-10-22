@@ -87,11 +87,14 @@ def test_저자는_사람_이름이고_이름이_통째로_든_책이_충분한_
     assert [(c["query"], c["expect"]["author"]) for c in authors] == [("한강", "한강")]
 
 
-def test_필터는_낱말마다_조건_넷이고_없는_말은_다섯이고_서술형은_마흔이다() -> None:
+def test_필터는_낱말마다_조건_넷이고_없는_말은_쉰_키워드_0건은_서른_서술형은_마흔이다() -> (
+    None
+):
     cases = build.fixed_cases()
     assert Counter(c["kind"] for c in cases) == {
         "filter": 20,
-        "nonsense": 5,
+        "nonsense": 50,
+        "no-keyword": 30,
         "descriptive": 40,
     }
     filters = [c["filters"] for c in cases if c["kind"] == "filter"]
