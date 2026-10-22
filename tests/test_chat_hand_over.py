@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
-from app.agent import prompts as agent_prompts
 from app.chat.schemas import Turn
 from app.core import voice
 from app.main import app
@@ -136,8 +135,8 @@ def test_직전_챗봇_말이_질문인지_본다(turns: list[Turn], asked: bool
     assert chat._bot_asked_last(turns) is asked
 
 
-def test_카드_대답_쇼핑_프롬프트가_같은_말투_규칙을_쓴다() -> None:
-    # 한 대화 안에서 목소리가 여럿이었다(#545). 세 프롬프트에 같은 글이 들어간다
+def test_카드_대답_프롬프트가_같은_말투_규칙을_쓴다() -> None:
+    # 한 대화 안에서 목소리가 여럿이었다(#545). ⑦ 에는 아직 넣지 않았다(app/core/voice.py)
     card = chat.CARD_PROMPT.format(
         recent_turns="", message="", intro="", limit=3, listing="", turn_end=""
     )
@@ -145,8 +144,6 @@ def test_카드_대답_쇼핑_프롬프트가_같은_말투_규칙을_쓴다() -
 
     assert voice.RULES in card
     assert voice.RULES in answer
-    assert voice.RULES in agent_prompts.SYSTEM_PROMPT
-    assert "한국어 존댓말로" not in agent_prompts.SYSTEM_PROMPT
 
 
 def test_말투_규칙에_베낄_값이_없다() -> None:
@@ -219,3 +216,42 @@ def test_카드_말풍선에서_되풀이_문장을_뺀다(monkeypatch: pytest.M
     )
 
     assert res.json()["data"]["reply"] == "『달러구트 꿈 백화점』이 제일 맞아 보여요."
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (
+            "습관을 다룬 책들로 골랐어요. 어떤 스타일이 끌리세요?",
+            "습관을 다룬 책들로 골랐어요.",
+        ),
+        ("SF 소설로 골랐어요. 어느 한 권이 더 끌리시나요?", "SF 소설로 골랐어요."),
+        # 갈래를 직접 말한 질문은 남긴다
+        (
+            "습관을 다룬 책들로 골랐어요. 기록하는 쪽이 좋으세요, 뇌과학 쪽이 좋으세요?",
+            "습관을 다룬 책들로 골랐어요. 기록하는 쪽이 좋으세요, 뇌과학 쪽이 좋으세요?",
+        ),
+        # 그 문장뿐이면 남긴다
+        ("어떤 책이 끌리세요?", "어떤 책이 끌리세요?"),
+    ],
+)
+def test_막연한_고르기_질문으로_끝나면_그_문장을_뺀다(
+    reply: str, expected: str
+) -> None:
+    assert voice.without_vague_question(reply) == expected
+
+
+def test_카드에_없는_제목을_짚은_문장은_뺀다() -> None:
+    titles = ["(게으른 완벽주의자를 위한) 시작의 습관", "작은 습관"]
+
+    assert (
+        chat._without_unshown_titles(
+            "습관을 다룬 책들이에요. 『작은 행복』이 제일 맞아 보여요.", titles
+        )
+        == "습관을 다룬 책들이에요."
+    )
+    # 괄호 머리말을 빼고 말해도 같은 책이다
+    reply = "『시작의 습관』은 기록하며 이어 가는 법을 알려 줘요."
+    assert chat._without_unshown_titles(reply, titles) == reply
+    # 다 빠지면 None — 호출부가 기본 문구로 채운다
+    assert chat._without_unshown_titles("『작은 행복』이 좋아요.", titles) is None

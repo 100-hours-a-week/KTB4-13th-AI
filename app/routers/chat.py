@@ -1512,7 +1512,38 @@ async def generate_cards(
                 "match_basis": match_basis,
             }
         )
+    if reply is not None:
+        reply = _without_unshown_titles(reply, [card["title"] for card in cards])
+    if reply is not None:
+        reply = voice.without_vague_question(reply)
     return CardResult(cards, reply, False)
+
+
+# 말풍선이 한 권을 『제목』으로 짚게 한 뒤(#545) 카드에 없는 책을 짚은 일이 있었다. 대화 평가에서 고른 카드에 없는
+# 『작은 행복』을 "좋습니다"라고 해, 사용자가 그 책을 말하자 ⑦이 "추천드린 책 목록에 없네요"라고 답했다(카드 턴 21개 중 1개).
+# 화면에 없는 책을 권하는 문장은 뺀다. 제목은 괄호 머리말과 띄어쓰기를 지우고, 어느 한쪽이 다른 쪽을 담으면 같은 책으로 본다.
+_NAMED_TITLE = re.compile(r"[『《]([^』》]+)[』》]")
+_TITLE_PREFIX = re.compile(r"\([^)]*\)")
+
+
+def _title_key(title: str | None) -> str:
+    return _NON_WORD.sub("", _TITLE_PREFIX.sub("", title or "")).lower()
+
+
+def _without_unshown_titles(reply: str, titles: list[str]) -> str | None:
+    """말풍선에서 카드에 없는 책 제목을 짚은 문장을 뺀다. 다 빠지면 None — 호출부가 기본 문구로 채운다."""
+    keys = [key for key in map(_title_key, titles) if key]
+
+    def shown(name: str) -> bool:
+        key = _title_key(name)
+        return not key or any(key in k or k in key for k in keys)
+
+    kept = [
+        sentence
+        for sentence in voice.sentences_of(reply)
+        if all(shown(name) for name in _NAMED_TITLE.findall(sentence))
+    ]
+    return " ".join(kept) or None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
