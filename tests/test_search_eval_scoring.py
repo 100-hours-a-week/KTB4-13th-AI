@@ -167,6 +167,22 @@ def test_저자_필터_없는_말은_각자의_숫자를_낸다() -> None:
     assert "hit_1" not in kinds["nonsense"]
 
 
+def test_없는_말과_키워드_0건인_있는_말은_결과가_빈_사례를_센다() -> None:
+    shelf = {i: _book(i) for i in range(1, 21)}
+    cases = [
+        ({"id": "nonsense-1", "kind": "nonsense"}, _response(*range(1, 21))),
+        ({"id": "nonsense-2", "kind": "nonsense"}, _response()),
+        ({"id": "no-keyword-01", "kind": "no-keyword"}, _response(1, 2)),
+        ({"id": "no-keyword-02", "kind": "no-keyword"}, _response()),
+    ]
+    kinds = summarize([score(case, resp, shelf, top=20) for case, resp in cases])[
+        "kinds"
+    ]
+    assert kinds["nonsense"]["empty"] == 1
+    assert kinds["no-keyword"]["empty"] == 1
+    assert kinds["no-keyword"]["returned_mean"] == 1.0
+
+
 def _descriptive_case(facet: str = "topic") -> dict:
     return {"id": f"descriptive-{facet}", "kind": "descriptive", "facet": facet}
 
