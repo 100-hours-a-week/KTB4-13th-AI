@@ -428,12 +428,12 @@ def test_확실한_말은_판정을_부르지_않는다(monkeypatch) -> None:
 
 
 def test_애매한_말을_판정이_추천이라고_하면_쇼핑을_거치지_않는다(monkeypatch) -> None:
-    # 카드가 보일 때 "1만5천원 이하로"를 ⑦이 예산 골라 담기로 받았다(머지 전 점검)
+    # 카드가 보일 때 "다른 거 보여줘"를 ⑦이 지금 카드 되읊기로 받았다(머지 전 점검)
     _forbid(monkeypatch, agent, "shop_turn")
     monkeypatch.setattr(chat, "_judge_lane", _judged("recommend"))
     _wire_recommend(monkeypatch)
 
-    res = client.post(URL, json=_body("1만5천원 이하로"))
+    res = client.post(URL, json=_body("다른 거 보여줘"))
 
     data = res.json()["data"]
     assert data["route"] == "recommend"

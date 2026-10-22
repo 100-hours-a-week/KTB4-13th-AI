@@ -44,10 +44,11 @@ def test_앞뒤_공백은_결과를_바꾸지_않는다() -> None:
     assert rules.classify("  1번 담아줘  ", True) == rules.classify("1번 담아줘", True)
 
 
-def test_규칙_버전은_2다() -> None:
+def test_규칙_버전은_3이다() -> None:
     # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다.
-    # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·③ 묻기의 답·카드 평가 말을 ③으로(#530)
-    assert rules.RULES_VERSION == 2
+    # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·③ 묻기의 답·카드 평가 말을 ③으로(#530),
+    # 3 = 가격·출간연도만 말한 짧은 말을 ③으로(#545)
+    assert rules.RULES_VERSION == 3
 
 
 # 직전 챗봇 말이 ③의 묻기(넓은 첫 요청에 원하는 것을 물은 말)면, 장바구니 낱말이 없는 답은 추천이다(#530)
@@ -246,7 +247,7 @@ def test_쇼핑_에이전트_요청_검사를_그대로_거친다() -> None:
             "응", True, {"after_action": True}, "neither", True, id="담기_질문의_답"
         ),
         # 낱말 근거 없이 기본값으로 정한 말은 애매하다. 머지 전 점검에서 틀린 말들이다
-        pytest.param("1만5천원 이하로", True, {}, "neither", False, id="조건만"),
+        # "1만5천원 이하로"는 v3 부터 확실한 추천이다(test_가격_출간연도만_말하면_카드가_보여도_확실한_추천이다)
         pytest.param("다른 거 보여줘", True, {}, "neither", False, id="다른_거"),
         pytest.param("2번은 어떤 내용이야?", True, {}, "cart", False, id="카드_번호만"),
         pytest.param("2번", True, {}, "cart", False, id="번호만"),
@@ -261,3 +262,46 @@ def test_낱말_근거가_있으면_확실하고_기본값으로_정했으면_�
     assert (decision.kind, decision.sure) == (kind, sure)
     # 갈래는 classify 와 같다. 낱말 규칙은 v2 그대로다
     assert rules.classify(message, cards_shown, **flags) == kind
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "1만5천원 이하로",
+        "2만원 이하로",
+        "만 원대로만",
+        "3만원 넘지 않는 걸로",
+        "15000원 이하",
+        "2020년 이후로",
+        "25년도 이후",
+    ],
+)
+def test_가격_출간연도만_말하면_카드가_보여도_확실한_추천이다(message: str) -> None:
+    # 말풍선이 한 권을 권한 뒤 판정 호출이 이런 말을 예산 골라 담기로 읽었다(#545, v3)
+    decision = rules.decide(message, cards_shown=True)
+
+    assert (decision.lane, decision.sure, decision.basis) == (
+        "recommend",
+        True,
+        "조건만 말함",
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "3만원 안에서 두 권 담아줘",
+        "1번 2만원이야?",
+        "2만원짜리 담아줘",
+        "가격은 2만원 이하로",
+    ],
+)
+def test_조건_말고_다른_말이_섞이면_조건만_말한_것이_아니다(message: str) -> None:
+    assert rules.decide(message, cards_shown=True).basis != "조건만 말함"
+
+
+def test_담기를_물은_뒤의_조건_말은_그_답일_수_있어_보지_않는다() -> None:
+    assert (
+        rules.decide("2만원 이하로", cards_shown=True, after_action=True).basis
+        != "조건만 말함"
+    )
