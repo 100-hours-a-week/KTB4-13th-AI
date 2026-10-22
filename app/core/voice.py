@@ -30,6 +30,7 @@ RULES = (
     '- 쓰지 않는 말: "추천합니다"·"추천드립니다"로 끝맺기, "주어진", "요청 감사합니다", '
     '"궁금한 점이 있으시면 말씀해 주세요", "도움이 되길 바랍니다".\n'
     "- 책을 읽어 본 것처럼 말하지 않는다. 책 내용은 받은 정보에 있는 것만 말한다.\n"
+    "- 책을 장바구니에 담거나 사라고 권하지 않는다. 담기와 주문은 사용자가 말할 때 다른 기능이 맡는다.\n"
 )
 
 
@@ -56,11 +57,31 @@ _VAGUE_QUESTION = re.compile(
     r"(어떤|어느)\s*(스타일|책|한\s*권|쪽|유형|타입|것|게)[^.!?]*(끌리|마음에\s*드|좋으|궁금|흥미)[^.!?]*\?\s*$"
 )
 
+# 두 갈래를 직접 말한 질문. 말풍선 지시(_HAND_OVER)가 시키는 꼴이다. 세 가지다.
+# - "A와 B 중 어느 쪽이 좋으세요?": 가장 흔하다. "어느 쪽"이 막연한 고르기 질문과 같은 낱말이라 이 꼴을 먼저 가린다.
+#   "이 중 어느 책이"처럼 보인 책들을 가리키는 "중"은 갈래가 아니다. 앞에 이어 주는 말(과·와·랑·나·또는·쉼표)이 있어야 한다
+# - "A가 좋으세요, 아니면 B가 좋으세요?"
+# - "A가 좋으세요, B가 좋으세요?": 쉼표로 이은 두 질문
+_FORK_QUESTION = re.compile(
+    r"(?:[과와랑나]|또는|,)\s[^.!?]*\s중(?:에서|에)?\s*(?:어느|어떤|무엇|뭐|어디)"
+    r"|아니면"
+    r"|(?:세요|가요|나요|까요|래요|어요|죠),\s*[^,.!?]+\?\s*$"
+)
+
+
+def is_fork_question(sentence: str) -> bool:
+    """문장이 두 갈래를 직접 말하며 어느 쪽인지 묻는 꼴인가."""
+    return bool(_FORK_QUESTION.search(sentence))
+
 
 def without_vague_question(reply: str) -> str:
-    """말풍선이 막연한 고르기 질문으로 끝나면 그 문장을 뺀다. 그 문장뿐이면 그대로 둔다."""
+    """말풍선이 막연한 고르기 질문으로 끝나면 그 문장을 뺀다. 그 문장뿐이거나 두 갈래를 말한 질문이면 그대로 둔다."""
     sentences = sentences_of(reply)
-    if len(sentences) > 1 and _VAGUE_QUESTION.search(sentences[-1]):
+    if (
+        len(sentences) > 1
+        and _VAGUE_QUESTION.search(sentences[-1])
+        and not is_fork_question(sentences[-1])
+    ):
         return " ".join(sentences[:-1])
     return reply
 

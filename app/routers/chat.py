@@ -1924,6 +1924,7 @@ async def chat(request: Request) -> JSONResponse:
             shopping.cards_shown(payload),
             asking.asked(req.recent_turns),
             gate_rules.asked_action(req.recent_turns),
+            gate_rules.asked_fork(req.recent_turns),
         )
         target = decision.lane
         if not decision.sure:

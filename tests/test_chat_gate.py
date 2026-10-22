@@ -192,6 +192,54 @@ def test_묻기에_답하면_쇼핑을_거치지_않고_추천으로_간다(monk
     assert res.json()["data"]["route"] == "recommend"
 
 
+@pytest.mark.parametrize("message", ["입문 쪽", "응", "2만원 이하로"])
+def test_추천_말풍선이_담이_들어간_두_갈래를_물어도_그_답은_쇼핑으로_가지_않는다(
+    monkeypatch, message: str
+) -> None:
+    # 리뷰 사례(#546): 예전엔 "담긴"의 "담"이 ⑦의 담기 질문으로 읽혀 이 답이 모두 ⑦로 갔다.
+    # 판정 호출도 ⑦도 불리면 안 된다 — 규칙이 확실하게 ③으로 보낸다
+    _forbid(monkeypatch, chat, "_judge_lane")
+    _forbid(monkeypatch, agent, "shop_turn")
+    _wire_recommend(monkeypatch)
+    turns = [
+        {"role": "user", "text": "따뜻한 소설 추천해줘"},
+        {
+            "role": "assistant",
+            "text": "따뜻한 소설로 골랐어요. 따뜻한 이야기가 담긴 쪽이 좋으세요, 긴장감 있는 쪽이 좋으세요?",
+        },
+    ]
+
+    res = client.post(URL, json=_body(message, recent_turns=turns))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["route"] == "recommend"
+
+
+def test_추천_말풍선의_두_갈래_질문_뒤에도_장바구니_말은_쇼핑으로_간다(
+    monkeypatch,
+) -> None:
+    _forbid(monkeypatch, chat, "_judge_lane")
+    _forbid(monkeypatch, chat, "update_spec")
+    _wire_shop(
+        monkeypatch,
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("담았어요."),
+        ],
+    )
+    turns = [
+        {"role": "user", "text": "따뜻한 소설 추천해줘"},
+        {
+            "role": "assistant",
+            "text": "따뜻한 소설로 골랐어요. 짧은 단편이 좋으세요, 긴 장편이 좋으세요?",
+        },
+    ]
+
+    res = client.post(URL, json=_body("1번 담아줘", recent_turns=turns))
+
+    assert res.json()["data"]["route"] == "shop"
+
+
 def test_직전_쇼핑_답이_200자를_넘어도_다음_턴은_400이_아니다(monkeypatch) -> None:
     # 쇼핑 답에는 길이 상한이 없다. ③ 검사가 먼저라 400 이면 갈래와 상관없이 다음 턴 전체가 실패한다(#490)
     _forbid(monkeypatch, agent, "shop_turn")

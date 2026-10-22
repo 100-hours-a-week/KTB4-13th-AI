@@ -47,7 +47,7 @@ def test_앞뒤_공백은_결과를_바꾸지_않는다() -> None:
 def test_규칙_버전은_3이다() -> None:
     # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다.
     # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·③ 묻기의 답·카드 평가 말을 ③으로(#530),
-    # 3 = 가격·출간연도만 말한 짧은 말을 ③으로(#545)
+    # 3 = 가격·출간연도만 말한 짧은 말과 ③ 두 갈래 질문의 답을 ③으로, 담기 질문은 ⑦의 서술어만(#545)
     assert rules.RULES_VERSION == 3
 
 
@@ -164,6 +164,142 @@ def test_직전_챗봇_말이_담기를_물었는지_본다() -> None:
     assert not rules.asked_action(
         [_T("assistant", "담았어요. 다른 도와드릴 일이 있으신가요?")]
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ⑦ 도구가 주는 문장
+        "카드 1번 《제목》을 담을까요?",
+        "카드 2번 《제목》을 뺄까요?",
+        "카드 1번 《제목》을 2권으로 바꿀까요?",
+        # 모델이 풀어 쓴 꼴
+        "카드 1번 《제목》을 장바구니에 담아 드릴까요?",
+        "장바구니에 넣어 드릴까요?",
+        "카드 2번을 빼 드릴까요?",
+        "카드 1번을 담으시겠어요?",
+        "수량을 2권으로 바꿔 드릴까요?",
+        "카드 2번 《제목》과 장바구니 2번째 《제목》 중 어느 책을 뺄까요?",
+        "담았어요. 카드 2번도 담을까요?",
+    ],
+)
+def test_쇼핑_에이전트의_행동_질문은_담기를_물은_것이다(text: str) -> None:
+    assert rules.asked_action([_T("assistant", text)])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ③ 말풍선이 두 갈래를 물은 말. "담"·"넣" 낱말이 들어 있어도 행동을 묻지 않았다(#545 리뷰)
+        "따뜻한 이야기가 담긴 쪽이 좋으세요, 긴장감 있는 쪽이 좋으세요?",
+        "일상을 담아낸 에세이가 좋으세요, 정보를 담은 책이 좋으세요?",
+        "담백한 문장 쪽이 좋으세요, 화려한 쪽이 좋으세요?",
+        "마음을 담을 수 있는 쪽이 좋으세요?",
+        "분위기를 바꿔 볼까요, 그대로 갈까요?",
+        "짧은 단편과 긴 장편 중 어느 쪽이 좋으세요?",
+    ],
+)
+def test_다른_뜻으로_담_넣이_들어간_질문은_담기를_물은_것이_아니다(text: str) -> None:
+    assert not rules.asked_action([_T("assistant", text)])
+
+
+def test_행동_질문_뒤에_사용자_말이_있으면_직전_챗봇_말이_없다() -> None:
+    turns = [_T("assistant", "카드 1번을 담을까요?"), _T("user", "응")]
+
+    assert not rules.asked_action(turns)
+    assert not rules.asked_fork(turns)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "습관을 다룬 책들로 골랐어요. 짧은 단편과 긴 장편 중 어느 쪽이 좋으세요?",
+        "골랐어요. 따뜻한 이야기가 담긴 쪽이 좋으세요, 긴장감 있는 쪽이 좋으세요?",
+        "입문서가 좋으세요, 아니면 실전서가 좋으세요?",
+    ],
+)
+def test_직전_챗봇_말이_두_갈래_질문인지_본다(text: str) -> None:
+    assert rules.asked_fork([_T("assistant", text)])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 질문이 아니거나 갈래가 없다
+        "습관을 다룬 책들로 골랐어요. 『작은 습관』이 제일 맞아 보여요.",
+        "어느 책이 마음에 드세요?",
+        # 앞 문장의 갈래는 보지 않는다. 마지막 문장이 기준이다
+        "입문 쪽이 좋으세요, 실전 쪽이 좋으세요? 골라 봤어요.",
+        # ⑦의 행동 질문
+        "카드 2번 《제목》과 장바구니 2번째 《제목》 중 어느 책을 뺄까요?",
+        "",
+    ],
+)
+def test_두_갈래_질문이_아니면_갈래를_물은_것이_아니다(text: str) -> None:
+    assert not rules.asked_fork([_T("assistant", text)])
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "입문 쪽",
+        "응",
+        "둘 다 좋아요",
+        "실전이요",
+        "입문 쪽이 좋을 것 같아",
+        "다른 거 보여줘",
+    ],
+)
+def test_두_갈래_질문의_답은_추천이다(message: str) -> None:
+    # 추천 낱말이 없어 판정 호출로 갔고, 판정이 실패하면 ⑦로 갔다(#545 리뷰)
+    for cards_shown in (True, False):
+        decision = rules.decide(message, cards_shown, after_fork=True)
+
+        assert (decision.lane, decision.sure, decision.basis) == (
+            "recommend",
+            True,
+            "③ 질문의 답",
+        ), message
+    # 질문 뒤가 아니면 그대로다
+    assert rules.decide(message, True).basis != "③ 질문의 답"
+
+
+@pytest.mark.parametrize(
+    ("message", "lane"),
+    [
+        # 장바구니 낱말과 사겠다는 말은 ⑦이다
+        ("2번 담아줘", "shop"),
+        ("얼마예요?", "shop"),
+        ("1번 살게요", "shop"),
+        # 카드 번호로 가리킨 말은 낱말 규칙이 그대로 가른다
+        ("1번 책이 흥미로워 보여요", "card"),
+        ("2번은 어떤 내용이야?", "shop"),
+    ],
+)
+def test_두_갈래_질문_뒤에도_장바구니_말과_카드를_가리킨_말은_그대로다(
+    message: str, lane: str
+) -> None:
+    assert rules.decide(message, True, after_fork=True).lane == lane
+    assert rules.decide(message, True).lane == lane
+
+
+def test_2만원_이하로_같은_조건_말은_질문에_담_낱말이_있어도_추천이다() -> None:
+    # 리뷰 사례: "…담긴 쪽이 좋으세요, …?" 뒤의 "2만원 이하로"가 ⑦ 질문의 답(확실)이 되어 ⑦로 갔다
+    turns = [
+        _T(
+            "assistant",
+            "따뜻한 이야기가 담긴 쪽이 좋으세요, 긴장감 있는 쪽이 좋으세요?",
+        )
+    ]
+
+    decision = rules.decide(
+        "2만원 이하로",
+        True,
+        after_action=rules.asked_action(turns),
+        after_fork=rules.asked_fork(turns),
+    )
+
+    assert (decision.lane, decision.sure) == ("recommend", True)
 
 
 # --- 쇼핑 칸 ---
