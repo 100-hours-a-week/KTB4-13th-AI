@@ -186,11 +186,13 @@ def test_넓은_첫_요청은_찾기_전에_카드_없이_한_번_묻는다(
     assert fake_db == []  # 후보 검색을 부르지 않았다
     assert data["cards"] == []
     assert data["reply"] == "위로가 필요하시군요."
-    # 명세: 카드가 없으면 followup 에 되묻는 문장. 질문 뒤에 답 보기를, 끝에 코드가 고정 문장을 붙인다(#505)
+    # 명세: 카드가 없으면 followup 에 되묻는 문장. 질문 아래에 답 보기를 한 줄에 하나씩, 끝에 코드가 고정 문장을 붙인다(#505)
     assert data["followup"] == (
-        "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요. "
-        '"회사 일로 지쳤어요", "관계 때문에 힘들어요", "이유 없이 무기력해요" 중에 '
-        "고르시거나 직접 말씀해 주세요. " + asking.TAIL
+        "요즘 어떤 일로 지치셨어요? 읽고 싶은 글의 결도 알려 주세요.\n\n"
+        "• 회사 일로 지쳤어요\n"
+        "• 관계 때문에 힘들어요\n"
+        "• 이유 없이 무기력해요\n\n"
+        "이 중에 고르시거나 직접 말씀해 주세요.\n" + asking.TAIL
     )
     # BE·FE 를 바꾸지 않는다. 보기는 버튼이나 새 칸이 아니라 문장에만 있다
     assert data["buttons"] == []
@@ -506,7 +508,7 @@ def test_보기를_못_만들어도_질문은_한다(monkeypatch: pytest.MonkeyP
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
 
     assert data["cards"] == []
-    assert data["followup"] == BROAD["question"] + " " + asking.TAIL
+    assert data["followup"] == BROAD["question"] + "\n" + asking.TAIL
 
 
 def test_보기가_길어_넘치면_뒤_보기부터_빼고_둘도_안_되면_질문만_한다() -> None:
@@ -515,13 +517,13 @@ def test_보기가_길어_넘치면_뒤_보기부터_빼고_둘도_안_되면_�
 
     fitted = asking.followup(question, options)
     assert len(fitted) <= asking.FOLLOWUP_MAX_CHARS
-    assert f'"{"나" * 20}", "{"다" * 20}" 중에' in fitted
+    assert f"• {'나' * 20}\n• {'다' * 20}\n\n" in fitted
     assert "라" * 20 not in fitted
     assert fitted.endswith(asking.TAIL)
     assert asking.followup(question + "가" * 50, options) == (
-        question + "가" * 50 + " " + asking.TAIL
+        question + "가" * 50 + "\n" + asking.TAIL
     )
-    assert asking.followup("어떤 여행이세요?") == "어떤 여행이세요? " + asking.TAIL
+    assert asking.followup("어떤 여행이세요?") == "어떤 여행이세요?\n" + asking.TAIL
 
 
 def test_보기를_따라_말한_답은_직전_질문의_답으로_받는다(
