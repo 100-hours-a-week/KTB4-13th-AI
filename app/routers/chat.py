@@ -26,7 +26,7 @@ from app.chat import asking, invented_mood, shown, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, history, isbn, popularity, responses
+from app.core import body, categories, db, history, isbn, popularity, responses, voice
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -1269,6 +1269,32 @@ MAX_REASON_SHORT_CHARS = 80
 #
 # JSON 에서 cards 를 reply 보다 먼저 쓰게 한다. 말풍선이 고른 책을 말하는데, 답 칸을 먼저 쓰면 모델이 말한 책과
 # 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유 칸보다 먼저 나오면 추론이 나빠짐).
+#
+# 말풍선의 마지막 문장이 사용자에게 차례를 넘긴다({turn_end}, #545). 10/21 평가 원본에서 카드 턴 말풍선이 다음 말을
+# 건넨 적이 0/39였다. 명세상 카드가 있으면 followup 이 null 이라 매 턴 사용자가 다시 말을 꺼내야 했고, 대화가 아니라
+# 검색창처럼 느껴졌다. 고른 책들이 갈리는 점을 하나 짚어 묻거나(Bing 되묻기 연구: 구체적인 질문이 "무엇이 궁금하세요?"
+# 같은 질문보다 최대 5배 눌림), 한 권을 짚어 의견을 말한다(INSPIRED, EMNLP 2020: 사람 추천자가 의견을 말한 추천이 더
+# 받아들여짐). 연달아 물으면 설문지가 되니 직전 챗봇 말이 질문이었으면 의견만 말한다. 예시는 낱말이 아니라 설명으로
+# 적는다(#410 — 낱말을 적으면 베낀다).
+#
+# 말투는 ⑦ 과 같은 규칙(app/core/voice.py)을 붙인다. "조건을 바꿨으면 받았다고 짧게 말하고"는 지웠다. 모델이 글자
+# 그대로 따라 해 "조건을 바꿨군요!"를 "다른 거 보여줘"에도 붙였다(#545). 바뀐 조건은 고른 책을 말하는 문장에 녹인다.
+#
+# 한 권은 번호가 아니라 제목으로 짚는다. 번호로 짚게 했더니 카드를 한 장 고르고 "2번 책은…"이라고 말해, 사용자가
+# "2번 담아줘"라고 하면 없는 카드가 됐다(점검 대화 1/37). 묻는 말은 두 갈래를 직접 말하는 꼴로 한다. "어떤 쪽이 더
+# 끌리세요?"만 물었더니 무엇과 무엇 중인지 말풍선 앞 문장을 다시 읽어야 했고, 말풍선이 길어졌다(중앙 35자 → 92자).
+# 책을 고르라는 질문 뒤에는 사용자의 다음 말("습관 만드는 책으로 보여줘")을 문지기 판정이 책 고르기로 읽어 ⑦로
+# 보내기도 했다. 방향을 묻는 질문이면 답이 곧 추천 조건이다.
+_HAND_OVER = (
+    "마지막 문장으로 사용자에게 차례를 넘긴다. 둘 중 하나만 한다. 고른 책들이 서로 갈리는 점 하나(수준, 형식, "
+    "다루는 범위처럼 책 소개에서 드러나는 차이)를 골라 그 두 갈래를 직접 말하며 어느 쪽이 맞는지 묻거나, 사용자가 "
+    "말한 것에 가장 맞는 한 권을 『제목』으로 짚고 그 까닭을 책 소개에 있는 것으로 한마디 하라. "
+    '"어떤 스타일이 끌리세요?", "어느 책이 마음에 드세요?"처럼 갈래를 말하지 않고 고르라고만 묻지 마라. '
+)
+_POINT_ONE = (
+    "이번에는 묻지 말고, 사용자가 말한 것에 가장 맞는 한 권을 『제목』으로 짚고 그 까닭을 책 소개에 있는 것으로 "
+    "한마디 하라. "
+)
 CARD_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
@@ -1285,10 +1311,12 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "줄여 쓰지 말고, 사용자가 찾은 것(위 조건)과 이 책 소개의 어떤 점이 맞는지 이어서 "
     "2-4문장으로 써라(최대 300자). 근거는 그 책의 소개에 있는 것만 쓴다.\n"
     "reply는 말풍선에 보일 1-2문장이다(최대 100자). 먼저 이번 메시지에 반응하라 — "
-    "조건을 바꿨으면 받았다고 짧게 말하고, 사정을 털어놓았으면 한마디 답한다. 책 제목은 "
+    "사정을 털어놓았으면 그 사정에 한마디 답하고, 바뀐 조건은 이번에 고른 책을 말하는 문장에 녹여라. 요청을 "
+    '"~을 찾으셨군요"처럼 되풀이하며 시작하지 마라. 책 제목은 '
     "카드에 보이니 말풍선에 늘어놓지 말고, 이번에 고른 책들이 어떤 결인지 한마디로 말하라. "
-    '"추천합니다", "추천드립니다"로 끝맺지 마라.\n'
-    '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
+    "{turn_end}\n"
+    + voice.RULES
+    + '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
@@ -1411,6 +1439,7 @@ async def generate_cards(
     *,
     message: str = "",
     recent_turns: list[Turn] | None = None,
+    may_ask: bool = True,
 ) -> CardResult:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
@@ -1439,6 +1468,7 @@ async def generate_cards(
                 "intro": _card_prompt_intro(spec) + _card_prompt_conditions(spec),
                 "limit": CARD_LIMIT,
                 "listing": _format_listing(candidates),
+                "turn_end": _HAND_OVER if may_ask else _POINT_ONE,
             },
         )
     except LLMUnavailableError:
@@ -1459,6 +1489,8 @@ async def generate_cards(
     reply = parsed.get("reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
+    else:
+        reply = voice.without_echo(reply.strip())
 
     cards = []
     for rank, item in enumerate(raw_cards[:CARD_LIMIT], start=1):
@@ -1498,7 +1530,38 @@ async def generate_cards(
                 "match_basis": match_basis,
             }
         )
+    if reply is not None:
+        reply = _without_unshown_titles(reply, [card["title"] for card in cards])
+    if reply is not None:
+        reply = voice.without_vague_question(reply)
     return CardResult(cards, reply, False)
+
+
+# 말풍선이 한 권을 『제목』으로 짚게 한 뒤(#545) 카드에 없는 책을 짚은 일이 있었다. 대화 평가에서 고른 카드에 없는
+# 『작은 행복』을 "좋습니다"라고 해, 사용자가 그 책을 말하자 ⑦이 "추천드린 책 목록에 없네요"라고 답했다(카드 턴 21개 중 1개).
+# 화면에 없는 책을 권하는 문장은 뺀다. 제목은 괄호 머리말과 띄어쓰기를 지우고, 어느 한쪽이 다른 쪽을 담으면 같은 책으로 본다.
+_NAMED_TITLE = re.compile(r"[『《]([^』》]+)[』》]")
+_TITLE_PREFIX = re.compile(r"\([^)]*\)")
+
+
+def _title_key(title: str | None) -> str:
+    return _NON_WORD.sub("", _TITLE_PREFIX.sub("", title or "")).lower()
+
+
+def _without_unshown_titles(reply: str, titles: list[str]) -> str | None:
+    """말풍선에서 카드에 없는 책 제목을 짚은 문장을 뺀다. 다 빠지면 None — 호출부가 기본 문구로 채운다."""
+    keys = [key for key in map(_title_key, titles) if key]
+
+    def shown(name: str) -> bool:
+        key = _title_key(name)
+        return not key or any(key in k or k in key for k in keys)
+
+    kept = [
+        sentence
+        for sentence in voice.sentences_of(reply)
+        if all(shown(name) for name in _NAMED_TITLE.findall(sentence))
+    ]
+    return " ".join(kept) or None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
@@ -1726,6 +1789,12 @@ def _ask_stage(req: ChatRequest) -> asking.Stage:
     return "may_ask"
 
 
+def _bot_asked_last(turns: list[Turn]) -> bool:
+    """직전 챗봇 말이 질문이었나(#545). BE 는 챗봇 줄에 reply 와 followup 을 같이 싣는다."""
+    last = turns[-1] if turns else None
+    return last is not None and last.role == "assistant" and "?" in last.text
+
+
 def _is_pinned(spec: Spec) -> bool:
     """제목·저자를 콕 집은 요청인가. 이런 요청은 물을 게 없다."""
     return spec.intent == "exact" or bool(spec.exact.title or spec.exact.author)
@@ -1751,17 +1820,18 @@ ANSWER_PROMPT = ChatPromptTemplate.from_template(
     "고르지 말고 답하라.\n"
     "- 보여 준 책에 대해 물으면 그 책 소개에 있는 내용으로만 답하라. 소개에 없는 것은 "
     "모른다고 말하라.\n"
-    "- 보여 준 책이 좋다거나 별로라고 하면, 그 책 소개에서 사용자가 말한 것과 맞는 점이나 "
-    "다른 점을 짧게 말하라.\n"
+    "- 보여 준 책을 두고 한 말(좋다, 별로다, 표지가 마음에 든다 등)에는 먼저 그 말에 짧게 반응하고, "
+    "필요하면 그 책 소개에서 사용자가 말한 것과 맞는 점이나 다른 점을 한마디 덧붙여라.\n"
     "- 보여 준 책 중에서 골라 달라면, 최근 대화에서 사용자가 말한 것에 가장 맞는 한 권을 "
     "번호로 고르고 이유를 짧게 말하라.\n"
     "- 챗봇이 무엇을 하는지 물으면, 원하는 책을 대화로 함께 좁혀 찾아 준다고 답하라. "
     "추천에 무엇을 쓰는지 물으면 대화에서 말한 내용을 바탕으로 찾는다고만 답하고, 그 밖의 "
     "것은 지어내지 마라.\n"
     "- 인사에는 짧게 인사하라.\n"
-    "reply는 1-3문장(최대 200자)이다. followup은 대화를 이어 갈 짧은 질문 한 문장"
-    "(최대 80자)이다.\n"
-    '다음 JSON 형식으로만 답하라: {{"reply": "질문에 대한 답", "followup": "이어 갈 질문"}}'
+    "reply는 1-3문장(최대 200자)이다. followup은 지금 이야기에서 이어지는 구체적인 질문 한 문장"
+    '(최대 80자)이다. "더 궁금한 점이 있으신가요?"처럼 어느 대화에나 붙는 질문은 쓰지 마라.\n'
+    + voice.RULES
+    + '다음 JSON 형식으로만 답하라: {{"reply": "질문에 대한 답", "followup": "이어 갈 질문"}}'
 )
 
 
@@ -1872,6 +1942,7 @@ async def chat(request: Request) -> JSONResponse:
             shopping.cards_shown(payload),
             asking.asked(req.recent_turns),
             gate_rules.asked_action(req.recent_turns),
+            gate_rules.asked_fork(req.recent_turns),
         )
         target = decision.lane
         if not decision.sure:
@@ -2029,6 +2100,8 @@ async def _recommend(
             spec,
             message=req.message,
             recent_turns=req.recent_turns,
+            # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
+            may_ask=slot_question is None and not _bot_asked_last(req.recent_turns),
         )
     cards, llm_reply, degraded = result.cards, result.reply, result.degraded
 

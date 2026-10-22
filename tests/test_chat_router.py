@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from app.chat.schemas import Spec
+from app.core import voice
 from app.main import app
 from app.routers import chat
 from app.search.schemas import SearchFilters
@@ -462,7 +463,11 @@ def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
     assert "reply는 말풍선에 보일 1-2문장이다" in prompt
     assert "먼저 이번 메시지에 반응하라" in prompt
     assert "말풍선에 늘어놓지 말고" in prompt
-    assert '"추천합니다", "추천드립니다"로 끝맺지 마라' in prompt
+    # 말투 규칙은 ⑦ 과 같은 글이다(#545). "추천합니다" 맺음 막기도 여기 있다
+    assert voice.RULES in prompt
+    assert (
+        "받았다고 짧게 말하고" not in prompt
+    )  # 글자 그대로 따라 해 "조건을 바꿨군요!"가 됐다
     assert '이번 메시지: "비 오는 날 읽을 책 추천해줘"' in prompt
     assert '"reply": "말풍선에 보일 1-2문장"}' in prompt
 

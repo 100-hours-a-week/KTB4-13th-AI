@@ -29,6 +29,17 @@
    낱말이 같이 있어도 ⑦이다. 3번보다 먼저 본다. ③이 새로 찾으면 카드가 갈아 끼워져 담을 수 없다. 사겠다는
    낱말은 장바구니 낱말에 넣지 않고 카드가 보일 때만 본다 — "구매할 책 추천해줘"는 카드가 없으면 추천이다.
 
+**v3(#545).** 가격·출간연도만 말한 짧은 말("1만5천원 이하로", "2020년 이후로")은 추천이다. ③ 말풍선이 끝에서 묻거나
+한 권을 권하게 된 뒤, 이런 말을 판정 호출이 "그 예산으로 골라 담기"로 읽어 ⑦로 보냈다(점검 대화 세 번 중 두 번,
+판정 프롬프트에 적어도 같았다). 낱말이 조건뿐이라 확실하다. 직전에 ⑦이 담기·빼기를 물었으면 그 답일 수 있어 보지 않는다.
+
+같은 PR 의 리뷰에서 두 가지를 더했다.
+- ``asked_action`` 이 ⑦의 행동 질문만 알아본다. 예전 식은 "담"·"넣" 뒤에 물음표만 오면 걸려서, ③ 말풍선이 "따뜻한 이야기가 담긴
+  쪽이 좋으세요, …?"처럼 물은 뒤의 답("입문 쪽", "응", "2만원 이하로")이 모두 ⑦ 질문의 답(확실)이 되어 ⑦로 갔다.
+  ⑦의 질문은 동사가 질문 끝의 서술어다("담을까요?", "뺄까요?", "2권으로 바꿀까요?", 도구가 주는 문장).
+- ③ 말풍선이 두 갈래를 직접 말하며 물은 뒤(``asked_fork``), 카드 번호를 가리키지 않은 답은 추천이다. 이 답엔 추천 낱말이 없어
+  판정 호출로 갔고, 판정이 실패하면 ⑦로 갔다. 장바구니 낱말이 있으면 그대로 ⑦이고, 사겠다는 말도 ⑦이다.
+
 **확실한 가름과 애매한 가름(#530).** ``decide`` 는 갈래와 함께 그 갈래가 낱말 근거로 정해졌는지(sure)를 준다.
 낱말 근거 없이 기본값으로 정한 경우 — 아무 신호도 없는 말, 카드 번호만 있고 행동·추천 낱말이 없는 말 — 는
 애매하다. 문지기는 애매한 말만 작은 판정 호출(app/gate/judge.py)에 맡긴다. 머지 전 점검 45턴에서 갈래가 틀린 7턴이
@@ -41,7 +52,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-RULES_VERSION = 2
+from app.core import voice
+
+RULES_VERSION = 3
 
 Lane = Literal["recommend", "shop"]
 # 문지기가 말을 보내는 곳. ``card`` 는 ③ 대답 턴(새로 찾지 않고 보인 책 소개로 답한다)
@@ -72,8 +85,23 @@ _BUY_WORDS = re.compile(
     r"담으면|담자|넣으면|사면|살게|살래|살까|사고\s*싶|사야|사려고|사요|구매|구입"
     r"|(?:번|로|거|걸|책)\s*(?:주세요|줘요?)"
 )
-# ⑦이 담기·빼기·수량 변경을 물은 문장("카드 1번을 담을까요?")
-_ACTION_QUESTION = re.compile(r"(?:담|넣|뺄|빼|바꿀)[^.!?\n]*(?:\?|까요)")
+# 가격이나 출간연도만 말한 짧은 말(v3). 말 전체가 이 꼴이어야 한다. "3만원 안에서 두 권 담아줘"는 아니다
+_CONDITION_ONLY = re.compile(
+    r"^(?:(?:\d[\d,]*\s*만?\s*\d*\s*천?|만|천)\s*원\s*대?"
+    r"|\d{2,4}\s*년\s*도?)"
+    r"\s*(?:이하|이상|미만|초과|안쪽|아래|까지|부터|이후|이전|넘지\s*않는|정도|대)?"
+    r"\s*(?:로|으로|만|걸로|거로|것으로|책으로|에\s*나온\s*(?:책|걸로|거))?\s*(?:만|요|로)?\s*[?!.~]*$"
+)
+# ⑦이 담기·빼기·수량 변경을 물은 문장. 동사가 질문 끝의 서술어인 꼴만 센다. ⑦ 도구가 주는 문장("담을까요?", "뺄까요?",
+# "2권으로 바꿀까요?")과 모델이 풀어 쓴 꼴("담아 드릴까요?", "담으시겠어요?")이다. "담긴 쪽이 좋으세요?", "마음을 담은",
+# "담아낸"처럼 낱말만 같은 ③의 말은 서술어가 아니라서 걸리지 않는다. "바꾸다"는 수량("2권으로")을 말할 때만 센다 —
+# "분위기를 바꿔 볼까요?"는 ③의 제안이다(#545 리뷰).
+_ACTION_QUESTION = re.compile(
+    r"(?:[담넣](?:을|아|어)|빼|뺄)\s*(?:드릴|줄|둘|도\s*될)?까요"
+    r"|(?:[담넣]으|빼)(?:시겠어요|실래요)"
+    r"|권(?:으로)?\s*(?:바꿀|바꿔\s*(?:드릴|줄))까요"
+    r"|권(?:으로)?\s*바꾸(?:시겠어요|실래요)"
+)
 
 
 class _Turn(Protocol):
@@ -81,14 +109,32 @@ class _Turn(Protocol):
     text: str
 
 
-def asked_action(recent_turns: Sequence[_Turn]) -> bool:
-    """직전 챗봇 말이 담기·빼기·수량 변경을 물었나."""
+def _last_bot_text(recent_turns: Sequence[_Turn]) -> str:
+    """직전 챗봇 말. 그 뒤에 사용자 말이 있거나 챗봇 말이 없으면 빈 글자."""
     for turn in reversed(recent_turns):
         if turn.role == "assistant":
-            return bool(_ACTION_QUESTION.search(turn.text))
+            return turn.text
         if turn.role == "user":
-            return False
-    return False
+            return ""
+    return ""
+
+
+def asked_action(recent_turns: Sequence[_Turn]) -> bool:
+    """직전 챗봇 말이 담기·빼기·수량 변경을 물었나."""
+    return bool(_ACTION_QUESTION.search(_last_bot_text(recent_turns)))
+
+
+def asked_fork(recent_turns: Sequence[_Turn]) -> bool:
+    """직전 챗봇 말이 ③ 말풍선의 두 갈래 질문("입문 쪽이 좋으세요, 실전 쪽이 좋으세요?")이었나(#545).
+
+    마지막 문장만 본다. ⑦의 행동 질문이면 아니다("카드 2번과 장바구니 2번째 중 어느 책을 뺄까요?").
+    """
+    sentences = voice.sentences_of(_last_bot_text(recent_turns))
+    if not sentences:
+        return False
+    return voice.is_fork_question(sentences[-1]) and not _ACTION_QUESTION.search(
+        sentences[-1]
+    )
 
 
 @dataclass(frozen=True)
@@ -116,18 +162,20 @@ def decide(
     cards_shown: bool,
     after_ask: bool = False,
     after_action: bool = False,
+    after_fork: bool = False,
 ) -> Decision:
     """말 하나를 네 갈래 중 하나로 가르고, 그 갈래가 확실한지 함께 준다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
-    2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2)
+    2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2). 가격·출간연도만 말했어도 추천(v3)
     3. 카드가 보일 때 사겠다는 말은 장바구니 신호다. 책을 칭찬하는 낱말이 같이 있어도 그렇다. 새 책을 찾는 낱말이
        같이 있으면 아래로 내려간다(v2)
-    4. 카드가 보일 때 책을 평가하는 말 중 번호로 카드를 가리킨 말은 ③ 대답 턴이다. 번호가 없거나 견주는 말은 애매하다.
+    4. 직전 챗봇 말이 ③의 두 갈래 질문이면(after_fork) 카드 번호를 가리키지 않은 답은 추천이다(v3)
+    5. 카드가 보일 때 책을 평가하는 말 중 번호로 카드를 가리킨 말은 ③ 대답 턴이다. 번호가 없거나 견주는 말은 애매하다.
        직전에 담기를 물었으면 그 답이라 아니다(v2)
-    5. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2). 행동 낱말도 추천 낱말도
+    6. 카드가 보일 때 카드를 가리키는 말은 장바구니 신호. 추천 낱말도 있으면 추천(v2). 행동 낱말도 추천 낱말도
        없으면 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라 확실하다
-    6. 추천 낱말만 있으면 추천. 아무 신호도 없으면 ``neither`` 이고 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라
+    7. 추천 낱말만 있으면 추천. 아무 신호도 없으면 ``neither`` 이고 애매하다. 직전에 ⑦이 담기를 물었으면 그 답이라
        확실하다
     """
     text = message.strip()
@@ -138,8 +186,12 @@ def decide(
         return Decision("both" if recommend else "cart", True, "장바구니 낱말")
     if after_ask:
         return Decision("recommend", True, "묻기의 답")
+    if not after_action and _CONDITION_ONLY.match(text):
+        return Decision("recommend", True, "조건만 말함")
     if cards_shown and not recommend and _BUY_WORDS.search(text):
         return Decision("cart", True, "사겠다는 낱말")
+    if after_fork and not pointer:
+        return Decision("recommend", True, "③ 질문의 답")
     if cards_shown and not after_action and not recommend and _INTEREST.search(text):
         if pointer and not _COMPARISON.search(text):
             return Decision("recommend", True, "카드 평가 말", card=True)
@@ -163,9 +215,10 @@ def classify(
     cards_shown: bool,
     after_ask: bool = False,
     after_action: bool = False,
+    after_fork: bool = False,
 ) -> Kind:
     """말 하나를 네 갈래 중 하나로 가른다(``decide`` 의 갈래만)."""
-    return decide(message, cards_shown, after_ask, after_action).kind
+    return decide(message, cards_shown, after_ask, after_action, after_fork).kind
 
 
 def route(
@@ -173,7 +226,8 @@ def route(
     cards_shown: bool,
     after_ask: bool = False,
     after_action: bool = False,
+    after_fork: bool = False,
 ) -> Lane:
     """③으로 바로 보낼지(``recommend``), ⑦로 보낼지(``shop``)."""
-    kind = classify(message, cards_shown, after_ask, after_action)
+    kind = classify(message, cards_shown, after_ask, after_action, after_fork)
     return "recommend" if kind == "recommend" else "shop"
