@@ -678,7 +678,9 @@ def test_LLM이_바꾼_semantic이_응답_spec에_반영된다(
     model = _sequenced_model(spec_reply, '{"cards": []}')
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
-    res = client.post("/recommendations/chat", json=_request())
+    # 사용자가 말하지 않은 분위기 낱말은 서버가 뺀다(app/chat/invented_mood.py). 여기서는 사용자가 말한 경우를 본다
+    message = "비 오는 날 잔잔하게 읽을 책 추천해줘"
+    res = client.post("/recommendations/chat", json=_request(message=message))
 
     assert res.status_code == 200
     assert res.json()["data"]["spec"]["semantic"] == "비 오는 날 읽을 잔잔한 책"
