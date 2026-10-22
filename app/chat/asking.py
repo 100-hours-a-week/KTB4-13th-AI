@@ -16,14 +16,15 @@
 질문 끝에는 코드가 고정 문장(TAIL)을 붙인다. 서버는 대화를 저장하지 않아서, 다음 턴에 최근 대화 글자만 보고 "직전
 챗봇 말이 이 질문이었다"를 알아야 하기 때문이다. 문지기는 이것으로 그 답을 ⑦에 들르지 않고 ③으로 보낸다.
 
-질문과 함께 답 보기(options)도 만든다(#505). 사용자가 말한 주제를 더 좁히는 갈래 2~4개이고, 질문 뒤에
-'"A", "B" 중에 고르시거나 직접 말씀해 주세요.'로 붙인다. 보기는 질문과 같은 판정 호출에서 같이 받는다 — 질문을
+질문과 함께 답 보기(options)도 만든다(#505). 사용자가 말한 주제를 더 좁히는 갈래 2~4개이고, 질문 아래에 한 줄에
+하나씩 붙인다. 처음에는 '"A", "B" 중에 고르시거나…'로 한 문단에 이어 썼는데, 보기 넷이 질문·안내와 섞여 한 덩어리로
+읽혀 무엇이 보기인지 눈에 안 들어왔다. 보기는 질문과 같은 판정 호출에서 같이 받는다 — 질문을
 이해한 모델이 그 질문의 답을 같이 써야 둘이 어긋나지 않고, 호출도 늘지 않는다. 위의 갈래 메뉴와 다른 점은 둘이다.
 보기는 검색한 10권이 아니라 사용자의 말에서 나오고, 보기에 없으면 자기 말로 답하면 된다.
 
 보기를 버튼(명세의 buttons)이나 새 응답 칸이 아니라 followup 문장에 넣는 것은 BE·FE 를 바꾸지 않으려서다. BE 는 ③ 응답의
 buttons 에 navigate 밖의 버튼이 오면 턴 전체를 AI 장애로 처리하고(AgentChatExternalMapper), 모르는 칸은 FE 에 넘기지
-않는다. FE 는 followup 을 글자 그대로 보여 준다.
+않는다. FE 는 followup 을 줄바꿈까지 글자 그대로 보여 주므로(white-space: pre-wrap) 줄로 나눈 보기가 목록으로 보인다.
 """
 
 import re
@@ -50,6 +51,10 @@ MIN_OPTIONS = 2
 MAX_OPTIONS = 4
 # 챗봇 줄은 BE 가 reply + 줄바꿈 + followup 으로 싣고 다음 턴에 뒤쪽 200자만 온다. followup 이 이보다 짧아야 질문까지 보인다.
 FOLLOWUP_MAX_CHARS = 190
+# 보기 줄의 머리. 번호를 달면 "2번"이라고만 답하게 되는데, 그 말에는 찾을 낱말이 없어 다음 턴에 최근 대화에서 보기를
+# 되찾아야 한다. 보기 글자를 그대로 말하면 그 말이 바로 검색어가 된다.
+OPTION_BULLET = "• "
+CHOOSE = "이 중에 고르시거나 직접 말씀해 주세요."
 # 건너뛰기는 고정 문장이 안내한다. 모델이 그런 보기를 쓰면 겹쳐서 버린다.
 _SKIP_LIKE = re.compile(r"(아무거나|상관\s?없|다\s?좋아|잘\s?모르겠)")
 _QUOTES = "\"'“”‘’"
@@ -136,7 +141,7 @@ def _options(raw: object) -> tuple[str, ...]:
     """모델이 쓴 보기를 문장에 넣을 수 있게 거른다. 쓸 보기가 둘이 안 되면 고를 게 없으니 보기 없이 묻는다.
 
     목록이 아니거나, 글자가 아니거나, 비었거나, 너무 길거나, 앞 보기와 같거나, 건너뛰기 뜻인 보기는 버린다.
-    따옴표로 감싸 넣으니 보기 양끝의 따옴표는 떼어 낸다.
+    보기는 한 줄에 하나씩 넣으니 안의 줄바꿈은 띄어쓰기로 바꾸고, 따라 말할 말이니 양끝의 따옴표는 떼어 낸다.
     """
     if not isinstance(raw, list):
         return ()
@@ -159,16 +164,16 @@ def _options(raw: object) -> tuple[str, ...]:
 
 
 def followup(question: str, options: Sequence[str] = ()) -> str:
-    """묻는 턴의 followup. 질문 뒤에 답 보기 문장을, 맨 끝에 고정 문장을 붙인다.
+    """묻는 턴의 followup. 질문, 한 줄에 하나씩 쓴 답 보기, 고르라는 안내를 빈 줄로 나누고 맨 끝에 고정 문장을 붙인다.
 
     FOLLOWUP_MAX_CHARS 를 넘으면 뒤 보기부터 뺀다. 보기가 둘도 안 들어가면 보기 없이 묻는다.
     """
     for count in range(len(options), MIN_OPTIONS - 1, -1):
-        listed = ", ".join(f'"{option}"' for option in options[:count])
-        text = f"{question} {listed} 중에 고르시거나 직접 말씀해 주세요. {TAIL}"
+        listed = "\n".join(OPTION_BULLET + option for option in options[:count])
+        text = f"{question}\n\n{listed}\n\n{CHOOSE}\n{TAIL}"
         if len(text) <= FOLLOWUP_MAX_CHARS:
             return text
-    return f"{question} {TAIL}"
+    return f"{question}\n{TAIL}"
 
 
 def _fit(text: str, limit: int) -> str:
