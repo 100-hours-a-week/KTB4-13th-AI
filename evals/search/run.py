@@ -200,6 +200,8 @@ def render(summary: dict[str, Any], top: int) -> str:
             measure = (
                 f"조건을 어긴 책 {row['violations']}권({row['violating_cases']}건)"
             )
+        elif "empty" in row:
+            measure = f"결과가 빈 사례 {row['empty']}건"
         lines.append(
             f"| {kind} | {row['measured']} | {measure} | {_num(row['returned_mean'])} "
             f"| {_num(row['seconds_median'], 3)} |"
