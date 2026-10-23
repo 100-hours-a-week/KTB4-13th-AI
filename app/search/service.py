@@ -25,6 +25,12 @@ FULL = "full"
 KEYWORD_WEIGHT = 3.0
 VECTOR_WEIGHT = 1.0
 
+# ③ 챗봇의 분위기·주제 요청(semantic)에 쓰는 비중(키워드, 벡터). 검색어가 "잔잔하고 위로가 되는 소설" 같은
+# 문장이라 키워드를 3배로 치면 제목 낱말만 겹친 책이 위로 온다("번아웃이 왔을 때" → 제목에 "왔을 때"가 든 책).
+# 서술형 검색어 40개에서 1:3 이 위 10권 nDCG 0.619 → 0.686, 낱말만 겹친 책 1.4권 → 0.8권이었다(#515).
+# 검색창은 위의 비중 그대로다(제목 검색 1등 99.7%).
+SEMANTIC_WEIGHTS = (1.0, 3.0)
+
 # 가격순·최신순·인기순은 등수를 무시하고 줄을 다시 세운다. 벡터 검색은 관련이 없어도 50권을
 # 채워 주므로 다 넣으면 상관없는 책이 "제일 싸다"는 이유로 1등이 된다. 그래서 벡터 쪽은 앞의
 # 20권만 정렬 대상에 넣는다. 고정 검색어 40개로 재니 벡터가 찾아낸 정답은 20등 안이 84%,
@@ -81,7 +87,10 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
 
 
 def _exact_title_first(
-    exact: set[int], keyword_ids: list[int], vector_ids: list[int]
+    exact: set[int],
+    keyword_ids: list[int],
+    vector_ids: list[int],
+    weights: tuple[float, float] = (KEYWORD_WEIGHT, VECTOR_WEIGHT),
 ) -> list[int]:
     """제목이 검색어와 (공백·영문 대소문자 빼고) 같은 책을 맨 앞에 놓고, 나머지는 두 순위를 합쳐 뒤에 붙인다.
 
@@ -96,7 +105,7 @@ def _exact_title_first(
     """
     head = [book_id for book_id in keyword_ids if book_id in exact]
     rest = [book_id for book_id in keyword_ids if book_id not in exact]
-    fused = rrf.fuse([rest, vector_ids], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+    fused = rrf.fuse([rest, vector_ids], list(weights))
     return head + [book_id for book_id in fused if book_id not in exact]
 
 
@@ -132,7 +141,13 @@ async def _vector_ids(
     return ids
 
 
-async def search(req: SearchRequest) -> SearchOutcome:
+async def search(
+    req: SearchRequest, *, weights: tuple[float, float] | None = None
+) -> SearchOutcome:
+    """검색한다. weights 는 순위를 합칠 때의 (키워드, 벡터) 비중이고, 주지 않으면 검색창의 비중이다.
+
+    ③ 챗봇만 첫 쪽을 받을 때 다른 비중을 준다. 커서로 다음 쪽을 받는 검색창은 늘 기본 비중이라 커서에 싣지 않는다.
+    """
     fingerprint = _fingerprint(req)
     # 못 쓰는 커서는 검색을 돌리기 전에 거른다.
     offset, issued_mode = _read_offset(req, fingerprint)
@@ -152,7 +167,9 @@ async def search(req: SearchRequest) -> SearchOutcome:
         else:
             pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
             exact = await keyword.exact_title_ids(conn, keyword_ids, req.query)
-            ranked = _exact_title_first(exact, keyword_ids, pool)
+            ranked = _exact_title_first(
+                exact, keyword_ids, pool, weights or (KEYWORD_WEIGHT, VECTOR_WEIGHT)
+            )
             degraded = None
 
         # 앞 페이지는 벡터까지 합친 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라

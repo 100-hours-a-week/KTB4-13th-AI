@@ -130,7 +130,7 @@ def test_출판사만_있으면_출판사를_검색어로_쓴다() -> None:
 def test_검색어가_없으면_service_search를_안_부르고_빈_후보(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(req: SearchRequest):
+    async def _boom(req: SearchRequest, **_options):
         raise AssertionError("검색어 없으면 service.search를 부르면 안 됨")
 
     monkeypatch.setattr(chat.service, "search", _boom)
@@ -140,10 +140,49 @@ def test_검색어가_없으면_service_search를_안_부르고_빈_후보(
     assert result == []
 
 
+@pytest.mark.parametrize(
+    ("spec", "weights"),
+    [
+        pytest.param(
+            _spec(semantic="잔잔하고 위로가 되는 소설"),
+            (1.0, 3.0),
+            id="분위기_주제는_벡터를_3배로",
+        ),
+        pytest.param(
+            _spec(
+                intent="exact",
+                exact=SpecExact(title="데미안", author=None, publisher=None),
+            ),
+            None,
+            id="제목을_콕_집으면_검색창_비중",
+        ),
+        pytest.param(
+            _spec(exact=SpecExact(title=None, author="김영하", publisher=None)),
+            None,
+            id="semantic이_비어_저자로_찾으면_검색창_비중",
+        ),
+    ],
+)
+def test_분위기_주제_요청만_벡터를_더_친다(
+    monkeypatch: pytest.MonkeyPatch, spec: Spec, weights: tuple[float, float] | None
+) -> None:
+    seen = []
+
+    async def _search(req: SearchRequest, **options) -> SearchOutcome:
+        seen.append(options.get("weights"))
+        return SearchOutcome(results=[], degraded=None)
+
+    monkeypatch.setattr(chat.service, "search", _search)
+
+    asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert seen == [weights]
+
+
 def test_semantic이면_소개글을_붙이고_소개글_없는_책은_뺀다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         assert req.query == "비 오는 날 읽을 책"
         # 온보딩 대응표(#110)에 없는 값(이미 카탈로그 분류명)이면 그대로 ①에 넘긴다
         # — 장르 정규화 자체는 tests/test_chat_category.py가 따로 본다.
@@ -175,7 +214,7 @@ def test_검색_결과의_ISBN이_후보에_그대로_남는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # 카드의 isbn 은 후보가 들고 온 값을 싣는다(#317). 후보를 다듬다가 칸을 떨어뜨리면 카드가 null 로 나간다.
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1088, isbn="9788936434120")], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -200,7 +239,7 @@ def test_온보딩_장르는_카탈로그_분류로_바꿔_거른다(
     넓게 받아야 한다) 카탈로그 분류로 직접 거른다.
     """
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         # "소설"은 ①에 안 넘어가야 한다 — 그대로 넘기면 정확 일치라 0건이 된다.
         assert req.filters.category is None
         return SearchOutcome(results=[_book(1088), _book(2000)], degraded=None)
@@ -235,7 +274,7 @@ def test_대응표에_없는_카테고리는_예전처럼_정확_일치로_넘�
     새로 안 하고 예전 동작을 그대로 유지한다.
     """
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         assert req.filters.category == "한국문학"
         return SearchOutcome(results=[_book(1088)], degraded=None)
 
@@ -264,7 +303,7 @@ def test_exact이면_소개글_없는_책도_후보에_남긴다(
 ) -> None:
     # exact는 분위기를 안 보므로, ①이 키워드로 찾아준 소개글 없는 책도 그대로 쓴다
     # (리뷰: "exact에서는 소개글 없는 책도 후보에 남기고, semantic일 때만 거르자").
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1088), _book(2000)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -293,7 +332,7 @@ def test_소개글_없는_책은_CANDIDATE_LIMIT_자리를_안_먹는다(
     """
     books = [_book(i) for i in range(1, chat.CANDIDATE_LIMIT + 2)]
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=books, degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -316,7 +355,7 @@ def test_소개글_없는_책은_CANDIDATE_LIMIT_자리를_안_먹는다(
 def test_publisher가_지정되면_다른_출판사_책은_후보에서_빠진다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(
             results=[
                 _book(1, publisher="현암사"),
@@ -344,7 +383,7 @@ def test_publisher가_지정되면_다른_출판사_책은_후보에서_빠진�
 def test_publisher_비교는_공백을_무시한다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1, publisher=" 현암사 ")], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -367,7 +406,7 @@ def test_publisher_비교는_주식회사_표기_차이를_무시한다(
 ) -> None:
     # 리뷰에서 지적된 실제 표기 차이 — "(주)현암사"는 6,649권이 쓰는 "(주)"/주식회사
     # 표기의 예, "현암주니어 :현암사"는 "브랜드 :출판사" 형태의 예다.
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(
             results=[
                 _book(1, publisher="(주)현암사"),
@@ -396,7 +435,7 @@ def test_publisher_없는_책은_출판사_지정_시_후보에서_빠진다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # books.py 주석대로 publisher가 null인 책이 있다 — .get()이 없으면 AttributeError.
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1, publisher=None)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -417,7 +456,7 @@ def test_publisher_없는_책은_출판사_지정_시_후보에서_빠진다(
 def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(
             results=[_book(1), _book(2), _book(3), _book(4)], degraded=None
         )
@@ -435,7 +474,7 @@ def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(
 
 
 def test_이미_구매한_책은_후보에서_빠진다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -455,7 +494,7 @@ def test_이미_구매한_책은_후보에서_빠진다(monkeypatch: pytest.Monk
 
 
 def test_저평점_준_책은_후보에서_빠진다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -479,7 +518,7 @@ def test_라이브러리에_담았거나_긍정_리뷰만_준_책은_안_빠진�
 ) -> None:
     """구매(PURCHASE)만 제외 대상이다 — 담기·긍정 리뷰는 추천에서 뺄 이유가 아니다."""
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -503,7 +542,7 @@ def test_구매한_책_제외도_CANDIDATE_LIMIT_자리를_안_먹는다(
 ) -> None:
     books = [_book(i) for i in range(1, chat.CANDIDATE_LIMIT + 2)]
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=books, degraded=None)
 
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
@@ -530,7 +569,7 @@ def test_후보가_CANDIDATE_LIMIT보다_많으면_앞에서부터_자른다(
 ) -> None:
     books = [_book(i) for i in range(1, chat.CANDIDATE_LIMIT + 5)]
 
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         assert req.size == chat.SEARCH_SIZE
         return SearchOutcome(results=books, degraded=None)
 
@@ -557,7 +596,7 @@ def _fake_descriptions(
 
 
 def _fake_search(monkeypatch: pytest.MonkeyPatch, books: list[dict]) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
+    async def _search(req: SearchRequest, **_options) -> SearchOutcome:
         return SearchOutcome(results=books, degraded=None)
 
     monkeypatch.setattr(chat.service, "search", _search)
