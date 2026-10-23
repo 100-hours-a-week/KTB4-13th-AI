@@ -13,6 +13,11 @@
 -- 적용(AI 서버): docker exec -i bookjeok-postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/20261023_book_embedding_docs.sql
 -- 확인: SELECT count(*) FROM book_embedding_docs;   → 0 (첫 실행 뒤에는 book_embeddings 와 같은 수)
 
+-- 서비스 중에 돌려도 된다. 새 표라 기존 표를 다시 쓰지 않고, 외래 키를 걸 때 book_embeddings 에 쓰기만 잠깐
+-- 막는다(읽기는 안 막아 검색·추천은 그대로). 그 순간 임베딩 작업이 쓰고 있으면 기다리는데, 5초가 넘으면 아무것도
+-- 바꾸지 않고 포기한다. 그때는 다시 돌리면 된다.
+SET lock_timeout = '5s';
+
 CREATE TABLE IF NOT EXISTS book_embedding_docs (
     book_id     integer PRIMARY KEY REFERENCES book_embeddings (book_id) ON DELETE CASCADE,
     doc_sha1    char(40) NOT NULL,  -- 벡터를 만든 글의 sha1(16진수)
