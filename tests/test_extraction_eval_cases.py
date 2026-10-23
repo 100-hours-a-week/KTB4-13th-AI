@@ -24,8 +24,9 @@ _PATH = Path(__file__).resolve().parents[1] / "evals" / "extraction" / "cases.js
 
 # 종류와 문장 최대 길이는 서버가 거르는 규칙(app/extraction/rules.py)과 같은 값을 쓴다. 따로 적어 두면
 # 묶음의 기대값과 서버의 규칙이 어긋나도 모른다.
-# typical 은 흔한 대화, guard 는 드물지만 틀리면 안 되는 대화다. 채점 결과를 따로 낸다.
-GROUPS = {"typical", "guard"}
+# typical 은 흔한 대화, guard 는 드물지만 틀리면 안 되는 대화, borrowed 는 ③ 챗봇 평가 질문의 사용자 말을 빌려 온
+# 대화다(#552). 채점 결과를 따로 낸다.
+GROUPS = {"typical", "guard", "borrowed"}
 
 _DATA = json.loads(_PATH.read_text(encoding="utf-8"))
 _KINDS = _DATA["kinds"]
@@ -84,7 +85,11 @@ def test_지키는_대화가_여덟_개_이상이다() -> None:
 
 @pytest.mark.parametrize("case", _CASES, ids=_IDS)
 def test_대화_하나의_형식(case: dict) -> None:
-    assert set(case) == {"id", "kind", "about", "request", "expect"}
+    # 빌려 온 대화는 어느 ③ 질문에서 왔는지(from_chat, evals/chat/cases.json 의 no)를 적는다
+    borrowed = _KINDS[case["kind"]]["group"] == "borrowed"
+    assert set(case) == {"id", "kind", "about", "request", "expect"} | (
+        {"from_chat"} if borrowed else set()
+    )
     assert case["id"].startswith(case["kind"] + "-")
     assert case["about"].strip()
 
@@ -155,8 +160,11 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
 
     keywords = item["keyword"]
     assert keywords and all(0 < len(k.strip()) <= _MAX_KEYWORD_CHARS for k in keywords)
-    # 핵심어는 뜻을 뒤집지 않는 말로 적는다. 피함은 세기의 부호로 나타낸다.
-    assert not [k for k in keywords if "않" in k or "싫" in k]
+    # 핵심어는 뜻을 뒤집지 않는 말로 적는다. 피함은 세기의 부호로 나타낸다. 『』로 감싼 제목은 그 책의 이름이라
+    # 보지 않는다(『물고기는 존재하지 않는다』).
+    assert not [
+        k for k in keywords if not k.startswith("『") and ("않" in k or "싫" in k)
+    ]
 
     if "applies_to" in item:
         names = item["applies_to"]
@@ -177,3 +185,20 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
         # 조건은 정해진 꼴로 적고, 늘 지킨다고 말한 것만 뽑는다(#427).
         assert all(condition_keyword(k) == k for k in keywords)
         assert strength >= MIN_CONDITION_STRENGTH
+
+
+def test_빌려_온_대화는_챗봇_평가의_질문과_사용자_말이_같다() -> None:
+    chat_path = _PATH.parents[1] / "chat" / "cases.json"
+    chat = json.loads(chat_path.read_text(encoding="utf-8"))
+    questions = chat["cases"] if isinstance(chat, dict) else chat
+    by_no = {q["no"]: q for q in questions}
+    borrowed = _in_group("borrowed")
+    assert borrowed
+    for case in borrowed:
+        question = by_no[case["from_chat"]]
+        # 종류가 그 질문의 출처다. 챗봇 평가의 기대값은 가져오지 않고 사용자 말만 쓴다
+        assert question["source"] == case["kind"], case["id"]
+        said = [
+            t["text"] for t in case["request"]["conversation"] if t["role"] == "user"
+        ]
+        assert said == question["turns"], case["id"]
