@@ -185,3 +185,20 @@ def test_세기_어디에_핵심어의_형식(case_id: str, item: dict) -> None:
         # 조건은 정해진 꼴로 적고, 늘 지킨다고 말한 것만 뽑는다(#427).
         assert all(condition_keyword(k) == k for k in keywords)
         assert strength >= MIN_CONDITION_STRENGTH
+
+
+def test_빌려_온_대화는_챗봇_평가의_질문과_사용자_말이_같다() -> None:
+    chat_path = _PATH.parents[1] / "chat" / "cases.json"
+    chat = json.loads(chat_path.read_text(encoding="utf-8"))
+    questions = chat["cases"] if isinstance(chat, dict) else chat
+    by_no = {q["no"]: q for q in questions}
+    borrowed = _in_group("borrowed")
+    assert borrowed
+    for case in borrowed:
+        question = by_no[case["from_chat"]]
+        # 종류가 그 질문의 출처다. 챗봇 평가의 기대값은 가져오지 않고 사용자 말만 쓴다
+        assert question["source"] == case["kind"], case["id"]
+        said = [
+            t["text"] for t in case["request"]["conversation"] if t["role"] == "user"
+        ]
+        assert said == question["turns"], case["id"]
