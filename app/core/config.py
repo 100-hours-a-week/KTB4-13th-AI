@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # 비율이 main 보다 낮아(47% → 짧은 평가 10~20%) 이 방식으로 바꿨다. 켜기는 이 기본값을 바꾸는 PR로 한다.
     chat_narrowing: bool = False
 
+    # --- ② 소개가 바뀐 책의 벡터 다시 만들기(#300) ---
+    # 켜면 임베딩 작업이 벡터를 만든 글의 해시를 새 표(book_embedding_docs)에 함께 적고, 지금 글과 다르면 다시
+    # 만든다. 소개가 없어진 책의 벡터도 지우고, 끝에 빠진 책이 없는지 확인한다. 끄면(기본) 지금처럼 벡터가 없는 책만
+    # 채우고 새 표를 읽지도 쓰지도 않아, 마이그레이션(20261023_book_embedding_docs.sql)이 적용되기 전에 머지돼도
+    # 깨지지 않는다. 이 값은 임베딩 작업만 읽어서, 기본값을 바꾸는 배포 없이 돌릴 때 환경변수로 켠다:
+    # docker exec -e EMBED_DOC_HASH=true bookjeok-ai python -m app.jobs.embed_books
+    embed_doc_hash: bool = False
+
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
     dev_cors_origins: str = ""
