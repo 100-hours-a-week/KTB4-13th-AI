@@ -149,6 +149,32 @@ def report_models() -> None:
                 feature,
                 shared,
             )
+    if settings.extraction_self_hosted_mode == "on":
+        # 서버 안쪽 주소는 로그에 남기지 않고 모델 이름만 남긴다
+        missing = [
+            name
+            for name, value in (
+                (
+                    "EXTRACTION_SELF_HOSTED_BASE_URL",
+                    settings.extraction_self_hosted_base_url,
+                ),
+                (
+                    "EXTRACTION_SELF_HOSTED_MODEL_ID",
+                    settings.extraction_self_hosted_model_id,
+                ),
+            )
+            if not value
+        ]
+        if missing:
+            logger.warning(
+                "EXTRACTION_SELF_HOSTED_MODE 가 on 인데 %s 가 비어 있어 ⑤ 취향 뽑기는 API 만 씁니다",
+                "·".join(missing),
+            )
+        else:
+            parts.append(
+                f"⑤ 취향 뽑기 자체 서빙 {settings.extraction_self_hosted_model_id}"
+                "(실패하면 API)"
+            )
     logger.info("LLM 모델: %s", ", ".join(parts))
 
 
