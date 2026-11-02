@@ -4,6 +4,7 @@
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -49,6 +50,18 @@ class Settings(BaseSettings):
     # 뽑는 일이라 작은 모델로 충분하고, 평가도 작은 모델로 잰다. 챗봇과 같은 값을 쓰면 운영에서는
     # 평가에 쓴 것과 다른 모델로 돌게 되어 따로 둔다.
     extraction_llm_model_id: str = ""
+    # ⑤ 취향 뽑기를 자체 서빙 LLM(GPU 서버의 vLLM 처럼 OpenAI 호환인 곳)으로 부를지(#569 운영 시범). off(기본)면
+    # 지금처럼 API 만 쓴다. on 이면 자체 서빙을 먼저 부르고, 실패하거나 시간을 넘기면 지금 API 로 다시 부른다. 스팟
+    # GPU 는 회수될 수 있어서다. 주소나 모델이 비어 있으면 on 이어도 API 만 쓴다(서버가 뜰 때 경고). 켜기는 이
+    # 기본값을 바꾸는 PR 로 한다.
+    extraction_self_hosted_mode: Literal["off", "on"] = "off"
+    extraction_self_hosted_base_url: str = ""
+    extraction_self_hosted_model_id: str = ""
+    # 자체 서빙 서버가 키를 검사할 때만 채운다. 외부 API 키를 다른 서버로 보내지 않으려고 따로 둔다.
+    extraction_self_hosted_api_key: str = ""
+    # 자체 서빙 호출 하나의 제한(초). 넘기면 API 로 다시 부르는데, 둘을 합친 시간도 llm_timeout_seconds 안에
+    # 들어야 해서(명세 ⑤ 504) 짧게 둔다.
+    extraction_self_hosted_timeout_seconds: float = 10
     # ③ 새 요청 판정 호출만 쓰는 모델(#513). 비어 있으면 llm_model_id 를 쓴다. 이어지는 턴마다 한 번 더 도는 짧은
     # 분류라 작고 빠른 모델로 충분하다. 평가도 작은 모델(gpt-4o-mini)로 쟀다. 챗봇과 같은 값이면 운영에서는
     # 더 큰 모델이 이 호출을 하게 되어 따로 둔다.
