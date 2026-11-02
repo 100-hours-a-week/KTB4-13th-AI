@@ -10,9 +10,15 @@ from fastapi.responses import JSONResponse
 
 
 def success(
-    message: str, data: Any, headers: dict[str, str] | None = None
+    message: str,
+    data: Any,
+    headers: dict[str, str] | None = None,
+    status: int = 200,
 ) -> JSONResponse:
-    return JSONResponse({"message": message, "data": data}, headers=headers)
+    """status 는 200 이 아닌 성공(③ 폴링의 202 등)에만 넘긴다."""
+    return JSONResponse(
+        {"message": message, "data": data}, status_code=status, headers=headers
+    )
 
 
 def error(
