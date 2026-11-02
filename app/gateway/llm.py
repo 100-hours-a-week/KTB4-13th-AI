@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, Literal
 
 import openai
@@ -153,9 +156,41 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
     이 값을 재사용하므로, 이 함수를 거치지 않고 체인을 부르면 health가 최근
     상태를 놓친다.
     """
+    with _llm_call():
+        return await chain.ainvoke(inputs)
+
+
+async def stream_json(
+    chain: Runnable, inputs: Any, on_text: Callable[[str], Awaitable[None]]
+) -> dict:
+    """체인(`프롬프트 | 모델`)을 흘려 받으며, 지금까지 온 글 전체를 조각마다 on_text 에 넘긴다.
+
+    다 받은 글은 parse_json_response 로 읽어 돌려준다. 결과와 예외는 `프롬프트 | 모델 |
+    message_text | parse_json_response` 를 invoke_chain 으로 부른 것과 같다(SSE, AI #236).
+
+    흘려 받으면 SDK 의 timeout 이 "조각 사이 대기"에만 걸려 한 호출 전체가 상한(명세: 생성 30초)을
+    넘을 수 있다. 그래서 호출 전체에 같은 시간을 따로 건다.
+    """
+    text = ""
+    with _llm_call():
+        try:
+            async with asyncio.timeout(get_settings().llm_timeout_seconds):
+                async for chunk in chain.astream(inputs):
+                    # 끝 알림 조각처럼 글 없이 오는 조각도 있다
+                    if piece := message_text(chunk):
+                        text += piece
+                        await on_text(text)
+        except TimeoutError as e:
+            raise LLMTimeoutError("LLM 이 제한 시간 안에 다 쓰지 못했다") from e
+        return parse_json_response(text)
+
+
+@contextlib.contextmanager
+def _llm_call() -> Iterator[None]:
+    """provider 예외를 LLMUnavailableError 로 바꾸고, 결과를 ⑧ /health 가 읽는 _llm_ok 에 남긴다."""
     global _llm_ok
     try:
-        result = await chain.ainvoke(inputs)
+        yield
     except (openai.APIError, OpenAIRefusalError) as e:
         # 연결 끊김·타임아웃·rate limit·5xx 전부 APIError 하위. langchain-openai는
         # 이걸 OpenAIConnectionError·OpenAITimeoutError 등으로 감싸 던지는데,
@@ -178,7 +213,6 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
         _llm_ok = False
         raise
     _llm_ok = True
-    return result
 
 
 async def complete(prompt: str) -> str:

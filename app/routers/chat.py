@@ -7,6 +7,10 @@
 처리를 명세 4단계 그대로 함수로 나눴다. 1·3단계는 LLM 체인이고, 2단계는 ①의
 하이브리드 검색을 쓴다(아래 각 함수 docstring 참고). 바깥 흐름(이 4단계가 이 순서로
 불리는 것)은 안 바뀐다.
+
+같은 처리를 세 가지 방식으로 받는다. 기본은 JSON 한 번이다. `Accept: text/event-stream` 이면 말풍선을 카드보다
+먼저 흘려보내고(SSE, app/chat/streaming.py), `/chat/jobs` 로 맡기면 job_id 를 바로 주고 결과는 따로 묻게 한다
+(폴링, app/chat/jobs.py). 응답을 만드는 갈래는 셋이 같은 함수(_respond)를 쓴다.
 """
 
 import asyncio
@@ -18,13 +22,14 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat import asking, invented_mood, shown, topic_switch
+from app.chat import asking, invented_mood, jobs, shown, streaming, topic_switch
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
+from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, history, isbn, popularity, responses, voice
 from app.core.config import get_settings
@@ -41,6 +46,7 @@ from app.gateway.llm import (
     invoke_chain,
     message_text,
     parse_json_response,
+    stream_json,
 )
 from app.routers import agent
 from app.search import service
@@ -1440,6 +1446,7 @@ async def generate_cards(
     message: str = "",
     recent_turns: list[Turn] | None = None,
     may_ask: bool = True,
+    on_reply: ReplySink | None = None,
 ) -> CardResult:
     """3단계 — 후보 중에서 골라 카드를 만든다.
 
@@ -1451,26 +1458,34 @@ async def generate_cards(
     호출부(chat())가 이 경우들을 규칙 기반 문구로 채운다. LLM 장애 시
     degraded로 match_score 상위 카드를 대신 돌려준다(명세: reason_short는
     규칙, reason_long은 null. #129).
+
+    on_reply 가 있으면(SSE·폴링) 모델이 쓰는 글을 흘려 받다가 reply 를 다 쓰면 _preview_reply 로 다듬어 거기로
+    먼저 넘긴다. 결과는 같다.
     """
     if not candidates:
         return CardResult([], None, False)
 
     id_by_book = {c["book_id"]: c for c in candidates}
-    # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
-    chain = CARD_PROMPT | get_chat_model() | message_text | parse_json_response
+    inputs = {
+        "recent_turns": _format_recent_turns(recent_turns or []),
+        "message": message,
+        "intro": _card_prompt_intro(spec) + _card_prompt_conditions(spec),
+        "limit": CARD_LIMIT,
+        "listing": _format_listing(candidates),
+        "turn_end": _HAND_OVER if may_ask else _POINT_ONE,
+    }
 
     try:
-        parsed = await invoke_chain(
-            chain,
-            {
-                "recent_turns": _format_recent_turns(recent_turns or []),
-                "message": message,
-                "intro": _card_prompt_intro(spec) + _card_prompt_conditions(spec),
-                "limit": CARD_LIMIT,
-                "listing": _format_listing(candidates),
-                "turn_end": _HAND_OVER if may_ask else _POINT_ONE,
-            },
-        )
+        if on_reply is None:
+            # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
+            chain = CARD_PROMPT | get_chat_model() | message_text | parse_json_response
+            parsed = await invoke_chain(chain, inputs)
+        else:
+            parsed = await stream_json(
+                CARD_PROMPT | get_chat_model(),
+                inputs,
+                streaming.ReplyPreview(on_reply, _preview_reply).feed,
+            )
     except LLMUnavailableError:
         logger.exception("카드 생성 실패")
         return CardResult(_rule_based_cards(candidates), None, True)
@@ -1535,6 +1550,14 @@ async def generate_cards(
     if reply is not None:
         reply = voice.without_vague_question(reply)
     return CardResult(cards, reply, False)
+
+
+def _preview_reply(reply: str) -> str:
+    """카드보다 먼저 보낼 말풍선(SSE·폴링). 아래 generate_cards 의 후처리 중 카드 없이 할 수 있는 것만 한다.
+
+    카드에 없는 책을 짚은 문장은 카드를 다 읽어야 알 수 있어 여기서 못 뺀다. 최종 reply 는 응답 본문의 것이다.
+    """
+    return _fit_reply(voice.without_vague_question(voice.without_echo(reply.strip())))
 
 
 # 말풍선이 한 권을 『제목』으로 짚게 한 뒤(#545) 카드에 없는 책을 짚은 일이 있었다. 대화 평가에서 고른 카드에 없는
@@ -1914,7 +1937,58 @@ def _fit_followup(followup: str) -> str:
 
 
 @router.post("/chat")
-async def chat(request: Request) -> JSONResponse:
+async def chat(request: Request) -> Response:
+    read = await _read_request(request)
+    if isinstance(read, JSONResponse):
+        return read
+    req, payload = read
+    if streaming.wants_stream(request):
+        # 요청 검사 오류는 위에서 상태 코드로 끝났다. 여기부터의 결과는 이벤트로 보낸다(AI #236)
+        return streaming.stream_response(
+            lambda on_reply: _respond(req, payload, on_reply)
+        )
+    return await _respond(req, payload, None)
+
+
+@router.post("/chat/jobs")
+async def submit_chat_job(request: Request) -> JSONResponse:
+    """폴링: /chat 과 같은 요청을 작업으로 맡기고 job_id 만 바로 돌려준다(202). 결과는 GET 으로 묻는다.
+
+    요청 검사 오류는 맡기지 않고 /chat 과 같은 상태 코드로 바로 답한다.
+    """
+    read = await _read_request(request)
+    if isinstance(read, JSONResponse):
+        return read
+    req, payload = read
+    job_id = jobs.submit(lambda on_reply: _respond(req, payload, on_reply))
+    return responses.success(
+        "job_accepted", {"job_id": job_id, "status": "pending"}, status=202
+    )
+
+
+@router.get("/chat/jobs/{job_id}")
+async def get_chat_job(job_id: str) -> JSONResponse:
+    """폴링: 아직이면 202 와 먼저 보여 줄 말풍선, 끝났으면 /chat 과 같은 응답(상태 코드·envelope)이다.
+
+    결과는 맡긴 뒤 jobs.KEEP_SECONDS 동안 몇 번이든 같은 것을 돌려준다. 모르거나 지난 작업이면 404 다.
+    """
+    job = jobs.get(job_id)
+    if job is None:
+        return responses.error(404, "job_not_found")
+    if not job.task.done():
+        return responses.success(
+            "job_pending",
+            {"job_id": job_id, "status": "pending", "reply": job.reply},
+            status=202,
+        )
+    if job.task.cancelled() or job.task.exception() is not None:
+        # 실패 로그는 작업이 끝날 때 jobs 가 남겼다
+        return responses.error(500, "internal_server_error")
+    return job.task.result()
+
+
+async def _read_request(request: Request) -> tuple[ChatRequest, dict] | JSONResponse:
+    """본문을 읽고 검사한다. 실패면 그대로 돌려줄 오류 응답이다. 세 전달 방식이 같은 검사를 쓴다."""
     raw = await body.read_limited(request, MAX_BODY_BYTES)
     if raw is None:
         return responses.error(413, "payload_too_large")
@@ -1928,7 +2002,13 @@ async def chat(request: Request) -> JSONResponse:
     if isinstance(req, tuple):
         status, message = req
         return responses.error(status, message)
+    return req, payload
 
+
+async def _respond(
+    req: ChatRequest, payload: dict, on_reply: ReplySink | None
+) -> JSONResponse:
+    """요청 하나에 답한다. on_reply 가 있으면 카드 생성 LLM 이 쓰는 reply 를 거기로 먼저 흘려보낸다."""
     # 쇼핑 칸(idempotency_key)을 보낸 요청이면 문지기가 ③과 ⑦ 중 어디로 보낼지 정한다(#413).
     # 칸이 없으면 이 변경 전과 똑같이 ③만 하고 응답에 route 도 없다.
     lane = None
@@ -1971,7 +2051,12 @@ async def chat(request: Request) -> JSONResponse:
             logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
             target = "recommend"
     return await _recommend(
-        req, lane, cards, answer_only=target == "card", shown_books=books
+        req,
+        lane,
+        cards,
+        answer_only=target == "card",
+        shown_books=books,
+        on_reply=on_reply,
     )
 
 
@@ -2009,6 +2094,7 @@ async def _recommend(
     *,
     answer_only: bool = False,
     shown_books: list[shown.ShownBook] | None = None,
+    on_reply: ReplySink | None = None,
 ) -> JSONResponse:
     """③ 본문: 조건 갱신 → 후보 검색 → 카드 생성. 질문이면 조건 갱신 → 대답, 넓은 첫 요청이면 조건 갱신 → 묻기(#530).
 
@@ -2102,6 +2188,7 @@ async def _recommend(
             recent_turns=req.recent_turns,
             # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
             may_ask=slot_question is None and not _bot_asked_last(req.recent_turns),
+            on_reply=on_reply,
         )
     cards, llm_reply, degraded = result.cards, result.reply, result.degraded
 

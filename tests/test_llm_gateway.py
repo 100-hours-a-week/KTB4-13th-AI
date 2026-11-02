@@ -8,13 +8,16 @@ complete()는 httpx.MockTransport로 응답 본문만 흉내 내 네트워크 �
 """
 
 import asyncio
+import itertools
 import json
 import logging
+from types import SimpleNamespace
 
 import httpx
 import openai
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -32,6 +35,7 @@ from app.gateway.llm import (
     message_text,
     parse_json_response,
     report_models,
+    stream_json,
 )
 
 
@@ -513,3 +517,132 @@ def test_서버가_뜰_때_DB에_붙기_전에_모델을_남긴다(
     with pytest.raises(_Stop):
         asyncio.run(_start())
     assert called == ["models", "db"]
+
+
+# --- stream_json — ③ SSE 가 카드 생성 LLM 을 흘려 받는 길 (AI #236) ---
+
+
+def _collect(chain, inputs=None) -> tuple[dict, list[str]]:
+    seen: list[str] = []
+
+    async def on_text(text: str) -> None:
+        seen.append(text)
+
+    return asyncio.run(stream_json(chain, inputs, on_text)), seen
+
+
+def test_stream_json은_지금까지_온_글_전체를_넘기고_다_읽은_JSON을_돌려준다() -> None:
+    model = GenericFakeChatModel(
+        messages=iter([AIMessage(content='{"reply": "안녕 하세요"}')])
+    )
+
+    parsed, seen = _collect(model, "프롬프트")
+
+    assert parsed == {"reply": "안녕 하세요"}
+    assert len(seen) > 1
+    assert all(later.startswith(earlier) for earlier, later in itertools.pairwise(seen))
+    assert seen[-1] == '{"reply": "안녕 하세요"}'
+
+
+class _Stream:
+    """chain.astream 만 흉내 낸다. pieces 를 차례로 내다가 마지막에 error 를 던진다."""
+
+    def __init__(
+        self, *pieces: str, error: Exception | None = None, delay: float = 0
+    ) -> None:
+        self._pieces, self._error, self._delay = pieces, error, delay
+
+    async def astream(self, _inputs):
+        for piece in self._pieces:
+            await asyncio.sleep(self._delay)
+            yield AIMessageChunk(content=piece)
+        if self._error is not None:
+            raise self._error
+
+
+def test_stream_json은_흘려_받다_끊기면_LLMUnavailableError고_status가_unavailable이다() -> (
+    None
+):
+    request = httpx.Request("POST", "http://localhost:11434/v1")
+    chain = _Stream('{"reply": "안', error=openai.APIConnectionError(request=request))
+
+    with pytest.raises(LLMUnavailableError):
+        _collect(chain)
+
+    assert last_known_status() == "unavailable"
+
+
+def test_stream_json은_다_받은_글이_JSON이_아니면_LLMUnavailableError다() -> None:
+    with pytest.raises(LLMUnavailableError):
+        _collect(_Stream('{"reply": "끊긴 글'))
+
+    assert last_known_status() == "unavailable"
+
+
+def test_stream_json은_조각이_계속_와도_전체가_상한을_넘으면_LLMTimeoutError다(
+    monkeypatch,
+) -> None:
+    # SDK timeout 은 조각 사이 대기에만 걸린다. 조각이 0.03초마다 와서 그건 안 넘어도, 전체 0.1초 상한은 넘는다
+    monkeypatch.setattr(
+        llm_gateway, "get_settings", lambda: SimpleNamespace(llm_timeout_seconds=0.1)
+    )
+    chain = _Stream(*(["가"] * 10), delay=0.03)
+
+    with pytest.raises(LLMTimeoutError):
+        _collect(chain)
+
+
+def test_stream_json은_ChatOpenAI의_JSON_모드_스트리밍을_끝단에서_읽는다(
+    monkeypatch,
+) -> None:
+    """get_chat_model()이 만드는 ChatOpenAI(JSON 모드)가 실제로 stream 요청을 보내고 조각을 읽는지 본다."""
+    pieces = ['{"reply": "비 오는', ' 날"', ', "cards": []}']
+    chunks = [
+        {
+            **_OK_BODY,
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": p},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        for p in pieces
+    ]
+    stream_body = (
+        "".join(f"data: {json.dumps(c, ensure_ascii=False)}\n\n" for c in chunks)
+        + "data: [DONE]\n\n"
+    )
+    sent: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_body.encode(),
+        )
+
+    real = ChatOpenAI
+
+    def factory(**kwargs):
+        kwargs["http_async_client"] = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return real(**kwargs)
+
+    monkeypatch.setattr(llm_gateway, "ChatOpenAI", factory)
+    monkeypatch.setenv("LLM_MOCK", "false")
+
+    parsed, seen = _collect(RunnableLambda(lambda x: x) | get_chat_model(), "프롬프트")
+
+    assert parsed == {"reply": "비 오는 날", "cards": []}
+    assert seen == [
+        '{"reply": "비 오는',
+        '{"reply": "비 오는 날"',
+        '{"reply": "비 오는 날", "cards": []}',
+    ]
+    assert sent[0]["stream"] is True
+    assert sent[0]["response_format"] == {"type": "json_object"}
