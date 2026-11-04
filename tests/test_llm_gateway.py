@@ -482,6 +482,49 @@ def test_기능별_모델을_다_정하면_경고_없이_쓰는_모델을_한_�
         assert model in infos[0]
 
 
+def _set_all_models_and_self_hosted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(monkeypatch, **{name: "own-model" for name in _OWN_MODELS})
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODE", "on")
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_BASE_URL", "http://10.0.0.5:8000/v1")
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODEL_ID", "gpu-model")
+
+
+def test_취향_뽑기_자체_서빙을_켜면_그_모델도_같은_줄에_남긴다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 운영 시범 날 배포 로그 한 줄로 GPU 모델이 켜졌는지 확인한다(#569)
+    _set_all_models_and_self_hosted(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    assert _logged(caplog, logging.WARNING) == []
+    infos = _logged(caplog, logging.INFO)
+    assert len(infos) == 1
+    assert "gpu-model" in infos[0]
+    # 서버 안쪽 주소는 로그에 남기지 않는다
+    assert "10.0.0.5" not in infos[0]
+
+
+@pytest.mark.parametrize(
+    "missing", ["EXTRACTION_SELF_HOSTED_BASE_URL", "EXTRACTION_SELF_HOSTED_MODEL_ID"]
+)
+def test_취향_뽑기_자체_서빙을_켰는데_설정이_비면_API만_쓴다고_경고한다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, missing: str
+) -> None:
+    # 켰다고 믿고 시범을 시작했는데 실제로는 API 로만 돌면, 밤마다 남긴 기록이 GPU 기록이 아니게 된다
+    _set_all_models_and_self_hosted(monkeypatch)
+    monkeypatch.setenv(missing, "")
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    warnings = _logged(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    assert "EXTRACTION_SELF_HOSTED_MODE" in warnings[0]
+    assert missing in warnings[0]
+
+
 def test_가짜_LLM이면_모델을_남기지_않는다(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
