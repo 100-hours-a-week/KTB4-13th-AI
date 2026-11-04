@@ -8,7 +8,9 @@
   맞게 찾은 것을 틀렸다고 센다.
 - 저자(`author`): 위 10권 가운데 저자 칸에 그 이름이 낱말로 통째로 든 책의 비율(`has_author`).
 - 필터(`filter`): 요청에 건 조건을 어긴 책의 수. 0이어야 한다.
-- 없는 말(`nonsense`): 돌아온 권수만 센다.
+- 없는 말(`nonsense`): 돌아온 권수와, 결과가 빈 사례 수를 센다. 몇이면 통과인지는 없다(#548, 검색에서는 자르지 않는다).
+- 키워드 0건인 있는 말(`no-keyword`, #548): 결과가 빈 사례 수. 0이어야 한다. 벡터 결과에만 기대는 말이라, 없는 말을
+  자르는 규칙이 이 말까지 비우지 않는지 지킨다.
 - 서술형(`descriptive`, #502): 정답이 여럿이라 나온 책마다 매긴 점수(맞음 2·조금 1·아님 0, labels.json)로 위 10권의
   nDCG 를 낸다. 이상값은 위 10권이 모두 2점인 순서로 고정한다(descriptive 참고).
 """
@@ -23,6 +25,8 @@ from app.core import categories, editions
 from app.feed.interest_picks import has_author
 
 TITLE_KINDS = ("title", "title-variant")
+# 결과가 빈 사례를 세는 종류. 없는 말은 비어야 좋고, 키워드 0건인 있는 말은 비면 안 된다
+EMPTY_KINDS = ("nonsense", "no-keyword")
 # 정답이 이 등수 안에 나온 사례의 비율을 낸다. 마지막 값은 묶음의 top 과 같다.
 HIT_AT = (1, 5, 20)
 # 저자 검색은 위 10권을 본다. 결과가 10권보다 적어도 10으로 나눈다.
@@ -216,6 +220,8 @@ def _row(items: Sequence[Score]) -> dict[str, Any]:
         row["relevant_mean"] = _mean([s.relevant for s in measured], 1)
         row["irrelevant_mean"] = _mean([s.irrelevant for s in measured], 1)
         row["unlabeled"] = sum(s.unlabeled for s in measured)
+    elif kind in EMPTY_KINDS:
+        row["empty"] = sum(s.returned == 0 for s in measured)
     return row
 
 

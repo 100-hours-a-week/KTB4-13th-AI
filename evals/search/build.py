@@ -22,7 +22,7 @@ from app.core import editions, products
 from app.feed.interest_picks import has_author
 
 CASES_PATH = Path(__file__).with_name("cases.json")
-VERSION = 2
+VERSION = 3
 # 위 몇 권을 보는지. 사례마다 /search 에 이 권수를 한 번 요청한다
 TOP = 20
 # 책을 고르는 순서를 정하는 값. 바꾸면 다른 묶음이 나온다
@@ -115,8 +115,97 @@ FILTERS = (
     ("역사", "역사", (2018, 2022), (None, 20000)),
     ("행복", "자기계발", (2015, None), (12000, 18000)),
 )
-# 없는 말. 자판을 아무렇게나 친 것처럼 만들었다
-NONSENSE = ("ㅁㄴㅇㄹㅍ", "ㅋㅌㅊ ㅍㅎㄱ", "뷁쒧퀣", "qzxjvk wpfh", "ㄷㄱㅅㅂ ㅈㄷㄱ")
+# 없는 말(#548). (소분류, 검색어). 자판을 아무렇게나 친 것처럼 만들었다. 소분류는 자음·모음만(jamo), 쓰지 않는
+# 음절(syllable), 영문(latin), 한글을 영문 자판으로 친 것(layout), 기호·숫자(symbol), 섞은 것(mixed)이다.
+# 앞의 다섯은 버전 2 의 것 그대로다. "0000", "aaaa" 처럼 제목에 그 글자가 든 책이 있어 키워드로 결과가 나오는 것도 둔다.
+NONSENSE = (
+    ("jamo", "ㅁㄴㅇㄹㅍ"),
+    ("jamo", "ㅋㅌㅊ ㅍㅎㄱ"),
+    ("syllable", "뷁쒧퀣"),
+    ("latin", "qzxjvk wpfh"),
+    ("jamo", "ㄷㄱㅅㅂ ㅈㄷㄱ"),
+    ("jamo", "ㅁㄴㅇㄹ"),
+    ("jamo", "ㅋㅋㅋㅋㅋ"),
+    ("jamo", "ㅎㅎㅎ"),
+    ("jamo", "ㅇㅇ"),
+    ("jamo", "ㄱㄴㄷㄹ"),
+    ("jamo", "ㅠㅠㅠㅠ"),
+    ("jamo", "ㅜㅜ"),
+    ("jamo", "ㅏㅑㅓㅕ"),
+    ("jamo", "ㅗㅛㅜㅠ"),
+    ("syllable", "뷁"),
+    ("syllable", "쀍쒧"),
+    ("syllable", "퉯뷁"),
+    ("syllable", "궰뛁쀍"),
+    ("syllable", "햏햏"),
+    ("syllable", "뭙뭙뭙"),
+    ("syllable", "쭳쭳"),
+    ("syllable", "깳깳깳깳"),
+    ("syllable", "뛟"),
+    ("syllable", "뾸쀍뺡"),
+    ("syllable", "가나다라마바사"),
+    ("syllable", "아야어여오요"),
+    ("latin", "asdf"),
+    ("latin", "asdfasdf"),
+    ("latin", "qwerty"),
+    ("latin", "zxcvbnm"),
+    ("latin", "jjjjjj"),
+    ("latin", "aaaa"),
+    ("latin", "sdfsdfsdf"),
+    ("latin", "lkjhgf"),
+    ("latin", "qwer asdf"),
+    ("latin", "xkcd zzq"),
+    ("latin", "fjdksla fjdk"),
+    ("layout", "dkssudgktpdy"),
+    ("layout", "rkskek"),
+    ("layout", "wkdtjr"),
+    ("layout", "qkrwldms"),
+    ("layout", "dlrjtdms"),
+    ("symbol", "!!!???"),
+    ("symbol", "..."),
+    ("symbol", "^^;;"),
+    ("symbol", "1234567"),
+    ("symbol", "0000"),
+    ("symbol", "@#$%"),
+    ("mixed", "ㅁㄴㅇㄹ 1234"),
+    ("mixed", "ㅂㅈㄷㄱ asdf"),
+)
+# 키워드 결과가 0건인 있는 말(#548). (소분류, 검색어). 사람이 찾는 책이 있는 말인데 키워드 검색이 0건이라 벡터
+# 결과에만 기댄다. 없는 말을 자르는 규칙을 넣을 때 이 말들이 비지 않는지 지키려고 둔다. 1권 이상 나오면 맞다.
+# 소분류는 제목 오타(typo), 로마자로 쓴 제목·저자(romanized), 제목 초성(chosung), 상황을 구어로 말한 것(colloquial).
+# 평가 DB 에서 키워드 결과가 0건인 것만 골랐다(10/22). 책 표가 바뀌면 키워드에 걸리는 것이 생길 수 있다.
+NO_KEYWORD = (
+    ("typo", "데미얀"),
+    ("typo", "채식쥬의자"),
+    ("typo", "아몬듣"),
+    ("typo", "사피언스ㅡ"),
+    ("typo", "해리퍼터"),
+    ("typo", "어린왕쟈님"),
+    ("typo", "룬의아이들 겨울의 적쟈"),
+    ("typo", "역행쟈"),
+    ("typo", "원씽ㅇ"),
+    ("romanized", "haripota"),
+    ("romanized", "ingan sil-gyeok"),
+    ("romanized", "tolseutoi"),
+    ("romanized", "eorin wangja"),
+    ("romanized", "chaesikjuuija"),
+    ("romanized", "sonyeoni onda"),
+    ("chosung", "ㅎㄹㅍㅌ"),
+    ("chosung", "ㄷㅁㅇ"),
+    ("chosung", "ㅅㄴㅇ ㅇㄷ"),
+    ("chosung", "ㅇㄹㅇㅈ"),
+    ("chosung", "ㅊㅅㅈㅇㅈ"),
+    ("colloquial", "머리 식힐 거"),
+    ("colloquial", "잠 안 올 때 볼 거"),
+    ("colloquial", "출퇴근길에 가볍게 볼 거"),
+    ("colloquial", "선물용으로 괜찮은 거"),
+    ("colloquial", "주말에 뒹굴면서 볼 거"),
+    ("colloquial", "비행기에서 볼 거"),
+    ("colloquial", "입문용으로 괜찮은 거"),
+    ("colloquial", "애기 재울 때 읽어 줄 거"),
+    ("colloquial", "친구 생일에 줄 만한 거"),
+    ("colloquial", "시험 끝나고 볼 거"),
+)
 # 서술형 검색어(#502). 맞는 책이 여럿이라 나온 책마다 매긴 점수(labels.json)로 잰다. 사람이 쓴 목록 그대로 쓴다.
 # (소분류, 검색어, 출처). 출처는 handoff(인계 문서의 예시), chat-eval(③ 챗봇 평가 질문을 검색창에 칠 말로 줄임),
 # written(직접 씀)이다. long 은 조건이 여럿인 20자 이상의 검색어다.
@@ -261,7 +350,7 @@ def _between(low_key: str, high_key: str, bounds: tuple) -> dict[str, int]:
 
 
 def fixed_cases() -> list[dict]:
-    """필터, 없는 말, 서술형의 사례. 표본을 뽑지 않고 위의 목록 그대로 만든다."""
+    """필터, 없는 말, 키워드 0건인 있는 말, 서술형의 사례. 표본을 뽑지 않고 위의 목록 그대로 만든다."""
     cases = []
     for word, category, years, price in FILTERS:
         one = (
@@ -274,8 +363,12 @@ def fixed_cases() -> list[dict]:
                 _case(f"filter-{len(cases) + 1:02d}", "filter", word, filters=filters)
             )
     cases += [
-        _case(f"nonsense-{i}", "nonsense", query)
-        for i, query in enumerate(NONSENSE, start=1)
+        _case(f"nonsense-{i}", "nonsense", query, group=group)
+        for i, (group, query) in enumerate(NONSENSE, start=1)
+    ]
+    cases += [
+        _case(f"no-keyword-{i:02d}", "no-keyword", query, group=group)
+        for i, (group, query) in enumerate(NO_KEYWORD, start=1)
     ]
     return cases + [
         _case(f"descriptive-{i:02d}", "descriptive", query, facet=facet, source=source)

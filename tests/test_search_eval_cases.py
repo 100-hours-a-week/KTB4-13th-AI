@@ -24,9 +24,20 @@ COUNTS = {
     "title-variant": 100,
     "author": 30,
     "filter": 20,
-    "nonsense": 5,
+    "nonsense": 50,
+    "no-keyword": 30,
     "descriptive": 40,
 }
+# 없는 말과 키워드 0건인 있는 말의 소분류(#548)
+NONSENSE_GROUPS = {
+    "jamo": 12,
+    "syllable": 13,
+    "latin": 12,
+    "layout": 5,
+    "symbol": 6,
+    "mixed": 2,
+}
+NO_KEYWORD_GROUPS = {"typo": 9, "romanized": 6, "chosung": 5, "colloquial": 10}
 # 서술형 검색어의 소분류(#502). long 은 조건이 여럿인 긴 검색어다
 FACETS = {"topic": 7, "mood": 7, "audience": 6, "situation": 6, "long": 8, "mixed": 6}
 
@@ -103,6 +114,29 @@ def test_필터_사례는_검색이_받는_조건을_건다() -> None:
         assert case["filters"] and set(case["filters"]) <= fields, case["id"]
     for case in _of("nonsense"):
         assert "filters" not in case and "expect" not in case
+
+
+def test_없는_말과_키워드_0건인_있는_말은_소분류가_있고_정답을_적지_않는다() -> None:
+    for kind, groups in (
+        ("nonsense", NONSENSE_GROUPS),
+        ("no-keyword", NO_KEYWORD_GROUPS),
+    ):
+        cases = _of(kind)
+        assert Counter(case["group"] for case in cases) == groups
+        assert len({case["query"] for case in cases}) == len(cases), kind
+        for case in cases:
+            # 서술형의 소분류(facet)와 섞이지 않게 다른 칸에 둔다
+            assert (
+                "facet" not in case and "expect" not in case and "filters" not in case
+            )
+    # 버전 2 의 다섯은 번호와 검색어를 그대로 둬서, 예전 결과 파일과 견줄 수 있다
+    assert [(c["id"], c["query"]) for c in _of("nonsense")[:5]] == [
+        ("nonsense-1", "ㅁㄴㅇㄹㅍ"),
+        ("nonsense-2", "ㅋㅌㅊ ㅍㅎㄱ"),
+        ("nonsense-3", "뷁쒧퀣"),
+        ("nonsense-4", "qzxjvk wpfh"),
+        ("nonsense-5", "ㄷㄱㅅㅂ ㅈㄷㄱ"),
+    ]
 
 
 def test_서술형_사례는_소분류와_출처가_있고_점수는_라벨_파일에_둔다() -> None:
