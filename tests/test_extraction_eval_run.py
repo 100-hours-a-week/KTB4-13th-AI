@@ -340,6 +340,25 @@ def test_계획은_어느_서버를_부르는지_알려_주되_서버_주소는_
     assert "10.0.3.7" not in out
 
 
+def test_자체_서빙을_켜고_돌리면_실패한_대화가_API_답으로_채점된다고_알린다(
+    monkeypatch, capsys
+) -> None:
+    # 켜 두면 GPU 가 실패한 대화를 API 가 대신 답해, GPU 통과율이 실제보다 높게 나온다
+    out = _plan(
+        monkeypatch,
+        capsys,
+        "https://openrouter.ai/api/v1",
+        EXTRACTION_SELF_HOSTED_MODE="on",
+        EXTRACTION_SELF_HOSTED_BASE_URL="http://10.0.3.7:8000/v1",
+        EXTRACTION_SELF_HOSTED_MODEL_ID="gpu-model",
+    )
+
+    assert "자체 서빙 켬" in out
+    assert "gpu-model" in out
+    assert "API 답으로 채점" in out
+    assert "10.0.3.7" not in out
+
+
 def test_yes를_붙이면_돌리고_표를_낸다(capsys) -> None:
     target, calls = _target()
 

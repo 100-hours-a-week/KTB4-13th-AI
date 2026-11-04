@@ -245,6 +245,17 @@ def _model_line() -> str:
         f"모델 {model or '(설정 없음)'}, 공급자 {settings.llm_provider or '(설정 없음)'}, "
         f"주소 {_where(settings.llm_base_url)}"
     )
+    if (
+        settings.extraction_self_hosted_mode == "on"
+        and settings.extraction_self_hosted_base_url
+        and settings.extraction_self_hosted_model_id
+    ):
+        # 켜 두면 자체 서빙이 실패한 대화를 위 API 가 대신 답한다. GPU 품질을 재는 실행이면 섞인다(#569)
+        line += (
+            f". 취향 뽑기 자체 서빙 켬: 모델 {settings.extraction_self_hosted_model_id}, "
+            f"주소 {_where(settings.extraction_self_hosted_base_url)}. "
+            "자체 서빙이 실패한 대화는 위 API 답으로 채점된다"
+        )
     return line
 
 
