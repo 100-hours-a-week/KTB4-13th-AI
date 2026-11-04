@@ -4,8 +4,12 @@
 하나씩 차례로 처리한다(명세 ⑥, #93).
 """
 
+# 홈 목록 장치(app/feed/build_queue.py)와 서로 부른다. 타입 표기를 함수를 만들 때 읽지 않게 한다
+from __future__ import annotations
+
 import json
 from collections.abc import Collection
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,7 +19,7 @@ import asyncpg
 from app.core import db, history, isbn
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
-from app.feed import interest_feed
+from app.feed import build_queue, interest_fetch
 from app.profile import compute, interests, labels
 from app.profile.compute import Profile
 from app.profile.schemas import USED_LIKED_BOOKS, Memory, Onboarding, ProfileRequest
@@ -67,16 +71,6 @@ WHERE b.isbn13 = ANY($1::text[])
 
 _READ_FIRST_SEEN_SQL = """
 SELECT book_first_seen::text FROM taste_profile WHERE user_id = $1
-"""
-
-# 추천 목록은 뽑을 때마다 판 번호를 올리고 바로 앞 판을 남긴다(#453). 오른쪽의 feed 는 바꾸기 전 값이다
-_SAVE_INTERESTS_SQL = """
-UPDATE taste_profile
-SET interest_scores = $2::jsonb, interest_vectors = $3::jsonb,
-    conditions = $4::jsonb, book_first_seen = $5::jsonb,
-    feed_prev = feed, feed = $6::jsonb, feed_version = feed_version + 1,
-    feed_partial = $7
-WHERE user_id = $1
 """
 
 
@@ -147,7 +141,26 @@ async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.His
 
 
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
-    """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다."""
+    """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다.
+
+    홈 목록을 응답 뒤에 만들도록 켜져 있어도 줄에 넣지 않고 그 자리에서 설정한 예산으로 만든다. 평가 도구가
+    이 길로 프로필 계산 시간을 잰다. 응답 뒤에 만드는 것은 rebuild_locked_on 이 한다.
+    """
+    cold_start, version, job = await _rebuild_on(conn, req)
+    if job is not None:
+        await build_queue.build_and_save(conn, job)
+    return cold_start, version
+
+
+async def _rebuild_on(
+    conn: asyncpg.Connection, req: ProfileRequest
+) -> tuple[bool, int, build_queue.Job | None]:
+    """계산해서 저장하고 (cold_start, profile_version, 줄에 넣을 작업) 을 돌려준다.
+
+    관심사별 홈 추천이 켜져 있으면 목록 칸에 요청 표를 적고 목록 재료를 계산한다. 목록을 응답 뒤에 만들도록
+    켜져 있으면(#581) 목록은 만들지 않고 재료를 작업으로 돌려준다. 꺼져 있으면 지금처럼 응답 안에서 3초
+    예산으로 만들어 저장하고 작업은 None 이다. 두 경우 모두 같은 재료와 같은 저장(build_queue)을 쓴다.
+    """
     hist = await _history(conn, req)
     # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
     # 같은 책을 두 번 적어 보내도(두 칸에 나눠 보내도) 한 번만 치고, 합쳐서 앞에서부터 상한만큼 쓴다.
@@ -176,27 +189,37 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
     version = compute.next_version(await _stored(conn, req.user_id), profile)
     await _save(conn, req.user_id, profile, version, hist.computed_at)
-    if get_settings().interest_feed:
-        owned = set(hist.weights) | hist.disliked_book_ids
-        await _save_interests(
-            conn, req, weights, vectors, owned, hist.disliked_book_ids
-        )
-    return profile.cold_start, version
+    settings = get_settings()
+    if not settings.interest_feed:
+        return profile.cold_start, version, None
+    owned = set(hist.weights) | hist.disliked_book_ids
+    token = await build_queue.mark(conn, req.user_id)
+    job = await _feed_job(
+        conn, req, weights, vectors, owned, hist.disliked_book_ids, token
+    )
+    if settings.profile_feed_async:
+        return profile.cold_start, version, job
+    await build_queue.build_and_save(
+        conn, replace(job, seconds=interest_fetch.BUDGET_SECONDS)
+    )
+    return profile.cold_start, version, None
 
 
-async def _save_interests(
+async def _feed_job(
     conn: asyncpg.Connection,
     req: ProfileRequest,
     weights: dict[int, float],
     vectors: dict[int, list[float]],
     owned: set[int],
     disliked: set[int],
-) -> None:
-    """관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날과 추천 목록을 저장한다(#440, #453).
+    token: str,
+) -> build_queue.Job:
+    """홈 목록 재료: 관심사 점수·관심사마다 책 벡터 평균·조건 목록·책을 처음 본 날(#440, #453).
 
     책은 취향 벡터에 쓴 것과 같다(좋아한 책과 이력, 2점 이하 리뷰를 단 책은 뺌). 벡터가 없는 책은 지금처럼
     쓰지 않는다. 챗봇이 쓰는 지금 칸(centroid, tag_weights)은 위에서 따로 저장했다. 추천 목록에서는 가진
-    책(owned: 이력의 책)을 빼고, 밤에 다시 뽑는 ⑨ 가 쓰도록 목록과 함께 남긴다(#537).
+    책(owned: 이력의 책)을 빼고, 밤에 다시 뽑는 ⑨ 가 쓰도록 목록과 함께 남긴다(#537). 목록과 이 값들은
+    build_queue.save 가 함께 저장한다.
     """
     rows = await conn.fetch(_BOOK_INFO_SQL, list(weights)) if weights else []
     isbns = [row["isbn13"] for row in rows if row["isbn13"]]
@@ -217,27 +240,19 @@ async def _save_interests(
         interests.memory_scores(memories),
         book_scores,
     )
-    conditions = interests.conditions(memories)
-    keyword_vectors = _keyword_vectors(memories)
-    feed = await interest_feed.build(
-        conn,
-        interests.combined(table),
-        interest_vectors,
-        keyword_vectors,
-        conditions,
-        owned,
-        book_anchors=interests.anchors(mine),
-    )
-    await conn.execute(
-        _SAVE_INTERESTS_SQL,
-        req.user_id,
-        json.dumps(table, ensure_ascii=False),
+    return build_queue.Job(
+        user_id=req.user_id,
+        token=token,
+        table=table,
+        book_vectors=interest_vectors,
         # 키워드 관심사의 핵심어 벡터도 남긴다. 밤에 목록을 다시 뽑는 ⑨ 는 요청 없이 저장된 것만 쓴다(#456)
-        json.dumps({**interest_vectors, **keyword_vectors}, ensure_ascii=False),
-        json.dumps(conditions, ensure_ascii=False),
-        json.dumps(first_seen),
-        json.dumps(feed.stored(owned, disliked), ensure_ascii=False),
-        bool(feed.substituted),
+        keyword_vectors=_keyword_vectors(memories),
+        conditions=interests.conditions(memories),
+        owned=frozenset(owned),
+        disliked=frozenset(disliked),
+        first_seen=first_seen,
+        book_anchors=interests.anchors(mine),
+        seconds=get_settings().profile_feed_seconds,
     )
 
 
@@ -319,7 +334,10 @@ async def rebuild_locked_on(
         await conn.execute(
             "SELECT pg_advisory_xact_lock($1, $2)", LOCK_SPACE, req.user_id
         )
-        cold_start, version = await rebuild_on(conn, req)
+        cold_start, version, job = await _rebuild_on(conn, req)
+    # 프로필과 요청 표가 확정된 뒤에 줄에 넣는다. 계산이 실패해 되돌려지면 넣지 않는다
+    if job is not None:
+        build_queue.submit(job)
     return {
         "message": "profile_success",
         "data": {"cold_start": cold_start, "profile_version": version},

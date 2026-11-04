@@ -130,7 +130,7 @@ async def build_and_save(conn: asyncpg.Connection, job: Job) -> bool:
     )
     saved = await save(conn, job, feed)
     logger.info(
-        "홈 목록을 뒤에서 만들었다(사용자 %s): %s, %.2f초, 대신 채운 관심사 %d개",
+        "홈 목록을 만들었다(사용자 %s): %s, %.2f초, 대신 채운 관심사 %d개",
         job.user_id,
         "저장" if saved else "새 요청이 있어 버림",
         time.monotonic() - started,
