@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -141,8 +142,20 @@ async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.His
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
     """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다.
 
-    관심사별 홈 추천이 켜져 있으면 목록 칸에 요청 표를 적고, 목록 재료를 계산해 목록을 만들어 저장한다.
-    재료와 저장은 홈 목록 장치(build_queue)와 같다.
+    홈 목록을 응답 뒤에 만들도록 켜져 있어도 줄에 넣지 않는다. 줄에 넣는 것은 rebuild_locked_on 이 한다.
+    """
+    cold_start, version, _ = await _rebuild_on(conn, req)
+    return cold_start, version
+
+
+async def _rebuild_on(
+    conn: asyncpg.Connection, req: ProfileRequest
+) -> tuple[bool, int, build_queue.Job | None]:
+    """계산해서 저장하고 (cold_start, profile_version, 줄에 넣을 작업) 을 돌려준다.
+
+    관심사별 홈 추천이 켜져 있으면 목록 칸에 요청 표를 적고 목록 재료를 계산한다. 목록을 응답 뒤에 만들도록
+    켜져 있으면(#581) 목록은 만들지 않고 재료를 작업으로 돌려준다. 꺼져 있으면 지금처럼 응답 안에서 3초
+    예산으로 만들어 저장하고 작업은 None 이다. 두 경우 모두 같은 재료와 같은 저장(build_queue)을 쓴다.
     """
     hist = await _history(conn, req)
     # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
@@ -172,14 +185,20 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
     version = compute.next_version(await _stored(conn, req.user_id), profile)
     await _save(conn, req.user_id, profile, version, hist.computed_at)
-    if get_settings().interest_feed:
-        owned = set(hist.weights) | hist.disliked_book_ids
-        token = await build_queue.mark(conn, req.user_id)
-        job = await _feed_job(
-            conn, req, weights, vectors, owned, hist.disliked_book_ids, token
-        )
-        await build_queue.build_and_save(conn, job)
-    return profile.cold_start, version
+    settings = get_settings()
+    if not settings.interest_feed:
+        return profile.cold_start, version, None
+    owned = set(hist.weights) | hist.disliked_book_ids
+    token = await build_queue.mark(conn, req.user_id)
+    job = await _feed_job(
+        conn, req, weights, vectors, owned, hist.disliked_book_ids, token
+    )
+    if settings.profile_feed_async:
+        return profile.cold_start, version, job
+    await build_queue.build_and_save(
+        conn, replace(job, seconds=interest_fetch.BUDGET_SECONDS)
+    )
+    return profile.cold_start, version, None
 
 
 async def _feed_job(
@@ -229,7 +248,7 @@ async def _feed_job(
         disliked=frozenset(disliked),
         first_seen=first_seen,
         book_anchors=interests.anchors(mine),
-        seconds=interest_fetch.BUDGET_SECONDS,
+        seconds=get_settings().profile_feed_seconds,
     )
 
 
@@ -311,7 +330,10 @@ async def rebuild_locked_on(
         await conn.execute(
             "SELECT pg_advisory_xact_lock($1, $2)", LOCK_SPACE, req.user_id
         )
-        cold_start, version = await rebuild_on(conn, req)
+        cold_start, version, job = await _rebuild_on(conn, req)
+    # 프로필과 요청 표가 확정된 뒤에 줄에 넣는다. 계산이 실패해 되돌려지면 넣지 않는다
+    if job is not None:
+        build_queue.submit(job)
     return {
         "message": "profile_success",
         "data": {"cold_start": cold_start, "profile_version": version},
