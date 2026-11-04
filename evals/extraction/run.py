@@ -22,6 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -240,7 +241,31 @@ def _model_line() -> str:
         return "LLM_MOCK=true 라서 진짜 LLM 을 부르지 않는다(이 API 는 503 으로 답한다)"
     # ⑤는 자기 모델 설정이 있으면 그것을, 없으면 챗봇과 같은 모델을 쓴다(app/extraction/service.py)
     model = settings.extraction_llm_model_id or settings.llm_model_id
-    return f"모델 {model or '(설정 없음)'}, 공급자 {settings.llm_provider or '(설정 없음)'}"
+    line = (
+        f"모델 {model or '(설정 없음)'}, 공급자 {settings.llm_provider or '(설정 없음)'}, "
+        f"주소 {_where(settings.llm_base_url)}"
+    )
+    return line
+
+
+# 기록에 이름으로 남길 공개 API. 그 밖의 서버(GPU 서버 등)는 주소를 남기지 않는다 — 기록이 GitHub 에 올라간다
+_PUBLIC_API_HOSTS = {
+    "openrouter.ai": "OpenRouter API",
+    "api.openai.com": "OpenAI API",
+    "generativelanguage.googleapis.com": "Gemini API",
+}
+
+
+def _where(base_url: str) -> str:
+    """LLM 주소가 어느 쪽인지. 같은 평가로 API(#568)와 GPU(#569)를 재서, 기록만 보고 갈라야 한다."""
+    parts = urlsplit(base_url)
+    host = parts.hostname or ""
+    if host in _PUBLIC_API_HOSTS:
+        return _PUBLIC_API_HOSTS[host]
+    if host in ("localhost", "127.0.0.1", "::1"):
+        # 로컬 Ollama 나 GPU 서버로 가는 포트포워딩. 포트로 가른다
+        return f"이 컴퓨터({host}:{parts.port})"
+    return "그 밖의 서버(주소는 남기지 않음)"
 
 
 def _split(text: str | None) -> list[str] | None:
