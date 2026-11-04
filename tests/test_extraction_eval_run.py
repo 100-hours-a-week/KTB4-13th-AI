@@ -68,8 +68,13 @@ def test_묶음_전체를_기대대로_답하면_전부_통과한다() -> None:
     # 기대 문장이 자기 찾는 말을 담지 않거나 금지어를 담으면, 맞게 뽑아도 통과할 수 없는 대화가 된다
     summary, calls = _run(_CASES)
 
-    assert len(calls) == len(_CASES) == 94
-    assert summary["total"] == {"cases": 94, "runs": 94, "passed": 94, "pass_rate": 1.0}
+    assert len(calls) == len(_CASES) == 179
+    assert summary["total"] == {
+        "cases": 179,
+        "runs": 179,
+        "passed": 179,
+        "pass_rate": 1.0,
+    }
     assert summary["failures"] == {}
 
 
@@ -79,11 +84,11 @@ def test_세_칸을_기대대로_답하면_맞은_비율이_모두_100이다() -
     summary, _calls = _run(_CASES)
 
     assert summary["labels"] == {
-        "labeled": 76,
+        "labeled": 163,
         "sign": 1.0,
         "strength": 1.0,
         "keyword": 1.0,
-        "where_labeled": 47,
+        "where_labeled": 117,
         "where": 1.0,
     }
 

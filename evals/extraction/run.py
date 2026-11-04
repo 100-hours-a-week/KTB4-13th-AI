@@ -40,7 +40,7 @@ def load_bundle() -> dict[str, Any]:
 
 
 def load_cases() -> list[dict[str, Any]]:
-    """대화 목록. 대화마다 자기 종류의 묶음(typical·guard)을 `group` 으로 붙여 준다."""
+    """대화 목록. 대화마다 자기 종류의 묶음(typical·guard·borrowed)을 `group` 으로 붙여 준다."""
     bundle = load_bundle()
     return [
         {**case, "group": bundle["kinds"][case["kind"]]["group"]}
@@ -253,7 +253,7 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
     )
     parser.add_argument("--kinds", help="돌릴 종류(쉼표로 여럿). 예: request,none")
     parser.add_argument("--ids", help="돌릴 대화 번호(쉼표로 여럿). 예: request-01")
-    parser.add_argument("--group", help="돌릴 묶음: typical 또는 guard")
+    parser.add_argument("--group", help="돌릴 묶음: typical, guard, borrowed")
     parser.add_argument(
         "--runs", type=int, default=1, help="대화마다 몇 번 돌릴지(기본 1)"
     )
