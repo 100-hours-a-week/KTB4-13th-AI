@@ -31,6 +31,10 @@ PICK_MAX = 200
 # 서버는 프로세스 하나로 돈다(Dockerfile 의 uvicorn)
 _BUILDING = asyncio.Lock()
 
+# 목록 칸(taste_profile.feed) 안의 요청 표 키. 목록을 뒤에서 만들 때 프로필 계산이 요청마다 새 표를 적고,
+# 뒤의 작업은 표가 그대로일 때만 저장한다(#580). 그새 새 요청이 오면 늦게 끝난 옛 목록을 버린다
+PENDING = "pending"
+
 # 세부 카테고리 → 속한 카테고리
 _PARENT = {
     name: parent for parent, group in categories.SUBCATEGORIES.items() for name in group

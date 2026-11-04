@@ -204,3 +204,33 @@ def test_저장된_목록과_앞_판을_읽고_없으면_None이다() -> None:
     # 커서에 기록용으로 실을 프로필 판 번호도 읽는다(#473)
     assert saved == interest_page.Stored(_NEW, 3, _OLD, profile_version=1)
     assert missing is None
+
+
+@_needs_db
+def test_요청_표만_있고_책이_없는_목록은_없는_것으로_본다() -> None:
+    # 프로필 계산이 목록을 뒤에서 만들 때는 목록 칸에 요청 표부터 적는다(#580). 처음 쓰는 사용자는 표만
+    # 있고 책이 없어서, 이걸 목록으로 읽으면 홈이 500 으로 답하고 지금 방식으로도 못 간다
+    async def check(conn):
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, cold_start, profile_version, feed)"
+            " VALUES ($1, false, 1, $2::jsonb)",
+            _USER,
+            json.dumps({"pending": "새 요청"}),
+        )
+        await conn.execute(
+            "INSERT INTO taste_profile (user_id, cold_start, profile_version, feed,"
+            " feed_version, feed_prev) VALUES ($1, false, 1, $2::jsonb, 3, $3::jsonb)",
+            _USER + 1,
+            json.dumps({"books": _NEW, "substituted": [], "pending": "새 요청"}),
+            json.dumps({"pending": "옛 요청"}),
+        )
+        return (
+            await interest_page.stored(conn, _USER),
+            await interest_page.stored(conn, _USER + 1),
+        )
+
+    first, rebuilding = asyncio.run(_with_books(check))
+
+    assert first is None
+    # 만들고 있는 동안에도 지금 목록은 그대로 보인다. 책이 없는 앞 판은 없는 것으로 본다
+    assert rebuilding == interest_page.Stored(_NEW, 3, None, profile_version=1)
