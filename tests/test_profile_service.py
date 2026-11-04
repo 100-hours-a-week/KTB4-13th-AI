@@ -887,3 +887,24 @@ def test_관심사별_추천이_꺼져_있으면_줄에_넣지_않는다(
     _run_with_interest_tables(check)
 
     assert submitted == []
+
+
+def test_켜져_있어도_rebuild_on_은_그_자리에서_설정한_예산으로_목록을_만든다(
+    submitted, interest_feed
+) -> None:
+    # 평가 도구(evals/feed/profile_timing.py)는 응답 경로가 아닌 rebuild_on 으로 잰다. 줄에 넣지 않고 작업을
+    # 버리면 표만 바뀌고 목록 뽑기 시간이 빠진 숫자가 나온다
+    interest_feed.feeds = [Feed([Placed(9100201, "요리", 80)], ())]
+
+    async def check(conn):
+        await service.rebuild_on(conn, _async_request())
+        return await _feed_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert submitted == []
+    assert [call["seconds"] for call in interest_feed.calls] == [10.0]
+    assert row["feed"]["books"] == [
+        {"book_id": 9100201, "interest": "요리", "match_score": 80}
+    ]
+    assert row["feed_version"] == 1

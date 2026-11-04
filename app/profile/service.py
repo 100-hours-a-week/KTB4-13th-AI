@@ -142,9 +142,12 @@ async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.His
 async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[bool, int]:
     """계산해서 저장하고 (cold_start, profile_version) 을 돌려준다. 부르는 쪽이 트랜잭션을 연다.
 
-    홈 목록을 응답 뒤에 만들도록 켜져 있어도 줄에 넣지 않는다. 줄에 넣는 것은 rebuild_locked_on 이 한다.
+    홈 목록을 응답 뒤에 만들도록 켜져 있어도 줄에 넣지 않고 그 자리에서 설정한 예산으로 만든다. 평가 도구가
+    이 길로 프로필 계산 시간을 잰다. 응답 뒤에 만드는 것은 rebuild_locked_on 이 한다.
     """
-    cold_start, version, _ = await _rebuild_on(conn, req)
+    cold_start, version, job = await _rebuild_on(conn, req)
+    if job is not None:
+        await build_queue.build_and_save(conn, job)
     return cold_start, version
 
 
