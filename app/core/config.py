@@ -4,7 +4,10 @@
 """
 
 from functools import lru_cache
+from typing import Self
+from urllib.parse import quote, urlsplit
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,8 +29,10 @@ class Settings(BaseSettings):
     release_sha: str = "dev"
 
     # --- AI 전용 PostgreSQL ---
-    # 기본값이 없다 = 필수. 없으면 앱이 아예 뜨지 않는다
-    database_url: str
+    # URL 은 필수다. 별도로 입력한 계정·비밀번호가 있으면 URL 안의 값보다 우선한다.
+    database_url: str = Field(repr=False)
+    db_username: str = ""
+    db_password: str = Field(default="", repr=False)
     db_pool_min: int = 1
     db_pool_max: int = 10
 
@@ -91,6 +96,37 @@ class Settings(BaseSettings):
     # --- 로컬 개발 전용: dev/ 테스트 화면이 브라우저에서 직접 호출할 때만 필요.
     # 비어있으면(기본) 아무 효과 없다. BE 연동 시작하면 이 줄과 dev/ 폴더를 같이 지운다.
     dev_cors_origins: str = ""
+
+    @model_validator(mode="after")
+    def resolve_database_url(self) -> Self:
+        if not self.database_url:
+            raise ValueError("DATABASE_URL을 설정해야 합니다")
+        if not self.db_username and not self.db_password:
+            return self
+
+        url = urlsplit(self.database_url)
+        if url.scheme not in {"postgresql", "postgres"}:
+            raise ValueError(
+                "DATABASE_URL은 postgresql:// 또는 postgres:// 형식이어야 합니다"
+            )
+
+        # 새 계정·비밀번호만 인코딩한다. URL 의 기존 인코딩과 연결 옵션은 보존한다.
+        username = (
+            quote(self.db_username, safe="") if self.db_username else url.username
+        )
+        password = (
+            quote(self.db_password, safe="") if self.db_password else url.password
+        )
+        if not username:
+            raise ValueError(
+                "DB_USERNAME 또는 DATABASE_URL 안의 계정을 설정해야 합니다"
+            )
+        credentials = username
+        if password is not None:
+            credentials += f":{password}"
+        host = url.netloc.rsplit("@", 1)[-1]
+        self.database_url = url._replace(netloc=f"{credentials}@{host}").geturl()
+        return self
 
 
 @lru_cache
