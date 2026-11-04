@@ -152,6 +152,8 @@ class Queue:
         # 이벤트는 처음 기다린 루프에 묶인다. 켤 때마다 그 루프에서 새로 만든다
         self._ready: asyncio.Event | None = None
         self._worker: asyncio.Task | None = None
+        # 일꾼이 지금 만드는 작업의 사용자. 내려갈 때 버리는 수에 넣는다
+        self._building: int | None = None
 
     @property
     def waiting(self) -> int:
@@ -170,8 +172,13 @@ class Queue:
             self._worker = asyncio.create_task(self._work(self._ready))
 
     async def stop(self) -> None:
-        """일꾼을 멈추고 줄을 비운다. 만들던 목록은 저장하지 않는다."""
-        dropped = len(self._jobs)
+        """일꾼을 멈추고 줄을 비운다. 만들던 목록은 저장하지 않는다.
+
+        만들던 것과 남은 줄을 더해 버린 수를 경고로 남긴다. 새 서버를 먼저 띄우고 옛 서버를 내리는 배포에서는
+        줄이 대개 비어 있어, 끊기는 것은 주로 만들던 하나다. 이 경고가 배포 때 자주 보이면 내려가기 전에
+        만들던 것을 마치게 한다(지금은 하지 않는다).
+        """
+        dropped = len(self._jobs) + (self._building is not None)
         self._jobs.clear()
         if self._worker is not None:
             self._worker.cancel()
@@ -194,12 +201,15 @@ class Queue:
                     time.monotonic() - submitted,
                     len(self._jobs),
                 )
+                self._building = user_id
                 try:
                     await self._run(job)
                 except Exception:
                     logger.exception(
                         "홈 목록을 뒤에서 만들지 못했다(사용자 %s)", user_id
                     )
+                finally:
+                    self._building = None
             ready.clear()
 
 

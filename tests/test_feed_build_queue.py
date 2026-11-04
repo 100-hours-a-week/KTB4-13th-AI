@@ -6,6 +6,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -389,7 +390,9 @@ def test_작업이_실패해도_다음_작업을_한다() -> None:
     assert asyncio.run(go()).started == ["a", "b"]
 
 
-def test_멈추면_만들던_작업과_남은_작업을_버리고_일꾼이_끝난다() -> None:
+def test_멈추면_만들던_작업과_남은_작업을_버리고_일꾼이_끝난다(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=build_queue.__name__)
+
     async def go():
         recorder = _Recorder(expect=2)
         queue = build_queue.Queue(recorder)
@@ -407,6 +410,8 @@ def test_멈추면_만들던_작업과_남은_작업을_버리고_일꾼이_끝�
     # 끊긴 사용자는 다음 프로필 계산 때 갱신된다
     assert recorder.started == ["a"]
     assert queue.waiting == 0
+    # 만들던 작업도 버린 수에 든다. 배포 때 끊긴 목록을 이 경고로 센다
+    assert "홈 목록 2개를 만들지 못했다" in caplog.text
 
 
 def test_앱이_뜨면_일꾼을_켜고_내려갈_때는_DB_연결을_닫기_전에_멈춘다(
