@@ -233,10 +233,12 @@ def test_사이에_밤_다시_뽑기가_저장해도_뒤의_작업_목록이_남
 @_needs_db
 def test_밤_다시_뽑기가_그_사용자를_뽑는_중이면_저장은_끝날_때까지_기다린다() -> None:
     # 밤 다시 뽑기는 사용자 잠금을 쥔 채 옛 관심사 값으로 목록을 뽑는다. 저장이 기다리지 않으면, 먼저 저장한
-    # 새 목록을 밤 다시 뽑기가 옛 값으로 만든 목록으로 덮는다. 두 연결이 서로를 봐야 해서 넣고 끝나면 지운다
+    # 새 목록을 밤 다시 뽑기가 옛 값으로 만든 목록으로 덮는다. 두 연결이 서로를 봐야 해서 넣고 끝나면 지운다.
+    # 밤 다시 뽑기는 6초 예산으로 뽑아 앱 연결의 문장 제한(5초)보다 오래 쥘 수 있다. 저장 쪽 연결에 그보다
+    # 짧은 문장 제한을 걸고 그보다 오래 쥔다. 그 제한에 걸려 끊기면 최신 요청의 목록이 저장되지 않고 사라진다
     async def go():
         holder = await asyncpg.connect(_DB_URL)
-        worker = await asyncpg.connect(_DB_URL)
+        worker = await asyncpg.connect(_DB_URL, command_timeout=0.3)
         try:
             await _insert(worker, _OLD, version=3)
             token = await build_queue.mark(worker, _USER)
@@ -250,7 +252,7 @@ def test_밤_다시_뽑기가_그_사용자를_뽑는_중이면_저장은_끝날
             saving = asyncio.create_task(
                 build_queue.save(worker, _job(token), _feed(2))
             )
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.6)
             waited = not saving.done()
             await tx.commit()
             return waited, await saving
