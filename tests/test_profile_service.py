@@ -14,6 +14,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
+from app.feed import build_queue
 from app.feed.interest_feed import Feed
 from app.feed.interest_list import Placed
 from app.profile import labels, service
@@ -566,6 +567,7 @@ class _FakeBuild:
         conditions,
         owned,
         book_anchors=None,
+        seconds=None,
     ):
         self.calls.append(
             {
@@ -574,6 +576,7 @@ class _FakeBuild:
                 "conditions": conditions,
                 "owned": owned,
                 "book_anchors": book_anchors,
+                "seconds": seconds,
             }
         )
         return self.feeds.pop(0) if self.feeds else Feed([], ())
@@ -585,7 +588,7 @@ def interest_feed(monkeypatch: pytest.MonkeyPatch) -> _FakeBuild:
     # 소설의 장르를 가를 이름 벡터는 없다고 친다. 다른 테스트가 만들어 둔 것을 쓰지 않는다
     monkeypatch.setattr(labels, "_name_vectors", {})
     build = _FakeBuild()
-    monkeypatch.setattr(service.interest_feed, "build", build)
+    monkeypatch.setattr(build_queue.interest_feed, "build", build)
     return build
 
 
@@ -712,6 +715,8 @@ def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가�
     assert call["conditions"] == ["300쪽 이하"]
     # 산 책은 빼고, 좋아한다고만 한 책(9100201)은 빼지 않는다
     assert call["owned"] == {9100202}
+    # 응답 안에서 만들 때는 BE 가 기다리므로 지금처럼 3초 예산이다
+    assert call["seconds"] == 3.0
 
 
 def test_목록을_뽑을_때_뺀_가진_책과_싫어한_책을_목록과_함께_남긴다(
