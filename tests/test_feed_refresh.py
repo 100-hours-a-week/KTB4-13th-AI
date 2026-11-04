@@ -215,6 +215,21 @@ def test_대체_자리가_표시된_목록을_저장된_프로필로_다시_뽑�
 
 
 @_needs_db
+def test_다시_뽑아_저장해도_뒤에서_만드는_중인_요청_표는_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 프로필 계산이 표를 적고 뒤의 작업이 목록을 저장하기 전에 다시 뽑기가 끼면, 표가 지워져 뒤의 작업이
+    # 최신 요청으로 만든 목록을 옛것으로 보고 버린다(#580). 표를 남겨야 뒤의 작업이 그 위를 덮는다
+    build = _FakeBuild(Feed([Placed(2, "요리", 80)], ()))
+
+    _, rows = _run_refresh(monkeypatch, build, {_A: (True, _feed(pending="새 요청"))})
+
+    feed = json.loads(rows[_A]["feed"])
+    assert feed["books"] == [{"book_id": 2, "interest": "요리", "match_score": 80}]
+    assert feed["pending"] == "새 요청"
+
+
+@_needs_db
 def test_또_넘기면_저장된_목록을_두고_표시만_남겨_그_밤에는_다시_집지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
