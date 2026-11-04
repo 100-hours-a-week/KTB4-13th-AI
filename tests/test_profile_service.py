@@ -14,6 +14,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
+from app.feed import build_queue
 from app.feed.interest_feed import Feed
 from app.feed.interest_list import Placed
 from app.profile import labels, service
@@ -566,6 +567,7 @@ class _FakeBuild:
         conditions,
         owned,
         book_anchors=None,
+        seconds=None,
     ):
         self.calls.append(
             {
@@ -574,6 +576,7 @@ class _FakeBuild:
                 "conditions": conditions,
                 "owned": owned,
                 "book_anchors": book_anchors,
+                "seconds": seconds,
             }
         )
         return self.feeds.pop(0) if self.feeds else Feed([], ())
@@ -585,7 +588,7 @@ def interest_feed(monkeypatch: pytest.MonkeyPatch) -> _FakeBuild:
     # 소설의 장르를 가를 이름 벡터는 없다고 친다. 다른 테스트가 만들어 둔 것을 쓰지 않는다
     monkeypatch.setattr(labels, "_name_vectors", {})
     build = _FakeBuild()
-    monkeypatch.setattr(service.interest_feed, "build", build)
+    monkeypatch.setattr(build_queue.interest_feed, "build", build)
     return build
 
 
@@ -712,6 +715,8 @@ def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가�
     assert call["conditions"] == ["300쪽 이하"]
     # 산 책은 빼고, 좋아한다고만 한 책(9100201)은 빼지 않는다
     assert call["owned"] == {9100202}
+    # 응답 안에서 만들 때는 BE 가 기다리므로 지금처럼 3초 예산이다
+    assert call["seconds"] == 3.0
 
 
 def test_목록을_뽑을_때_뺀_가진_책과_싫어한_책을_목록과_함께_남긴다(
@@ -769,3 +774,137 @@ def test_기능_플래그가_꺼져_있으면_새_칸을_쓰지_않는다() -> N
         "feed_prev": None,
         "feed_partial": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# 목록을 응답 뒤에 만들기(#581). 켜면 프로필과 요청 표만 저장하고 답한 뒤, 목록은 서버 안 줄에 넣는다.
+# ---------------------------------------------------------------------------
+
+
+def _async_request() -> ProfileRequest:
+    return _request(
+        onboarding={"categories": ["역사"], "liked_book_ids": [9100201]},
+        memories=_memories(),
+        history={
+            "purchased_isbns": [_isbn(9100202)],
+            "reviews": [{"isbn": _isbn(9100202), "rating": 1.0}],
+        },
+    )
+
+
+@pytest.fixture
+def submitted(interest_feed, monkeypatch: pytest.MonkeyPatch) -> list:
+    """목록을 응답 뒤에 만들도록 켜고, 줄에 넣은 작업을 모은다."""
+    monkeypatch.setattr(get_settings(), "profile_feed_async", True)
+    monkeypatch.setattr(get_settings(), "profile_feed_seconds", 10.0)
+    jobs: list = []
+    monkeypatch.setattr(service.build_queue, "submit", jobs.append)
+    return jobs
+
+
+def test_켜면_프로필과_요청_표만_저장하고_목록은_응답_뒤에_만들도록_줄에_넣는다(
+    submitted, interest_feed, at_now
+) -> None:
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _async_request())
+        return await _row(conn), await _interest_row(conn), await _feed_row(conn)
+
+    profile, values, feed = _run_with_interest_tables(check)
+
+    assert profile["cold_start"] is False
+    # 응답 전에 목록을 뽑지 않는다
+    assert interest_feed.calls == []
+    [job] = submitted
+    assert feed == {
+        "feed": {"pending": job.token},
+        "feed_version": 0,
+        "feed_prev": None,
+        "feed_partial": False,
+    }
+    # 관심사 값은 뒤의 작업이 목록과 함께 저장한다
+    assert values == {
+        "interest_scores": {},
+        "interest_vectors": {},
+        "conditions": [],
+        "book_first_seen": {},
+    }
+    assert (job.user_id, job.seconds) == (_USER, 10.0)
+
+
+def test_줄에_넣은_작업은_응답_전에_만들_때와_같은_재료로_같은_목록과_값을_저장한다(
+    submitted, at_now, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 재료를 저장값에서 다시 읽지 않고 요청으로 계산한 값을 넘기므로, 넘긴 재료가 지금과 같아야 한다
+    built = Feed([Placed(9100201, "요리", 80)], ("작가:한강",))
+    calls = []
+
+    async def build(
+        conn, scores, book_vectors, keyword_vectors, conditions, owned, **options
+    ):
+        calls.append(
+            (
+                scores,
+                book_vectors,
+                keyword_vectors,
+                conditions,
+                owned,
+                options["book_anchors"],
+            )
+        )
+        return built
+
+    monkeypatch.setattr(build_queue.interest_feed, "build", build)
+    settings = get_settings()
+
+    async def check(conn):
+        monkeypatch.setattr(settings, "profile_feed_async", False)
+        await service.rebuild_locked_on(conn, _async_request())
+        before = (await _interest_row(conn), await _feed_row(conn))
+        await conn.execute("DELETE FROM taste_profile WHERE user_id = $1", _USER)
+        monkeypatch.setattr(settings, "profile_feed_async", True)
+        await service.rebuild_locked_on(conn, _async_request())
+        [job] = submitted
+        await build_queue.build_and_save(conn, job)
+        return before, (await _interest_row(conn), await _feed_row(conn))
+
+    before, after = _run_with_interest_tables(check)
+
+    assert after == before
+    assert calls[1] == calls[0]
+    # 산 책과 싫어한 책도 지금처럼 목록과 함께 남는다
+    assert after[1]["feed"]["owned"] == [9100202]
+    assert after[1]["feed"]["disliked"] == [9100202]
+
+
+def test_관심사별_추천이_꺼져_있으면_줄에_넣지_않는다(
+    submitted, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "interest_feed", False)
+
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _async_request())
+
+    _run_with_interest_tables(check)
+
+    assert submitted == []
+
+
+def test_켜져_있어도_rebuild_on_은_그_자리에서_설정한_예산으로_목록을_만든다(
+    submitted, interest_feed
+) -> None:
+    # 평가 도구(evals/feed/profile_timing.py)는 응답 경로가 아닌 rebuild_on 으로 잰다. 줄에 넣지 않고 작업을
+    # 버리면 표만 바뀌고 목록 뽑기 시간이 빠진 숫자가 나온다
+    interest_feed.feeds = [Feed([Placed(9100201, "요리", 80)], ())]
+
+    async def check(conn):
+        await service.rebuild_on(conn, _async_request())
+        return await _feed_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert submitted == []
+    assert [call["seconds"] for call in interest_feed.calls] == [10.0]
+    assert row["feed"]["books"] == [
+        {"book_id": 9100201, "interest": "요리", "match_score": 80}
+    ]
+    assert row["feed_version"] == 1
