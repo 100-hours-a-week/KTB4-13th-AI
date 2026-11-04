@@ -4,14 +4,16 @@
 """
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
 import asyncpg
 import pytest
 
-from app.feed import build_queue, refresh
+from app.feed import build_queue, interest_feed, refresh
 from app.feed.interest_feed import Feed
 from app.feed.interest_list import Placed
 
@@ -265,3 +267,224 @@ def test_밤_다시_뽑기가_그_사용자를_뽑는_중이면_저장은_끝날
 
     assert waited is True
     assert saved is True
+
+
+@_needs_db
+def test_뒤의_작업은_받은_재료로_목록을_뽑아_저장한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    async def fake_build(conn, scores, book_vectors, keyword_vectors, *rest, **options):
+        calls.append((scores, book_vectors, keyword_vectors, *rest, options))
+        return _feed(2)
+
+    monkeypatch.setattr(interest_feed, "build", fake_build)
+
+    async def check(conn):
+        await _insert(conn, _OLD, version=3)
+        token = await build_queue.mark(conn, _USER)
+        saved = await build_queue.build_and_save(conn, _job(token, seconds=10.0))
+        return saved, await _row(conn)
+
+    saved, row = _run(check)
+
+    assert saved is True
+    assert row["feed"]["books"] == _books(2)
+    # 저장값을 읽지 않고 받은 재료를 그대로 넘긴다. 점수는 관심사마다 하나로 합친다
+    assert calls == [
+        (
+            {"요리": 1.0},
+            {"요리": [0.1]},
+            {"키워드:고양이": [0.2]},
+            ["쪽수<300"],
+            frozenset({9_100_031, 9_100_032}),
+            {"seconds": 10.0, "book_anchors": {"요리": (9_100_031,)}},
+        )
+    ]
+
+
+# --- 서버 안 대기줄 ---
+
+
+class _Recorder:
+    """작업을 받은 차례를 남기고, gate 가 열릴 때까지 작업을 붙잡는다. expect 개를 끝내면 done 이 켜진다."""
+
+    def __init__(self, expect: int, fail_on: frozenset[str] = frozenset()) -> None:
+        self.started: list[str] = []
+        self.running = 0
+        self.most_at_once = 0
+        self.finished = 0
+        self.expect = expect
+        self.fail_on = fail_on
+        self.gate = asyncio.Event()
+        self.done = asyncio.Event()
+
+    async def __call__(self, job: build_queue.Job) -> None:
+        self.started.append(job.token)
+        self.running += 1
+        self.most_at_once = max(self.most_at_once, self.running)
+        try:
+            await self.gate.wait()
+            if job.token in self.fail_on:
+                raise RuntimeError("목록 뽑기 실패")
+        finally:
+            self.running -= 1
+            self.finished += 1
+            if self.finished == self.expect:
+                self.done.set()
+
+
+async def _drain(queue: build_queue.Queue, recorder: _Recorder) -> None:
+    recorder.gate.set()
+    await asyncio.wait_for(recorder.done.wait(), 1)
+    await queue.stop()
+
+
+def test_넣은_차례대로_한_번에_하나씩_만든다() -> None:
+    async def go():
+        recorder = _Recorder(expect=3)
+        queue = build_queue.Queue(recorder)
+        queue.start()
+        for user, token in ((1, "a"), (2, "b"), (3, "c")):
+            queue.submit(_job(token, user_id=user))
+        await _drain(queue, recorder)
+        return recorder
+
+    recorder = asyncio.run(go())
+
+    assert recorder.started == ["a", "b", "c"]
+    # 기다리는 작업이 DB 연결을 붙잡지 않고, 목록은 서버 안에서 하나씩 뽑는다
+    assert recorder.most_at_once == 1
+
+
+def test_같은_사람의_작업이_줄에_있으면_새_작업으로_바꾸고_자리는_그대로다() -> None:
+    async def go():
+        recorder = _Recorder(expect=3)
+        queue = build_queue.Queue(recorder)
+        queue.start()
+        queue.submit(_job("처음", user_id=1))
+        await asyncio.sleep(0)  # 첫 작업이 시작해 gate 에서 기다린다
+        queue.submit(_job("옛 요청", user_id=2))
+        queue.submit(_job("다른 사람", user_id=3))
+        queue.submit(_job("새 요청", user_id=2))
+        await _drain(queue, recorder)
+        return recorder
+
+    recorder = asyncio.run(go())
+
+    # 옛 요청의 목록은 어차피 저장 때 버려지므로 만들지 않는다
+    assert recorder.started == ["처음", "새 요청", "다른 사람"]
+
+
+def test_작업이_실패해도_다음_작업을_한다() -> None:
+    async def go():
+        recorder = _Recorder(expect=2, fail_on=frozenset({"a"}))
+        queue = build_queue.Queue(recorder)
+        queue.start()
+        queue.submit(_job("a", user_id=1))
+        queue.submit(_job("b", user_id=2))
+        await _drain(queue, recorder)
+        return recorder
+
+    assert asyncio.run(go()).started == ["a", "b"]
+
+
+def test_멈추면_만들던_작업과_남은_작업을_버리고_일꾼이_끝난다(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=build_queue.__name__)
+
+    async def go():
+        recorder = _Recorder(expect=2)
+        queue = build_queue.Queue(recorder)
+        queue.start()
+        queue.submit(_job("a", user_id=1))
+        queue.submit(_job("b", user_id=2))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(queue.stop(), 1)
+        recorder.gate.set()
+        await asyncio.sleep(0)
+        return recorder, queue
+
+    recorder, queue = asyncio.run(go())
+
+    # 끊긴 사용자는 다음 프로필 계산 때 갱신된다
+    assert recorder.started == ["a"]
+    assert queue.waiting == 0
+    # 만들던 작업도 버린 수에 든다. 배포 때 끊긴 목록을 이 경고로 센다
+    assert "홈 목록 2개를 만들지 못했다" in caplog.text
+
+
+def test_앱이_뜨면_일꾼을_켜고_내려갈_때는_DB_연결을_닫기_전에_멈춘다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 연결 풀을 먼저 닫으면 만들던 목록이 닫힌 풀을 쓰다 실패한다
+    from app import main
+
+    events: list[str] = []
+
+    class _FakeDb:
+        async def connect(self) -> None:
+            events.append("db.connect")
+
+        async def disconnect(self) -> None:
+            events.append("db.disconnect")
+
+        def get_pool(self):
+            return self
+
+        def acquire(self):
+            return contextlib.nullcontext()
+
+        async def report_missing_indexes(self, conn) -> None:
+            pass
+
+    async def stop() -> None:
+        events.append("queue.stop")
+
+    monkeypatch.setattr(main.cursor, "check_key", lambda: None)
+    monkeypatch.setattr(main, "db", _FakeDb())
+    monkeypatch.setattr(main.embedding, "load_model", lambda: None)
+    monkeypatch.setattr(main.labels, "load", _no_labels)
+    monkeypatch.setattr(build_queue, "start", lambda: events.append("queue.start"))
+    monkeypatch.setattr(build_queue, "stop", stop)
+
+    async def run() -> None:
+        async with main.lifespan(main.app):
+            events.append("serving")
+
+    asyncio.run(run())
+
+    assert events == [
+        "db.connect",
+        "queue.start",
+        "serving",
+        "queue.stop",
+        "db.disconnect",
+    ]
+
+
+async def _no_labels() -> None:
+    pass
+
+
+def test_이벤트_루프가_바뀌어도_다시_켜서_작업을_만든다() -> None:
+    # 줄은 모듈에 하나라 앱을 띄우고 내리기를 되풀이하면(테스트가 lifespan 을 여러 번 돌린다) 루프가
+    # 바뀐다. 처음 루프에 묶인 채면 두 번째로 켠 일꾼이 바로 죽는다
+    recorder_runs: list[str] = []
+
+    async def run(job: build_queue.Job) -> None:
+        recorder_runs.append(job.token)
+
+    queue = build_queue.Queue(run)
+
+    async def once(token: str) -> None:
+        queue.start()
+        queue.submit(_job(token))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await queue.stop()
+
+    asyncio.run(once("첫 루프"))
+    asyncio.run(once("둘째 루프"))
+
+    assert recorder_runs == ["첫 루프", "둘째 루프"]
