@@ -74,6 +74,51 @@ def _run(llm_output, req=None) -> list[dict]:
     return asyncio.run(service.to_extractions(req or _request(), llm_output))
 
 
+def test_load_mock_uses_fixture_and_still_embeds(monkeypatch, embed_calls) -> None:
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: type("Settings", (), {"extraction_load_test_mock": True})(),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("external LLM must not be called")
+
+    monkeypatch.setattr(service, "get_chat_model", forbidden)
+    monkeypatch.setattr(service, "_self_hosted_model", forbidden)
+    result = asyncio.run(service.extract(_request()))
+    assert len(result) == 1
+    assert result[0]["keyword"] == "잔잔한"
+    assert embed_calls == [(["잔잔한"], "query")]
+
+
+def test_load_mock_returns_empty_for_empty_conversation(
+    monkeypatch, embed_calls
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "get_settings",
+        lambda: type("Settings", (), {"extraction_load_test_mock": True})(),
+    )
+    req = _request().model_copy(update={"conversation": []})
+    assert asyncio.run(service.extract(req)) == []
+    assert embed_calls == []
+
+
+def test_load_mock_accepts_other_user_text_and_keeps_embedding(
+    monkeypatch, embed_calls
+):
+    monkeypatch.setenv("CHAT_LOAD_TEST_MOCK", "true")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    req = _request()
+    req.conversation[0].text = "여행 중 읽을 소설을 추천해줘"
+    result = asyncio.run(service.extract(req))
+    assert result
+    assert embed_calls
+
+
 def test_후보마다_명세의_여덟_칸으로_나온다(embed_calls) -> None:
     result = _run({"extractions": [_item()]})
 

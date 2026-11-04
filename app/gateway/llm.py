@@ -75,6 +75,8 @@ def get_chat_model(
     settings = get_settings()
     self_hosted = bool(base_url)
 
+    if settings.chat_load_test_mock:
+        raise LLMUnavailableError("chat load test mode blocks all external LLM calls")
     if settings.llm_mock:
         return FakeListChatModel(responses=['{"mock": true}'])  # 개발 중 가짜 응답
 

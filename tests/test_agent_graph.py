@@ -79,6 +79,18 @@ def _tool_messages(messages) -> list[ToolMessage]:
     return [m for m in messages if isinstance(m, ToolMessage)]
 
 
+def test_load_mock_runs_cart_tool_and_finishes_normally():
+    from app.agent.load_test_model import LoadTestModel
+    from app.agent.reply import finish
+
+    req = _request("1번 장바구니에 담아줘")
+    fake = _fake()
+    run = asyncio.run(run_agent(req, model=LoadTestModel(req, 0), gateway=fake))
+    finish(run)
+    assert fake.cart_state(UID) == {A: 1}
+    assert run.tool_calls[0].result == {"ok": True}
+
+
 # --- 기본 흐름 ---
 
 
