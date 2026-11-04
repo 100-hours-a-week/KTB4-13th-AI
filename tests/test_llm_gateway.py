@@ -11,6 +11,7 @@ import asyncio
 import itertools
 import json
 import logging
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -31,6 +32,7 @@ from app.gateway.llm import (
     complete,
     get_chat_model,
     invoke_chain,
+    invoke_chain_with_fallback,
     last_known_status,
     message_text,
     parse_json_response,
@@ -480,6 +482,49 @@ def test_기능별_모델을_다_정하면_경고_없이_쓰는_모델을_한_�
         assert model in infos[0]
 
 
+def _set_all_models_and_self_hosted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(monkeypatch, **{name: "own-model" for name in _OWN_MODELS})
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODE", "on")
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_BASE_URL", "http://10.0.0.5:8000/v1")
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODEL_ID", "gpu-model")
+
+
+def test_취향_뽑기_자체_서빙을_켜면_그_모델도_같은_줄에_남긴다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 운영 시범 날 배포 로그 한 줄로 GPU 모델이 켜졌는지 확인한다(#569)
+    _set_all_models_and_self_hosted(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    assert _logged(caplog, logging.WARNING) == []
+    infos = _logged(caplog, logging.INFO)
+    assert len(infos) == 1
+    assert "gpu-model" in infos[0]
+    # 서버 안쪽 주소는 로그에 남기지 않는다
+    assert "10.0.0.5" not in infos[0]
+
+
+@pytest.mark.parametrize(
+    "missing", ["EXTRACTION_SELF_HOSTED_BASE_URL", "EXTRACTION_SELF_HOSTED_MODEL_ID"]
+)
+def test_취향_뽑기_자체_서빙을_켰는데_설정이_비면_API만_쓴다고_경고한다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, missing: str
+) -> None:
+    # 켰다고 믿고 시범을 시작했는데 실제로는 API 로만 돌면, 밤마다 남긴 기록이 GPU 기록이 아니게 된다
+    _set_all_models_and_self_hosted(monkeypatch)
+    monkeypatch.setenv(missing, "")
+
+    with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
+        report_models()
+
+    warnings = _logged(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    assert "EXTRACTION_SELF_HOSTED_MODE" in warnings[0]
+    assert missing in warnings[0]
+
+
 def test_가짜_LLM이면_모델을_남기지_않는다(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -646,3 +691,158 @@ def test_stream_json은_ChatOpenAI의_JSON_모드_스트리밍을_끝단에서_�
     ]
     assert sent[0]["stream"] is True
     assert sent[0]["response_format"] == {"type": "json_object"}
+
+
+# --- 자체 서빙 LLM(GPU 서버) 주소와, 실패하면 받쳐 둔 LLM 으로 다시 부르기 (#569) ---
+
+
+def test_주소를_주면_그_서버로_보내고_외부_키와_ZDR은_싣지_않는다(monkeypatch) -> None:
+    # GPU 서버의 vLLM 은 OpenRouter 가 아니다. 외부 API 키를 다른 서버로 보내지 않고, OpenRouter 전용 설정도 뺀다
+    monkeypatch.setenv("EXTERNAL_AI_API_KEY", "external-key")
+
+    kwargs = _chat_openai_kwargs(
+        monkeypatch,
+        model_id="gpu-model",
+        base_url="http://gpu:8000/v1",
+        timeout_seconds=10,
+    )
+
+    assert kwargs["base_url"] == "http://gpu:8000/v1"
+    assert kwargs["model"] == "gpu-model"
+    assert kwargs["api_key"] != "external-key"
+    assert kwargs["extra_body"] is None
+    assert kwargs["timeout"] == 10
+    assert kwargs["max_retries"] == 0
+
+
+def test_자체_서빙_서버가_키를_검사하면_준_키를_보낸다(monkeypatch) -> None:
+    kwargs = _chat_openai_kwargs(
+        monkeypatch, base_url="http://gpu:8000/v1", api_key="gpu-key"
+    )
+
+    assert kwargs["api_key"] == "gpu-key"
+
+
+def test_주소를_안_주면_지금처럼_공용_주소와_외부_키로_보낸다(monkeypatch) -> None:
+    monkeypatch.setenv("EXTERNAL_AI_API_KEY", "external-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    kwargs = _chat_openai_kwargs(monkeypatch)
+
+    assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+    assert kwargs["api_key"] == "external-key"
+    assert kwargs["timeout"] == 30
+
+
+def _answering(value) -> RunnableLambda:
+    return RunnableLambda(lambda _inputs: value)
+
+
+def _counting(value, calls: list) -> RunnableLambda:
+    def _answer(_inputs):
+        calls.append(1)
+        return value
+
+    return RunnableLambda(_answer)
+
+
+def test_먼저_부른_LLM이_답하면_받쳐_둔_LLM은_부르지_않는다() -> None:
+    calls: list = []
+
+    result = asyncio.run(
+        invoke_chain_with_fallback(_answering("GPU"), _counting("API", calls), None)
+    )
+
+    assert result == "GPU"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(
+            openai.APIConnectionError(request=httpx.Request("POST", "http://gpu/v1")),
+            id="연결_실패",
+        ),
+        pytest.param(
+            openai.APITimeoutError(request=httpx.Request("POST", "http://gpu/v1")),
+            id="시간_초과",
+        ),
+        pytest.param(LLMUnavailableError("JSON 없음"), id="쓸_수_없는_답"),
+    ],
+)
+def test_먼저_부른_LLM이_실패하면_받쳐_둔_LLM으로_다시_부른다(exc) -> None:
+    # 스팟 GPU 는 밤 배치 중에 회수될 수 있다. 그래도 그 호출은 API 로 끝나야 한다
+    result = asyncio.run(
+        invoke_chain_with_fallback(_raising(exc), _answering("API"), None)
+    )
+
+    assert result == "API"
+    assert last_known_status() == "ok"
+
+
+def test_둘_다_실패하면_받쳐_둔_LLM의_장애로_끝난다() -> None:
+    request = httpx.Request("POST", "http://x/v1")
+
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(
+            invoke_chain_with_fallback(
+                _raising(openai.APIConnectionError(request=request)),
+                _raising(openai.APITimeoutError(request=request)),
+                None,
+            )
+        )
+
+    assert last_known_status() == "unavailable"
+
+
+def test_LLM_장애가_아닌_예외는_다시_부르지_않고_그대로_던진다() -> None:
+    # 코드 결함을 API 로 다시 불러 덮으면 GPU 쪽 결함이 안 보인다
+    calls: list = []
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            invoke_chain_with_fallback(
+                _raising(ValueError("코드 결함")), _counting("API", calls), None
+            )
+        )
+
+    assert calls == []
+
+
+def test_다시_부른_시간까지_합쳐_제한_시간을_넘기면_LLMTimeoutError다(
+    monkeypatch,
+) -> None:
+    # 명세는 생성 30초를 넘기면 504 로 답하게 한다. GPU 를 기다린 시간에 API 시간을 다 더하면 그 상한을 넘는다
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "1")
+
+    async def _slow_fail(_inputs):
+        await asyncio.sleep(0.6)
+        raise LLMUnavailableError("GPU 가 늦게 실패")
+
+    async def _slow_answer(_inputs):
+        await asyncio.sleep(0.6)
+        return "API"
+
+    started = time.perf_counter()
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(
+            invoke_chain_with_fallback(
+                RunnableLambda(_slow_fail), RunnableLambda(_slow_answer), None
+            )
+        )
+
+    assert time.perf_counter() - started < 1.5
+
+
+def test_다시_부를_때_기록에는_장애_종류만_남는다(caplog) -> None:
+    # 예외 메시지에는 모델이 쓴 글이 실릴 수 있고, 그 글이 사용자 말을 되풀이할 때가 있다(#202)
+    failing = _raising(LLMUnavailableError("사용자가 한 말 그대로"))
+
+    with caplog.at_level(logging.WARNING, logger="app.gateway.llm"):
+        asyncio.run(invoke_chain_with_fallback(failing, _answering("API"), None))
+
+    warnings = _logged(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    assert "LLMUnavailableError" in warnings[0]
+    assert "사용자가 한 말" not in warnings[0]

@@ -8,6 +8,9 @@ AI 는 입력도 결과도 저장하지 않는다. 뽑은 취향은 BE 가 저�
 import logging
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
+
 from app.core.config import get_settings
 from app.extraction import prompts, rules
 from app.extraction.schemas import ExtractionRequest
@@ -16,6 +19,7 @@ from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
     invoke_chain,
+    invoke_chain_with_fallback,
     message_text,
     parse_json_response,
 )
@@ -42,25 +46,23 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     LLM 장애는 LLMUnavailableError(시간 초과는 LLMTimeoutError), 임베딩 장애는
     EmbeddingUnavailableError 로 올라간다.
     """
-    chain = (
-        prompts.EXTRACTION_PROMPT
+    api_chain = _chain(
         # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
         # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
-        | get_chat_model(
+        get_chat_model(
             model_id=get_settings().extraction_llm_model_id or None,
             temperature=EXTRACTION_TEMPERATURE,
         )
-        | message_text
-        | parse_json_response
     )
-    llm_output = await invoke_chain(chain, prompts.inputs(req))
+    self_hosted = _self_hosted_model()
+    if self_hosted is None:
+        llm_output = await invoke_chain(api_chain, prompts.inputs(req))
+    else:
+        llm_output = await invoke_chain_with_fallback(
+            _chain(self_hosted), api_chain, prompts.inputs(req)
+        )
 
-    raw = llm_output.get("extractions")
-    if not isinstance(raw, list):
-        # 약속한 모양이 아닌 답을 "뽑은 것 없음"으로 넘기면 BE 는 이 대화를 처리한 것으로 보고 취향을
-        # 잃는다. JSON 이 아닌 답(parse_json_response)과 같은 LLM 장애로 다뤄 나중에 다시 부르게 한다.
-        raise LLMUnavailableError("LLM 답에 extractions 목록이 없음")
-
+    raw = llm_output["extractions"]
     extractions = await to_extractions(req, llm_output)
     logger.info(
         "취향 기억 추출(프롬프트 %s): LLM 이 낸 후보 %d, 응답 %d",
@@ -69,6 +71,43 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
         len(extractions),
     )
     return extractions
+
+
+def _chain(model: BaseChatModel) -> Runnable:
+    return (
+        prompts.EXTRACTION_PROMPT
+        | model
+        | message_text
+        | parse_json_response
+        | _require_extractions
+    )
+
+
+def _require_extractions(llm_output: dict) -> dict:
+    """답이 약속한 모양(extractions 목록)인지 본다. 체인 안에서 봐야 자체 서빙의 엉뚱한 답도 API 로 다시 부른다."""
+    if not isinstance(llm_output.get("extractions"), list):
+        # 약속한 모양이 아닌 답을 "뽑은 것 없음"으로 넘기면 BE 는 이 대화를 처리한 것으로 보고 취향을
+        # 잃는다. JSON 이 아닌 답(parse_json_response)과 같은 LLM 장애로 다뤄 나중에 다시 부르게 한다.
+        raise LLMUnavailableError("LLM 답에 extractions 목록이 없음")
+    return llm_output
+
+
+def _self_hosted_model() -> BaseChatModel | None:
+    """자체 서빙을 켰고 주소·모델이 다 있으면 그 모델, 아니면 None(지금처럼 API 만 씀)."""
+    settings = get_settings()
+    if not (
+        settings.extraction_self_hosted_mode == "on"
+        and settings.extraction_self_hosted_base_url
+        and settings.extraction_self_hosted_model_id
+    ):
+        return None
+    return get_chat_model(
+        model_id=settings.extraction_self_hosted_model_id,
+        temperature=EXTRACTION_TEMPERATURE,
+        base_url=settings.extraction_self_hosted_base_url,
+        api_key=settings.extraction_self_hosted_api_key or None,
+        timeout_seconds=settings.extraction_self_hosted_timeout_seconds,
+    )
 
 
 async def to_extractions(
