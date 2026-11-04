@@ -307,6 +307,63 @@ def test_계획은_취향_뽑기가_실제로_부를_모델을_알려_준다(
     assert f"모델 {shown}," in capsys.readouterr().out
 
 
+def _plan(monkeypatch, capsys, base_url: str, **env: str) -> str:
+    monkeypatch.setenv("LLM_MOCK", "false")
+    monkeypatch.setenv("LLM_MODEL_ID", "openai/gpt-4o-mini")
+    monkeypatch.setenv("LLM_BASE_URL", base_url)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    target, _calls = _target()
+    run.main(["--ids", "none-01"], target=target)
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("base_url", "shown"),
+    [
+        pytest.param(
+            "https://openrouter.ai/api/v1", "주소 OpenRouter API", id="OpenRouter"
+        ),
+        pytest.param(
+            "http://localhost:8000/v1", "주소 이 컴퓨터(localhost:8000)", id="로컬"
+        ),
+        pytest.param(
+            "http://10.0.3.7:8000/v1",
+            "주소 그 밖의 서버(주소는 남기지 않음)",
+            id="GPU_서버",
+        ),
+    ],
+)
+def test_계획은_어느_서버를_부르는지_알려_주되_서버_주소는_남기지_않는다(
+    monkeypatch, capsys, base_url, shown
+) -> None:
+    # 같은 평가로 #568 은 API 를, #569 는 GPU 를 잰다. 기록만 보고 어느 쪽인지 갈라야 한다.
+    # 기록은 GitHub 에 올라가므로 서버 안쪽 주소는 찍지 않는다
+    out = _plan(monkeypatch, capsys, base_url)
+
+    assert shown in out
+    assert "10.0.3.7" not in out
+
+
+def test_자체_서빙을_켜고_돌리면_실패한_대화가_API_답으로_채점된다고_알린다(
+    monkeypatch, capsys
+) -> None:
+    # 켜 두면 GPU 가 실패한 대화를 API 가 대신 답해, GPU 통과율이 실제보다 높게 나온다
+    out = _plan(
+        monkeypatch,
+        capsys,
+        "https://openrouter.ai/api/v1",
+        EXTRACTION_SELF_HOSTED_MODE="on",
+        EXTRACTION_SELF_HOSTED_BASE_URL="http://10.0.3.7:8000/v1",
+        EXTRACTION_SELF_HOSTED_MODEL_ID="gpu-model",
+    )
+
+    assert "자체 서빙 켬" in out
+    assert "gpu-model" in out
+    assert "API 답으로 채점" in out
+    assert "10.0.3.7" not in out
+
+
 def test_yes를_붙이면_돌리고_표를_낸다(capsys) -> None:
     target, calls = _target()
 
