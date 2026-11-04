@@ -201,13 +201,13 @@ async def _save_interests(
     isbns = [row["isbn13"] for row in rows if row["isbn13"]]
     first_seen = await _first_seen(conn, req.user_id, isbns)
     books = []
-    mine = []  # (관심사, 책 번호, 처음 본 날). 매칭 점수에 쓰는 내 책(#483)
+    mine = []  # (관심사, 책 번호). 매칭 점수에 쓰는 내 책(#483)
     for row in rows:
         found = _book_interest(row, vectors)
         if found:
             interest, vector = found
             books.append((interest, float(weights[row["book_id"]]), vector))
-            mine.append((interest, row["book_id"], first_seen.get(row["isbn13"], "")))
+            mine.append((interest, row["book_id"]))
     book_scores, interest_vectors = interests.book_scores(books)
 
     memories = req.used_memories()
@@ -257,7 +257,7 @@ async def book_anchors(
     for row in rows:
         found = _book_interest(row, vectors)
         if found:
-            mine.append((found[0], row["book_id"], first_seen[row["isbn13"]]))
+            mine.append((found[0], row["book_id"]))
     return interests.anchors(mine)
 
 
