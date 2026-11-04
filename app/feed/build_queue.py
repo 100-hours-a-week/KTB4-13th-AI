@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _PENDING = interest_feed.PENDING
 
+# 저장 때 사용자 잠금을 기다리는 한도. 앱 연결의 문장 제한(5초)을 따르면, 밤 다시 뽑기가 그 사용자를 6초
+# 예산으로 뽑는 동안 저장이 끊겨 최신 요청의 목록이 사라진다. 밤 다시 뽑기 한 번(20초)보다 넉넉히 준다
+LOCK_WAIT_SECONDS = 30.0
+
 # 요청 표만 바꾼다. 판 번호와 앞 판은 목록을 저장할 때 한 번만 바꾼다. 여기서도 바꾸면 프로필 계산 한 번에
 # 판이 두 번 올라, 더 보기를 넘기던 사람이 앞 판을 잃는다(커서는 지금 판 - 1 만 앞 판으로 읽는다)
 _MARK_SQL = f"""
@@ -91,6 +95,7 @@ async def save(conn: asyncpg.Connection, job: Job, feed: interest_feed.Feed) -> 
             "SELECT pg_advisory_xact_lock($1, $2)",
             profile_service.LOCK_SPACE,
             job.user_id,
+            timeout=LOCK_WAIT_SECONDS,
         )
         status = await conn.execute(
             _SAVE_SQL,
