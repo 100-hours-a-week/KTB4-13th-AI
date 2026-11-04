@@ -460,3 +460,26 @@ def test_앱이_뜨면_일꾼을_켜고_내려갈_때는_DB_연결을_닫기_전
 
 async def _no_labels() -> None:
     pass
+
+
+def test_이벤트_루프가_바뀌어도_다시_켜서_작업을_만든다() -> None:
+    # 줄은 모듈에 하나라 앱을 띄우고 내리기를 되풀이하면(테스트가 lifespan 을 여러 번 돌린다) 루프가
+    # 바뀐다. 처음 루프에 묶인 채면 두 번째로 켠 일꾼이 바로 죽는다
+    recorder_runs: list[str] = []
+
+    async def run(job: build_queue.Job) -> None:
+        recorder_runs.append(job.token)
+
+    queue = build_queue.Queue(run)
+
+    async def once(token: str) -> None:
+        queue.start()
+        queue.submit(_job(token))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await queue.stop()
+
+    asyncio.run(once("첫 루프"))
+    asyncio.run(once("둘째 루프"))
+
+    assert recorder_runs == ["첫 루프", "둘째 루프"]
