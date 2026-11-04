@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _PENDING = interest_feed.PENDING
 
+# 저장 때 사용자 잠금을 기다리는 한도. 앱 연결의 문장 제한(5초)을 따르면, 밤 다시 뽑기가 그 사용자를 6초
+# 예산으로 뽑는 동안 저장이 끊겨 최신 요청의 목록이 사라진다. 밤 다시 뽑기 한 번(20초)보다 넉넉히 준다
+LOCK_WAIT_SECONDS = 30.0
+
 # 요청 표만 바꾼다. 판 번호와 앞 판은 목록을 저장할 때 한 번만 바꾼다. 여기서도 바꾸면 프로필 계산 한 번에
 # 판이 두 번 올라, 더 보기를 넘기던 사람이 앞 판을 잃는다(커서는 지금 판 - 1 만 앞 판으로 읽는다)
 _MARK_SQL = f"""
@@ -91,6 +95,7 @@ async def save(conn: asyncpg.Connection, job: Job, feed: interest_feed.Feed) -> 
             "SELECT pg_advisory_xact_lock($1, $2)",
             profile_service.LOCK_SPACE,
             job.user_id,
+            timeout=LOCK_WAIT_SECONDS,
         )
         status = await conn.execute(
             _SAVE_SQL,
@@ -144,7 +149,8 @@ class Queue:
     def __init__(self, run: Callable[[Job], Awaitable[object]]) -> None:
         self._run = run
         self._jobs: dict[int, tuple[Job, float]] = {}
-        self._ready = asyncio.Event()
+        # 이벤트는 처음 기다린 루프에 묶인다. 켤 때마다 그 루프에서 새로 만든다
+        self._ready: asyncio.Event | None = None
         self._worker: asyncio.Task | None = None
 
     @property
@@ -153,11 +159,15 @@ class Queue:
 
     def submit(self, job: Job) -> None:
         self._jobs[job.user_id] = (job, time.monotonic())
-        self._ready.set()
+        if self._ready is not None:
+            self._ready.set()
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
-            self._worker = asyncio.create_task(self._work())
+            self._ready = asyncio.Event()
+            if self._jobs:
+                self._ready.set()
+            self._worker = asyncio.create_task(self._work(self._ready))
 
     async def stop(self) -> None:
         """일꾼을 멈추고 줄을 비운다. 만들던 목록은 저장하지 않는다."""
@@ -168,12 +178,13 @@ class Queue:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker
             self._worker = None
+        self._ready = None
         if dropped:
             logger.warning("서버가 내려가 홈 목록 %d개를 만들지 못했다", dropped)
 
-    async def _work(self) -> None:
+    async def _work(self, ready: asyncio.Event) -> None:
         while True:
-            await self._ready.wait()
+            await ready.wait()
             while self._jobs:
                 user_id = next(iter(self._jobs))
                 job, submitted = self._jobs.pop(user_id)
@@ -189,7 +200,7 @@ class Queue:
                     logger.exception(
                         "홈 목록을 뒤에서 만들지 못했다(사용자 %s)", user_id
                     )
-            self._ready.clear()
+            ready.clear()
 
 
 async def _run_with_pool(job: Job) -> None:
