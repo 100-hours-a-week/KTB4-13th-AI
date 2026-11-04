@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
+from app.feed import build_queue
 from app.gateway import embedding, llm
 from app.profile import labels
 from app.routers import agent, chat, embeddings, extractions, feed, profile, search
@@ -44,8 +45,11 @@ async def lifespan(app: FastAPI):
     else:
         # ⑥ 요청 중에는 모델을 부르지 않으므로 라벨 벡터를 여기서 미리 만든다.
         await labels.load()
+    # 프로필 계산 뒤 홈 목록을 뒤에서 만드는 일꾼(#580)
+    build_queue.start()
     yield
-    # 앱이 내려갈 때
+    # 앱이 내려갈 때. 연결 풀을 닫기 전에 일꾼부터 멈춘다
+    await build_queue.stop()
     await db.disconnect()
 
 
