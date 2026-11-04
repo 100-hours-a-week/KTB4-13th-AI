@@ -439,6 +439,125 @@ def test_답을_JSON으로_고정하는_설정은_건드리지_않는다(
     assert "json_mode" not in _model_asked(monkeypatch)
 
 
+# --- 자체 서빙 LLM(GPU 서버)으로 먼저 부르고, 실패하면 지금 API 로 (#569 운영 시범) ---
+
+_GPU_URL = "http://gpu:8000/v1"
+
+
+def _self_hosted(
+    monkeypatch: pytest.MonkeyPatch, mode="on", url=_GPU_URL, model="gpu-model"
+):
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODE", mode)
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_BASE_URL", url)
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_MODEL_ID", model)
+
+
+def _use_routes(monkeypatch: pytest.MonkeyPatch, gpu_reply, api_reply) -> list[dict]:
+    """주소(base_url)를 받은 모델은 gpu_reply 로, 아닌 모델은 api_reply 로 답한다. 예외면 던진다.
+
+    돌려주는 목록에는 LLM 이 실제로 불린 순서대로 어느 쪽이었는지("gpu"/"api")와 만든 인자가 쌓인다.
+    """
+    called: list[dict] = []
+
+    def _factory(**kwargs):
+        route = "gpu" if kwargs.get("base_url") else "api"
+        reply = gpu_reply if route == "gpu" else api_reply
+
+        def _answer(_prompt) -> AIMessage:
+            called.append({"route": route, **kwargs})
+            if isinstance(reply, Exception):
+                raise reply
+            return AIMessage(content=reply)
+
+        return RunnableLambda(_answer)
+
+    monkeypatch.setattr(service, "get_chat_model", _factory)
+    return called
+
+
+def test_자체_서빙을_켜면_그_주소와_모델로_먼저_부른다(
+    monkeypatch, embed_calls
+) -> None:
+    _self_hosted(monkeypatch)
+    called = _use_routes(
+        monkeypatch, _answer_json(_item(strength=2)), _answer_json(_item(strength=3))
+    )
+
+    assert [item["strength"] for item in _extract()] == [2]
+    assert called == [
+        {
+            "route": "gpu",
+            "model_id": "gpu-model",
+            "temperature": service.EXTRACTION_TEMPERATURE,
+            "base_url": _GPU_URL,
+            "api_key": None,
+            "timeout_seconds": 10,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "gpu_reply",
+    [
+        pytest.param(
+            openai.APIConnectionError(request=httpx.Request("POST", _GPU_URL)),
+            id="GPU가_없음",
+        ),
+        pytest.param(
+            openai.APITimeoutError(request=httpx.Request("POST", _GPU_URL)),
+            id="시간_초과",
+        ),
+        pytest.param('{"mock": true}', id="약속한_모양이_아님"),
+    ],
+)
+def test_자체_서빙이_실패하면_지금_API로_다시_부른다(
+    monkeypatch, embed_calls, gpu_reply
+) -> None:
+    # 스팟 GPU 가 밤 배치 중에 회수돼도 그 대화의 취향은 API 로 뽑혀야 한다
+    _self_hosted(monkeypatch)
+    called = _use_routes(monkeypatch, gpu_reply, _answer_json(_item(strength=3)))
+
+    assert [item["strength"] for item in _extract()] == [3]
+    assert [call["route"] for call in called] == ["gpu", "api"]
+    # API 쪽은 지금과 같은 인자로 부른다
+    assert {k: v for k, v in called[1].items() if k != "route"} == {
+        "model_id": None,
+        "temperature": service.EXTRACTION_TEMPERATURE,
+    }
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        pytest.param({"mode": "off"}, id="꺼짐"),
+        pytest.param({"url": ""}, id="주소가_빔"),
+        pytest.param({"model": ""}, id="모델이_빔"),
+    ],
+)
+def test_꺼져_있거나_설정이_비면_API만_부른다(
+    monkeypatch, embed_calls, setting
+) -> None:
+    _self_hosted(monkeypatch, **setting)
+    called = _use_routes(
+        monkeypatch, _answer_json(_item(strength=2)), _answer_json(_item(strength=3))
+    )
+
+    assert [item["strength"] for item in _extract()] == [3]
+    assert [call["route"] for call in called] == ["api"]
+
+
+def test_자체_서빙_서버가_키를_검사하면_그_키를_넘긴다(
+    monkeypatch, embed_calls
+) -> None:
+    _self_hosted(monkeypatch)
+    monkeypatch.setenv("EXTRACTION_SELF_HOSTED_API_KEY", "gpu-key")
+    called = _use_routes(monkeypatch, _answer_json(), _answer_json())
+
+    _extract()
+
+    assert called[0]["api_key"] == "gpu-key"
+
+
 def test_좋아함과_싫어함은_핵심어가_같으면_벡터도_같고_세기의_부호로_가른다(
     embed_calls,
 ) -> None:

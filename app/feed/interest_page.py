@@ -79,15 +79,20 @@ class Stored:
 
 
 async def stored(conn: asyncpg.Connection, user_id: int) -> Stored | None:
-    """저장된 목록. 아직 뽑지 않았으면 None 이다."""
+    """저장된 목록. 아직 뽑지 않았으면 None 이다.
+
+    목록을 뒤에서 만들 때는 목록 칸에 요청 표부터 적어서(#580), 처음 쓰는 사용자는 표만 있고 책이 없다. 그런
+    칸도 아직 뽑지 않은 것으로 본다.
+    """
     row = await conn.fetchrow(_STORED_SQL, user_id)
-    if row is None or row["feed"] is None:
+    feed = json.loads(row["feed"]) if row and row["feed"] else {}
+    if "books" not in feed:
         return None
-    prev = json.loads(row["feed_prev"]) if row["feed_prev"] else None
+    prev = json.loads(row["feed_prev"]) if row["feed_prev"] else {}
     return Stored(
-        books=json.loads(row["feed"])["books"],
+        books=feed["books"],
         version=row["feed_version"],
-        prev=prev["books"] if prev else None,
+        prev=prev.get("books"),
         profile_version=row["profile_version"],
     )
 

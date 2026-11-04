@@ -50,6 +50,9 @@ def get_chat_model(
     json_mode: bool = True,
     model_id: str | None = None,
     temperature: float | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> BaseChatModel:
     """체인(`프롬프트 | 모델 | 파서`)에 끼울 채팅 모델을 만든다.
 
@@ -64,8 +67,13 @@ def get_chat_model(
         ③ 평가의 기준 모델까지 같이 움직이므로 호출부 단위로 고르게 한다.
     temperature: 이 호출부만 온도를 정한다. 없으면 보내지 않아 모델의 기본값이다(⑤만
         낮춘다, #433).
+    base_url: 이 호출부만 다른 OpenAI 호환 서버(GPU 서버의 vLLM 등 자체 서빙)로 보낸다. 없으면
+        LLM_BASE_URL. 주면 외부 API 키 대신 api_key 를 보내고 OpenRouter 전용 설정(ZDR)은 싣지
+        않는다 — 외부 API 키를 다른 서버로 보내지 않으려는 것이다(#569).
+    timeout_seconds: 이 호출부만 시간 제한을 정한다. 없으면 LLM_TIMEOUT_SECONDS.
     """
     settings = get_settings()
+    self_hosted = bool(base_url)
 
     if settings.llm_mock:
         return FakeListChatModel(responses=['{"mock": true}'])  # 개발 중 가짜 응답
@@ -81,19 +89,27 @@ def get_chat_model(
     # 실측으로 openai/gpt-4o-mini는 ZDR+도구가 404(데이터 정책 단계에서 0개), gpt-4o·
     # gpt-5.4-mini·gpt-5.4-nano는 됐다(#345). 도구를 쓰는 호출부는 model_id로 고른다.
     extra_body = (
-        {"provider": {"zdr": True}} if settings.llm_provider == "openrouter" else None
+        {"provider": {"zdr": True}}
+        if settings.llm_provider == "openrouter" and not self_hosted
+        else None
     )
 
-    return ChatOpenAI(
-        model=model_id or settings.llm_model_id,
-        base_url=settings.llm_base_url,
+    if self_hosted:
+        # vLLM 은 키 검사를 켠 서버에서만 키를 본다. SDK 가 빈 값을 거부해 "EMPTY" 로 채운다
+        key = api_key or "EMPTY"
+    else:
         # EXTERNAL_AI_API_KEY가 비어 있으면(Ollama처럼 검사 안 하는 provider)
         # SDK가 그래도 값을 요구하므로 "ollama"로 채운다. Gemini 등 실제로
         # 키를 검사하는 provider는 .env에 EXTERNAL_AI_API_KEY만 채우면 된다 —
         # base_url·model_id와 함께 이 셋만 바뀌면 되도록 게이트웨이가 provider를
         # 안 가리게 짜여 있다(파일 상단 주석 참고).
-        api_key=settings.external_ai_api_key or "ollama",
-        timeout=settings.llm_timeout_seconds,
+        key = settings.external_ai_api_key or "ollama"
+
+    return ChatOpenAI(
+        model=model_id or settings.llm_model_id,
+        base_url=base_url or settings.llm_base_url,
+        api_key=key,
+        timeout=timeout_seconds or settings.llm_timeout_seconds,
         # 명세: 생성 경로 상한 30초, 넘으면 504. max_retries 기본값은 None이라
         # OpenAI SDK 기본 재시도(2회)가 살아나고, 재시도 사이 대기시간까지 더해져
         # timeout 값만으로는 상한을 보장 못 한다. 재시도는 끄고 timeout 하나로
@@ -133,6 +149,32 @@ def report_models() -> None:
                 feature,
                 shared,
             )
+    if settings.extraction_self_hosted_mode == "on":
+        # 서버 안쪽 주소는 로그에 남기지 않고 모델 이름만 남긴다
+        missing = [
+            name
+            for name, value in (
+                (
+                    "EXTRACTION_SELF_HOSTED_BASE_URL",
+                    settings.extraction_self_hosted_base_url,
+                ),
+                (
+                    "EXTRACTION_SELF_HOSTED_MODEL_ID",
+                    settings.extraction_self_hosted_model_id,
+                ),
+            )
+            if not value
+        ]
+        if missing:
+            logger.warning(
+                "EXTRACTION_SELF_HOSTED_MODE 가 on 인데 %s 가 비어 있어 ⑤ 취향 뽑기는 API 만 씁니다",
+                "·".join(missing),
+            )
+        else:
+            parts.append(
+                f"⑤ 취향 뽑기 자체 서빙 {settings.extraction_self_hosted_model_id}"
+                "(실패하면 API)"
+            )
     logger.info("LLM 모델: %s", ", ".join(parts))
 
 
@@ -158,6 +200,35 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
     """
     with _llm_call():
         return await chain.ainvoke(inputs)
+
+
+async def invoke_chain_with_fallback(
+    chain: Runnable, fallback: Runnable, inputs: Any
+) -> Any:
+    """chain 을 부르고, LLM 장애(시간 초과 포함)로 끝나면 fallback 으로 한 번 더 부른다.
+
+    자체 서빙 LLM(GPU 서버) 뒤에 지금 API 를 받쳐 두는 데 쓴다(#569). 스팟 GPU 는 회수될 수 있어서다.
+    LLM 장애가 아닌 예외(코드 결함)는 다시 부르지 않고 그대로 던진다.
+
+    둘을 합친 시간도 LLM_TIMEOUT_SECONDS 안에 들게 한다. 명세는 생성 30초를 넘기면 504 로 답하게
+    하는데, chain 이 실패하기까지 기다린 시간에 fallback 시간을 다 더하면 그 상한을 넘는다. 그래서
+    chain 쪽 모델의 시간 제한은 짧게 둔다.
+    """
+    try:
+        async with asyncio.timeout(get_settings().llm_timeout_seconds):
+            try:
+                return await invoke_chain(chain, inputs)
+            except LLMUnavailableError as e:
+                # 예외 메시지에는 모델이 쓴 글이 실릴 수 있어(#202) 종류만 남긴다
+                logger.warning(
+                    "먼저 부른 LLM 이 답하지 못해(%s) 받쳐 둔 LLM 으로 다시 부른다",
+                    type(e).__name__,
+                )
+                return await invoke_chain(fallback, inputs)
+    except TimeoutError as e:
+        raise LLMTimeoutError(
+            "LLM 이 제한 시간 안에 답하지 못했다(다시 부른 것 포함)"
+        ) from e
 
 
 async def stream_json(

@@ -54,10 +54,15 @@ SELECT interest_scores::text, interest_vectors::text, conditions::text,
        (feed->'owned')::text AS owned, (feed->'disliked')::text AS disliked
 FROM taste_profile WHERE user_id = $1
 """
-# ⑥ 과 같이 판 번호를 올리고 바로 앞 판을 남긴다
-_SAVE_SQL = """
+# ⑥ 과 같이 판 번호를 올리고 바로 앞 판을 남긴다. 뒤에서 만드는 중인 목록의 요청 표는 남긴다. 지우면 뒤의
+# 작업이 최신 요청으로 만든 목록을 옛것으로 보고 버린다(#580)
+_SAVE_SQL = f"""
 UPDATE taste_profile
-SET feed_prev = feed, feed = $2::jsonb, feed_version = feed_version + 1,
+SET feed_prev = feed,
+    feed = $2::jsonb || jsonb_strip_nulls(
+        jsonb_build_object('{interest_feed.PENDING}', feed->'{interest_feed.PENDING}')
+    ),
+    feed_version = feed_version + 1,
     feed_partial = $3
 WHERE user_id = $1
 """
