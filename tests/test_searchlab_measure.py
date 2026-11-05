@@ -150,3 +150,13 @@ def test_종류와_건수로_고른다() -> None:
         {"kind": "title"},
     ]
     assert measure.select(items, None, 2) == items[:2]
+
+
+def test_벡터_한도를_풀면_풀의_문장_한도도_같이_늘린다() -> None:
+    assert measure.Knobs().command_timeout() == 5.0
+    assert measure.Knobs(vector_timeout=1.0).command_timeout() == 5.0
+    assert measure.Knobs(vector_timeout=30.0).command_timeout() == 30.0
+    before = vector.QUERY_TIMEOUT_SECONDS
+    with measure.patched(measure.Knobs(vector_timeout=30.0), {}):
+        assert vector.QUERY_TIMEOUT_SECONDS == 30.0
+    assert vector.QUERY_TIMEOUT_SECONDS == before

@@ -32,6 +32,8 @@ OUT_DIR = Path(__file__).with_name("out")
 REPEATS = 7
 TOP = 20
 EVAL_DB_SUFFIX = "_eval"
+# 앱 풀의 문장 한도(app/core/db.py)
+APP_COMMAND_TIMEOUT = 5.0
 
 # 회차 머리에 적는 설정. 시간에 닿는 것만 고른다
 _SETTINGS = (
@@ -82,6 +84,13 @@ class Knobs:
     ef_search: int | None = None
     random_page_cost: float | None = None
     effective_io_concurrency: int | None = None
+    # 벡터 검색 한도(초). 앱은 2초에서 끊고 키워드만으로 답한다. 처음 조회는 이 한도에 자주 걸려, 그대로 재면 시간이
+    # 2초에서 잘려 설정끼리 차이가 안 보인다. 측정 회차는 한도를 풀고 재며, 앱이라면 끊겼을 검색은 잰 시간으로 센다.
+    vector_timeout: float | None = None
+
+    def command_timeout(self) -> float:
+        """풀의 문장 한도. 앱은 5초다. 벡터 한도를 그보다 길게 풀면 같이 늘린다."""
+        return max(APP_COMMAND_TIMEOUT, self.vector_timeout or 0)
 
     def session_settings(self) -> dict[str, str]:
         """연결마다 거는 설정. 앱은 이 둘을 바꾸지 않으므로 연결을 만들 때 세션 설정으로 건다."""
@@ -154,6 +163,8 @@ def patched(knobs: Knobs, query_vectors: Mapping[str, list[float]]) -> Iterator[
             swap(module, name, timed(getattr(module, name), label))
         if knobs.ef_search is not None:
             swap(vector, "SEARCH_EF_SEARCH", knobs.ef_search)
+        if knobs.vector_timeout is not None:
+            swap(vector, "QUERY_TIMEOUT_SECONDS", knobs.vector_timeout)
         yield stages
     finally:
         for obj, name, value in reversed(saved):
@@ -283,7 +294,7 @@ async def run(
         url,
         min_size=1,
         max_size=1,
-        command_timeout=5,
+        command_timeout=knobs.command_timeout(),
         server_settings={
             "timezone": settings.tz,
             "default_transaction_read_only": "on",
@@ -404,6 +415,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--random-page-cost", type=float)
     parser.add_argument("--effective-io-concurrency", type=int)
     parser.add_argument(
+        "--vector-timeout",
+        type=float,
+        help="벡터 검색 한도(초). 앱은 2초. 측정 회차는 풀고 잰다(예: 30)",
+    )
+    parser.add_argument(
         "--kinds", nargs="*", help="이 종류만 잰다(title, author, sort ...)"
     )
     parser.add_argument("--limit", type=int, help="앞에서 몇 건만 잰다(시험용)")
@@ -428,7 +444,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     bundle = json.loads(QUERIES_PATH.read_text(encoding="utf-8"))
     items = ordered(select(bundle["measure"], args.kinds, args.limit), args.order_seed)
-    knobs = Knobs(args.ef_search, args.random_page_cost, args.effective_io_concurrency)
+    knobs = Knobs(
+        args.ef_search,
+        args.random_page_cost,
+        args.effective_io_concurrency,
+        args.vector_timeout,
+    )
     out = OUT_DIR / f"{args.label}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("a", encoding="utf-8") as fh:
