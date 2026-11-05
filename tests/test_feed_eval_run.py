@@ -335,3 +335,34 @@ def test_기준선은_지금_묶음으로_잰_것이다() -> None:
         for kind, row in kinds.items()
         if row["users"] != row["measured"]
     } == dict(unmeasured)
+
+
+def test_비동기면_요청_번호표가_지워질_때까지_기다린다() -> None:
+    answers = iter([True, True, False])
+
+    async def pending() -> bool:
+        return next(answers)
+
+    waited = asyncio.run(runner.wait_list(pending, timeout=5, poll=0))
+
+    assert waited is not None and waited >= 0
+    assert next(answers, "다 씀") == "다 씀"
+
+
+def test_한도를_넘기면_기다리지_않고_None() -> None:
+    async def pending() -> bool:
+        return True
+
+    assert asyncio.run(runner.wait_list(pending, timeout=0.01, poll=0.001)) is None
+
+
+def test_기다린_요약은_한도를_넘긴_사람을_따로_센다() -> None:
+    got = runner.wait_summary([0.5, None, 1.5, 0.2])
+
+    assert got == {
+        "users": 4,
+        "timed_out": 1,
+        "median_seconds": 0.5,
+        "max_seconds": 1.5,
+    }
+    assert runner.wait_summary([None])["median_seconds"] is None
