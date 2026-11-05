@@ -387,7 +387,8 @@ async def _asks_new_request(message: str, previous: str) -> bool:
     spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
     """
     if get_settings().chat_load_test_mock:
-        return True
+        # 같은 대화방에서 조건을 갱신하는 부하 시나리오: 초기화·재추출은 하지 않는다.
+        return False
     model_id = get_settings().relation_llm_model_id
     model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
     chain = RELATION_PROMPT | model | message_text | parse_json_response
