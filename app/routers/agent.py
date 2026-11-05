@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.agent import guard, replay
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
+from app.agent.load_test_model import LoadTestModel
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
@@ -121,7 +122,10 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
     try:
         gateway = get_commerce(req)
         catalog = get_catalog()
-        model = agent_model()
+        if get_settings().chat_load_test_mock:
+            model = LoadTestModel(req, get_settings().agent_load_test_delay_seconds)
+        else:
+            model = agent_model()
         # 비교는 소개글을 읽는 별도 호출이다. 도구를 고르는 호출과 메시지를 섞지 않는다
         comparer = LlmComparer(catalog, model)
         # 한 턴은 LLM 을 최대 4번(비교는 한 번 더) 부른다. LLM 호출 하나의 제한(LLM_TIMEOUT_SECONDS)만으로는

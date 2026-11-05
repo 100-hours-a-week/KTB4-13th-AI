@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30
     llm_mock: bool = False
+    # 부하 테스트 전용. ⑤의 LLM만 대체하며 기본적으로 꺼져 있다.
+    extraction_load_test_mock: bool = False
+    # 추천 채팅 부하 테스트 전용. 실제 LLM 호출은 차단하며 기본은 꺼 둔다.
+    chat_load_test_mock: bool = False
+    chat_load_test_spec_delay_seconds: float = 0.0
+    chat_load_test_card_delay_seconds: float = 0.0
+    agent_load_test_delay_seconds: float = 0.0
     # ⑦ 쇼핑 에이전트만 쓰는 모델(#356). 비어 있으면 llm_model_id 를 쓴다. ③ 평가의 기준 모델이 같이
     # 움직이지 않게 따로 둔다. 도구 호출을 쓰므로 ZDR 과 도구를 같이 지원하는 모델이어야 한다(#345).
     agent_llm_model_id: str = ""
