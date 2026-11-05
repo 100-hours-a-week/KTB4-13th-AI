@@ -111,6 +111,19 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 
 결과는 종류별·묶음별 통과율 표로 나오고, PR 본문에 그대로 붙일 수 있습니다.
 
+### 두 결과를 짝지어 견주기
+
+두 모델(예: API와 GPU의 소형 모델)의 `--out` 파일을 같은 대화끼리 짝지어 견줍니다([#605](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/605)). [#569](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/569) E4 품질 관문의 판정 코드이고, LLM을 부르지 않습니다.
+
+```
+uv run python -m evals.extraction.compare --base api.json --new gpu.json --group borrowed
+```
+
+- 대화마다 여러 회 중 다수결로 통과를 정합니다(3회면 2회 이상).
+- 통과율 차이(새 모델 − 기준)의 짝 부트스트랩 95% 구간(1만 번, 시드 고정) 하한이 −10%p(#569에 11/5 고정한 M)보다 위면 "넘음", 아니면 "못 넘음"입니다.
+- 한쪽만 통과한 대화 수, 회차 사이에 결과가 섞인 대화 수(같은 모델을 다시 돌려도 달라지는 정도), 종류별 통과율, 실패 이유별 호출 수를 같이 냅니다. 크게 나빠진 실패 이유가 있는지는 사람이 봅니다.
+- 묶음 버전이나 프롬프트 버전이 다르면 견주지 않습니다. 모델 말고 다른 것이 바뀐 것이기 때문입니다.
+
 ## 코드 채점이 보는 것
 
 호출 하나는 아래를 모두 지키면 통과입니다.
