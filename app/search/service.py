@@ -12,6 +12,7 @@ import asyncpg
 from app.core import cursor, db
 from app.gateway import embedding
 from app.search import books, keyword, rrf, sorting, vector
+from app.search import mode as modes
 from app.search.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,7 @@ logger = logging.getLogger(__name__)
 KEYWORD_ONLY = "keyword-only"
 FULL = "full"
 
-# 합칠 때 키워드 쪽 등수를 3배로 쳐 준다. 키워드 결과는 낱말이 실제로 들어 있는 책이라 믿을 만하고,
-# 벡터 결과는 관련이 없어도 "그나마 가까운 책"이 항상 채워지기 때문이다.
-# 1:1 이면 제목을 정확히 쳐도 벡터 쪽 1등과 자리를 다퉈 밀린다(측정 기록은 이슈 #35 코멘트).
-KEYWORD_WEIGHT = 3.0
-VECTOR_WEIGHT = 1.0
-
-# 가격순·최신순·인기순은 등수를 무시하고 줄을 다시 세운다. 벡터 검색은 관련이 없어도 50권을
-# 채워 주므로 다 넣으면 상관없는 책이 "제일 싸다"는 이유로 1등이 된다. 그래서 벡터 쪽은 앞의
-# 20권만 정렬 대상에 넣는다. 고정 검색어 40개로 재니 벡터가 찾아낸 정답은 20등 안이 84%,
-# 50등까지 넓히면 100% 였다. 남은 16%를 얻자고 관련이 약한 30권을 들이는 쪽이 손해라고 봤다.
-SORT_VECTOR_LIMIT = 20
+# 두 순위를 합치는 비중과 정렬할 때 넣는 벡터 권수는 검색 모드에 있다(app/search/mode.py).
 
 
 class CursorExpired(Exception):
@@ -81,7 +72,10 @@ def _read_offset(req: SearchRequest, fingerprint: str) -> tuple[int, str | None]
 
 
 def _exact_title_first(
-    exact: set[int], keyword_ids: list[int], vector_ids: list[int]
+    exact: set[int],
+    keyword_ids: list[int],
+    vector_ids: list[int],
+    mode: modes.Mode | None = None,
 ) -> list[int]:
     """제목이 검색어와 (공백·영문 대소문자 빼고) 같은 책을 맨 앞에 놓고, 나머지는 두 순위를 합쳐 뒤에 붙인다.
 
@@ -96,7 +90,8 @@ def _exact_title_first(
     """
     head = [book_id for book_id in keyword_ids if book_id in exact]
     rest = [book_id for book_id in keyword_ids if book_id not in exact]
-    fused = rrf.fuse([rest, vector_ids], [KEYWORD_WEIGHT, VECTOR_WEIGHT])
+    m = modes.current(mode)
+    fused = rrf.fuse([rest, vector_ids], [m.keyword_weight, m.vector_weight], k=m.rrf_k)
     return head + [book_id for book_id in fused if book_id not in exact]
 
 
@@ -111,13 +106,16 @@ async def _embed_query(query: str) -> list[float] | None:
 
 
 async def _vector_ids(
-    conn: asyncpg.Connection, query_vector: list[float] | None, req: SearchRequest
+    conn: asyncpg.Connection,
+    query_vector: list[float] | None,
+    req: SearchRequest,
+    mode: modes.Mode | None = None,
 ) -> list[int] | None:
     """벡터 검색 결과. 벡터 검색을 할 수 없는 상태면 None."""
     if query_vector is None:
         return None
     try:
-        ids = await vector.search_ids(conn, query_vector, req.filters)
+        ids = await vector.search_ids(conn, query_vector, req.filters, mode=mode)
         # 0건이 필터 때문인지, 책 벡터가 아직 없어서인지 가른다(명세: 초기 적재 중이면 축소 응답).
         if not ids and not await vector.has_any(conn):
             return None
@@ -132,7 +130,12 @@ async def _vector_ids(
     return ids
 
 
-async def search(req: SearchRequest) -> SearchOutcome:
+async def search(
+    req: SearchRequest, *, mode: modes.Mode | None = None
+) -> SearchOutcome:
+    """검색한다. mode 를 주지 않으면 검색창 모드(부를 때의 modes.SEARCH)다."""
+    # 한 요청 안에서는 같은 모드를 쓴다. 도중에 SEARCH 가 바뀌어도 단계마다 섞이지 않게 처음에 정한다
+    m = modes.current(mode)
     fingerprint = _fingerprint(req)
     # 못 쓰는 커서는 검색을 돌리기 전에 거른다.
     offset, issued_mode = _read_offset(req, fingerprint)
@@ -142,17 +145,17 @@ async def search(req: SearchRequest) -> SearchOutcome:
         # 키워드 검색이 실패하면 예외가 그대로 올라가 500 이 된다(DB 가 죽은 상태).
         query_vector, keyword_ids = await asyncio.gather(
             _embed_query(req.query),
-            keyword.search_ids(conn, req.query, req.filters),
+            keyword.search_ids(conn, req.query, req.filters, mode=m),
         )
-        vector_ids = await _vector_ids(conn, query_vector, req)
+        vector_ids = await _vector_ids(conn, query_vector, req, m)
 
         by_relevance = req.sort == "relevance"
         if vector_ids is None:
             ranked, degraded = keyword_ids, KEYWORD_ONLY
         else:
-            pool = vector_ids if by_relevance else vector_ids[:SORT_VECTOR_LIMIT]
+            pool = vector_ids if by_relevance else vector_ids[: m.sort_vector_limit]
             exact = await keyword.exact_title_ids(conn, keyword_ids, req.query)
-            ranked = _exact_title_first(exact, keyword_ids, pool)
+            ranked = _exact_title_first(exact, keyword_ids, pool, m)
             degraded = None
 
         # 앞 페이지는 벡터까지 합친 순위였는데 지금은 키워드만이면(또는 그 반대) 순위가 달라

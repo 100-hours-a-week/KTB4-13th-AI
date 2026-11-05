@@ -7,13 +7,9 @@
 import asyncpg
 
 from app.core.pgvector import to_vector_literal
+from app.search import mode as modes
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
-
-# 순위 합치기에 넘길 후보 수. 키워드 쪽(keyword.CANDIDATE_LIMIT)보다 작게 둔다.
-# 벡터 검색은 관련이 없어도 "그나마 가까운 책"을 무조건 채워 주기 때문에,
-# 길게 받을수록 뒤쪽은 잡음이다.
-CANDIDATE_LIMIT = 50
 
 # 색인(HNSW)은 근사 검색이라 탐색 폭(ef_search)이 좁으면 정답을 놓친다. 기본값은 40 이다.
 # 이 모델은 모든 책의 유사도가 0.8~0.9 에 빽빽이 몰려 있어 특히 놓치기 쉽다.
@@ -22,10 +18,7 @@ CANDIDATE_LIMIT = 50
 # 지금은 ④ 홈 추천의 더 보기(app/feed/personalized.py)가 이 값을 쓴다.
 EF_SEARCH = 1000
 
-# 검색(① 검색창, 그리고 ③ 챗봇이 부르는 검색)의 탐색 폭. 홈 추천과 따로 둔다(#516).
-# 운영(벡터 46만 개)에서 처음 조회가 1000 은 최대 0.57초, 400 은 0.36초였다. 평가 묶음에서 제목 검색 1등은
-# 그대로였고, 서술형 검색은 위 10권 nDCG 가 0.619 에서 0.617 로 거의 같았다.
-SEARCH_EF_SEARCH = 400
+# 검색(검색창, 그리고 챗봇이 부르는 검색)의 후보 수와 탐색 폭은 검색 모드에 있다(app/search/mode.py).
 
 # 벡터 질의를 기다리는 최대 시간(초). BE 는 /search 응답을 5초까지만 기다린다. 연결 기본
 # 제한(db.py 의 command_timeout 5초)에 맡기면 질의가 느릴 때 5초를 다 쓰고 실패해, 키워드
@@ -52,18 +45,20 @@ async def search_ids(
     conn: asyncpg.Connection,
     query_vector: list[float],
     filters: SearchFilters,
-    limit: int = CANDIDATE_LIMIT,
+    limit: int | None = None,
+    mode: modes.Mode | None = None,
 ) -> list[int]:
-    """뜻이 가까운 순서대로 book_id 를 돌려준다."""
+    """뜻이 가까운 순서대로 book_id 를 돌려준다. limit 을 주지 않으면 모드의 후보 수다."""
+    m = modes.current(mode)
     where, filter_params = build_where(filters, first_param=3)
     # SET LOCAL 은 트랜잭션 안에서만 먹고, 끝나면 연결이 원래 설정으로 돌아간다.
     async with conn.transaction():
-        await conn.execute(f"SET LOCAL hnsw.ef_search = {SEARCH_EF_SEARCH}")
+        await conn.execute(f"SET LOCAL hnsw.ef_search = {int(m.ef_search)}")
         await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
         rows = await conn.fetch(
             _SQL.format(where=where),
             to_vector_literal(query_vector),
-            limit,
+            m.vector_limit if limit is None else limit,
             *filter_params,
             timeout=QUERY_TIMEOUT_SECONDS,
         )

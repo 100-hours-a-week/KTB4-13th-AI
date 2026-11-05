@@ -29,13 +29,15 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> dict:
         assert purpose == "query"
         return [[0.0] * 384], 384, "test-model"
 
-    async def _keyword(conn, query, filters):
+    async def _keyword(conn, query, filters, mode=None):
+        state["keyword_mode"] = mode
         return state["keyword"]
 
     async def _exact(conn, book_ids, query):
         return state["exact"]
 
-    async def _vector(conn, query_vector, filters):
+    async def _vector(conn, query_vector, filters, mode=None):
+        state["vector_mode"] = mode
         if isinstance(state["vector"], Exception):
             raise state["vector"]
         return state["vector"]
@@ -140,7 +142,7 @@ def test_필터_때문에_벡터_결과가_0건인_것은_정상_응답이다(fa
 
 
 def test_키워드_검색이_실패하면_예외가_올라간다(fakes: dict, monkeypatch) -> None:
-    async def _fail(conn, query, filters):
+    async def _fail(conn, query, filters, mode=None):
         raise asyncpg.PostgresError("DB 끊김")
 
     monkeypatch.setattr(service.keyword, "search_ids", _fail)
@@ -266,3 +268,30 @@ def test_키워드만으로_줄여_응답할_때는_정렬_후보를_자르지_�
 
     assert fakes["sorted"] == (list(range(100, 150)), "price_asc")
     assert outcome.degraded == "keyword-only"
+
+
+def test_모드를_주지_않으면_부를_때의_검색창_모드를_모든_단계에_넘긴다(
+    fakes: dict, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from app.search import mode as modes
+
+    swapped = replace(modes.SEARCH, ef_search=123)
+    monkeypatch.setattr(modes, "SEARCH", swapped)
+    _search()
+
+    assert fakes["keyword_mode"] is swapped
+    assert fakes["vector_mode"] is swapped
+
+
+def test_모드의_비중과_k로_순위를_합친다() -> None:
+    from app.search.mode import Mode
+
+    # 키워드 [1], 벡터 [2]. 비중이 같으면 등수가 같아 번호가 작은 1이 먼저, 벡터를 크게 치면 2가 먼저다
+    assert service._exact_title_first(
+        set(), [1], [2], Mode(keyword_weight=1, vector_weight=1)
+    ) == [1, 2]
+    assert service._exact_title_first(
+        set(), [1], [2], Mode(keyword_weight=1, vector_weight=3)
+    ) == [2, 1]
