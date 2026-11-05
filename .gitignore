@@ -27,3 +27,6 @@ evals/search/results/
 
 # ③ 단계별 측정 원본·채점 중간 파일(evals/chat_stages). 모델 호출 기록이라 올리지 않는다
 evals/chat_stages/results/
+
+# 검색 시간 측정 도구의 검색어 벡터(evals/searchlab/vectors.py, 약 5MB). 검색어 파일에서 다시 만든다
+evals/searchlab/out/
