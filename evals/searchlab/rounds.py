@@ -95,9 +95,12 @@ def measure_args(
         ("ef_search", "--ef-search"),
         ("random_page_cost", "--random-page-cost"),
         ("effective_io_concurrency", "--effective-io-concurrency"),
+        ("vector_timeout", "--vector-timeout"),
     ):
-        if rnd.get(key) is not None:
-            args += [flag, str(rnd[key])]
+        # 회차 값이 없으면 계획 전체의 값(벡터 한도처럼 모든 회차에 같은 것)
+        value = rnd.get(key, plan.get(key))
+        if value is not None:
+            args += [flag, str(value)]
     if plan.get("kinds"):
         args += ["--kinds", *plan["kinds"]]
     if plan.get("limit"):

@@ -1,6 +1,7 @@
 {
  "name": "a5-eic",
  "note": "A5: effective_io_concurrency 16(운영)과 64를 A·B·B·A로. 필터·키워드 검색어만(#556 「실험 서버 일정」 11/7). random_page_cost는 실행 계획만 견줘 회차를 쓰지 않는다",
+ "vector_timeout": 30,
  "kinds": ["filter", "title", "title-variant", "author"],
  "rounds": [
   {"label": "eic16", "effective_io_concurrency": 16},

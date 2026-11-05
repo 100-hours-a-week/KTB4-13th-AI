@@ -1,6 +1,7 @@
 {
  "name": "a1-ef",
  "note": "기준선과 A1: 탐색 폭을 앞뒤 뒤집은 순서로 8회차(#556 「실험 서버 일정」 11/6). B2는 같은 기록으로 본다",
+ "vector_timeout": 30,
  "rounds": [
   {"label": "ef100", "ef_search": 100},
   {"label": "ef200", "ef_search": 200},
