@@ -1,0 +1,14 @@
+{
+ "name": "a1-ef",
+ "note": "기준선과 A1: 탐색 폭을 앞뒤 뒤집은 순서로 8회차(#556 「실험 서버 일정」 11/6). B2는 같은 기록으로 본다",
+ "rounds": [
+  {"label": "ef100", "ef_search": 100},
+  {"label": "ef200", "ef_search": 200},
+  {"label": "ef400", "ef_search": 400},
+  {"label": "ef1000", "ef_search": 1000},
+  {"label": "ef1000", "ef_search": 1000},
+  {"label": "ef400", "ef_search": 400},
+  {"label": "ef200", "ef_search": 200},
+  {"label": "ef100", "ef_search": 100}
+ ]
+}

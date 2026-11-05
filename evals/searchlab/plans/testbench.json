@@ -1,0 +1,5 @@
+{
+ "name": "testbench",
+ "note": "시험대: 빈 캐시 확인과 운영과 맞춰 보기. 지금 앱 값(탐색 폭 400) 그대로 두 회차",
+ "rounds": [{"label": "base"}, {"label": "base"}]
+}
