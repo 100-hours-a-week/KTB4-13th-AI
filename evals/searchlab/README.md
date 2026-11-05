@@ -1,6 +1,6 @@
 # 검색 시간 측정 도구
 
-[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어 고정([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591))과 한 회차 재기([#593](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/593))까지 있고, 회차 이어 돌리기·결과 정리는 다음 PR에서 더합니다.
+[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어 고정([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591))과 한 회차 재기([#593](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/593)), 회차 이어 돌리기([#595](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/595))까지 있고, 결과 정리는 다음 PR에서 더합니다.
 
 | 파일 | 내용 | 저장소 |
 | --- | --- | --- |
@@ -10,6 +10,9 @@
 | `out/vectors.json` | 만든 벡터(약 5MB) | 두지 않음 |
 | `measure.py` | 한 회차를 잰다 | 둔다 |
 | `out/<label>.jsonl` | 잰 기록 | 두지 않음 |
+| `rounds.py` | 회차를 재부팅부터 이어 돌린다 | 둔다 |
+| `plans/*.json` | 회차 계획(순서·설정) | 둔다 |
+| `out/<plan>/` | 회차 요약(`rounds.jsonl`)과 회차마다 잰 기록 | 두지 않음 |
 
 ## 잴 검색어 170건
 
@@ -60,6 +63,30 @@
 - 다음 페이지 커서는 서명 키가 있어야 만들어서, 재는 동안은 고정 값으로 바꿉니다(수 마이크로초라 시간에 닿지 않음).
 - 이름이 `_eval`로 끝나는 DB에서만 돕니다. 다른 DB(개발 서버 예비 측정)는 `--any-db`를 붙입니다.
 
+## 회차 이어 돌리기
+
+부하·측정 EC2에서 돌립니다. 맥 연결이 끊겨도 회차가 이어지게 하려는 것입니다(`nohup`이나 `tmux` 안에서).
+
+회차마다 이렇게 갑니다.
+
+1. 짧은 CPU 계산(같은 파이썬 계산을 세 번 돌린 가장 빠른 값)
+2. 실험 RDS 재부팅(`clear: "stop-start"`면 정지·시작). 켜질 때까지 기다린 뒤, DB가 켜진 시각이 바뀌었는지 봅니다. 그대로면 캐시가 안 빈 것이라 그 자리에서 멈춥니다
+3. `measure.py`로 데우기 → 처음 조회(순서는 회차마다 다르게 섞음) → 반복 조회
+4. 다시 짧은 CPU 계산. 앞뒤가 크게 다르면 그 회차는 버립니다(결과 정리 단계)
+5. 재부팅 10분 전부터 회차 끝까지의 CloudWatch 지표(1분 간격): RDS 읽기 IOPS·지연·처리량, CPU, 남은 메모리, CPU 크레딧, 디스크 버스트 잔고. 이 EC2의 CPU·크레딧도
+
+| 계획 | 무엇 | 회차 |
+| --- | --- | --- |
+| `testbench` | 시험대: 빈 캐시 확인, 운영과 맞춰 보기 | 지금 앱 값 두 번 |
+| `a1-ef` | 기준선과 A1(탐색 폭) | 100·200·400·1000·1000·400·200·100 |
+| `a5-eic` | A5(`effective_io_concurrency`), 키워드 쪽 검색어만 | 16·64·64·16 |
+| `smoke` | 도구 확인용, 재부팅 없이 3건 | 2 |
+
+- `--db-instance`의 이름에 `exp`가 없으면 재부팅하지 않습니다. 운영·개발 DB를 실수로 건드리지 않게 하려는 것입니다. 이름을 주지 않으면 재부팅 없이 잽니다(로컬 시험, 개발 서버 예비 측정).
+- `--yes` 없이 돌리면 할 일만 보여 줍니다.
+- 재부팅만으로 OS 캐시까지 비는지는 첫 회차 뒤 향상된 모니터링(RDS 콘솔의 OS 지표)으로 손으로 봅니다. 안 비면 계획에 `"clear": "stop-start"`를 넣습니다. 정지·시작은 몇 분 더 걸립니다.
+- AWS는 aws CLI로 부릅니다. EC2에서는 서버 역할의 권한을, 맥에서는 `--aws-profile`을 씁니다.
+
 ## 주의
 
 - 필터 사례는 같은 낱말("사랑", "여행" 등)을 조건만 바꿔 쓰고, 정렬 사례 6건은 서술형 검색어를 다시 씁니다. 한 회차에서 앞 사례가 뒤 사례의 캐시를 데우므로, 처음 조회는 종류별로 나눠 보고 순서를 회차마다 섞습니다.
@@ -82,5 +109,11 @@ DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.measure -
 ```
 
 `--pgss`는 실험 DB에 `CREATE EXTENSION pg_stat_statements`를 한 번 해 둬야 합니다(RDS 기본 설정에서 미리 읽혀 있음).
+
+```bash
+# 회차 이어 돌리기(부하·측정 EC2). 먼저 --yes 없이 할 일을 본다
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.rounds plans/a1-ef.json --db-instance <실험 RDS 이름>
+DATABASE_URL=postgresql://<실험 DB> nohup uv run python -m evals.searchlab.rounds plans/a1-ef.json --db-instance <실험 RDS 이름> --yes > a1.log 2>&1 &
+```
 
 벡터 파일은 저장소에 없으니, 부하·측정 EC2에서는 저장소를 받은 뒤(#556 「시험 환경」의 준비 명령) 두 번째 명령을 한 번 돌립니다. `DATABASE_URL`은 설정 검사 때문에만 필요합니다.
