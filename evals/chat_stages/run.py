@@ -71,8 +71,9 @@ class _Tap:
         chat.service = self
         chat._dedupe_editions = self._dedupe
 
-    async def search(self, req):
-        outcome = await self.inner.search(req)
+    async def search(self, req, **options):
+        # 챗봇이 넘기는 모드(뜻 모드 등)를 그대로 넘긴다
+        outcome = await self.inner.search(req, **options)
         self.trace["search"] = [r["book_id"] for r in outcome.results]
         self.trace["degraded"] = outcome.degraded
         return outcome

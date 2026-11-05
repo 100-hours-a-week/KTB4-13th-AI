@@ -49,6 +49,7 @@ from app.gateway.llm import (
     stream_json,
 )
 from app.routers import agent
+from app.search import mode as modes
 from app.search import service
 from app.search.schemas import MAX_QUERY_CHARS, SearchFilters, SearchRequest
 
@@ -1171,8 +1172,12 @@ async def get_candidates(
         if catalog_categories is not None:
             search_filters = spec.filters.model_copy(update={"category": None})
 
+    # 분위기·주제 요청은 그 문장이 그대로 검색어라 뜻 모드로 찾는다(#556, 값은 지금 검색창과 같음). 제목·저자를
+    # 콕 집은 요청과, semantic 이 비어 제목·저자로 찾는 요청은 검색창 모드다
+    mode = modes.MEANING if spec.intent == "semantic" and spec.semantic else None
     outcome = await service.search(
-        SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
+        SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE),
+        mode=mode,
     )
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in outcome.results if r["book_id"] not in exclude]

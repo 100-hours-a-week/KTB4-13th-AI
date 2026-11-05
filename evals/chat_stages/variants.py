@@ -35,19 +35,23 @@ class VectorFirst:
     소개글 없는 책을 빼므로 잃는 책이 없다. 임베딩이나 벡터 검색이 실패하면 ①로 돌아간다.
     """
 
-    async def search(self, req):
+    async def search(self, req, **options):
         if _intent.get() != "semantic":
-            return await service.search(req)
+            return await service.search(req, **options)
         try:
             vectors, _, _ = await embedding.embed([req.query], "query")
             async with db.get_pool().acquire() as conn:
                 ids = await vector.search_ids(
-                    conn, vectors[0], req.filters, limit=req.size
+                    conn,
+                    vectors[0],
+                    req.filters,
+                    limit=req.size,
+                    mode=options.get("mode"),
                 )
                 results = await books.fetch(conn, ids)
         except Exception:  # noqa: BLE001 — ①(service._vector_ids)과 같이 어떤 이유로 실패해도 할 일이 같다
             chat.logger.exception("벡터 검색 실패. ① 검색으로 대신한다")
-            return await service.search(req)
+            return await service.search(req, **options)
         return service.SearchOutcome(results=results, degraded=None)
 
 
