@@ -210,3 +210,16 @@ def test_DB_를_주지_않으면_재부팅도_지표도_없이_잰다() -> None:
     )
     assert aws.calls == []
     assert written[0]["cleared"] is None and "rds" not in written[0]
+
+
+def test_계획_전체의_값은_회차마다_넘기고_회차_값이_앞선다() -> None:
+    plan = {"name": "p", "warmup": False, "vector_timeout": 30}
+    got = rounds.measure_args(plan, {"label": "a"}, 1, "first")
+    assert got[got.index("--vector-timeout") + 1] == "30"
+    got = rounds.measure_args(plan, {"label": "a", "vector_timeout": 2}, 1, "first")
+    assert got[got.index("--vector-timeout") + 1] == "2"
+
+
+def test_측정_계획은_벡터_한도를_풀고_잰다() -> None:
+    for name in ("testbench", "a1-ef", "a5-eic"):
+        assert rounds.load_plan(PLANS / f"{name}.json")["vector_timeout"] == 30
