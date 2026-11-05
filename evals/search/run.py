@@ -69,9 +69,28 @@ def select(
     ]
 
 
-def request(case: dict, top: int) -> dict:
-    """사례의 /search 요청. 관련도순 위 top 권을 한 번에 받는다."""
-    return {"query": case["query"], "filters": case.get("filters", {}), "size": top}
+# 사용자가 보는 첫 화면(#556 판정). 인기순 위 12권이다
+SCREEN_SORT = "popular"
+SCREEN_TOP = 12
+
+
+def request(case: dict, top: int, sort: str = "relevance") -> dict:
+    """사례의 /search 요청. 위 top 권을 한 번에 받는다. 정렬은 기본 관련도순이다."""
+    body = {"query": case["query"], "filters": case.get("filters", {}), "size": top}
+    if sort != "relevance":
+        body["sort"] = sort
+    return body
+
+
+def parse_sets(items: Sequence[str] | None) -> dict[str, str]:
+    """--set 이름=값 목록. 값의 타입은 잴 코드의 검색 모드가 정한다(collect.apply_mode)."""
+    out = {}
+    for item in items or ():
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip() or not value.strip():
+            raise ValueError(f"--set 은 이름=값 꼴이어야 한다: {item!r}")
+        out[name.strip()] = value.strip()
+    return out
 
 
 def database_name(url: str) -> str:
@@ -130,6 +149,7 @@ def score_all(
     shelf: dict[int, Book],
     top: int,
     labels: Mapping[str, Mapping[str, int]] | None = None,
+    look: int | None = None,
 ) -> list[Score]:
     return [
         score(
@@ -138,6 +158,7 @@ def score_all(
             shelf,
             top,
             labels,
+            look,
         )
         for case, result in zip(cases, results, strict=True)
     ]
@@ -161,7 +182,13 @@ _DESCRIPTIVE_NOTE = (
 )
 
 
-def render(summary: dict[str, Any], top: int) -> str:
+def render(
+    summary: dict[str, Any],
+    top: int,
+    hit_at: Sequence[int] = HIT_AT,
+    look: int = 10,
+    sort: str = "relevance",
+) -> str:
     """사람이 읽는 결과 표. PR 본문에 그대로 붙일 수 있게 마크다운으로 낸다."""
     kinds = summary["kinds"]
     titles = [(kind, row) for kind, row in kinds.items() if "mrr" in row]
@@ -173,15 +200,18 @@ def render(summary: dict[str, Any], top: int) -> str:
         for kind, row in kinds.items()
         if "mrr" not in row and "ndcg_mean" not in row
     ]
-    lines = [f"위 {top}권 기준. {_NOTE}"]
+    order = "" if sort == "relevance" else f"{sort} 정렬, "
+    lines = [f"{order}위 {top}권 기준. {_NOTE}"]
     if titles:
         lines += [
             "",
-            "| 종류 | 사례 | 1등 안 | 5등 안 | 20등 안 | MRR | 못 찾음 | 시간(초, 중앙값) |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 종류 | 사례 | "
+            + " | ".join(f"{k}등 안" for k in hit_at)
+            + " | MRR | 못 찾음 | 시간(초, 중앙값) |",
+            "| --- | --- | " + "--- | " * len(hit_at) + "--- | --- | --- |",
         ]
     for name, row in titles:
-        hits = " | ".join(_pct(row[f"hit_{k}"]) for k in HIT_AT)
+        hits = " | ".join(_pct(row[f"hit_{k}"]) for k in hit_at)
         lines.append(
             f"| {name} | {row['measured']} | {hits} | {_num(row['mrr'], 3)} "
             f"| {row['missed']} | {_num(row['seconds_median'], 3)} |"
@@ -195,7 +225,7 @@ def render(summary: dict[str, Any], top: int) -> str:
     for kind, row in others:
         measure = "-"
         if "author_share_mean" in row:
-            measure = f"위 10권 중 그 저자의 책 {_num(row['author_share_mean'], 2)}"
+            measure = f"위 {look}권 중 그 저자의 책 {_num(row['author_share_mean'], 2)}"
         elif "violations" in row:
             measure = (
                 f"조건을 어긴 책 {row['violations']}권({row['violating_cases']}건)"
@@ -209,12 +239,16 @@ def render(summary: dict[str, Any], top: int) -> str:
     if described:
         lines += [
             "",
-            "| 종류 | 사례 | 위 10권 nDCG | 2점 책 | 0점 책 | 점수 없는 책 | 시간(초, 중앙값) |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            (
+                f"| 종류 | 사례 | 위 {look}권 nDCG | nDCG′ | Judged | 2점 책 | 0점 책 "
+                "| 점수 없는 책 | 시간(초, 중앙값) |"
+            ),
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     for name, row in described:
         lines.append(
             f"| {name} | {row['measured']} | {_num(row['ndcg_mean'], 3)} "
+            f"| {_num(row.get('ndcg_labeled_mean'), 3)} | {_pct(row.get('judged_mean'))} "
             f"| {_num(row['relevant_mean'])} | {_num(row['irrelevant_mean'])} "
             f"| {row['unlabeled']} | {_num(row['seconds_median'], 3)} |"
         )
@@ -246,7 +280,31 @@ def main(
     parser.add_argument("--yes", action="store_true", help="실제로 돌린다")
     parser.add_argument("--out", help="사례마다의 결과를 남길 JSON 파일")
     parser.add_argument("--any-db", action="store_true", help="_eval 이 아닌 DB 에도")
+    parser.add_argument(
+        "--sort",
+        default="relevance",
+        choices=("relevance", "popular", "newest", "price_asc", "price_desc"),
+        help="정렬. 기본 관련도순",
+    )
+    parser.add_argument("--top", type=int, help="받을 권수. 기본은 묶음의 top(20)")
+    parser.add_argument(
+        "--screen",
+        action="store_true",
+        help=f"사용자가 보는 첫 화면으로 잰다({SCREEN_SORT} 위 {SCREEN_TOP}권, 저자·서술형도 {SCREEN_TOP}권)",
+    )
+    parser.add_argument(
+        "--set",
+        action="append",
+        metavar="이름=값",
+        help="검색창 모드의 값 하나를 바꿔 잰다(여럿이면 여러 번). 예: --set keyword_weight=1",
+    )
     args = parser.parse_args(argv)
+    try:
+        overrides = parse_sets(args.set)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    sort = SCREEN_SORT if args.screen else args.sort
 
     bundle = load_bundle()
     try:
@@ -262,7 +320,12 @@ def main(
         )
         return 2
     label = code_label(code)
+    top = SCREEN_TOP if args.screen else (args.top or bundle["top"])
+    look = SCREEN_TOP if args.screen else None
+    hit_at = (1, SCREEN_TOP) if args.screen else HIT_AT
     print(f"사례 {len(picked)}건, /search 를 {len(picked)}번 부른다. 코드: {label}")
+    if overrides or sort != "relevance" or top != bundle["top"]:
+        print(f"정렬 {sort}, 위 {top}권, 바꾼 값 {overrides or '없음'}")
 
     injected = search is not None and facts is not None
     if not injected:
@@ -278,20 +341,23 @@ def main(
         print("실제로 돌리려면 --yes 를 붙인다. LLM 은 부르지 않고 DB 에 쓰지 않는다.")
         return 0
 
-    requests = [request(case, bundle["top"]) for case in picked]
+    if injected and overrides:
+        print("--set 은 실제 코드로 잴 때만 쓴다", file=sys.stderr)
+        return 2
+    requests = [request(case, top, sort) for case in picked]
     database = None
     if injected:
         results = search(requests)
         shelf = facts({i for r in results for i in r["book_ids"]})
     else:
-        results = collect_with(code, requests)
+        results = collect_with(code, requests, overrides)
         book_ids = {i for r in results for i in r["book_ids"]}
         shelf, database = asyncio.run(read_db(url, book_ids))
     from evals.search.label import load_labels
 
     labels = load_labels()["labels"]
-    scores = score_all(picked, results, shelf, bundle["top"], labels)
-    summary = summarize(scores)
+    scores = score_all(picked, results, shelf, top, labels, look)
+    summary = summarize(scores, hit_at)
     print()
     catalog = bundle["catalog"]
     if database and (database["books"], database["with_vectors"]) != (
@@ -303,7 +369,7 @@ def main(
             f"주의: 이 DB 의 책 표(책 {database['books']:,}권, 벡터 {database['with_vectors']:,}권)가 "
             f"묶음을 만든 책 표(책 {catalog['books']:,}권, 벡터 {catalog['with_vectors']:,}권)와 다르다.\n"
         )
-    print(render(summary, bundle["top"]))
+    print(render(summary, top, hit_at, look or 10, sort))
 
     if args.out:
         saved = {
@@ -311,6 +377,10 @@ def main(
             "catalog": catalog,
             "database": database,
             "code": label,
+            "sort": sort,
+            "top": top,
+            "look": look,
+            "mode_overrides": overrides,
             "summary": summary,
             # 받은 책 번호도 남긴다. 코드끼리 위 N권이 얼마나 바뀌었는지 견줄 때 쓴다
             "scores": [
