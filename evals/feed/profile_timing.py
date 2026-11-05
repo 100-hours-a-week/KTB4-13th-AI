@@ -10,10 +10,13 @@
 - 임베딩 모델을 따로 읽지 않고 같은 컨테이너의 서버(② /embeddings)에 묻는다. 작은 서버라 모델을 두 번 올리면
   메모리가 모자란다. 벡터는 재기 전에 다 만들어 둔다(실제 ⑥ 은 BE 에게서 벡터를 받는다)
 - 한 번에 한 명씩 부른다. BE 밤 배치가 ⑥ 을 그렇게 부른다
+- `--seconds` 를 주면 목록 예산을 그 값으로 잰다(#599). 비동기로 켰을 때 쓰는 예산(profile_feed_seconds)으로 그
+  자리에서 만든다. 주지 않으면 지금 운영처럼 3초(interest_fetch.BUDGET_SECONDS)다
 
-    curl -fsSL <이 파일 주소> | docker exec -i <AI 컨테이너> python - <cases.json 주소> [사용자 수] [건너뛸 수]
+    curl -fsSL <이 파일 주소> | docker exec -i <AI 컨테이너> python - <cases.json 주소> [사용자 수] [건너뛸 수] [--seconds 6]
 """
 
+import argparse
 import asyncio
 import json
 import statistics
@@ -24,7 +27,7 @@ import urllib.request
 from app.core import categories, db
 from app.core.config import get_settings
 from app.extraction.service import MEMORY_VECTOR_PURPOSE
-from app.feed import interest_feed
+from app.feed import interest_feed, interest_fetch
 from app.profile import labels, service
 from app.profile.schemas import ProfileRequest
 
@@ -124,8 +127,26 @@ async def _timed_build(*args, **kwargs):
     return feed
 
 
-async def measure(requests: list[tuple[str, ProfileRequest]]) -> list[dict]:
+def use_budget(seconds: float | None) -> float:
+    """목록 예산을 정하고 그 값을 돌려준다. 설정은 이 프로세스 안에서만 바꾸고 서버의 설정은 건드리지 않는다.
+
+    예산을 주면 비동기로 켠 것처럼 profile_feed_seconds 를 쓴다. 이때도 service.rebuild_on 은 줄에 넣지 않고
+    그 자리에서 만든다(그 함수의 설명).
+    """
+    settings = get_settings()
+    if seconds is None:
+        settings.profile_feed_async = False
+        return interest_fetch.BUDGET_SECONDS
+    settings.profile_feed_async = True
+    settings.profile_feed_seconds = seconds
+    return seconds
+
+
+async def measure(
+    requests: list[tuple[str, ProfileRequest]], seconds: float | None = None
+) -> list[dict]:
     get_settings().interest_feed = True
+    use_budget(seconds)
     interest_feed.build = _timed_build
     await db.connect()
     rows = []
@@ -166,23 +187,51 @@ def _at(values: list[float], share: float) -> float:
     return ordered[min(len(ordered) - 1, round(share * (len(ordered) - 1)))]
 
 
-def summary(rows: list[dict]) -> str:
+def numbers(rows: list[dict], budget: float) -> dict:
+    """요약 숫자. 대신 채운 사용자는 예산 안에 관심사 목록을 다 못 채워 다른 책으로 채운 사람이다(#562)."""
     totals = [r["total"] for r in rows]
+    builds = [r["build"] for r in rows if "build" in r]
+    return {
+        "budget": budget,
+        "users": len(rows),
+        "median": round(statistics.median(totals), 3),
+        "p90": round(_at(totals, 0.9), 3),
+        "p95": round(_at(totals, 0.95), 3),
+        "max": round(max(totals), 3),
+        "build_median": round(statistics.median(builds), 3) if builds else None,
+        "build_p95": round(_at(builds, 0.95), 3) if builds else None,
+        "over3": sum(t > 3 for t in totals),
+        "over5": sum(t > 5 for t in totals),
+        "substituted_users": sum(1 for r in rows if r.get("substituted")),
+        "empty_lists": sum(1 for r in rows if r.get("books") == 0),
+    }
+
+
+def summary(rows: list[dict], budget: float = interest_fetch.BUDGET_SECONDS) -> str:
+    n = numbers(rows, budget)
     return (
-        f"SUMMARY users={len(rows)} median={statistics.median(totals):.2f} "
-        f"p90={_at(totals, 0.9):.2f} max={max(totals):.2f} "
-        f"over3={sum(t > 3 for t in totals)} over5={sum(t > 5 for t in totals)} "
-        f"substituted_users={sum(1 for r in rows if r.get('substituted'))} "
-        f"empty_lists={sum(1 for r in rows if r.get('books') == 0)}"
+        f"SUMMARY budget={n['budget']:g} users={n['users']} median={n['median']:.2f} "
+        f"p90={n['p90']:.2f} p95={n['p95']:.2f} max={n['max']:.2f} "
+        f"over3={n['over3']} over5={n['over5']} "
+        f"substituted_users={n['substituted_users']} "
+        f"empty_lists={n['empty_lists']}"
     )
 
 
 def main(argv: list[str]) -> None:
-    url = argv[0]
-    limit = int(argv[1]) if len(argv) > 1 else None
-    offset = int(argv[2]) if len(argv) > 2 else 0
-    rows = asyncio.run(measure(prepare(url, limit, offset)))
-    print(summary(rows), flush=True)
+    parser = argparse.ArgumentParser(description="⑥ 한 번의 시간을 저장 없이 잰다")
+    parser.add_argument("cases", help="cases.json 주소")
+    parser.add_argument("users", nargs="?", type=int, help="몇 명만 잴지")
+    parser.add_argument("skip", nargs="?", type=int, default=0, help="앞에서 건너뛸 수")
+    parser.add_argument("--seconds", type=float, help="목록 예산(초). 없으면 3초")
+    args = parser.parse_args(argv)
+    budget = use_budget(args.seconds)
+    rows = asyncio.run(
+        measure(prepare(args.cases, args.users, args.skip), args.seconds)
+    )
+    print(summary(rows, budget), flush=True)
+    # 회차끼리 견주는 표를 만들 때 읽는 줄. 값은 위 줄과 같다
+    print("JSON " + json.dumps(numbers(rows, budget)), flush=True)
 
 
 if __name__ == "__main__":
