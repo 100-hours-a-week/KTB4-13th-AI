@@ -183,3 +183,22 @@ def test_보고서는_버린_회차를_빼고_기준선과_견준다(tmp_path) -
     assert "CPU 계산이 회차 뒤 2.00배 느림" in text
     row = next(line for line in text.splitlines() if line.startswith("| ef100 | first"))
     assert "0.60배" in row and "줄어듦" in row
+
+
+def test_앱의_벡터_한도와_같은_값으로_끊겼을_검색을_센다() -> None:
+    from app.search import vector
+
+    assert analyze.APP_VECTOR_LIMIT_MS == vector.QUERY_TIMEOUT_SECONDS * 1000
+    lines = [
+        {**_search("a", 2500), "stages": {"vector": [2100.0]}, "degraded": None},
+        {
+            **_search("b", 900),
+            "stages": {"vector": [800.0]},
+            "degraded": "keyword-only",
+        },
+        {**_search("c", 50, state="repeat", rep=1), "stages": {"vector": [3000.0]}},
+        {**_search("c", 50, state="repeat", rep=2), "stages": {"vector": [40.0]}},
+    ]
+    assert analyze.cut_counts(lines, "first") == (1, 1)
+    # 반복 조회는 첫 번을 빼고 센다
+    assert analyze.cut_counts(lines, "repeat") == (0, 0)

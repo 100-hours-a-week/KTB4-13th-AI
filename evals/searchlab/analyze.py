@@ -35,6 +35,9 @@ READ_LATENCY_LIMIT = 1.30
 BALANCE_GAP = 20.0
 
 _SUFFIX = re.compile(r"-\d+$")
+# 앱의 벡터 검색 한도(app/search/vector.py QUERY_TIMEOUT_SECONDS, 테스트로 맞춰 본다). 측정 회차는 한도를 풀고
+# 재므로, 앱이라면 끊겼을 검색은 잰 벡터 시간이 이 값을 넘은 것으로 센다
+APP_VECTOR_LIMIT_MS = 2000.0
 
 
 def config_of(label: str) -> str:
@@ -59,6 +62,23 @@ def query_values(lines: Sequence[Mapping[str, Any]], state: str) -> dict[str, fl
         if values:
             out[qid] = float(np.median(values))
     return out
+
+
+def cut_counts(lines: Sequence[Mapping[str, Any]], state: str) -> tuple[int, int]:
+    """(키워드만으로 답한 검색 수, 앱이라면 벡터가 끊겼을 검색 수). 반복 조회는 첫 번을 뺀다."""
+    degraded = over = 0
+    for line in lines:
+        if (
+            line.get("type") != "search"
+            or line.get("state") != state
+            or line.get("error")
+        ):
+            continue
+        if state == "repeat" and line.get("rep", 1) == 1:
+            continue
+        degraded += bool(line.get("degraded"))
+        over += sum(line.get("stages", {}).get("vector", [])) > APP_VECTOR_LIMIT_MS
+    return degraded, over
 
 
 def percentile(values: Sequence[float], q: float) -> float:
@@ -315,8 +335,8 @@ def report(path: Path, baseline: str | None) -> str:
     lines += [
         "## 회차",
         "",
-        "| 회차 | 상태 | 건수 | 중앙값 ms | p90 | p95 | 실패 | 버릴 이유 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 회차 | 상태 | 건수 | 중앙값 ms | p90 | p95 | 실패 | 키워드만 | 앱이면 벡터 끊김 | 버릴 이유 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for label, recs in records.items():
         for state in ("first", "repeat"):
@@ -332,8 +352,10 @@ def report(path: Path, baseline: str | None) -> str:
                 and x.get("error")
             )
             why = "; ".join(reasons.get(label, [])) or ""
+            degraded, over = cut_counts(recs, state)
             lines.append(
-                f"| {label} | {state} | {s['n']} | {_ms(s['median'])} | {_ms(s['p90'])} | {_ms(s['p95'])} | {errors} | {why} |"
+                f"| {label} | {state} | {s['n']} | {_ms(s['median'])} | {_ms(s['p90'])} | {_ms(s['p95'])} | {errors} "
+                f"| {degraded} | {over} | {why} |"
             )
     lines.append("")
 
