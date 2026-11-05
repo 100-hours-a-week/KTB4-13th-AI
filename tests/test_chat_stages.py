@@ -116,3 +116,28 @@ def test_벡터_검색은_semantic_요청에만_걸린다(monkeypatch) -> None:
     finally:
         undo()
     assert chat.service is variants.service
+
+
+def test_벡터_실험도_챗봇이_넘긴_모드를_검색에_그대로_넘긴다(monkeypatch) -> None:
+    from app.search import mode as modes
+
+    seen = []
+
+    async def fake_search(req, **options):
+        seen.append(options.get("mode"))
+        return SimpleNamespace(results=[], degraded=None)
+
+    async def fake_get_candidates(spec, *args, **kwargs):
+        await chat.service.search(
+            SimpleNamespace(query=spec.intent), mode=modes.MEANING
+        )
+        return []
+
+    monkeypatch.setattr(variants.service, "search", fake_search)
+    monkeypatch.setattr(chat, "get_candidates", fake_get_candidates)
+    undo = variants.install("vector")
+    try:
+        asyncio.run(chat.get_candidates(_spec("exact")))
+    finally:
+        undo()
+    assert seen == [modes.MEANING]
