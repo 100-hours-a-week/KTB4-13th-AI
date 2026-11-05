@@ -115,6 +115,7 @@ QA에서 뜻 없는 검색어(`zxqvjkwpqz`)에 관계없는 책이 나와 fail�
   - 라벨을 더해도 이상값이 바뀌지 않아, 이미 잰 코드의 숫자가 그대로입니다
 - **2점 책, 0점 책**: 위 10권 중 그 점수의 책 수(평균)
 - **점수 없는 책**: 라벨에 없는 책은 0점으로 계산하고 따로 셉니다. 검색 코드를 바꿔 처음 보는 책이 많이 나오면 그 책만 더 매깁니다
+- **nDCG′, Judged**: 라벨 없는 책을 0점으로 세면 라벨을 만들 때 쓴 설정이 유리하고, 새 책을 올리는 설정은 낮게 잽니다([#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556) 「품질 지표와 라벨」). 그래서 라벨 없는 책을 목록에서 빼고 뒤의 책을 당겨 잰 nDCG′와, 본 권수 중 라벨이 있는 비율(Judged)을 같이 냅니다. 셋을 함께 봅니다(nDCG는 하한)
 
 ### 점수를 매기는 법
 
@@ -164,7 +165,28 @@ git worktree add --detach ../v1 421a77c
 DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.run --yes --code ../v1
 ```
 
-상수 하나만 바꿔 보는 실험도 같은 방법으로 합니다. worktree를 하나 더 꺼내 상수만 고치고 `--code`로 돌립니다. 결과 위의 코드 칸에 `(app 을 고친 채)`가 붙습니다.
+### 검색 값을 바꿔 재기
+
+검색 결과를 정하는 값은 검색창 모드 한 벌(`app/search/mode.py`)에 있습니다. `--set 이름=값`으로 값을 바꿔 같은 코드로 잽니다. worktree를 따로 꺼내지 않아도 됩니다.
+
+```
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.run --yes --kinds descriptive --set keyword_weight=1 --set vector_weight=3
+```
+
+- 이름은 모드의 칸 이름이고, 값의 타입은 지금 값을 따릅니다. 없는 이름이거나 모드가 없는 옛 코드(`--code`)면 멈춥니다
+- 바꾸는 것은 검색창 모드뿐입니다. 챗봇의 분위기·주제 요청이 쓰는 뜻 모드는 그대로입니다
+- 바꾼 값은 `--out` 파일의 `mode_overrides`에 남습니다
+
+### 첫 화면으로 재기
+
+사용자가 실제로 보는 것은 인기순 첫 화면 12권입니다(#556 판정 기준). `--screen`이면 모든 사례를 인기순 위 12권으로 받고, 저자·서술형도 12권을 봅니다. 제목은 1등 안과 12등 안을 냅니다.
+
+```
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.run --yes --screen
+```
+
+- `--sort`(`popular`, `newest`, `price_asc`, `price_desc`)와 `--top`으로 정렬과 권수만 따로 바꿀 수도 있습니다(정렬할 때 넣는 벡터 권수 C6 등). 이때 저자·서술형은 지금처럼 10권을 봅니다
+- 관련도순 숫자(지금 기준선)는 원리를 볼 때 같이 냅니다
 
 ## 결과 읽는 법
 
