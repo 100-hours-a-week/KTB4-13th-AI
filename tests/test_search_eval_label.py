@@ -89,3 +89,24 @@ def test_라벨_파일은_검색어마다_한_줄이다() -> None:
     text = label.dump(data, "labels")
     assert json.loads(text) == data
     assert '  "d-1": {"A": 2},\n  "d-2": {"B": 0}\n' in text
+
+
+def test_설정은_칸_값_꼴로_받고_값이_없으면_지금_그대로() -> None:
+    assert label.parse_variant("base=") == ("base", {})
+    assert label.parse_variant("w13=keyword_weight:1, vector_weight:3") == (
+        "w13",
+        {"keyword_weight": "1", "vector_weight": "3"},
+    )
+    for bad in ("w13", "=keyword_weight:1", "w13=keyword_weight"):
+        with pytest.raises(ValueError):
+            label.parse_variant(bad)
+
+
+def test_후보는_코드와_설정에서_모으고_이름이_겹치면_멈춘다() -> None:
+    targets = label.pool_targets(["main=../main"], ["w13=keyword_weight:1"])
+    assert targets["main"] == (Path("../main"), {})
+    assert targets["w13"] == (label.run.REPO, {"keyword_weight": "1"})
+    with pytest.raises(ValueError, match="겹친다"):
+        label.pool_targets(["a=../a"], ["a="])
+    with pytest.raises(ValueError, match="하나 이상"):
+        label.pool_targets([], [])

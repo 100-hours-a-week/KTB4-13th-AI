@@ -132,6 +132,11 @@ uv run python -m evals.search.label apply-review --by "누가 확인했는지, �
 2. `candidates.md`를 읽고 `grades.json`의 빈칸에 점수를 적은 뒤 `apply`로 `labels.json`에 넣습니다. 이미 있는 라벨은 덮지 않습니다
 3. `review`: 라벨의 10%를 시드로 골라 사람이 확인할 표(`review.md`)를 냅니다. 고친 점수를 `review.json`의 `fixed`에 적고 `apply-review`로 넣으면 본 수와 고친 수가 `labels.json`에 남습니다
 4. 검색 코드를 바꿔 점수 없는 책이 많이 나오면 1과 2만 다시 합니다. 이미 매긴 책은 다시 매기지 않습니다
+5. 검색창 모드의 값만 바꾼 설정은 worktree 없이 `--variant 이름=칸:값,칸:값`으로 줍니다(이 저장소의 코드, 값이 없으면 지금 그대로). `--screen`이면 관련도순 위 20권에 더해 인기순 위 12권(첫 화면)도 모읍니다
+
+```
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool --variant base= --variant w13=keyword_weight:1,vector_weight:3 --screen
+```
 
 ### 매긴 점수
 
