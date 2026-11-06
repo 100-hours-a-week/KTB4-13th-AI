@@ -1,7 +1,7 @@
 """검색 시간 한 회차 재기(evals/searchlab/measure.py) 테스트(#593). DB 없이 돈다.
 
-DB 에 붙어 끝까지 도는 것은 로컬 평가 DB 에서 손으로 확인했다(PR 본문). pg_stat_statements 는 로컬에 없어
-실험 서버에서 처음 돈다.
+DB 에 붙어 끝까지 도는 것은 로컬 평가 DB 에서 손으로 확인했다(PR 본문). `--server-stats` 는 pg_stat_statements 를
+켠 임시 로컬 DB(평가 DB 의 구조와 책 8천 권)에서 확인했다. 검색마다 비우는 `--pgss` 는 실험 서버에서 처음 돈다.
 """
 
 import asyncio
@@ -160,3 +160,164 @@ def test_벡터_한도를_풀면_풀의_문장_한도도_같이_늘린다() -> N
     with measure.patched(measure.Knobs(vector_timeout=30.0), {}):
         assert vector.QUERY_TIMEOUT_SECONDS == 30.0
     assert vector.QUERY_TIMEOUT_SECONDS == before
+
+
+def test_문장_통계를_비우는_것은_실험_DB_에서만() -> None:
+    # 운영·개발 DB 의 pg_stat_statements 는 다른 사람도 본다. 비우지 않고 앞뒤 차이로만 읽는다
+    assert measure.pgss_refusal("bookjeok_ai_eval") is None
+    assert "--server-stats" in measure.pgss_refusal("bookjeok_ai")
+
+
+def test_서버_통계는_자기_계정의_바뀐_줄만_묻고_읽는_문장_자신은_뺀다() -> None:
+    sql = measure.server_diff_sql(
+        {
+            "queryid",
+            "toplevel",
+            "calls",
+            "total_exec_time",
+            "shared_blks_hit",
+            "shared_blks_read",
+            "blk_read_time",
+        }
+    )
+    assert "pg_stat_statements(false)" in sql
+    assert "current_user" in sql
+    assert "pg_backend_pid()" in sql
+    assert "blk_read_time AS read_time" in sql
+    sql18 = measure.server_diff_sql(
+        {
+            "queryid",
+            "toplevel",
+            "calls",
+            "total_exec_time",
+            "shared_blks_hit",
+            "shared_blks_read",
+            "shared_blk_read_time",
+        }
+    )
+    assert "shared_blk_read_time AS read_time" in sql18
+
+
+def test_서버_통계는_앞뒤_차이를_낸다() -> None:
+    stats = measure.ServerStats()
+    row = {
+        "queryid": 1,
+        "toplevel": True,
+        "calls": 10,
+        "total_exec_time": 100.0,
+        "shared_blks_hit": 50,
+        "shared_blks_read": 5,
+        "read_time": 2.0,
+    }
+    assert stats.apply([row]) is None  # 처음 읽은 것은 기준이다
+    changed = dict(
+        row,
+        calls=11,
+        total_exec_time=103.5,
+        shared_blks_hit=58,
+        shared_blks_read=7,
+        read_time=2.5,
+    )
+    new = {
+        "queryid": 2,
+        "toplevel": True,
+        "calls": 1,
+        "total_exec_time": 1.0,
+        "shared_blks_hit": 3,
+        "shared_blks_read": 0,
+        "read_time": 0.0,
+    }
+    assert stats.apply([changed, new]) == {
+        "calls": 2,
+        "exec_ms": 4.5,
+        "hit": 11,
+        "read": 2,
+        "read_ms": 0.5,
+    }
+    assert stats.apply([]) == {
+        "calls": 0,
+        "exec_ms": 0.0,
+        "hit": 0,
+        "read": 0,
+        "read_ms": 0.0,
+    }
+    assert stats.known() == ([1, 2], [11, 1])
+
+
+class _KeywordConn:
+    def __init__(self, rows: int) -> None:
+        self.rows = rows
+
+    def transaction(self):
+        conn = self
+
+        class _Tx:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Tx()
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+    async def fetch(self, *_args, **_kwargs):
+        return [{"book_id": i} for i in range(self.rows)]
+
+
+def test_단계가_끝나면_바깥_단계마다_한_번_부르고_그_시간은_단계_시간에_넣지_않는다() -> (
+    None
+):
+    called: list[str] = []
+
+    async def after(label: str) -> None:
+        called.append(label)
+        await asyncio.sleep(0.05)
+
+    from app.search.schemas import SearchFilters
+
+    with measure.patched(measure.Knobs(), {}, after_stage=after) as stages:
+        # 낱말 둘 → 모든 낱말(1권) 뒤 낱말마다 넓히기. 안쪽 _run 두 번에는 부르지 않는다
+        asyncio.run(keyword.search_ids(_KeywordConn(1), "꿀벌 그림책", SearchFilters()))
+    assert called == ["keyword"]
+    assert len(stages.ms["keyword_query"]) == 2
+    assert stages.ms["keyword"][0] < 50
+
+
+def test_표·색인별로_읽은_블록의_차이와_캐시_적중률() -> None:
+    before = [
+        {"relname": "hnsw_idx", "kind": "i", "am": "hnsw", "fetched": 100, "hit": 90},
+        {"relname": "books", "kind": "r", "am": "heap", "fetched": 10, "hit": 10},
+    ]
+    after = [
+        {"relname": "hnsw_idx", "kind": "i", "am": "hnsw", "fetched": 300, "hit": 240},
+        {"relname": "books", "kind": "r", "am": "heap", "fetched": 10, "hit": 10},
+        {"relname": "new_idx", "kind": "i", "am": "gin", "fetched": 4, "hit": 1},
+    ]
+    delta = measure.statio_delta(before, after)
+    assert delta == [
+        {"relname": "hnsw_idx", "kind": "i", "am": "hnsw", "read": 50, "hit": 150},
+        {"relname": "new_idx", "kind": "i", "am": "gin", "read": 3, "hit": 1},
+    ]
+    assert measure.hit_ratio(delta, "hnsw") == 0.75
+    assert measure.hit_ratio(delta, "brin") is None
+
+
+def test_실험_DB_가_아니면_pgss_는_묻지_않고_멈추고_둘은_같이_못_쓴다(
+    monkeypatch, capsys
+) -> None:
+    from types import SimpleNamespace
+
+    from app.core import config
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(database_url="postgresql://u@h/bookjeok_ai"),
+    )
+    assert measure.main(["--label", "x", "--state", "first", "--pgss", "--any-db"]) == 2
+    assert "--server-stats" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        measure.main(["--label", "x", "--state", "first", "--pgss", "--server-stats"])
