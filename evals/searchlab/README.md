@@ -1,6 +1,6 @@
 # 검색 시간 측정 도구
 
-[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어 고정([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591))과 한 회차 재기([#593](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/593)), 회차 이어 돌리기([#595](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/595))까지 있고, 결과 정리는 다음 PR에서 더합니다.
+[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어 고정([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591))과 한 회차 재기([#593](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/593)), 회차 이어 돌리기([#595](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/595)), 결과 정리([#597](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/597))가 있습니다.
 
 | 파일 | 내용 | 저장소 |
 | --- | --- | --- |
@@ -13,6 +13,8 @@
 | `rounds.py` | 회차를 재부팅부터 이어 돌린다 | 둔다 |
 | `plans/*.json` | 회차 계획(순서·설정) | 둔다 |
 | `out/<plan>/` | 회차 요약(`rounds.jsonl`)과 회차마다 잰 기록 | 두지 않음 |
+| `analyze.py` | 회차 기록을 판정 기준대로 정리한다 | 둔다 |
+| `out/<plan>/report.md` | 정리한 표 | 두지 않음(기록 이슈에 붙임) |
 
 ## 잴 검색어 170건
 
@@ -92,6 +94,29 @@
 - 재부팅만으로 OS 캐시까지 비는지는 첫 회차 뒤 향상된 모니터링(RDS 콘솔의 OS 지표)으로 손으로 봅니다. 안 비면 계획에 `"clear": "stop-start"`를 넣습니다. 정지·시작은 몇 분 더 걸립니다.
 - AWS는 aws CLI로 부릅니다. EC2에서는 서버 역할의 권한을, 맥에서는 `--aws-profile`을 씁니다.
 
+## 결과 정리
+
+[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556) 「미리 정하는 판정 기준」의 시간 줄과 「통계 방법」을 그대로 따릅니다. 기준을 바꾸면 이 파일과 #556을 같이 고칩니다.
+
+- **검색어 하나의 값:** 처음 조회는 그 한 번, 반복 조회는 첫 번을 뺀 6번의 중앙값입니다.
+- **같은 설정을 두 번 쟀으면(A·B·B·A):** 검색어마다 두 회차의 기하평균을 씁니다. 회차 이름 뒤의 `-1`·`-2`를 떼어 같은 설정으로 묶습니다.
+- **비교:** 같은 검색어끼리 log(새 설정 ÷ 기준선)를 내고, 그 중앙값의 짝 부트스트랩 95% 구간(1만 번, 시드 고정)과 Wilcoxon을 봅니다.
+
+| 판정 | 뜻 |
+| --- | --- |
+| 줄어듦 / 늘어남 | 구간이 0을 걸치지 않고, Wilcoxon도 같은 쪽(p < 0.05) |
+| 판단 불가 | 구간이 0을 걸치거나, 구간과 Wilcoxon이 어긋남. "같다"로 적지 않습니다 |
+| 탈락 | p95가 기준선의 1.2배를 넘음. 중앙값이 줄어도 탈락입니다 |
+
+| 버리거나 짝짓지 않는 회차 | 기준 |
+| --- | --- |
+| 버림 | 회차 뒤 CPU 계산이 앞보다 1.3배 넘게 느림, 또는 그 회차의 평균 읽기 지연(`ReadLatency`)이 계획 안 회차들의 중앙값보다 1.3배 넘게 높음 |
+| 짝짓지 않음 | 두 회차의 디스크 버스트 잔고(`EBSIOBalance%`) 최저값이 20%p 넘게 다름. 표에 적기만 하고, 그 쌍을 빼고 다시 볼지는 사람이 정합니다 |
+
+- **끊김 세기:** 회차 표에 키워드만으로 답한 검색 수와, 앱이라면 벡터가 끊겼을 검색 수(잰 벡터 시간이 앱 한도 2초를 넘음)를 같이 적습니다. 측정 회차는 한도를 풀고 재기 때문에 둘째 칸이 앱 사용자가 겪을 수입니다.
+- **그 밖에 내는 것:** 시간 = a + b × DB 캐시 밖에서 읽은 블록 회귀, 처음 조회의 위 20권 기준선 일치율, 일반 계획을 쓴 문장 수(PostgreSQL 18)
+- **통계:** scipy(Wilcoxon)와 numpy를 씁니다. scipy는 개발 의존성입니다.
+
 ## 주의
 
 - 필터 사례는 같은 낱말("사랑", "여행" 등)을 조건만 바꿔 쓰고, 정렬 사례 6건은 서술형 검색어를 다시 씁니다. 한 회차에서 앞 사례가 뒤 사례의 캐시를 데우므로, 처음 조회는 종류별로 나눠 보고 순서를 회차마다 섞습니다.
@@ -121,6 +146,11 @@ DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.rounds pl
 DATABASE_URL=postgresql://<실험 DB> nohup uv run python -m evals.searchlab.rounds plans/a1-ef.json --db-instance <실험 RDS 이름> --yes > a1.log 2>&1 &
 ```
 
+```bash
+# 결과 정리(DB·AWS 안 씀). out/a1-ef/report.md 에도 쓴다
+uv run python -m evals.searchlab.analyze out/a1-ef --baseline ef400
+```
+
 벡터 파일은 저장소에 없으니, 부하·측정 EC2에서는 저장소를 받은 뒤(#556 「시험 환경」의 준비 명령) 두 번째 명령을 한 번 돌립니다. `DATABASE_URL`은 설정 검사 때문에만 필요합니다.
 
 ## 시험대(운영과 맞춰 보기)
@@ -144,3 +174,12 @@ DATABASE_URL=postgresql://<운영 DB> uv run python -m evals.searchlab.measure -
 
 - 운영은 늘 데워진 채라 데우기를 하지 않습니다. 실험 서버의 데우기 500건이 운영의 이 상태를 흉내 냅니다.
 - 운영 앱과 같은 계정으로 붙으면 그 시간의 앱 요청이 `server` 값에 섞일 수 있습니다. 회차 머리에 계정을 남기지는 않으니, 잰 날 `pg_stat_activity`로 앱 계정을 한 번 봐 둡니다.
+
+```bash
+# 견주기(DB·AWS 안 씀). 넷을 다 지키면 통과, 아니면 끝 코드 1
+uv run python -m evals.searchlab.testbench --exp out/testbench/base-1.jsonl --prod out/prod/first.jsonl \
+  --exp-ef1000 out/testbench/ef1000.jsonl --exp-ef400 out/testbench/ef400.jsonl \
+  --prod-ef1000 out/prod/ef1000.jsonl --prod-ef400 out/prod/ef400.jsonl --out out/testbench/check.md
+```
+
+넷의 읽는 법(#556 「시험대 검증」을 이렇게 셉니다): 1·2는 두 쪽에서 실패 없이 잰 검색어끼리 중앙값과 p90을 각각 견줘 실험 ÷ 운영이 0.7–1.3 안, 3은 처음 조회 구간의 벡터 색인 적중률 차가 ±0.10 안, 4는 검색어마다 반복 조회(첫 번 뺀 중앙값)의 1000 ÷ 400 벡터 시간을 내고 그 중앙값의 차가 ±0.1 안입니다. 블록이 둘 다 0이면 같다고 봅니다.
