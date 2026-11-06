@@ -46,48 +46,21 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     LLM 장애는 LLMUnavailableError(시간 초과는 LLMTimeoutError), 임베딩 장애는
     EmbeddingUnavailableError 로 올라간다.
     """
-    if get_settings().extraction_load_test_mock or get_settings().chat_load_test_mock:
-        # 실제 사용자 발화를 근거로 써서 기존 필터·임베딩 경로를 통과한다.
-        evidence = next(
-            (
-                t.text.strip()
-                for t in reversed(req.used_conversation())
-                if t.role == "user" and len(t.text.strip()) >= 4
-            ),
-            "",
+    api_chain = _chain(
+        # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
+        # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
+        get_chat_model(
+            model_id=get_settings().extraction_llm_model_id or None,
+            temperature=EXTRACTION_TEMPERATURE,
         )
-        standard = "잔잔한 소설 추천해줘" in evidence
-        llm_output = {
-            "extractions": [
-                {
-                    "type": "mood" if standard else "topic",
-                    "value": "잔잔한 소설을 찾음" if standard else evidence[:200],
-                    "strength": 2,
-                    "keyword": "잔잔한" if standard else evidence[:100],
-                    "evidence": evidence,
-                    "owner": "user",
-                    "basis": "stated",
-                }
-            ]
-            if evidence
-            else []
-        }
+    )
+    self_hosted = _self_hosted_model()
+    if self_hosted is None:
+        llm_output = await invoke_chain(api_chain, prompts.inputs(req))
     else:
-        api_chain = _chain(
-            # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
-            # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
-            get_chat_model(
-                model_id=get_settings().extraction_llm_model_id or None,
-                temperature=EXTRACTION_TEMPERATURE,
-            )
+        llm_output = await invoke_chain_with_fallback(
+            _chain(self_hosted), api_chain, prompts.inputs(req)
         )
-        self_hosted = _self_hosted_model()
-        if self_hosted is None:
-            llm_output = await invoke_chain(api_chain, prompts.inputs(req))
-        else:
-            llm_output = await invoke_chain_with_fallback(
-                _chain(self_hosted), api_chain, prompts.inputs(req)
-            )
 
     raw = llm_output["extractions"]
     extractions = await to_extractions(req, llm_output)

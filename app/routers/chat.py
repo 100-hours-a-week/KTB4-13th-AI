@@ -365,9 +365,6 @@ async def _ask_spec_patch(
     shown_listing: str = "(없음)",
     ask_stage: asking.Stage = "none",
 ) -> dict:
-    if get_settings().chat_load_test_mock:
-        await asyncio.sleep(max(0, get_settings().chat_load_test_spec_delay_seconds))
-        return {"intent": "semantic", "semantic": message}
     chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
     return await invoke_chain(
         chain,
@@ -386,9 +383,6 @@ async def _asks_new_request(message: str, previous: str) -> bool:
 
     spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
     """
-    if get_settings().chat_load_test_mock:
-        # 같은 대화방에서 조건을 갱신하는 부하 시나리오: 초기화·재추출은 하지 않는다.
-        return False
     model_id = get_settings().relation_llm_model_id
     model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
     chain = RELATION_PROMPT | model | message_text | parse_json_response
@@ -414,8 +408,6 @@ async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
 
 async def _judge_scope(message: str) -> asking.Ask | None:
     """넓은 첫 요청인지 판정한다(#530). 넓으면 물을 말과 답 보기, 아니면 None. 호출이 실패하면 묻지 않는다."""
-    if get_settings().chat_load_test_mock:
-        return None
     chain = asking.SCOPE_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
         answer = await invoke_chain(chain, {"message": message})
@@ -1484,24 +1476,7 @@ async def generate_cards(
     }
 
     try:
-        if get_settings().chat_load_test_mock:
-            await asyncio.sleep(
-                max(0, get_settings().chat_load_test_card_delay_seconds)
-            )
-            parsed = {
-                "reply": "요청하신 책을 골라봤어요.",
-                "cards": [
-                    {
-                        "book_id": c["book_id"],
-                        "reason_short": "요청하신 주제와 관련된 책이에요.",
-                        "reason_long": "요청하신 주제의 책을 살펴보세요.",
-                    }
-                    for c in candidates[:CARD_LIMIT]
-                ],
-            }
-            if on_reply is not None:
-                await on_reply(_preview_reply(parsed["reply"]))
-        elif on_reply is None:
+        if on_reply is None:
             # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
             chain = CARD_PROMPT | get_chat_model() | message_text | parse_json_response
             parsed = await invoke_chain(chain, inputs)
@@ -1896,8 +1871,6 @@ async def _judge_lane(
 
     직전 챗봇 말은 최근 대화의 마지막 줄이 챗봇 말일 때만 쓴다. 사용자 말만 싣는 호출자도 있다.
     """
-    if get_settings().chat_load_test_mock:
-        return "recommend"
     last = req.recent_turns[-1] if req.recent_turns else None
     last_bot = last.text if last is not None and last.role == "assistant" else ""
     chain = (
@@ -1934,8 +1907,6 @@ async def _answer(
     req: ChatRequest, shown_books: list[shown.ShownBook]
 ) -> tuple[str, str, bool]:
     """대답 턴의 (reply, followup, degraded). LLM 이 실패하면 고정 안내와 degraded 를 준다."""
-    if get_settings().chat_load_test_mock:
-        return "테스트용 응답입니다.", "어떤 책을 찾으시나요?", False
     chain = ANSWER_PROMPT | get_chat_model() | message_text | parse_json_response
     try:
         parsed = await invoke_chain(

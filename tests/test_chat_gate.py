@@ -97,24 +97,6 @@ def _without_shop_fields(body: dict) -> dict:
     return {k: v for k, v in body.items() if k not in SHOP_FIELDS}
 
 
-def test_load_mock_returns_real_candidate_card_without_llm(monkeypatch):
-    from app.core.config import get_settings
-
-    monkeypatch.setenv("CHAT_LOAD_TEST_MOCK", "true")
-    get_settings.cache_clear()
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("external model must not be built")
-
-    monkeypatch.setattr(chat, "get_chat_model", forbidden)
-    response = client.post(URL, json=_without_shop_fields(_body(RECOMMEND_MESSAGE)))
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["cards"]
-    assert data["cards"][0]["book_id"] == 1088
-    assert not data["degraded"]
-
-
 def _wire_recommend(monkeypatch) -> None:
     """③ 이 쓰는 LLM(조건 갱신 → 카드 생성)을 가짜로 바꾼다."""
     replies = iter(["{}", CARD_REPLY])
