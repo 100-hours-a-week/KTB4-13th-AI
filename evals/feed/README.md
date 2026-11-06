@@ -31,6 +31,7 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.feed
 - **이름이 `_eval`로 끝나는 DB에만 돌립니다.** 실행기가 가상 사용자의 프로필을 DB에 쓰기 때문입니다. 끝나면 지웁니다. 다른 DB에 돌리려면 `--any-db`를 붙입니다.
 - 묶음을 만든 책 표와 권수가 다른 DB에 돌리면 결과 위에 주의가 찍힙니다.
 - `--out`으로 사용자마다의 결과를 파일로 남깁니다. `evals/feed/results/` 아래에 두면 저장소에 섞이지 않습니다.
+- 홈 목록을 응답 뒤에 만들도록 켜고(`PROFILE_FEED_ASYNC=true`) 돌리면, ⑥ 뒤에 그 사용자의 목록이 다 만들어질 때까지(목록 칸의 요청 번호표 `pending`이 지워질 때까지, 최대 60초) 기다린 뒤 홈을 부릅니다([#601](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/601)). 기다리지 않으면 처음 쓰는 사용자는 새 목록이 아니라 지금 방식 목록으로 채점됩니다. 결과 아래에 기다린 사람 수·초와 한도를 넘긴 사람 수가 찍힙니다.
 
 ### ⑥ 시간 재기 (운영 서버)
 

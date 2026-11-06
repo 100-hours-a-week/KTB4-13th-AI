@@ -31,6 +31,14 @@ FEED_URL = "/recommendations/feed"
 CALL_TIMEOUT_SECONDS = 60
 # 가상 사용자의 프로필을 쓰는 DB. 개발용이나 운영 DB 에 쓰지 않게 이름으로 막는다.
 EVAL_DB_SUFFIX = "_eval"
+# 비동기로 켜져 있으면 ⑥ 뒤에 목록이 다 만들어질 때까지 이만큼 기다린 뒤 홈을 부른다(#601). 목록 예산(기본 6초)과
+# 앞 사람 목록이 남았을 때를 넉넉히 덮는다. 넘기면 그대로 부르고 그 수를 적는다.
+ASYNC_WAIT_SECONDS = 60.0
+ASYNC_POLL_SECONDS = 0.1
+# 목록 칸의 요청 번호표. 일꾼이 목록을 저장하면 지워진다(app/feed/build_queue.py)
+_PENDING_SQL = (
+    "SELECT coalesce(feed ? 'pending', false) FROM taste_profile WHERE user_id = $1"
+)
 
 Target = Callable[[dict[str, Any]], Awaitable[Response]]
 Facts = Callable[[set[str]], Awaitable[dict[str, Book]]]
@@ -139,6 +147,24 @@ async def run(
 
 
 # 묶음의 취향 기억에 붙이는 저장한 때의 시작. BE 처럼 시간대 표시 없이 보낸다
+async def wait_list(
+    pending: Callable[[], Awaitable[bool]],
+    *,
+    timeout: float = ASYNC_WAIT_SECONDS,
+    poll: float = ASYNC_POLL_SECONDS,
+) -> float | None:
+    """목록이 다 만들어질(요청 번호표가 지워질) 때까지 기다린 초. 한도를 넘기면 None 이다.
+
+    서버를 같은 이벤트 루프에서 돌리므로 기다리는 동안 일꾼이 목록을 만든다.
+    """
+    started = perf_counter()
+    while await pending():
+        if perf_counter() - started > timeout:
+            return None
+        await asyncio.sleep(poll)
+    return perf_counter() - started
+
+
 def memory_request(
     memories: Sequence[Mapping[str, Any]], vectors: Sequence[list[float]], dim: int
 ) -> list[dict[str, Any]]:
@@ -277,6 +303,7 @@ async def measure(
     from app.main import app
 
     settings = get_settings()
+    waits: list[float | None] = []
     headers = (
         {"Authorization": f"Bearer {settings.ai_service_token}"}
         if settings.ai_service_token
@@ -319,6 +346,13 @@ async def measure(
                         "history": user["history"],
                     },
                 )
+                if settings.profile_feed_async and profile.status_code == 200:
+                    # 켜져 있으면 목록은 응답 뒤에 만들어진다. 바로 부르면 지금 방식 목록이 채점된다
+                    waits.append(
+                        await wait_list(
+                            lambda: conn.fetchval(_PENDING_SQL, case["user_id"])
+                        )
+                    )
                 history = user["history"]
                 started = perf_counter()
                 feed = await client.get(
@@ -368,6 +402,8 @@ async def measure(
                 params={"user_id": 2_000_000_000, "surface": "home", "size": 1},
             )
             scores = await run(picked, by_id, target, facts, bundle["interests"])
+        if settings.profile_feed_async:
+            info["async_wait"] = wait_summary(waits)
         return scores, info
     finally:
         # 가상 사용자의 프로필을 남기지 않는다. 남으면 다음에 다른 묶음 버전으로 잴 때 섞인다.
@@ -375,6 +411,17 @@ async def measure(
             "DELETE FROM taste_profile WHERE user_id = ANY($1::int[])", users
         )
         await conn.close()
+
+
+def wait_summary(waits: Sequence[float | None]) -> dict[str, Any]:
+    """비동기로 켜고 돌렸을 때 목록을 기다린 사람 수·초·한도를 넘긴 수."""
+    done = sorted(w for w in waits if w is not None)
+    return {
+        "users": len(waits),
+        "timed_out": sum(w is None for w in waits),
+        "median_seconds": round(done[len(done) // 2], 2) if done else None,
+        "max_seconds": round(done[-1], 2) if done else None,
+    }
 
 
 def _split(text: str | None) -> list[str] | None:
@@ -459,6 +506,13 @@ def main(
             f"{bundle['catalog']['with_vectors']:,}권)와 다르다.\n"
         )
     print(render(summary, bundle["top"]))
+    if database and "async_wait" in database:
+        wait = database["async_wait"]
+        # 한도를 넘긴 사람은 새 목록이 아니라 지금 방식 목록으로 채점됐다
+        print(
+            f"\n비동기: {wait['users']}명의 목록을 기다림(가운데 {wait['median_seconds']}초, "
+            f"최대 {wait['max_seconds']}초), 한도({ASYNC_WAIT_SECONDS:g}초)를 넘긴 사람 {wait['timed_out']}명"
+        )
 
     if args.out:
         saved = {
