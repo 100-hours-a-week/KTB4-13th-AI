@@ -284,14 +284,12 @@ def test_재료가_없으면_점수도_없다() -> None:
     assert interests.combined({}) == {}
 
 
-def test_매칭_점수에_쓰는_내_책은_관심사마다_처음_본_날이_늦은_책부터_열_권이다() -> (
-    None
-):
-    books = [("요리", 100 + i, f"2026-10-{i + 1:02d}") for i in range(12)]
-    books += [("역사", 7, "2026-10-01"), ("역사", 8, "2026-10-01")]
+def test_매칭_점수에_쓰는_내_책은_관심사마다_그_관심사의_내_책_전부다() -> None:
+    books = [("요리", 111 - i) for i in range(12)]
+    books += [("역사", 8), ("역사", 7), ("역사", 8)]
 
     picked = interests.anchors(books)
 
-    # 늦게 본 열 권. 같은 날이면 번호가 큰 책부터다(#483)
-    assert picked["요리"] == tuple(range(111, 101, -1))
-    assert picked["역사"] == (8, 7)
+    # 날짜도 상한도 쓰지 않는다. 이력에 날짜가 없어서다(#586). 순서는 번호 순이다
+    assert picked["요리"] == tuple(range(100, 112))
+    assert picked["역사"] == (7, 8)

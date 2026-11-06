@@ -114,7 +114,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         owned, disliked = await _owned(conn, user_id, row)
         # 매칭 점수에 쓰는 내 책은 ⑥ 처럼 관심사마다 다시 가른다. 저장된 칸을 늘리지 않으려는 것이다(#483)
         anchors = await profile_service.book_anchors(
-            conn, json.loads(row["book_first_seen"] or "{}"), disliked
+            conn, list(json.loads(row["book_first_seen"] or "{}")), disliked
         )
         feed = await interest_feed.build(
             conn,

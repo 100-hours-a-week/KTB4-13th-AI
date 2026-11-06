@@ -257,25 +257,18 @@ def book_scores(
     return scores, vectors
 
 
-# 매칭 점수에서 "가장 비슷한 내 책"을 찾을 때 관심사마다 쓰는 책 수. 책이 많을수록 상관없는 책도 그중 한 권과는
-# 가깝게 나와 점수가 오르므로, 최근 책으로 묶는다(#483)
-ANCHORS_PER_INTEREST = 10
+def anchors(books: Iterable[tuple[str, int]]) -> dict[str, tuple[int, ...]]:
+    """(관심사, 책 번호) 들 → 관심사마다 매칭 점수에 쓰는 내 책 번호(#483). 그 관심사의 내 책 전부다.
 
-
-def anchors(books: Iterable[tuple[str, int, str]]) -> dict[str, tuple[int, ...]]:
-    """(관심사, 책 번호, 처음 본 날) 들 → 관심사마다 매칭 점수에 쓰는 내 책 번호(#483).
-
-    관심사마다 처음 본 날이 늦은 책부터 ANCHORS_PER_INTEREST 권이다. 같은 날이면 번호가 큰 책부터다.
+    전에는 처음 본 날이 늦은 10권까지만 썼다. 책이 많을수록 상관없는 책도 그중 한 권과는 가깝게 나와 점수가
+    오르기 때문이었다. 이력에 날짜가 없어 AI 서버가 적어 둔 날짜로 골랐는데, 그 날짜가 정확하지 않고 사용자
+    정보를 저장하지 않는 방향과도 어긋나 상한을 뺐다. 50권이면 상관없는 책 위 5%가 6–10점 오르지만 뽑힌 책도
+    같이 올라 둘의 차이는 비슷하다(#586).
     """
-    grouped: dict[str, list[tuple[str, int]]] = {}
-    for interest, book_id, seen in books:
-        grouped.setdefault(interest, []).append((seen, book_id))
-    return {
-        interest: tuple(
-            book_id for _, book_id in sorted(items, reverse=True)[:ANCHORS_PER_INTEREST]
-        )
-        for interest, items in grouped.items()
-    }
+    grouped: dict[str, set[int]] = {}
+    for interest, book_id in books:
+        grouped.setdefault(interest, set()).add(book_id)
+    return {interest: tuple(sorted(ids)) for interest, ids in grouped.items()}
 
 
 def per_interest(

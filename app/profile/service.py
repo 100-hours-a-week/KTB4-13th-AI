@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -224,13 +225,13 @@ async def _feed_job(
     isbns = [row["isbn13"] for row in rows if row["isbn13"]]
     first_seen = await _first_seen(conn, req.user_id, isbns)
     books = []
-    mine = []  # (관심사, 책 번호, 처음 본 날). 매칭 점수에 쓰는 내 책(#483)
+    mine = []  # (관심사, 책 번호). 매칭 점수에 쓰는 내 책(#483)
     for row in rows:
         found = _book_interest(row, vectors)
         if found:
             interest, vector = found
             books.append((interest, float(weights[row["book_id"]]), vector))
-            mine.append((interest, row["book_id"], first_seen.get(row["isbn13"], "")))
+            mine.append((interest, row["book_id"]))
     book_scores, interest_vectors = interests.book_scores(books)
 
     memories = req.used_memories()
@@ -256,23 +257,23 @@ async def _feed_job(
 
 
 async def book_anchors(
-    conn: asyncpg.Connection, first_seen: dict[str, str], excluded: set[int]
+    conn: asyncpg.Connection, isbns: Collection[str], excluded: set[int]
 ) -> dict[str, tuple[int, ...]]:
-    """저장된 "책을 처음 본 날"의 책을 관심사로 갈라, 관심사마다 매칭 점수에 쓰는 내 책 번호(⑨ 가 쓴다, #483).
+    """저장된 내 책(ISBN)을 관심사로 갈라, 관심사마다 매칭 점수에 쓰는 내 책 번호(⑨ 가 쓴다, #483).
 
-    ⑥ 이 이 책들로 관심사마다 책 벡터 평균을 만들었으므로 ⑥ 과 같은 책이다. 그 뒤 2점 이하 리뷰를 단 책
-    (excluded)은 뺀다.
+    책은 "책을 처음 본 날"(book_first_seen)의 키다. ⑥ 이 이 책들로 관심사마다 책 벡터 평균을 만들었으므로 ⑥ 과
+    같은 책이다. 날짜는 쓰지 않는다(#586). 그 뒤 2점 이하 리뷰를 단 책(excluded)은 뺀다.
     """
-    if not first_seen:
+    if not isbns:
         return {}
-    rows = await conn.fetch(_BOOK_INFO_BY_ISBN_SQL, list(first_seen))
+    rows = await conn.fetch(_BOOK_INFO_BY_ISBN_SQL, list(isbns))
     rows = [row for row in rows if row["book_id"] not in excluded]
     vectors = await book_vectors(conn, [row["book_id"] for row in rows])
     mine = []
     for row in rows:
         found = _book_interest(row, vectors)
         if found:
-            mine.append((found[0], row["book_id"], first_seen[row["isbn13"]]))
+            mine.append((found[0], row["book_id"]))
     return interests.anchors(mine)
 
 
@@ -308,7 +309,7 @@ async def _first_seen(
     """이력의 책마다 AI 서버가 처음 본 날. 이미 본 책은 그날을 지키고, 처음 보는 책은 받은 날의 전날이다.
 
     BE 는 하루치 활동을 밤에 모아 부르므로 받은 날의 전날이 그 책이 생긴 날에 가깝다(#395). 이력에서 빠진
-    책은 지운다. 오래된 취향을 약하게 할 때 쓴다(규칙은 나중에 정함).
+    책은 지운다. 지금은 ⑨ 가 책(키)만 내 책 목록으로 쓰고, 날짜를 쓰는 곳은 없다(#586).
     """
     stored = await conn.fetchval(_READ_FIRST_SEEN_SQL, user_id)
     seen = json.loads(stored) if stored else {}
