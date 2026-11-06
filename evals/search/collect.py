@@ -29,6 +29,8 @@ MODE_ENV = "SEARCH_EVAL_MODE"
 THRESHOLD_ENV = "SEARCH_EVAL_TRGM_THRESHOLD"
 # 키워드·벡터 단계의 결과도 남길 때 켠다. 실행기(run.py --trace)가 채운다
 TRACE_ENV = "SEARCH_EVAL_TRACE"
+# 벡터 질의 한도(초)를 바꿔 잴 때 값. 실행기(run.py --vector-timeout)가 채운다
+VECTOR_TIMEOUT_ENV = "SEARCH_EVAL_VECTOR_TIMEOUT"
 CALL_TIMEOUT_SECONDS = 60
 # 이만큼 부를 때마다 어디까지 왔는지 찍는다. 묶음 전부에 몇 분 걸린다
 PROGRESS_EVERY = 100
@@ -70,6 +72,13 @@ def apply_threshold(value: float) -> None:
             return await original(conn, sql, args)
 
     keyword._run = with_threshold
+
+
+def apply_vector_timeout(seconds: float) -> None:
+    """벡터 질의 한도를 바꾼다. 여러 설정을 나란히 돌려 품질만 볼 때 부하로 줄여 답하지 않게 한다."""
+    from app.search import vector
+
+    vector.QUERY_TIMEOUT_SECONDS = seconds
 
 
 def watch_stages() -> dict:
@@ -155,6 +164,7 @@ def collect_with(
     *,
     threshold: float | None = None,
     trace: bool = False,
+    vector_timeout: float | None = None,
 ) -> list[dict]:
     """`code` 폴더의 코드로 따로 띄운 파이썬에서 collect 를 돌린다.
 
@@ -168,6 +178,7 @@ def collect_with(
         env[MODE_ENV] = json.dumps(overrides or {})
         env[THRESHOLD_ENV] = "" if threshold is None else str(threshold)
         env[TRACE_ENV] = "1" if trace else ""
+        env[VECTOR_TIMEOUT_ENV] = "" if vector_timeout is None else str(vector_timeout)
         command = [sys.executable, "-P", __file__, str(sent), str(got)]
         subprocess.run(command, env=env, check=True)
         return json.loads(got.read_text(encoding="utf-8"))
@@ -184,6 +195,9 @@ def main(argv: list[str]) -> int:
     threshold = os.environ.get(THRESHOLD_ENV)
     if threshold:
         apply_threshold(float(threshold))
+    vector_timeout = os.environ.get(VECTOR_TIMEOUT_ENV)
+    if vector_timeout:
+        apply_vector_timeout(float(vector_timeout))
     seen = watch_stages() if os.environ.get(TRACE_ENV) else None
     got.write_text(json.dumps(asyncio.run(collect(requests, seen))), encoding="utf-8")
     return 0

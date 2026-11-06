@@ -117,6 +117,14 @@ def test_문턱을_바꾸면_키워드_쿼리_앞에_문턱을_건다(monkeypatc
     ]
 
 
+def test_벡터_한도를_바꿔_끼운다(monkeypatch) -> None:
+    from app.search import vector
+
+    monkeypatch.setattr(vector, "QUERY_TIMEOUT_SECONDS", 2.0)
+    collect.apply_vector_timeout(30.0)
+    assert vector.QUERY_TIMEOUT_SECONDS == 30.0
+
+
 def test_단계_기록은_요청마다_키워드_벡터_경로를_담는다(monkeypatch) -> None:
     from app.search import keyword, vector
 

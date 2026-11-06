@@ -21,6 +21,8 @@ BUDGETS = (500, 1000, 1500)
 WEIGHTS = ((3, 1), (1, 1), (1, 3))
 # 글자 조각 색인의 기본 문턱. 선이 이 밑이면 문턱 = 선 갈래도 잰다
 THRESHOLD = 0.6
+# 나란히 돌리면 좁은 필터의 벡터 검색이 앱의 2초 한도를 넘겨 키워드만으로 답한다. 시간이 아니라 품질을 재므로 푼다
+VECTOR_TIMEOUT = 30
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,10 @@ def jobs(out: Path, picked: Sequence[Cell]) -> list[tuple[Path, list[str]]]:
         for suffix, view in (("rel", ["--trace"]), ("screen", ["--screen"])):
             path = out / f"{cell.name}-{suffix}.json"
             if not path.exists():
-                todo.append((path, ["--yes", *cell.args(), *view, "--out", str(path)]))
+                limit = ["--vector-timeout", str(VECTOR_TIMEOUT)]
+                todo.append(
+                    (path, ["--yes", *cell.args(), *limit, *view, "--out", str(path)])
+                )
     return todo
 
 

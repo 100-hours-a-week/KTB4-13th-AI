@@ -317,6 +317,11 @@ def main(
         help="글자 조각 색인의 문턱(기본 0.6)을 바꿔 잰다. 앱 코드는 그대로다(#556 B4)",
     )
     parser.add_argument(
+        "--vector-timeout",
+        type=float,
+        help="벡터 질의 한도(초, 기본은 앱의 2초). 나란히 돌려 품질만 볼 때 부하로 줄여 답하지 않게 푼다",
+    )
+    parser.add_argument(
         "--trace",
         action="store_true",
         help="사례마다 키워드·벡터 단계의 결과를 --out 에 남긴다",
@@ -364,7 +369,9 @@ def main(
         print("실제로 돌리려면 --yes 를 붙인다. LLM 은 부르지 않고 DB 에 쓰지 않는다.")
         return 0
 
-    if injected and (overrides or args.trgm_threshold or args.trace):
+    if injected and (
+        overrides or args.trgm_threshold or args.trace or args.vector_timeout
+    ):
         print("--set 등은 실제 코드로 잴 때만 쓴다", file=sys.stderr)
         return 2
     fetch = SCREEN_FETCH if args.screen else top
@@ -380,6 +387,7 @@ def main(
             overrides,
             threshold=args.trgm_threshold,
             trace=args.trace,
+            vector_timeout=args.vector_timeout,
         )
         book_ids = {i for r in results for i in r["book_ids"]}
         shelf, database = asyncio.run(read_db(url, book_ids))
@@ -412,6 +420,7 @@ def main(
             "look": look,
             "mode_overrides": overrides,
             "trgm_threshold": args.trgm_threshold,
+            "vector_timeout": args.vector_timeout,
             "summary": summary,
             # 받은 책 번호도 남긴다. 코드끼리 위 N권이 얼마나 바뀌었는지 견줄 때 쓴다.
             # 서술형은 ISBN 도 남긴다. 라벨을 더한 뒤 다시 돌리지 않고 다시 매길 수 있다(#556 모든 판정은 마지막 라벨로)
