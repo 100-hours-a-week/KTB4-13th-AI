@@ -192,6 +192,7 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.sear
 
 - `--sort`(`popular`, `newest`, `price_asc`, `price_desc`)와 `--top`으로 정렬과 권수만 따로 바꿀 수도 있습니다(정렬할 때 넣는 벡터 권수 C6 등). 이때 저자·서술형은 지금처럼 10권을 봅니다
 - 관련도순 숫자(지금 기준선)는 원리를 볼 때 같이 냅니다
+- 24권을 받고 채점은 위 12권만 합니다. 뒤의 12권은 nDCG′가 라벨 없는 책을 뺀 자리에 당겨 올 때만 씁니다
 
 ## 결과 읽는 법
 

@@ -186,7 +186,9 @@ def score(
 
     look 은 저자·서술형이 보는 권수다. 주지 않으면 10권(지금 기준), 첫 화면으로 볼 때는 12권이다.
     """
-    books = [shelf.get(book_id) for book_id in response.book_ids[:top]]
+    # 받은 권수가 top 보다 많을 수 있다(첫 화면). 뒤의 책은 nDCG′ 가 당겨 올 때만 쓴다
+    received = [shelf.get(book_id) for book_id in response.book_ids]
+    books = received[:top]
     kind = case["kind"]
     extra: dict[str, Any] = {}
     if kind in TITLE_KINDS:
@@ -198,7 +200,7 @@ def score(
     elif kind == "descriptive":
         extra.update(
             descriptive(
-                books, (labels or {}).get(case["id"], {}), look or DESCRIPTIVE_TOP
+                received, (labels or {}).get(case["id"], {}), look or DESCRIPTIVE_TOP
             )
         )
     return Score(
@@ -207,7 +209,7 @@ def score(
         change=case.get("change"),
         facet=case.get("facet"),
         ok=response.status == 200 and response.degraded is None,
-        returned=len(response.book_ids),
+        returned=len(books),
         seconds=response.seconds,
         **extra,
     )

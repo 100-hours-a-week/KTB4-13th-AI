@@ -72,6 +72,9 @@ def select(
 # 사용자가 보는 첫 화면(#556 판정). 인기순 위 12권이다
 SCREEN_SORT = "popular"
 SCREEN_TOP = 12
+# 첫 화면으로 잴 때 받는 권수. 채점은 위 12권만 본다. 12권만 받으면 nDCG′ 가 라벨 없는 책을 뺀 자리에 뒤의 책을
+# 당겨 오지 못해, 새 책을 올리는 설정을 낮게 잰다
+SCREEN_FETCH = 24
 
 
 def request(case: dict, top: int, sort: str = "relevance") -> dict:
@@ -162,6 +165,11 @@ def score_all(
         )
         for case, result in zip(cases, results, strict=True)
     ]
+
+
+def _isbn(shelf: Mapping[int, Book], book_id: int) -> str | None:
+    book = shelf.get(book_id)
+    return book.isbn if book else None
 
 
 def _pct(value: float | None) -> str:
@@ -344,7 +352,8 @@ def main(
     if injected and overrides:
         print("--set 은 실제 코드로 잴 때만 쓴다", file=sys.stderr)
         return 2
-    requests = [request(case, top, sort) for case in picked]
+    fetch = SCREEN_FETCH if args.screen else top
+    requests = [request(case, fetch, sort) for case in picked]
     database = None
     if injected:
         results = search(requests)
@@ -382,9 +391,18 @@ def main(
             "look": look,
             "mode_overrides": overrides,
             "summary": summary,
-            # 받은 책 번호도 남긴다. 코드끼리 위 N권이 얼마나 바뀌었는지 견줄 때 쓴다
+            # 받은 책 번호도 남긴다. 코드끼리 위 N권이 얼마나 바뀌었는지 견줄 때 쓴다.
+            # 서술형은 ISBN 도 남긴다. 라벨을 더한 뒤 다시 돌리지 않고 다시 매길 수 있다(#556 모든 판정은 마지막 라벨로)
             "scores": [
-                {**asdict(s), "book_ids": r["book_ids"]}
+                {
+                    **asdict(s),
+                    "book_ids": r["book_ids"],
+                    **(
+                        {"isbns": [_isbn(shelf, i) for i in r["book_ids"]]}
+                        if s.kind == "descriptive"
+                        else {}
+                    ),
+                }
                 for s, r in zip(scores, results, strict=True)
             ],
         }
