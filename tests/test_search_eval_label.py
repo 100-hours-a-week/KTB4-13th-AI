@@ -108,5 +108,19 @@ def test_후보는_코드와_설정에서_모으고_이름이_겹치면_멈춘�
     assert targets["w13"] == (label.run.REPO, {"keyword_weight": "1"})
     with pytest.raises(ValueError, match="겹친다"):
         label.pool_targets(["a=../a"], ["a="])
-    with pytest.raises(ValueError, match="하나 이상"):
-        label.pool_targets([], [])
+    assert label.pool_targets([], []) == {}
+
+
+def test_저장된_결과에서_모을_때_첫_화면은_본_권수까지만_쓴다() -> None:
+    cases = [{"id": "descriptive-02"}, {"id": "descriptive-01"}]
+    saved = {
+        "top": 2,
+        "scores": [
+            {"id": "descriptive-01", "book_ids": [1, 2, 3]},
+            {"id": "descriptive-02", "book_ids": [4]},
+        ],
+    }
+    assert label.saved_results(saved, cases) == [
+        {"book_ids": [4]},
+        {"book_ids": [1, 2]},
+    ]

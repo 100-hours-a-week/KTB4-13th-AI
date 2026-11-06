@@ -6,6 +6,9 @@
     # 검색창 모드의 값만 바꾼 설정은 worktree 없이 --variant 로 준다(이 저장소의 코드). --screen 이면 인기순 위 12권도 모은다
     DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool \\
         --variant base= --variant w13=keyword_weight:1,vector_weight:3 --screen
+    # 이미 돌린 run.py --out 파일이 있으면 다시 검색하지 않고 그 결과에서 모은다(격자처럼 칸이 많을 때)
+    DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool \\
+        --results evals/search/results/b4/*.json
     # 2. candidates.md 를 읽고 grades.json 의 빈칸에 점수를 적은 뒤 라벨에 넣는다
     uv run python -m evals.search.label apply --judge "Claude 세션 채점(모델), 날짜"
     # 3. 라벨의 10%를 사람이 확인할 표로 뽑고, review.json 의 fixed 칸에 고친 점수를 넣는다
@@ -201,10 +204,16 @@ def parse_variant(item: str) -> tuple[str, dict[str, str]]:
     return name.strip(), overrides
 
 
+def saved_results(saved: Mapping[str, Any], cases: Sequence[dict]) -> list[dict]:
+    """run.py --out 내용에서 사례 순서대로의 책. 첫 화면 파일은 본 권수(위 12권)까지만 쓴다."""
+    rows = {row["id"]: row for row in saved["scores"]}
+    return [{"book_ids": rows[c["id"]]["book_ids"][: saved["top"]]} for c in cases]
+
+
 def pool_targets(
     codes: Sequence[str], variants: Sequence[str]
 ) -> dict[str, tuple[Path, dict[str, str]]]:
-    """후보를 모을 곳. 이름 → (잴 코드 폴더, 바꿀 모드 값). 하나도 없거나 이름이 겹치면 ValueError."""
+    """후보를 모을 곳. 이름 → (잴 코드 폴더, 바꿀 모드 값). 이름이 겹치면 ValueError. 하나도 없으면 빈 값이다."""
     targets: dict[str, tuple[Path, dict[str, str]]] = {}
     for item in codes:
         name, _, path = item.partition("=")
@@ -214,8 +223,6 @@ def pool_targets(
         if name in targets:
             raise ValueError(f"이름이 겹친다: {name}")
         targets[name] = (run.REPO, overrides)
-    if not targets:
-        raise ValueError("--code 나 --variant 를 하나 이상 준다")
     if len(targets) != len(codes) + len(variants):
         raise ValueError("이름이 겹친다")
     return targets
@@ -259,6 +266,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="관련도순 위 20권에 더해 인기순 위 12권(첫 화면)도 모은다",
     )
+    pool.add_argument(
+        "--results",
+        nargs="+",
+        default=[],
+        type=Path,
+        help="이미 돌린 run.py --out 파일. 다시 검색하지 않고 그 결과에서 모은다",
+    )
     sub.add_parser("apply", help="grades.json 을 라벨에 넣는다").add_argument(
         "--judge", required=True, help="점수를 매긴 사람이나 세션, 날짜"
     )
@@ -279,6 +293,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ValueError as exc:
             print(exc, file=sys.stderr)
             return 2
+        if not targets and not args.results:
+            print("--code, --variant, --results 중 하나를 준다", file=sys.stderr)
+            return 2
         cases = run.select(run.load_bundle()["cases"], kinds=["descriptive"])
         views = [("", [run.request(case, POOL_TOP) for case in cases])]
         if args.screen:
@@ -291,6 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name, (path, overrides) in targets.items()
             for suffix, requests in views
         }
+        found |= {path.stem: saved_results(_json(path), cases) for path in args.results}
         ids = sorted(
             {i for results in found.values() for r in results for i in r["book_ids"]}
         )
