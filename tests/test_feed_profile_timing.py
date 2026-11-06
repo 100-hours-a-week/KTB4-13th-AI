@@ -57,3 +57,30 @@ def test_요약은_가운데값과_예산을_넘긴_수를_센다() -> None:
     assert "users=3 median=3.50" in line
     assert "over3=2 over5=1" in line
     assert "substituted_users=2 empty_lists=1" in line
+
+
+def test_요약에_p95_와_예산을_적는다() -> None:
+    rows = [
+        {"total": float(t), "build": t / 2, "books": 1, "substituted": 0}
+        for t in range(1, 21)
+    ]
+
+    line = profile_timing.summary(rows, budget=6.0)
+    got = profile_timing.numbers(rows, 6.0)
+
+    assert line.startswith("SUMMARY budget=6 users=20")
+    assert "p95=19.00" in line
+    assert got["p95"] == 19.0 and got["build_p95"] == 9.5
+    assert got["budget"] == 6.0
+
+
+def test_예산을_주면_비동기_예산으로_재고_주지_않으면_지금_3초() -> None:
+    from app.core.config import get_settings
+    from app.feed import interest_fetch
+
+    settings = get_settings()
+    assert profile_timing.use_budget(10.0) == 10.0
+    assert settings.profile_feed_async is True
+    assert settings.profile_feed_seconds == 10.0
+    assert profile_timing.use_budget(None) == interest_fetch.BUDGET_SECONDS
+    assert settings.profile_feed_async is False
