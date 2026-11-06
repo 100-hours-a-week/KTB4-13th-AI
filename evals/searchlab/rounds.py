@@ -105,7 +105,11 @@ def measure_args(
         args += ["--kinds", *plan["kinds"]]
     if plan.get("limit"):
         args += ["--limit", str(plan["limit"])]
-    if plan.get("pgss", True):
+    if plan.get("server_stats") or plan.get("any_db"):
+        # 단계별 DB 쪽 값을 통계를 비우지 않고 앞뒤 차이로 읽는다. 운영 값과 같은 방법으로 견줄 때(시험대)와
+        # 실험 DB 가 아닐 때. 검색마다 통계를 비우는 --pgss 는 실험 DB 에서만 돈다
+        args.append("--server-stats")
+    elif plan.get("pgss", True):
         args.append("--pgss")
     if plan.get("any_db"):
         # 실험 서버를 못 받았을 때 개발 서버에서 하는 예비 측정(#556 「진행 순서」)
