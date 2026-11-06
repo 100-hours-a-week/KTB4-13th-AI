@@ -58,9 +58,18 @@ def test_처음_조회만_섞고_데우고_반복_조회는_그대로() -> None:
     assert "--pgss" in first
     repeat = rounds.measure_args(plan, rnd, 3, "repeat")
     assert "--warmup" not in repeat and "--order-seed" not in repeat
-    assert "--any-db" in rounds.measure_args(
+    other_db = rounds.measure_args(
         {"name": "p", "warmup": False, "any_db": True}, rnd, 1, "first"
     )
+    # 실험 DB 가 아니면 통계를 비우지 않고 앞뒤 차이로 읽는다
+    assert "--any-db" in other_db
+    assert "--server-stats" in other_db and "--pgss" not in other_db
+
+
+def test_시험대는_운영과_같은_방법으로_단계별_DB_쪽_값을_잰다() -> None:
+    testbench = rounds.load_plan(PLANS / "testbench.json")
+    args = rounds.measure_args(testbench, testbench["rounds"][0], 1, "first")
+    assert "--server-stats" in args and "--pgss" not in args
 
 
 class _Aws:

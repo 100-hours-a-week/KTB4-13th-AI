@@ -56,6 +56,8 @@
 | 검색 전체 시간 | 검색 함수 한 번. 임베딩 시간은 들어가지 않습니다(실험 AI 서버에서 따로 잼) |
 | 단계별 시간 | 키워드(`keyword`, 후보 질의 한 번마다 `keyword_query`), 벡터, 제목 일치, 정렬, 책 조회 함수를 감싸 잽니다 |
 | 문장별 읽은 블록·시간 | `--pgss`를 주면 검색마다 `pg_stat_statements`를 비우고 읽습니다. DB 캐시 안(`shared_blks_hit`)·밖(`shared_blks_read`), 실행·계획 시간, 판이 18이면 일반·맞춤 계획 횟수 |
+| 단계별 DB 쪽 값 | `--server-stats`를 주면 바깥 단계마다 `pg_stat_statements`의 앞뒤 차이로 DB 쪽 실행 시간, 문장 수, 캐시 안·밖 블록을 남깁니다(`server`). 통계를 비우지 않아 운영에서도 씁니다. 이 계정이 돌린 문장만 읽고, 읽는 문장 자신은 뺍니다 |
+| 표·색인별 블록 | 회차 끝에 표·색인마다 캐시 안·밖 블록의 차이와 벡터 색인(hnsw) 캐시 적중률을 남깁니다(`statio`). 같은 DB의 다른 요청도 들어갑니다 |
 | 결과 | 위 20권의 책 번호. 설정끼리, 실험 DB와 운영끼리 일치율을 봅니다 |
 | 회차 머리 | 설정, 코드 커밋, 검색어 파일 지문, PostgreSQL·확장 판, 주요 설정 값, 큰 표·색인 크기, DB가 켜진 시각(재부팅 확인) |
 
@@ -64,7 +66,8 @@
 - 연결은 하나만 씁니다. 준비된 문장은 연결마다 따로라, 연결이 여럿이면 같은 문장이 일반 계획으로 바뀌는 때가 회차마다 달라집니다. 운영 앱은 연결이 10개라 바뀌는 때가 더 늦습니다.
 - 연결은 읽기 전용(`default_transaction_read_only`)입니다.
 - 다음 페이지 커서는 서명 키가 있어야 만들어서, 재는 동안은 고정 값으로 바꿉니다(수 마이크로초라 시간에 닿지 않음).
-- 이름이 `_eval`로 끝나는 DB에서만 돕니다. 다른 DB(개발 서버 예비 측정)는 `--any-db`를 붙입니다.
+- 이름이 `_eval`로 끝나는 DB에서만 돕니다. 다른 DB(개발 서버 예비 측정, 운영 시험대 값)는 `--any-db`를 붙입니다. 검색마다 통계를 비우는 `--pgss`는 그래도 `_eval` DB에서만 돌고, 다른 DB는 `--server-stats`를 씁니다.
+- 단계별 시간은 재는 쪽에서 잰 값이라 DB까지 오가는 시간이 들어 있습니다. 맥에서 터널로 운영을 재면 이 왕복이 커서, 실험 서버와 견줄 때는 `server` 값을 씁니다. `--server-stats`의 통계 읽기는 단계 시간에는 안 들어가고 검색 전체 시간에는 들어갑니다.
 
 ## 회차 이어 돌리기
 
@@ -149,3 +152,25 @@ uv run python -m evals.searchlab.analyze out/a1-ef --baseline ef400
 ```
 
 벡터 파일은 저장소에 없으니, 부하·측정 EC2에서는 저장소를 받은 뒤(#556 「시험 환경」의 준비 명령) 두 번째 명령을 한 번 돌립니다. `DATABASE_URL`은 설정 검사 때문에만 필요합니다.
+
+## 시험대(운영과 맞춰 보기)
+
+실험 서버 숫자가 운영과 맞는지 같은 검색어·같은 방법으로 견줍니다(#556 「시험대 검증」). 두 쪽 모두 단계별 DB 쪽 값(`--server-stats`)으로 잽니다. 운영은 읽기 전용이고 통계를 비우지 않습니다.
+
+```bash
+# 실험 서버: 재부팅 → 데우기 → 처음 조회 → 반복 조회, 두 회차
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.rounds plans/testbench.json --db-instance <실험 RDS 이름> --yes
+# 그 뒤 재부팅 없이 탐색 폭 1000/400 반복 조회
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.measure --label testbench/ef1000 --state repeat --ef-search 1000 --server-stats --vector-timeout 30
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.measure --label testbench/ef400 --state repeat --ef-search 400 --server-stats --vector-timeout 30
+```
+
+```bash
+# 운영(읽기 전용, 맥에서 터널): 데우기 없이 처음 조회. 순서는 실험 서버 첫 회차와 같게
+DATABASE_URL=postgresql://<운영 DB> uv run python -m evals.searchlab.measure --label prod/first --state first --order-seed testbench-1 --server-stats --vector-timeout 30 --any-db
+DATABASE_URL=postgresql://<운영 DB> uv run python -m evals.searchlab.measure --label prod/ef1000 --state repeat --ef-search 1000 --server-stats --vector-timeout 30 --any-db
+DATABASE_URL=postgresql://<운영 DB> uv run python -m evals.searchlab.measure --label prod/ef400 --state repeat --ef-search 400 --server-stats --vector-timeout 30 --any-db
+```
+
+- 운영은 늘 데워진 채라 데우기를 하지 않습니다. 실험 서버의 데우기 500건이 운영의 이 상태를 흉내 냅니다.
+- 운영 앱과 같은 계정으로 붙으면 그 시간의 앱 요청이 `server` 값에 섞일 수 있습니다. 회차 머리에 계정을 남기지는 않으니, 잰 날 `pg_stat_activity`로 앱 계정을 한 번 봐 둡니다.

@@ -1,6 +1,7 @@
 {
  "name": "testbench",
- "note": "시험대: 빈 캐시 확인과 운영과 맞춰 보기. 지금 앱 값(탐색 폭 400) 그대로 두 회차",
+ "note": "시험대: 빈 캐시 확인과 운영과 맞춰 보기. 지금 앱 값(탐색 폭 400) 그대로 두 회차. 운영 값(#567)과 같은 방법으로 견주려고 단계별 DB 쪽 값(server_stats)으로 잰다. 탐색 폭 1000/400 시간 비는 회차 뒤 재부팅 없이 measure 로 반복 조회 두 번(README 「시험대」)",
  "vector_timeout": 30,
+ "server_stats": true,
  "rounds": [{"label": "base"}, {"label": "base"}]
 }
