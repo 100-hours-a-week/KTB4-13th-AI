@@ -161,7 +161,7 @@ def test_첫_화면은_인기순_위_12권으로_받고_12권을_본다(capsys) 
         == 0
     )
 
-    assert sent == [{"query": "전순선", "filters": {}, "size": 12, "sort": "popular"}]
+    assert sent == [{"query": "전순선", "filters": {}, "size": 24, "sort": "popular"}]
     printed = capsys.readouterr().out
     # 12번째 책이 그 저자의 책이라 12권을 보면 1/12, 10권만 보면 0이다
     assert "popular 정렬, 위 12권 기준" in printed
