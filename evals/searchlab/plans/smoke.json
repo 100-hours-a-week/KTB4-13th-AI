@@ -1,0 +1,8 @@
+{
+ "name": "smoke",
+ "note": "도구 확인용. 재부팅 없이 로컬 평가 DB에서 몇 건만",
+ "warmup": false,
+ "pgss": false,
+ "limit": 3,
+ "rounds": [{"label": "ef100", "ef_search": 100}, {"label": "ef400", "ef_search": 400}]
+}
