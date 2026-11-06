@@ -45,6 +45,27 @@ curl -fsSL https://raw.githubusercontent.com/100-hours-a-week/KTB4-13th-AI/<커�
 - 뒤에 사용자 수와 건너뛸 수를 붙이면 나눠 돌립니다(예: `… cases.json 48 96`).
 - 마지막 줄 `SUMMARY`에 가운데값, 90%, 최대, 3초·5초를 넘은 수, 대신 채운 관심사가 있던 사용자 수, 목록이 빈 사용자 수가 나옵니다.
 
+### 비동기 부하 (실험 서버)
+
+홈 목록을 응답 뒤에 만들도록 켠 실험 AI 서버에, 부하·측정 EC2에서 가상 사용자의 ⑥을 HTTP로 보냅니다([#603](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/603)). [#582](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/582)의 켜는 기준을 잽니다.
+
+```
+DATABASE_URL=postgresql://<실험 DB> AI_SERVICE_TOKEN=<실험 토큰> uv run python -m evals.feed.async_load --base-url http://<실험 AI>:8000 --pattern sequential --users 31 --label seq31 --yes
+DATABASE_URL=... AI_SERVICE_TOKEN=... uv run python -m evals.feed.async_load --base-url ... --pattern burst --users 10 --label burst10 --stop-after 120 --cluster <실험 클러스터> --service <실험 서비스> --yes
+```
+
+| 재는 것 | 어떻게 |
+| --- | --- |
+| ⑥ 응답 시간 | 사용자마다. 연달아(`sequential`)는 앞 응답을 받고 다음을 보내고, 한꺼번에(`burst`)는 동시에 보냅니다 |
+| 목록이 다 만들어지기까지 | 보낸 때부터 목록 칸의 요청 번호표(`pending`)가 지워질 때까지. 실험 DB를 0.5초마다 읽습니다(최대 10분) |
+| 그동안의 검색 시간 | 검색 평가 묶음의 제목 검색어로 1초마다 한 번씩. 보내기 전 60초(`before`)와 보내는 동안(`during`), 다 만든 뒤(`after`)의 p95를 견줍니다 |
+| 내릴 때 버린 수 | `--stop-after 120`: 다 보낸 뒤 운영처럼 새 요청 없이 120초 기다렸다가 실험 서비스를 0개로 내리고, 끝내 안 만들어진 사용자를 셉니다 |
+
+- 취향 기억 벡터는 보내기 전에 실험 서버의 `/embeddings`로 다 만들어 둡니다(BE는 이미 벡터를 들고 부릅니다).
+- 이름이 `_eval`로 끝나는 DB에만 돌고, 끝나면 가상 사용자(9300001–9300191)의 프로필을 지웁니다(`--keep`이면 남김).
+- 이름에 `exp`가 없는 클러스터·서비스는 내리지 않습니다. `--yes` 없이는 할 일만 보여 줍니다.
+- 결과는 `evals/feed/results/async-<label>.jsonl`(저장소에 올리지 않음). 첫 줄이 요약이고, 그 뒤로 사용자마다 한 줄입니다.
+
 ## 결과 읽는 법
 
 종류마다 한 줄입니다.
