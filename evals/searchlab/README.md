@@ -1,6 +1,6 @@
 # 검색 시간 측정 도구
 
-[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어를 고정하는 데까지 있고([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591)), 한 회차 재기·회차 이어 돌리기·결과 정리는 다음 PR에서 더합니다.
+[#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556)의 시간 측정에 쓰는 도구입니다. 앱 코드 밖이라 운영 동작은 바뀌지 않습니다. 지금은 검색어 고정([#591](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/591))과 한 회차 재기([#593](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/593))까지 있고, 회차 이어 돌리기·결과 정리는 다음 PR에서 더합니다.
 
 | 파일 | 내용 | 저장소 |
 | --- | --- | --- |
@@ -8,6 +8,8 @@
 | `queries.json` | 고른 결과. 한 줄에 검색어 하나 | 둔다 |
 | `vectors.py` | 검색어 벡터를 미리 만든다 | 둔다 |
 | `out/vectors.json` | 만든 벡터(약 5MB) | 두지 않음 |
+| `measure.py` | 한 회차를 잰다 | 둔다 |
+| `out/<label>.jsonl` | 잰 기록 | 두지 않음 |
 
 ## 잴 검색어 170건
 
@@ -40,6 +42,28 @@
 - 같은 검색어는 한 번만 만듭니다(654개).
 - 파일에 `queries.json`의 지문을 같이 적습니다. 검색어가 바뀌면 측정 도구가 옛 벡터를 읽지 않습니다.
 
+## 한 회차 재기
+
+앱의 검색 함수(`app.search.service.search`)를 그대로 부르고, 검색어 벡터만 미리 만든 것으로 바꿉니다. 그래서 SQL, `SET LOCAL`, 준비된 문장이 앱과 같습니다. 캐시 비우기(재부팅)와 회차 순서는 이 도구 밖(다음 PR)에서 정합니다.
+
+| 기록 | 어떻게 |
+| --- | --- |
+| 검색 전체 시간 | 검색 함수 한 번. 임베딩 시간은 들어가지 않습니다(실험 AI 서버에서 따로 잼) |
+| 단계별 시간 | 키워드(`keyword`, 후보 질의 한 번마다 `keyword_query`), 벡터, 제목 일치, 정렬, 책 조회 함수를 감싸 잽니다 |
+| 문장별 읽은 블록·시간 | `--pgss`를 주면 검색마다 `pg_stat_statements`를 비우고 읽습니다. DB 캐시 안(`shared_blks_hit`)·밖(`shared_blks_read`), 실행·계획 시간, 판이 18이면 일반·맞춤 계획 횟수 |
+| 단계별 DB 쪽 값 | `--server-stats`를 주면 바깥 단계마다 `pg_stat_statements`의 앞뒤 차이로 DB 쪽 실행 시간, 문장 수, 캐시 안·밖 블록을 남깁니다(`server`). 통계를 비우지 않아 운영에서도 씁니다. 이 계정이 돌린 문장만 읽고, 읽는 문장 자신은 뺍니다 |
+| 표·색인별 블록 | 회차 끝에 표·색인마다 캐시 안·밖 블록의 차이와 벡터 색인(hnsw) 캐시 적중률을 남깁니다(`statio`). 같은 DB의 다른 요청도 들어갑니다 |
+| 결과 | 위 20권의 책 번호. 설정끼리, 실험 DB와 운영끼리 일치율을 봅니다 |
+| 회차 머리 | 설정, 코드 커밋, 검색어 파일 지문, PostgreSQL·확장 판, 주요 설정 값, 큰 표·색인 크기, DB가 켜진 시각(재부팅 확인) |
+
+- 바꿔 보는 설정: 탐색 폭(`--ef-search`)은 앱이 `SET LOCAL`로 거는 상수를 바꾸고, `--random-page-cost`·`--effective-io-concurrency`는 앱이 바꾸지 않는 값이라 연결의 세션 설정으로 겁니다.
+- 벡터 검색 한도: 앱은 벡터 검색을 2초에서 끊고 키워드만으로 답합니다. 처음 조회는 이 한도에 자주 걸려(11/5 개발 DB에서 10건 중 9건) 그대로 재면 시간이 2초에서 잘립니다. 측정 회차는 `--vector-timeout 30`으로 풀고 재고, 앱이라면 끊겼을 검색은 잰 벡터 시간이 2초를 넘은 것으로 셉니다. 풀의 문장 한도(앱 5초)도 같이 늘립니다.
+- 연결은 하나만 씁니다. 준비된 문장은 연결마다 따로라, 연결이 여럿이면 같은 문장이 일반 계획으로 바뀌는 때가 회차마다 달라집니다. 운영 앱은 연결이 10개라 바뀌는 때가 더 늦습니다.
+- 연결은 읽기 전용(`default_transaction_read_only`)입니다.
+- 다음 페이지 커서는 서명 키가 있어야 만들어서, 재는 동안은 고정 값으로 바꿉니다(수 마이크로초라 시간에 닿지 않음).
+- 이름이 `_eval`로 끝나는 DB에서만 돕니다. 다른 DB(개발 서버 예비 측정, 운영 시험대 값)는 `--any-db`를 붙입니다. 검색마다 통계를 비우는 `--pgss`는 그래도 `_eval` DB에서만 돌고, 다른 DB는 `--server-stats`를 씁니다.
+- 단계별 시간은 재는 쪽에서 잰 값이라 DB까지 오가는 시간이 들어 있습니다. 맥에서 터널로 운영을 재면 이 왕복이 커서, 실험 서버와 견줄 때는 `server` 값을 씁니다. `--server-stats`의 통계 읽기는 단계 시간에는 안 들어가고 검색 전체 시간에는 들어갑니다.
+
 ## 주의
 
 - 필터 사례는 같은 낱말("사랑", "여행" 등)을 조건만 바꿔 쓰고, 정렬 사례 6건은 서술형 검색어를 다시 씁니다. 한 회차에서 앞 사례가 뒤 사례의 캐시를 데우므로, 처음 조회는 종류별로 나눠 보고 순서를 회차마다 섞습니다.
@@ -53,5 +77,14 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.sear
 # 벡터 만들기(DB를 쓰지 않음, 맥에서 약 40초). 결과는 out/vectors.json
 DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.searchlab.vectors
 ```
+
+```bash
+# 한 회차: 데우기 500건 → 잴 검색어 170건을 한 번씩(처음 조회). 순서는 회차마다 다른 값으로 섞는다
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.measure --label base --state first --warmup --order-seed r1 --pgss
+# 반복 조회: 같은 검색어를 7번씩(첫 번은 판정에 쓰지 않음). 탐색 폭만 바꿔서
+DATABASE_URL=postgresql://<실험 DB> uv run python -m evals.searchlab.measure --label ef1000 --state repeat --ef-search 1000 --pgss
+```
+
+`--pgss`는 실험 DB에 `CREATE EXTENSION pg_stat_statements`를 한 번 해 둬야 합니다(RDS 기본 설정에서 미리 읽혀 있음).
 
 벡터 파일은 저장소에 없으니, 부하·측정 EC2에서는 저장소를 받은 뒤(#556 「시험 환경」의 준비 명령) 두 번째 명령을 한 번 돌립니다. `DATABASE_URL`은 설정 검사 때문에만 필요합니다.
