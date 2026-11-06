@@ -3,6 +3,7 @@
 진짜 앱 대신 가짜 `app` 패키지를 만든 폴더를 넘긴다. 따로 띄운 파이썬이 그 폴더의 코드로 검색하는지 본다.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -80,3 +81,70 @@ def test_검색_모드에_없는_이름이면_멈춘다(monkeypatch) -> None:
     monkeypatch.setattr(modes, "SEARCH", modes.Mode())
     with pytest.raises(SystemExit, match="없는 이름"):
         collect.apply_mode({"weight": "1"})
+
+
+def test_문턱을_바꾸면_키워드_쿼리_앞에_문턱을_건다(monkeypatch) -> None:
+    from app.search import keyword
+
+    sent: list[str] = []
+
+    class _Tx:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Conn:
+        def transaction(self):
+            return _Tx()
+
+        async def execute(self, sql):
+            sent.append(sql)
+
+        async def fetch(self, sql, *args):
+            sent.append(sql)
+            return []
+
+    monkeypatch.setattr(keyword, "_run", keyword._run)
+    collect.apply_threshold(0.5)
+    asyncio.run(keyword._run(_Conn(), "SELECT 1", []))
+
+    assert sent == [
+        "SET LOCAL pg_trgm.word_similarity_threshold = 0.5",
+        "SET LOCAL enable_seqscan = off",
+        "SELECT 1",
+    ]
+
+
+def test_단계_기록은_요청마다_키워드_벡터_경로를_담는다(monkeypatch) -> None:
+    from app.search import keyword, vector
+
+    async def keyword_ids(*args, **kwargs):
+        keyword._cand_each_word(1, "")
+        return [1, 2]
+
+    async def exact_ids(*args, **kwargs):
+        return {2}
+
+    async def vector_ids(*args, **kwargs):
+        return [3]
+
+    monkeypatch.setattr(keyword, "search_ids", keyword_ids)
+    monkeypatch.setattr(keyword, "exact_title_ids", exact_ids)
+    monkeypatch.setattr(vector, "search_ids", vector_ids)
+    monkeypatch.setattr(keyword, "_cand_each_word", lambda *a: "cand")
+    seen = collect.watch_stages()
+
+    async def one() -> None:
+        await keyword.search_ids()
+        await keyword.exact_title_ids()
+        await vector.search_ids()
+
+    asyncio.run(one())
+    assert seen == {
+        "each_word": True,
+        "keyword_ids": [1, 2],
+        "exact_ids": [2],
+        "vector_ids": [3],
+    }

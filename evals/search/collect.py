@@ -25,6 +25,10 @@ import httpx
 SEARCH_URL = "/search"
 # 검색창 모드를 바꿔 잴 때 값(JSON, 이름 → 값)을 넘기는 환경 변수. 실행기(run.py --set)가 채운다(#556)
 MODE_ENV = "SEARCH_EVAL_MODE"
+# 글자 조각 색인의 문턱을 바꿔 잴 때 값(#556 B4 "문턱 = 선"). 실행기(run.py --trgm-threshold)가 채운다
+THRESHOLD_ENV = "SEARCH_EVAL_TRGM_THRESHOLD"
+# 키워드·벡터 단계의 결과도 남길 때 켠다. 실행기(run.py --trace)가 채운다
+TRACE_ENV = "SEARCH_EVAL_TRACE"
 CALL_TIMEOUT_SECONDS = 60
 # 이만큼 부를 때마다 어디까지 왔는지 찍는다. 묶음 전부에 몇 분 걸린다
 PROGRESS_EVERY = 100
@@ -52,8 +56,59 @@ def apply_mode(overrides: dict) -> dict:
     return asdict(modes.SEARCH)
 
 
-async def collect(requests: list[dict]) -> list[dict]:
-    """요청마다 /search 를 한 번씩 부른다. 한 번에 하나씩 부른다(시간을 재기 때문이다)."""
+def apply_threshold(value: float) -> None:
+    """키워드 후보 쿼리에 글자 조각 문턱을 건다. 앱 코드는 그대로 두고 이 파이썬 안에서 `_run` 만 감싼다."""
+    from app.search import keyword
+
+    original = keyword._run
+
+    async def with_threshold(conn, sql, args):
+        async with conn.transaction():
+            await conn.execute(
+                f"SET LOCAL pg_trgm.word_similarity_threshold = {float(value)}"
+            )
+            return await original(conn, sql, args)
+
+    keyword._run = with_threshold
+
+
+def watch_stages() -> dict:
+    """요청 하나의 키워드·벡터 단계 결과를 담을 곳을 돌려준다. 앱 코드는 그대로 두고 이 파이썬 안에서만 감싼다.
+
+    keyword_ids·vector_ids·exact_ids 는 그 단계가 돌려준 책이고, each_word 는 낱말마다 넓히는 경로로 갔을 때 참이다.
+    """
+    from app.search import keyword, vector
+
+    seen: dict = {}
+
+    def keep(module, name: str, key: str) -> None:
+        original = getattr(module, name)
+
+        async def wrapped(*args, **kwargs):
+            got = await original(*args, **kwargs)
+            seen[key] = sorted(got) if isinstance(got, set) else list(got)
+            return got
+
+        setattr(module, name, wrapped)
+
+    keep(keyword, "search_ids", "keyword_ids")
+    keep(keyword, "exact_title_ids", "exact_ids")
+    keep(vector, "search_ids", "vector_ids")
+    each_word = keyword._cand_each_word
+
+    def flagged(*args, **kwargs):
+        seen["each_word"] = True
+        return each_word(*args, **kwargs)
+
+    keyword._cand_each_word = flagged
+    return seen
+
+
+async def collect(requests: list[dict], seen: dict | None = None) -> list[dict]:
+    """요청마다 /search 를 한 번씩 부른다. 한 번에 하나씩 부른다(시간을 재기 때문이다).
+
+    seen 을 주면(watch_stages) 사례마다 키워드·벡터 단계의 결과를 trace 칸에 남긴다.
+    """
     from app.core.config import get_settings
     from app.main import app
 
@@ -71,6 +126,8 @@ async def collect(requests: list[dict]) -> list[dict]:
         # 첫 요청은 DB 연결을 여느라 느리다. 재는 시간에 섞이지 않게 한 번 불러 둔다.
         await client.post(SEARCH_URL, json={"query": "책", "size": 1})
         for done, body in enumerate(requests, start=1):
+            if seen is not None:
+                seen.clear()
             started = perf_counter()
             response = await client.post(SEARCH_URL, json=body)
             seconds = perf_counter() - started
@@ -83,6 +140,7 @@ async def collect(requests: list[dict]) -> list[dict]:
                     # V1 응답에는 isbn 이 없다. 책 번호로 받아 같은 DB 에서 책 정보를 읽는다
                     "book_ids": [item["book_id"] for item in items],
                     "seconds": seconds,
+                    **({"trace": dict(seen)} if seen is not None else {}),
                 }
             )
             if done % PROGRESS_EVERY == 0:
@@ -91,7 +149,12 @@ async def collect(requests: list[dict]) -> list[dict]:
 
 
 def collect_with(
-    code: Path, requests: list[dict], overrides: dict | None = None
+    code: Path,
+    requests: list[dict],
+    overrides: dict | None = None,
+    *,
+    threshold: float | None = None,
+    trace: bool = False,
 ) -> list[dict]:
     """`code` 폴더의 코드로 따로 띄운 파이썬에서 collect 를 돌린다.
 
@@ -103,6 +166,8 @@ def collect_with(
         sent.write_text(json.dumps(requests, ensure_ascii=False), encoding="utf-8")
         env = {**os.environ, "PYTHONPATH": str(code.resolve())}
         env[MODE_ENV] = json.dumps(overrides or {})
+        env[THRESHOLD_ENV] = "" if threshold is None else str(threshold)
+        env[TRACE_ENV] = "1" if trace else ""
         command = [sys.executable, "-P", __file__, str(sent), str(got)]
         subprocess.run(command, env=env, check=True)
         return json.loads(got.read_text(encoding="utf-8"))
@@ -116,7 +181,11 @@ def main(argv: list[str]) -> int:
     overrides = json.loads(os.environ.get(MODE_ENV) or "{}")
     if overrides:
         print(f"검색창 모드: {apply_mode(overrides)}", file=sys.stderr, flush=True)
-    got.write_text(json.dumps(asyncio.run(collect(requests))), encoding="utf-8")
+    threshold = os.environ.get(THRESHOLD_ENV)
+    if threshold:
+        apply_threshold(float(threshold))
+    seen = watch_stages() if os.environ.get(TRACE_ENV) else None
+    got.write_text(json.dumps(asyncio.run(collect(requests, seen))), encoding="utf-8")
     return 0
 
 

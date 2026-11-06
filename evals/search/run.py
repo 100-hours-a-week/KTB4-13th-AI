@@ -157,7 +157,12 @@ def score_all(
     return [
         score(
             case,
-            Response(**{**result, "book_ids": tuple(result["book_ids"])}),
+            Response(
+                result["status"],
+                result["degraded"],
+                tuple(result["book_ids"]),
+                result["seconds"],
+            ),
             shelf,
             top,
             labels,
@@ -306,6 +311,16 @@ def main(
         metavar="이름=값",
         help="검색창 모드의 값 하나를 바꿔 잰다(여럿이면 여러 번). 예: --set keyword_weight=1",
     )
+    parser.add_argument(
+        "--trgm-threshold",
+        type=float,
+        help="글자 조각 색인의 문턱(기본 0.6)을 바꿔 잰다. 앱 코드는 그대로다(#556 B4)",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="사례마다 키워드·벡터 단계의 결과를 --out 에 남긴다",
+    )
     args = parser.parse_args(argv)
     try:
         overrides = parse_sets(args.set)
@@ -349,8 +364,8 @@ def main(
         print("실제로 돌리려면 --yes 를 붙인다. LLM 은 부르지 않고 DB 에 쓰지 않는다.")
         return 0
 
-    if injected and overrides:
-        print("--set 은 실제 코드로 잴 때만 쓴다", file=sys.stderr)
+    if injected and (overrides or args.trgm_threshold or args.trace):
+        print("--set 등은 실제 코드로 잴 때만 쓴다", file=sys.stderr)
         return 2
     fetch = SCREEN_FETCH if args.screen else top
     requests = [request(case, fetch, sort) for case in picked]
@@ -359,7 +374,13 @@ def main(
         results = search(requests)
         shelf = facts({i for r in results for i in r["book_ids"]})
     else:
-        results = collect_with(code, requests, overrides)
+        results = collect_with(
+            code,
+            requests,
+            overrides,
+            threshold=args.trgm_threshold,
+            trace=args.trace,
+        )
         book_ids = {i for r in results for i in r["book_ids"]}
         shelf, database = asyncio.run(read_db(url, book_ids))
     from evals.search.label import load_labels
@@ -390,6 +411,7 @@ def main(
             "top": top,
             "look": look,
             "mode_overrides": overrides,
+            "trgm_threshold": args.trgm_threshold,
             "summary": summary,
             # 받은 책 번호도 남긴다. 코드끼리 위 N권이 얼마나 바뀌었는지 견줄 때 쓴다.
             # 서술형은 ISBN 도 남긴다. 라벨을 더한 뒤 다시 돌리지 않고 다시 매길 수 있다(#556 모든 판정은 마지막 라벨로)
@@ -402,6 +424,7 @@ def main(
                         if s.kind == "descriptive"
                         else {}
                     ),
+                    **({"trace": r["trace"]} if "trace" in r else {}),
                 }
                 for s, r in zip(scores, results, strict=True)
             ],
