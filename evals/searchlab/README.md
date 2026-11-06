@@ -174,3 +174,12 @@ DATABASE_URL=postgresql://<운영 DB> uv run python -m evals.searchlab.measure -
 
 - 운영은 늘 데워진 채라 데우기를 하지 않습니다. 실험 서버의 데우기 500건이 운영의 이 상태를 흉내 냅니다.
 - 운영 앱과 같은 계정으로 붙으면 그 시간의 앱 요청이 `server` 값에 섞일 수 있습니다. 회차 머리에 계정을 남기지는 않으니, 잰 날 `pg_stat_activity`로 앱 계정을 한 번 봐 둡니다.
+
+```bash
+# 견주기(DB·AWS 안 씀). 넷을 다 지키면 통과, 아니면 끝 코드 1
+uv run python -m evals.searchlab.testbench --exp out/testbench/base-1.jsonl --prod out/prod/first.jsonl \
+  --exp-ef1000 out/testbench/ef1000.jsonl --exp-ef400 out/testbench/ef400.jsonl \
+  --prod-ef1000 out/prod/ef1000.jsonl --prod-ef400 out/prod/ef400.jsonl --out out/testbench/check.md
+```
+
+넷의 읽는 법(#556 「시험대 검증」을 이렇게 셉니다): 1·2는 두 쪽에서 실패 없이 잰 검색어끼리 중앙값과 p90을 각각 견줘 실험 ÷ 운영이 0.7–1.3 안, 3은 처음 조회 구간의 벡터 색인 적중률 차가 ±0.10 안, 4는 검색어마다 반복 조회(첫 번 뺀 중앙값)의 1000 ÷ 400 벡터 시간을 내고 그 중앙값의 차가 ±0.1 안입니다. 블록이 둘 다 0이면 같다고 봅니다.
