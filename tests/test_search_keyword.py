@@ -6,13 +6,16 @@ SEARCH_TEST_DATABASE_URL 에 DB 주소를 주면 돈다. 넣은 책은 트랜잭
 
 import asyncio
 import os
+from dataclasses import replace
 
 import asyncpg
 import pytest
 
 from app.core import products
 from app.search import books, keyword
+from app.search import mode as modes
 from app.search.filters import build_where
+from app.search.mode import SEARCH
 from app.search.schemas import SearchFilters
 
 
@@ -379,7 +382,7 @@ def test_후보_상한에_걸려도_제목이_똑같은_책은_맨_위다(
 ) -> None:
     # 즈믄가람이 든 책은 셋인데 한 번에 한 권만 가져오게 줄인다. 어느 책이 그 자리를 차지하든,
     # 제목이 검색어와 똑같은 책은 따로 찾아 넣으므로 맨 위에 있어야 한다.
-    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 1)
+    monkeypatch.setattr(modes, "SEARCH", replace(modes.SEARCH, lookup_limit=1))
 
     ids = _run_in_rollback(lambda c: keyword.search_ids(c, "즈믄가람", SearchFilters()))
 
@@ -392,7 +395,7 @@ def test_후보_상한에_걸려도_대소문자만_다른_제목은_맨_위다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # 낱말로 찾는 후보를 아예 막아, 제목이 똑같은 책을 따로 찾는 쪽만 남긴다.
-    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 0)
+    monkeypatch.setattr(modes, "SEARCH", replace(modes.SEARCH, lookup_limit=0))
 
     ids = _run_in_rollback(
         lambda c: keyword.search_ids(c, "zephyrine quillfeather", SearchFilters())
@@ -404,7 +407,7 @@ def test_후보_상한에_걸려도_대소문자만_다른_제목은_맨_위다(
 @needs_db
 def test_후보_상한은_필터를_건_뒤에_건다(monkeypatch: pytest.MonkeyPatch) -> None:
     # 필터보다 먼저 자르면 소설이 아닌 책이 한 자리를 먹고 필터에서 빠져 결과가 빈다.
-    monkeypatch.setattr(keyword, "LOOKUP_LIMIT", 1)
+    monkeypatch.setattr(modes, "SEARCH", replace(modes.SEARCH, lookup_limit=1))
 
     ids = _run_in_rollback(
         lambda c: keyword.search_ids(c, "즈믄가람", SearchFilters(category="소설"))
@@ -424,8 +427,8 @@ def _explain(query: str, cand_sql) -> str:
             tokens,
             [keyword.like_pattern(t) for t in tokens],
             query,
-            keyword.CANDIDATE_LIMIT,
-            keyword.MIN_COVERAGE,
+            SEARCH.keyword_limit,
+            SEARCH.min_coverage,
             *params,
         ]
         rows = await keyword._run(conn, sql, args)
@@ -446,7 +449,7 @@ def test_모든_낱말이_든_책이_충분하면_넓히지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # 기준을 1권으로 낮춘다. 세 낱말이 모두 든 책이 한 권 있으니 넓히지 않고, 둘만 든 책은 빠진다.
-    monkeypatch.setattr(keyword, "MIN_ALL_WORDS", 1)
+    monkeypatch.setattr(modes, "SEARCH", replace(modes.SEARCH, min_all_words=1))
 
     ids = _run_in_rollback(
         lambda c: keyword.search_ids(c, "벨로누아 헤스티르 카담네르", SearchFilters())
@@ -511,9 +514,9 @@ def test_낱말마다_넓힐_때_나눈_권수로_자른다() -> None:
     sql = keyword._cand_each_word(5, "")
 
     assert sql.count("LIMIT 200)") == 5
-    assert f"LIMIT {keyword.LOOKUP_LIMIT})" not in sql
+    assert f"LIMIT {SEARCH.lookup_limit})" not in sql
 
 
 def test_모든_낱말이_든_책을_먼저_찾을_때는_줄이지_않는다() -> None:
     # 이 경로는 결과가 적어 싸다. 줄이면 제목이 긴 책을 찾을 때 후보만 줄어든다.
-    assert f"LIMIT {keyword.LOOKUP_LIMIT}" in keyword._cand_all_words(5, "")
+    assert f"LIMIT {SEARCH.lookup_limit}" in keyword._cand_all_words(5, "")

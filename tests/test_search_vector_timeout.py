@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from app.search import vector
+from app.search.mode import SEARCH
 from app.search.schemas import SearchFilters
 
 
@@ -45,6 +46,6 @@ def test_검색은_홈_추천과_따로_둔_탐색_폭을_건다() -> None:
 
     asyncio.run(vector.search_ids(conn, [0.0] * 384, SearchFilters()))
 
-    assert f"SET LOCAL hnsw.ef_search = {vector.SEARCH_EF_SEARCH}" in conn.executed
+    assert f"SET LOCAL hnsw.ef_search = {SEARCH.ef_search}" in conn.executed
     # 검색은 400 으로 줄였고(#516), 홈 추천 더 보기는 1000 그대로다
-    assert (vector.SEARCH_EF_SEARCH, vector.EF_SEARCH) == (400, 1000)
+    assert (SEARCH.ef_search, vector.EF_SEARCH) == (400, 1000)

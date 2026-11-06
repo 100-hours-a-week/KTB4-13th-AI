@@ -30,7 +30,7 @@ _intent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 class VectorFirst:
     """(b) chat.py 가 부르는 `service.search` 자리에 들어간다. semantic 요청만 벡터 검색으로 받는다.
 
-    ①의 하이브리드 검색은 키워드 등수를 3배로 쳐서(app/search/service.py 의 KEYWORD_WEIGHT), 검색어의 흔한
+    ①의 하이브리드 검색은 키워드 등수를 3배로 쳐서(app/search/mode.py 의 keyword_weight), 검색어의 흔한
     낱말이 제목에 든 책이 위를 채운다. 벡터 검색은 소개글이 있는 책만 찾는데, semantic 이면 ③이 어차피
     소개글 없는 책을 빼므로 잃는 책이 없다. 임베딩이나 벡터 검색이 실패하면 ①로 돌아간다.
     """

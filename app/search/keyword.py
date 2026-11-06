@@ -8,46 +8,14 @@ import unicodedata
 
 import asyncpg
 
+from app.search import mode as modes
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
 
-# 한 번에 가져오는 후보 수. 응답에는 이 중 앞에서부터 size 만큼만 나간다.
-# 200 은 다음 단계(#35)에서 벡터 검색 결과와 순위를 합칠 때 쓸 여유분이다.
-CANDIDATE_LIMIT = 200
 # 검색어는 200자까지라 낱말이 수십 개일 수 있다. 낱말마다 색인을 한 번씩 뒤지므로 묶는다.
 MAX_TOKENS = 10
 
-# 어디서 맞았는지에 따른 가중치. 제목 > 저자 > 소개글.
-# 소개글은 길어서 흔한 낱말이 우연히 걸리기 쉬우므로 낮게 둔다.
-W_TITLE = 3.0
-W_AUTHOR = 2.0
-W_DESCRIPTION = 0.5
-# 검색어 전체가 제목 전체와 비슷할수록 더 올린다. "마음" 을 치면 제목에 마음이 든 책이
-# 수십 권인데, 그중 제목이 정확히 『마음』 인 책이 맨 위여야 한다.
-# word_similarity 가 아니라 similarity 를 쓴다 — 앞의 것은 "일부와 맞는가" 라 전부 1.0 이 된다.
-W_WHOLE_TITLE = 2.0
-
-# 낱말들이 평균 이만큼은 맞아야 결과에 넣는다(낱말별 0~1, 제목·저자에 있으면 1에 가깝다).
-# 이 선이 없으면 "꿀벌이 주인공인 그림책" 처럼 낱말이 여럿인 검색어에서 "그림책" 하나만
-# 맞은 책 수십 권이 결과를 채운다. 값은 고정 검색어 25개로 0 부터 0.9 까지 재서 골랐다
-# (측정 기록은 이슈 #35 코멘트).
-MIN_COVERAGE = 0.6
-# 소개글에만 있는 낱말은 절반만 쳐 준다. 그래서 소개글에서만 맞은 책은 선을 못 넘는다.
-# 그런 책은 다음 단계(#35)의 벡터 검색이 뜻으로 찾는다.
-DESCRIPTION_COVERAGE = 0.5
-# 색인을 한 번 조회할 때 가져오는 책 수 상한. 흔한 낱말은 수만 권이 걸리는데 그 전부를 채점하면
-# 책 수에 비례해 느려진다(266만 권에서 1초가 넘음, #120). 순서 없이 먼저 찾은 만큼만 가져오므로
-# 제목이 검색어와 똑같은 책은 따로 찾아 늘 넣는다(_same_title).
-LOOKUP_LIMIT = 500
-# 낱말마다 넓힐 때 모으는 후보의 합. 낱말 수로 나눠 낱말마다 이만큼씩만 모은다(최소 LOOKUP_MIN).
-# 후보마다 낱말별로 소개글을 뒤져 채점하므로 비용은 후보 수에 비례한다. 문장으로 친 검색어("초등학생이
-# 읽기 쉬운 과학 책")는 거의 늘 이 경로로 와서, 낱말마다 500권이면 261만 권에서 키워드 단계만 p95 298ms
-# 였다. 1,000권으로 나누면 131ms 이고, 제목·제목+저자 검색 600개의 1등은 그대로였다(#198).
-LOOKUP_BUDGET = 1000
-LOOKUP_MIN = 100
-# 낱말이 여럿이면 모든 낱말이 든 책부터 찾는다. 낱말이 많을수록 그런 책은 오히려 줄어 채점할
-# 것이 몇 권 없다. 이만큼도 안 나오면(오타가 섞였거나 제목에 없는 말을 쳤을 때) 낱말마다 넓힌다.
-MIN_ALL_WORDS = 10
+# 후보 수·선·상한·가중치는 검색 모드에 있다(app/search/mode.py).
 
 # 후보는 제목·저자의 글자 조각 색인(pg_trgm)으로만 고른다. `<%` 는 낱말이 글 안 어딘가와
 # 비슷하면 참이다(기준은 pg_trgm.word_similarity_threshold, 기본 0.6). 조사가 붙은 말
@@ -56,14 +24,14 @@ MIN_ALL_WORDS = 10
 # 소개글은 후보를 고를 때 보지 않는다. 소개글에서만 맞은 낱말은 0.5 로 치므로, 선(0.6)을
 # 넘으려면 적어도 한 낱말은 제목·저자에서 0.6 이상 맞아야 한다. 소개글까지 뒤지면 "때",
 # "책" 같은 흔한 낱말이 수만 권을 후보로 끌고 와 13만 권에서 5초가 넘었다(전부 버려질
-# 책이다). MIN_COVERAGE 를 0.6 아래로 내리거나 DESCRIPTION_COVERAGE 를 올리면 이 전제가
+# 책이다). 선(min_coverage)을 0.6 아래로 내리거나 소개글 몫(description_coverage)을 올리면 이 전제가
 # 깨지니 같이 고쳐야 한다.
 #
-# 낱말마다 색인을 따로 조회하고 LOOKUP_LIMIT 권까지만 모은다. 낱말 목록과 책 표를 한 번에
+# 낱말마다 색인을 따로 조회하고 상한(lookup_limit)까지만 모은다. 낱말 목록과 책 표를 한 번에
 # 조인하면 낱말이 늘 때 PostgreSQL 이 색인을 버리고 표 전체를 훑는다(#120). 그래서 선을 넘을
 # 책이 전부 후보가 되지는 않는다. 흔한 낱말에서 순서 없이 잘리는 대신 제목이 검색어와 똑같은
 # 책은 늘 넣는다. 고정 표본 300권으로 잰 품질은 전과 같거나 나았다(#120).
-# 낱말이 여럿이면 모든 낱말이 든 책부터 찾고 모자랄 때만 낱말마다 넓힌다(MIN_ALL_WORDS).
+# 낱말이 여럿이면 모든 낱말이 든 책부터 찾고 모자랄 때만 낱말마다 넓힌다(min_all_words).
 #
 # 제목은 공백을 뺀 형태와도 비교한다. "메타포워즈" 처럼 붙여 치면 "메타포 워즈" 와 글자
 # 조각이 절반만 겹쳐 선을 못 넘는다(이슈 #63). 일반 공백만 빼면 탭·전각공백·nbsp 로 띄어 쓴
@@ -147,19 +115,20 @@ def _same_title(where: str) -> str:
     return f"SELECT b.book_id FROM v_books b WHERE {_same_title_as('b.title', '$3')}{where}"
 
 
-def lookup_limit(n_tokens: int) -> int:
-    """낱말마다 넓힐 때 낱말 하나에 모으는 권수. 낱말 1–2개면 LOOKUP_LIMIT 그대로다."""
-    return min(LOOKUP_LIMIT, max(LOOKUP_MIN, LOOKUP_BUDGET // n_tokens))
+def lookup_limit(n_tokens: int, mode: modes.Mode | None = None) -> int:
+    """낱말마다 넓힐 때 낱말 하나에 모으는 권수. 낱말 1–2개면 상한(lookup_limit) 그대로다."""
+    m = modes.current(mode)
+    return min(m.lookup_limit, max(m.lookup_min, m.lookup_budget // n_tokens))
 
 
-def _cand_each_word(n_tokens: int, where: str) -> str:
+def _cand_each_word(n_tokens: int, where: str, mode: modes.Mode | None = None) -> str:
     """낱말마다 색인을 따로 조회해 lookup_limit 권씩 모으고, 제목이 똑같은 책을 더한다.
 
     필터(where)는 자르기 전에 건다. 뒤에 걸면 필터에 안 맞는 책이 자리를 먹는다.
     """
     lookups = "\n        UNION ALL\n".join(
         f"        (SELECT b.book_id FROM v_books b"
-        f" WHERE {_word_matches(i)}{where} LIMIT {lookup_limit(n_tokens)})"
+        f" WHERE {_word_matches(i)}{where} LIMIT {lookup_limit(n_tokens, mode)})"
         for i in range(1, n_tokens + 1)
     )
     return (
@@ -170,30 +139,31 @@ def _cand_each_word(n_tokens: int, where: str) -> str:
     )
 
 
-def _cand_all_words(n_tokens: int, where: str) -> str:
-    """모든 낱말이 제목·저자에 든 책을 LOOKUP_LIMIT 권까지 모으고, 제목이 똑같은 책을 더한다."""
+def _cand_all_words(n_tokens: int, where: str, mode: modes.Mode | None = None) -> str:
+    """모든 낱말이 제목·저자에 든 책을 상한(lookup_limit)까지 모으고, 제목이 똑같은 책을 더한다."""
     conds = "\n          AND ".join(_word_matches(i) for i in range(1, n_tokens + 1))
     return (
         "cand AS (\n"
         "    SELECT book_id FROM (\n"
         "        SELECT b.book_id FROM v_books b\n"
         f"        WHERE {conds}{where}\n"
-        f"        LIMIT {int(LOOKUP_LIMIT)}\n"
+        f"        LIMIT {int(modes.current(mode).lookup_limit)}\n"
         "    ) all_words\n"
         f"    UNION\n    {_same_title(where)}\n"
         ")"
     )
 
 
-def _sql(cand: str) -> str:
+def _sql(cand: str, mode: modes.Mode | None = None) -> str:
     """후보 고르기(cand 절)에 점수·정렬을 붙인 쿼리."""
+    m = modes.current(mode)
     return _SQL.format(
         cand=cand,
-        w_title=W_TITLE,
-        w_author=W_AUTHOR,
-        w_desc=W_DESCRIPTION,
-        w_whole=W_WHOLE_TITLE,
-        desc_coverage=DESCRIPTION_COVERAGE,
+        w_title=m.w_title,
+        w_author=m.w_author,
+        w_desc=m.w_description,
+        w_whole=m.w_whole_title,
+        desc_coverage=m.description_coverage,
         nospace_b_title=_nospace("b.title"),
         nospace_title=_nospace("title"),
         nospace_query=_nospace("$3"),
@@ -205,7 +175,7 @@ async def _run(conn: asyncpg.Connection, sql: str, args: list) -> list[asyncpg.R
 
     `<%` 는 실제로 몇 권이 걸릴지 어림을 못 해(낱말과 상관없이 3% 로 본다) PostgreSQL 이 가끔
     색인 대신 표를 앞에서부터 훑는다. 그러면 느린 데다, 큰 표는 직전 훑기가 멈춘 자리부터
-    이어 훑어서 LOOKUP_LIMIT 로 자를 때마다 다른 책이 남는다. 페이지를 넘길 때마다 검색을 다시
+    이어 훑어서 상한(lookup_limit)으로 자를 때마다 다른 책이 남는다. 페이지를 넘길 때마다 검색을 다시
     돌리므로 결과가 바뀌면 같은 책이 두 번 나오거나 빠진다. 266만 권에서 432번 중 8번 달라지던
     결과가 이 설정으로 0번이 됐다(#148).
     """
@@ -270,9 +240,11 @@ async def search_ids(
     conn: asyncpg.Connection,
     query: str,
     filters: SearchFilters,
-    limit: int = CANDIDATE_LIMIT,
+    limit: int | None = None,
+    mode: modes.Mode | None = None,
 ) -> list[int]:
-    """잘 맞는 순서대로 book_id 를 돌려준다."""
+    """잘 맞는 순서대로 book_id 를 돌려준다. limit 을 주지 않으면 모드의 후보 수다."""
+    m = modes.current(mode)
     # 낱말뿐 아니라 제목 전체와 견주는 값($3)도 같은 모양이어야 한다(#200).
     query = normalize_query(query)
     tokens = tokenize(query)
@@ -283,13 +255,13 @@ async def search_ids(
         tokens,
         [like_pattern(t) for t in tokens],
         query.strip(),
-        limit,
-        MIN_COVERAGE,
+        m.keyword_limit if limit is None else limit,
+        m.min_coverage,
         *filter_params,
     ]
     if len(tokens) >= 2:
-        rows = await _run(conn, _sql(_cand_all_words(len(tokens), where)), args)
-        if len(rows) >= MIN_ALL_WORDS:
+        rows = await _run(conn, _sql(_cand_all_words(len(tokens), where, m), m), args)
+        if len(rows) >= m.min_all_words:
             return [r["book_id"] for r in rows]
-    rows = await _run(conn, _sql(_cand_each_word(len(tokens), where)), args)
+    rows = await _run(conn, _sql(_cand_each_word(len(tokens), where, m), m), args)
     return [r["book_id"] for r in rows]
