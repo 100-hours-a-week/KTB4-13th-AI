@@ -5,6 +5,9 @@
 
 from pathlib import Path
 
+import pytest
+
+from evals.search import collect
 from evals.search.collect import collect_with
 
 # 검색어의 글자 수를 첫 책 번호로 돌려준다. "fail" 은 500, "slow" 는 줄인 응답이다.
@@ -52,3 +55,28 @@ def test_준_폴더의_코드로_요청_순서대로_검색한다(tmp_path: Path
         (500, None, []),
     ]
     assert all(r["seconds"] >= 0 for r in results)
+
+
+def test_검색창_모드의_값을_바꿔_끼우고_타입은_지금_값을_따른다(monkeypatch) -> None:
+    from app.search import mode as modes
+
+    monkeypatch.setattr(modes, "SEARCH", modes.Mode())
+    got = collect.apply_mode({"keyword_weight": "1", "lookup_limit": "300"})
+
+    assert modes.SEARCH.keyword_weight == 1.0 and isinstance(
+        modes.SEARCH.keyword_weight, float
+    )
+    assert modes.SEARCH.lookup_limit == 300 and isinstance(
+        modes.SEARCH.lookup_limit, int
+    )
+    assert got["min_coverage"] == modes.Mode().min_coverage
+    # 뜻 모드는 그대로다
+    assert modes.MEANING == modes.Mode()
+
+
+def test_검색_모드에_없는_이름이면_멈춘다(monkeypatch) -> None:
+    from app.search import mode as modes
+
+    monkeypatch.setattr(modes, "SEARCH", modes.Mode())
+    with pytest.raises(SystemExit, match="없는 이름"):
+        collect.apply_mode({"weight": "1"})

@@ -1,8 +1,11 @@
 """① 검색 평가의 서술형 검색어에 점수(맞음 2·조금 1·아님 0)를 매기는 도구(#502).
 
-    # 1. 코드마다 위 20권을 합쳐, 아직 점수가 없는 책을 검색어마다 섞어 가린 채점 파일로 낸다
+    # 1. 코드·설정마다 위 20권을 합쳐, 아직 점수가 없는 책을 검색어마다 섞어 가린 채점 파일로 낸다
     DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool \\
         --code main=../main --code ef400=../ef400 --code ef200=../ef200
+    # 검색창 모드의 값만 바꾼 설정은 worktree 없이 --variant 로 준다(이 저장소의 코드). --screen 이면 인기순 위 12권도 모은다
+    DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.label pool \\
+        --variant base= --variant w13=keyword_weight:1,vector_weight:3 --screen
     # 2. candidates.md 를 읽고 grades.json 의 빈칸에 점수를 적은 뒤 라벨에 넣는다
     uv run python -m evals.search.label apply --judge "Claude 세션 채점(모델), 날짜"
     # 3. 라벨의 10%를 사람이 확인할 표로 뽑고, review.json 의 fixed 칸에 고친 점수를 넣는다
@@ -184,6 +187,40 @@ async def _books(url: str, key: str, values: list) -> dict[Any, Any]:
     return {r[key]: dict(r) for r in rows}
 
 
+def parse_variant(item: str) -> tuple[str, dict[str, str]]:
+    """'이름=칸:값,칸:값' → (이름, {칸: 값}). 값이 없으면('base=') 지금 값 그대로다."""
+    name, sep, spec = item.partition("=")
+    if not sep or not name.strip():
+        raise ValueError(f"--variant 는 이름=칸:값,칸:값 꼴이어야 한다: {item!r}")
+    overrides = {}
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        key, colon, value = part.partition(":")
+        if not colon or not key.strip() or not value.strip():
+            raise ValueError(f"--variant 의 값은 칸:값 꼴이어야 한다: {part!r}")
+        overrides[key.strip()] = value.strip()
+    return name.strip(), overrides
+
+
+def pool_targets(
+    codes: Sequence[str], variants: Sequence[str]
+) -> dict[str, tuple[Path, dict[str, str]]]:
+    """후보를 모을 곳. 이름 → (잴 코드 폴더, 바꿀 모드 값). 하나도 없거나 이름이 겹치면 ValueError."""
+    targets: dict[str, tuple[Path, dict[str, str]]] = {}
+    for item in codes:
+        name, _, path = item.partition("=")
+        targets.setdefault(name, (Path(path), {}))
+    for item in variants:
+        name, overrides = parse_variant(item)
+        if name in targets:
+            raise ValueError(f"이름이 겹친다: {name}")
+        targets[name] = (run.REPO, overrides)
+    if not targets:
+        raise ValueError("--code 나 --variant 를 하나 이상 준다")
+    if len(targets) != len(codes) + len(variants):
+        raise ValueError("이름이 겹친다")
+    return targets
+
+
 def _write(name: str, text: str) -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
     path = WORK / name
@@ -210,7 +247,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="① 서술형 검색어에 점수를 매긴다")
     sub = parser.add_subparsers(dest="command", required=True)
     pool = sub.add_parser("pool", help="후보를 모아 채점 파일을 낸다")
-    pool.add_argument("--code", action="append", required=True, help="이름=폴더")
+    pool.add_argument("--code", action="append", default=[], help="이름=폴더")
+    pool.add_argument(
+        "--variant",
+        action="append",
+        default=[],
+        help="이름=칸:값,칸:값. 이 저장소 코드에서 검색창 모드의 값만 바꾼 설정(값이 없으면 지금 그대로)",
+    )
+    pool.add_argument(
+        "--screen",
+        action="store_true",
+        help="관련도순 위 20권에 더해 인기순 위 12권(첫 화면)도 모은다",
+    )
     sub.add_parser("apply", help="grades.json 을 라벨에 넣는다").add_argument(
         "--judge", required=True, help="점수를 매긴 사람이나 세션, 날짜"
     )
@@ -226,11 +274,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in ("pool", "review") and (url := _database(args)) is None:
         return 2
     if args.command == "pool":
-        codes = dict(item.split("=", 1) for item in args.code)
+        try:
+            targets = pool_targets(args.code, args.variant)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
         cases = run.select(run.load_bundle()["cases"], kinds=["descriptive"])
-        requests = [run.request(case, POOL_TOP) for case in cases]
+        views = [("", [run.request(case, POOL_TOP) for case in cases])]
+        if args.screen:
+            screen = [
+                run.request(case, run.SCREEN_TOP, run.SCREEN_SORT) for case in cases
+            ]
+            views.append(("/screen", screen))
         found = {
-            name: collect_with(Path(path), requests) for name, path in codes.items()
+            f"{name}{suffix}": collect_with(path, requests, overrides)
+            for name, (path, overrides) in targets.items()
+            for suffix, requests in views
         }
         ids = sorted(
             {i for results in found.values() for r in results for i in r["book_ids"]}

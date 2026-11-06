@@ -23,9 +23,33 @@ from time import perf_counter
 import httpx
 
 SEARCH_URL = "/search"
+# 검색창 모드를 바꿔 잴 때 값(JSON, 이름 → 값)을 넘기는 환경 변수. 실행기(run.py --set)가 채운다(#556)
+MODE_ENV = "SEARCH_EVAL_MODE"
 CALL_TIMEOUT_SECONDS = 60
 # 이만큼 부를 때마다 어디까지 왔는지 찍는다. 묶음 전부에 몇 분 걸린다
 PROGRESS_EVERY = 100
+
+
+def apply_mode(overrides: dict) -> dict:
+    """검색창 모드의 값을 바꿔 끼우고, 바꾼 뒤의 값 전체를 돌려준다. 값의 타입은 지금 값의 타입을 따른다.
+
+    잴 코드에 검색 모드가 없거나(옛 커밋) 없는 이름이면 멈춘다. 조용히 지금 값으로 재지 않게 한다.
+    """
+    from dataclasses import asdict, replace
+
+    try:
+        from app.search import mode as modes
+    except ImportError as exc:
+        raise SystemExit(
+            "이 코드에는 검색 모드(app/search/mode.py)가 없어 값을 바꿔 잴 수 없다"
+        ) from exc
+    current = asdict(modes.SEARCH)
+    unknown = sorted(set(overrides) - set(current))
+    if unknown:
+        raise SystemExit(f"검색 모드에 없는 이름: {', '.join(unknown)}")
+    typed = {k: type(current[k])(v) for k, v in overrides.items()}
+    modes.SEARCH = replace(modes.SEARCH, **typed)
+    return asdict(modes.SEARCH)
 
 
 async def collect(requests: list[dict]) -> list[dict]:
@@ -66,7 +90,9 @@ async def collect(requests: list[dict]) -> list[dict]:
     return results
 
 
-def collect_with(code: Path, requests: list[dict]) -> list[dict]:
+def collect_with(
+    code: Path, requests: list[dict], overrides: dict | None = None
+) -> list[dict]:
     """`code` 폴더의 코드로 따로 띄운 파이썬에서 collect 를 돌린다.
 
     `-P` 로 이 파일이 있는 폴더를 import 경로에서 빼서 `app` 은 PYTHONPATH 의 `code` 에서만 찾는다. 설정(.env)은
@@ -76,6 +102,7 @@ def collect_with(code: Path, requests: list[dict]) -> list[dict]:
         sent, got = Path(tmp, "requests.json"), Path(tmp, "results.json")
         sent.write_text(json.dumps(requests, ensure_ascii=False), encoding="utf-8")
         env = {**os.environ, "PYTHONPATH": str(code.resolve())}
+        env[MODE_ENV] = json.dumps(overrides or {})
         command = [sys.executable, "-P", __file__, str(sent), str(got)]
         subprocess.run(command, env=env, check=True)
         return json.loads(got.read_text(encoding="utf-8"))
@@ -86,6 +113,9 @@ def main(argv: list[str]) -> int:
     # 서버는 요청마다 로그를 남긴다. 수백 번 부르면 진행이 묻히므로 경고부터만 보인다.
     logging.disable(logging.INFO)
     requests = json.loads(sent.read_text(encoding="utf-8"))
+    overrides = json.loads(os.environ.get(MODE_ENV) or "{}")
+    if overrides:
+        print(f"검색창 모드: {apply_mode(overrides)}", file=sys.stderr, flush=True)
     got.write_text(json.dumps(asyncio.run(collect(requests))), encoding="utf-8")
     return 0
 
