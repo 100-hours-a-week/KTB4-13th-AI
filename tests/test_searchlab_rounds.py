@@ -232,3 +232,14 @@ def test_계획_전체의_값은_회차마다_넘기고_회차_값이_앞선다(
 def test_측정_계획은_벡터_한도를_풀고_잰다() -> None:
     for name in ("testbench", "a1-ef", "a5-eic"):
         assert rounds.load_plan(PLANS / f"{name}.json")["vector_timeout"] == 30
+
+
+def test_낱말_적중_선은_회차_값을_측정기에_넘긴다() -> None:
+    plan = {"name": "p", "warmup": False}
+    got = rounds.measure_args(
+        plan, {"label": "line07", "min_coverage": 0.7}, 1, "first"
+    )
+    assert got[got.index("--min-coverage") + 1] == "0.7"
+    assert "--min-coverage" not in rounds.measure_args(
+        plan, {"label": "base"}, 1, "first"
+    )
