@@ -321,3 +321,12 @@ def test_실험_DB_가_아니면_pgss_는_묻지_않고_멈추고_둘은_같이_
     assert "--server-stats" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         measure.main(["--label", "x", "--state", "first", "--pgss", "--server-stats"])
+
+
+def test_낱말_적중_선은_재는_동안만_바꾸고_끝나면_되돌린다() -> None:
+    before = keyword.MIN_COVERAGE
+    with measure.patched(measure.Knobs(min_coverage=0.7), {"q": [0.5]}):
+        assert keyword.MIN_COVERAGE == 0.7
+    assert keyword.MIN_COVERAGE == before
+    with measure.patched(measure.Knobs(), {"q": [0.5]}):
+        assert keyword.MIN_COVERAGE == before

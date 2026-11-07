@@ -92,6 +92,8 @@ class Knobs:
     # 벡터 검색 한도(초). 앱은 2초에서 끊고 키워드만으로 답한다. 처음 조회는 이 한도에 자주 걸려, 그대로 재면 시간이
     # 2초에서 잘려 설정끼리 차이가 안 보인다. 측정 회차는 한도를 풀고 재며, 앱이라면 끊겼을 검색은 잰 시간으로 센다.
     vector_timeout: float | None = None
+    # 키워드 후보의 낱말 적중 선(keyword.MIN_COVERAGE). 품질 최종 후보(선 0.7·0.65)의 시간을 같은 회차 방법으로 잰다(#556)
+    min_coverage: float | None = None
 
     def command_timeout(self) -> float:
         """풀의 문장 한도. 앱은 5초다. 벡터 한도를 그보다 길게 풀면 같이 늘린다."""
@@ -192,6 +194,8 @@ def patched(
             swap(vector, "SEARCH_EF_SEARCH", knobs.ef_search)
         if knobs.vector_timeout is not None:
             swap(vector, "QUERY_TIMEOUT_SECONDS", knobs.vector_timeout)
+        if knobs.min_coverage is not None:
+            swap(keyword, "MIN_COVERAGE", knobs.min_coverage)
         yield stages
     finally:
         for obj, name, value in reversed(saved):
@@ -601,6 +605,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--random-page-cost", type=float)
     parser.add_argument("--effective-io-concurrency", type=int)
     parser.add_argument(
+        "--min-coverage",
+        type=float,
+        help="키워드 후보의 낱말 적중 선(지금 앱 값은 app/search/keyword.py MIN_COVERAGE)",
+    )
+    parser.add_argument(
         "--vector-timeout",
         type=float,
         help="벡터 검색 한도(초). 앱은 2초. 측정 회차는 풀고 잰다(예: 30)",
@@ -643,6 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.random_page_cost,
         args.effective_io_concurrency,
         args.vector_timeout,
+        args.min_coverage,
     )
     out = OUT_DIR / f"{args.label}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
