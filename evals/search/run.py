@@ -44,8 +44,8 @@ WHERE b.book_id = ANY($1::int[])
 """
 
 
-def load_bundle() -> dict[str, Any]:
-    return json.loads(CASES_PATH.read_text(encoding="utf-8"))
+def load_bundle(path: Path = CASES_PATH) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def select(
@@ -294,6 +294,14 @@ def main(
     parser.add_argument("--out", help="사례마다의 결과를 남길 JSON 파일")
     parser.add_argument("--any-db", action="store_true", help="_eval 이 아닌 DB 에도")
     parser.add_argument(
+        "--bundle",
+        type=Path,
+        help="묶음 파일. 없으면 cases.json. 확인용 검색어(confirm.json)를 잴 때 준다(#556)",
+    )
+    parser.add_argument(
+        "--labels", type=Path, help="서술형 라벨 파일. 없으면 labels.json"
+    )
+    parser.add_argument(
         "--sort",
         default="relevance",
         choices=("relevance", "popular", "newest", "price_asc", "price_desc"),
@@ -334,7 +342,7 @@ def main(
         return 2
     sort = SCREEN_SORT if args.screen else args.sort
 
-    bundle = load_bundle()
+    bundle = load_bundle(args.bundle or CASES_PATH)
     try:
         picked = select(bundle["cases"], kinds=_split(args.kinds), ids=_split(args.ids))
     except ValueError as exc:
@@ -393,7 +401,7 @@ def main(
         shelf, database = asyncio.run(read_db(url, book_ids))
     from evals.search.label import load_labels
 
-    labels = load_labels()["labels"]
+    labels = (load_labels(args.labels) if args.labels else load_labels())["labels"]
     scores = score_all(picked, results, shelf, top, labels, look)
     summary = summarize(scores, hit_at)
     print()
@@ -412,6 +420,7 @@ def main(
     if args.out:
         saved = {
             "bundle_version": bundle["version"],
+            "bundle": (args.bundle or CASES_PATH).name,
             "catalog": catalog,
             "database": database,
             "code": label,

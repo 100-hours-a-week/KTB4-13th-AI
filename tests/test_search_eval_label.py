@@ -124,3 +124,27 @@ def test_저장된_결과에서_모을_때_첫_화면은_본_권수까지만_쓴
         {"book_ids": [4]},
         {"book_ids": [1, 2]},
     ]
+
+
+def test_다른_라벨_파일에_넣고_평가_묶음_라벨은_건드리지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "grades.json").write_text(
+        json.dumps({"grades": {"confirm-01": {"c01": 2}}}), encoding="utf-8"
+    )
+    (work / "sources.json").write_text(
+        json.dumps({"confirm-01": {"c01": {"isbn": "9780000000001", "ranks": {}}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(label, "WORK", work)
+    monkeypatch.setattr(label, "LABELS_PATH", tmp_path / "labels.json")
+    other = tmp_path / "confirm-labels.json"
+
+    assert label.main(["--labels", str(other), "apply", "--judge", "세션"]) == 0
+
+    assert json.loads(other.read_text(encoding="utf-8"))["labels"] == {
+        "confirm-01": {"9780000000001": 2}
+    }
+    assert not (tmp_path / "labels.json").exists()

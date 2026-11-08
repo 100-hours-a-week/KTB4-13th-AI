@@ -237,3 +237,30 @@ def test_후보_확인은_Holm_을_거쳐_좋아진_쪽만_넘긴다() -> None:
         name: passed for name, _, passed, _ in quality.confirm(base, [good, worse])
     }
     assert results == {"good": True, "worse": False}
+
+
+def test_확인은_따로_준_라벨_파일로_다시_매긴다(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def write(name: str, isbn: str) -> Path:
+        row = {**_described(1, 0.0), "isbns": [isbn]}
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({**_meta(), "scores": [row]}), encoding="utf-8")
+        return path
+
+    base, new = write("base", "9780000000002"), write("new", "9780000000001")
+    labels = tmp_path / "l.json"
+    labels.write_text(
+        json.dumps({"labels": {"descriptive-1": {"9780000000001": 2}}}),
+        encoding="utf-8",
+    )
+    pair = ["confirm", "--base", str(base), "--new", str(new)]
+
+    assert quality.main(["--labels", str(labels), *pair]) == 0
+    # 새 안의 1등이 2점 책이다. 이상값은 위 12권이 모두 2점이라 3 / 15.3
+    assert "new: 차이 +0.196" in capsys.readouterr().out
+
+    # 라벨 파일을 주지 않으면 평가 묶음의 라벨이라 두 책 모두 점수가 없다
+    monkeypatch.setattr(quality, "load_labels", lambda: {"labels": {}})
+    assert quality.main(pair) == 0
+    assert "new: 차이 +0.000" in capsys.readouterr().out

@@ -514,6 +514,11 @@ def case_values(run_: Run, kind: str) -> dict[str, float]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="검색 평가 결과를 짝지어 판정한다")
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        help="서술형 라벨 파일. 없으면 labels.json. 확인용 검색어는 그 라벨로 준다(판정 셈법은 같다)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     one = sub.add_parser("compare", help="기준선과 새 안 하나")
     one.add_argument("--base", required=True, type=Path)
@@ -531,7 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     pair.add_argument("--kind", default="descriptive")
     args = parser.parse_args(argv)
 
-    labels = load_labels()["labels"]
+    labels = (load_labels(args.labels) if args.labels else load_labels())["labels"]
     try:
         if args.command == "compare":
             base, new = load(args.base, labels), load(args.new, labels)

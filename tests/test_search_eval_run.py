@@ -204,3 +204,38 @@ def test_값을_바꾸는_이름은_이름_값_꼴이어야_한다() -> None:
     for bad in ("keyword_weight", "=1", "keyword_weight="):
         with pytest.raises(ValueError, match="이름=값"):
             run.parse_sets([bad])
+
+
+def test_다른_묶음과_라벨_파일로_잰다(tmp_path: Path) -> None:
+    # 확인용 검색어(#556 판정 기준 4)는 평가 묶음·라벨과 따로 둔다
+    catalog = run.load_bundle()["catalog"]
+    bundle = {"version": 1, "top": 20, "seed": "556", "catalog": catalog}
+    bundle["cases"] = [
+        {"id": "confirm-01", "kind": "descriptive", "facet": "topic", "query": "우주"}
+    ]
+    (tmp_path / "b.json").write_text(json.dumps(bundle), encoding="utf-8")
+    labels = {"labels": {"confirm-01": {"9780000000001": 2}}}
+    (tmp_path / "l.json").write_text(json.dumps(labels), encoding="utf-8")
+    book = Book(
+        book_id=1,
+        isbn="9780000000001",
+        title="책",
+        author=None,
+        category=None,
+        pub_year=None,
+        price=None,
+    )
+
+    def search(requests: list[dict]) -> list[dict]:
+        return [{"status": 200, "degraded": None, "book_ids": [1], "seconds": 0.1}]
+
+    out = tmp_path / "r.json"
+    argv = ["--bundle", str(tmp_path / "b.json"), "--labels", str(tmp_path / "l.json")]
+    argv += ["--yes", "--out", str(out)]
+    assert run.main(argv, search=search, facts=lambda ids: {1: book}) == 0
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["bundle_version"] == 1
+    assert [s["id"] for s in saved["scores"]] == ["confirm-01"]
+    # 2점 책 하나가 1등이다(이상값은 위 10권이 모두 2점, 3 / 13.63)
+    assert saved["scores"][0]["ndcg"] == pytest.approx(0.220, abs=1e-3)

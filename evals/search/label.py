@@ -253,6 +253,16 @@ def _database(args: argparse.Namespace) -> str | None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="① 서술형 검색어에 점수를 매긴다")
     sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--bundle",
+        type=Path,
+        help="묶음 파일. 없으면 cases.json. 확인용 검색어(confirm.json)는 이것으로 준다(#556)",
+    )
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        help="라벨 파일. 없으면 labels.json. 확인용 라벨은 따로 둔다",
+    )
     pool = sub.add_parser("pool", help="후보를 모아 채점 파일을 낸다")
     pool.add_argument("--code", action="append", default=[], help="이름=폴더")
     pool.add_argument(
@@ -283,7 +293,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in ("pool", "review"):
         sub.choices[name].add_argument("--any-db", action="store_true")
     args = parser.parse_args(argv)
-    data = load_labels()
+    labels_path = args.labels or LABELS_PATH
+    data = load_labels(labels_path)
+    bundle = run.load_bundle(args.bundle) if args.bundle else run.load_bundle()
 
     if args.command in ("pool", "review") and (url := _database(args)) is None:
         return 2
@@ -296,7 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not targets and not args.results:
             print("--code, --variant, --results 중 하나를 준다", file=sys.stderr)
             return 2
-        cases = run.select(run.load_bundle()["cases"], kinds=["descriptive"])
+        cases = run.select(bundle["cases"], kinds=["descriptive"])
         views = [("", [run.request(case, POOL_TOP) for case in cases])]
         if args.screen:
             screen = [
@@ -321,8 +333,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "apply":
         grades = _json(WORK / "grades.json")["grades"]
         added = apply(grades, _json(WORK / "sources.json"), data, args.judge)
-        LABELS_PATH.write_text(dump(data, "labels"), encoding="utf-8")
-        print(f"라벨 {added}개를 더했다: {LABELS_PATH}")
+        labels_path.write_text(dump(data, "labels"), encoding="utf-8")
+        print(f"라벨 {added}개를 더했다: {labels_path}")
     elif args.command == "review":
         review = pick_review(data)
         books = asyncio.run(_books(url, "isbn13", [r["isbn"] for r in review]))
@@ -330,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "| 번호 | 검색어 | 책 | 소개글 | 점수 |",
             "| --- | --- | --- | --- | --- |",
         ]
-        queries = {c["id"]: c["query"] for c in run.load_bundle()["cases"]}
+        queries = {c["id"]: c["query"] for c in bundle["cases"]}
         for n, item in enumerate(review, 1):
             book = books[item["isbn"]]
             rows.append(
@@ -344,8 +356,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"사람이 확인할 라벨 {len(review)}개: {table}")
     else:
         changed = apply_review(_json(WORK / "review.json")["review"], data, args.by)
-        LABELS_PATH.write_text(dump(data, "labels"), encoding="utf-8")
-        print(f"사람이 고친 라벨 {changed}개를 넣었다: {LABELS_PATH}")
+        labels_path.write_text(dump(data, "labels"), encoding="utf-8")
+        print(f"사람이 고친 라벨 {changed}개를 넣었다: {labels_path}")
     return 0
 
 
