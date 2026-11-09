@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from app.agent import evidence, guard
+from app.agent.checkout import Plan
 from app.agent.errors import ToolErrorCode
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
@@ -26,6 +27,7 @@ from app.agent.schemas import (
     Action,
     AgentActData,
     Button,
+    Checkout,
     ResolvedReference,
     Selection,
     SelectionConstraints,
@@ -40,6 +42,11 @@ from app.gateway.commerce import CommerceErrorCode
 # 반복을 다 쓰거나 LLM 이 빈 글로 끝났을 때, 지운 문장도 없을 때 쓰는 안내
 FALLBACK_REPLY = "요청을 끝까지 처리하지 못했어요. 다시 한 번 말씀해 주세요."
 CART_SCREEN = "CART-001"
+# 주문 화면(#631, BE#533). "주문해 줘"로 책을 담은 턴에 장바구니 버튼 대신 붙인다. FE 는 이번에 담은 책만 이 화면에
+# 넣고 checkout 의 쿠폰·포인트를 채운다. 이름은 BE·FE 와 정하면 바꾼다
+ORDER_SCREEN = "ORDER-001"
+ORDER_LABEL = "주문 화면으로"
+COUPON_LATER = "쿠폰과 포인트는 주문 화면에서 적용돼요."
 
 # 완료 표현. 말투를 하나씩 막는 목록이라 빠진 말이 있을 수 있다. 그래서 이 목록은 "LLM 이 완료를 말했나"를
 # 넓게 잡는 데만 쓰고, 사용자에게 가는 결과 문장은 이 목록과 상관없이 코드가 만든다(_outcomes).
@@ -60,6 +67,11 @@ _ACTION_CLAIMS: dict[ToolName, re.Pattern[str]] = {
         rf"(바꿨|바꾸었|바꿔\s*{_GAVE}|바뀌었|변경{_DID}|수정{_DID}|줄였|줄어들었|늘렸|늘어났|조정{_DID})"
     ),
 }
+
+# 주문했다·결제했다는 말. ⑦ 은 주문서를 만들거나 결제하지 않으므로 늘 거짓이다(#631)
+_ORDER_CLAIM = re.compile(
+    rf"(주문|결제|구매|구입){_DID}|(주문|결제|구매|구입)(을|를|이|가)?\s*(마쳤|끝냈|끝났|마무리)"
+)
 
 # "못 담았어요", "안 담았어요"는 하지 못했다는 말이다. "담았"에 걸려 완료 표현으로 오인되지 않게 먼저 뺀다.
 _NEGATED_ACTION = re.compile(
@@ -134,6 +146,11 @@ def _facts(run: AgentRun) -> _Facts:
                 if item["price"] is not None:
                     allowed.update({item["price"], item["price"] * item["quantity"]})
                     prices.append(item["price"])
+        if call.name == ToolName.BOOK_SEARCH and "books" in call.result:
+            for book in call.result["books"]:
+                titles[book["isbn"]] = book["title"]
+                allowed.add(book["price"])
+                prices.append(book["price"])
         if call.name == ToolName.BOOK_OFFER and "offers" in call.result:
             for offer in call.result["offers"]:
                 titles[offer["isbn"]] = offer["title"]
@@ -181,6 +198,8 @@ def _check(sentence: str, facts: _Facts) -> tuple[str, int | None] | None:
         return None  # 사용자에게 묻는 문장은 주장이 아니다
 
     masked = _mask(sentence, facts.titles)
+    if _ORDER_CLAIM.search(_NEGATED_ACTION.sub("", masked)):
+        return "ORDER_NOT_DONE", None  # 주문서를 만들거나 결제하지 않는다(#631)
     claimable = _NEGATED_ACTION.sub("", masked)
     claimed = [tool for tool, p in _ACTION_CLAIMS.items() if p.search(claimable)]
     if claimed:
@@ -329,6 +348,14 @@ def _outcomes(run: AgentRun, titles: dict[str, str]) -> list[str]:
         # 책을 풀기 전에 막힌 호출의 isbn 은 LLM 이 준 값이라 쓰지 않는다. BE 까지 간 호출만 코드가 채운 값이다
         if not reached or not isinstance(isbn, str):
             continue
+        earlier = attempts.get((call.name, isbn))
+        if (
+            earlier is not None
+            and earlier.result.get("ok") is True
+            and call.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
+        ):
+            # 이번 턴에 담은 책을 모델이 한 번 더 담으려 한 것이다(코드가 고른 책을 담은 뒤 등, #631). 담은 것이 사실이다
+            continue
         attempts.pop(
             (call.name, isbn), None
         )  # 말하는 순서는 마지막으로 시도한 때를 따른다
@@ -413,10 +440,20 @@ def _resolved(run: AgentRun) -> ResolvedReference | None:
     return ResolvedReference(ref=", ".join(parts), isbns=isbns)
 
 
+def _wrote(calls: list[ToolCall]) -> bool:
+    return any(
+        c.name in guard.WRITE_TOOLS and c.result.get("ok") is True for c in calls
+    )
+
+
 def _selection(calls: list[ToolCall]) -> Selection | None:
-    """코드가 고른 조합. 골라 담기를 하지 않았거나 고르지 못했으면 None."""
+    """코드가 고른 조합. 골라 담기를 하지 않았거나 고르지 못했으면 None.
+
+    골라서 담으라고 맡겨 고른 책을 이미 담았으면(#631) 확인받을 조합이 아니다. BE 는 selection 이 있으면 actions 를
+    보지 않고 담기 제안만 저장하므로 싣지 않는다.
+    """
     picked = _picked(calls)
-    if picked is None:
+    if picked is None or _wrote(calls):
         return None
     return Selection(
         goal="budget_pick",
@@ -450,13 +487,14 @@ def _touched_cart(call: ToolCall) -> bool:
     )
 
 
-def _buttons(calls: list[ToolCall], logged_in: bool) -> list[Button]:
+def _buttons(calls: list[ToolCall], logged_in: bool, order: bool) -> list[Button]:
     buttons: list[Button] = []
     seen: set[str] = set()
 
-    # AI 가 고른 조합은 담지 않고 이 버튼으로 확인받는다. 로그인하지 않았으면 담을 수 없으니 만들지 않는다
+    # AI 가 고른 조합은 담지 않고 이 버튼으로 확인받는다. 로그인하지 않았으면 담을 수 없으니 만들지 않는다.
+    # 골라서 담으라고 맡겨 이미 담았으면 확인받지 않는다(#631)
     picked = _picked(calls)
-    if picked is not None and logged_in:
+    if picked is not None and logged_in and not _wrote(calls):
         isbns = [book["isbn"] for book in picked.result["chosen"]]
         buttons.append(Button(label="담기", action="confirm_selection", isbns=isbns))
 
@@ -466,12 +504,44 @@ def _buttons(calls: list[ToolCall], logged_in: bool) -> list[Button]:
             buttons.append(Button(label=text, action="navigate", target=target))
 
     for call in calls:
-        if call.name == ToolName.UI_GUIDE and call.result.get("ok") is True:
+        # 주문 화면으로 보내는 턴에는 다른 화면 안내를 붙이지 않는다. FE 가 바로 주문 화면으로 간다(#631)
+        if (
+            call.name == ToolName.UI_GUIDE
+            and call.result.get("ok") is True
+            and not order
+        ):
             target = call.arguments["target"]
             navigate(UI_TARGETS[target], target)
-    if any(_touched_cart(call) for call in calls):
+    if order:
+        # "주문해 줘"로 담았으면 장바구니 대신 주문 화면으로 보낸다(#631)
+        navigate(ORDER_LABEL, ORDER_SCREEN)
+    elif any(_touched_cart(call) for call in calls):
         navigate(UI_TARGETS[CART_SCREEN], CART_SCREEN)
     return buttons
+
+
+def _coupon_name(name: str) -> str:
+    return name if "쿠폰" in name else f"{name} 쿠폰"
+
+
+def _checkout_line(plan: Plan) -> str:
+    """주문 화면에 채울 쿠폰·포인트 안내. 금액은 코드가 계산한 값이라 답변 검사를 거치지 않는다."""
+    if plan.coupon is not None and plan.use_point > 0:
+        applied = f"{_coupon_name(plan.coupon.name)}({plan.discount:,}원 할인)과 포인트 {plan.use_point:,}원을"
+    elif plan.coupon is not None:
+        applied = f"{_coupon_name(plan.coupon.name)}({plan.discount:,}원 할인)을"
+    elif plan.use_point > 0:
+        applied = f"포인트 {plan.use_point:,}원을"
+    else:
+        return "주문 화면에서 확인하고 주문해 주세요."
+    return f"주문 화면에 {applied} 적용해 둘게요. 확인하고 주문해 주세요."
+
+
+def _checkout(plan: Plan | None) -> Checkout | None:
+    if plan is None:
+        return None
+    coupon = plan.coupon.owned_coupon_id if plan.coupon is not None else None
+    return Checkout(owned_coupon_id=coupon, use_point=plan.use_point)
 
 
 def finish(run: AgentRun) -> Finished:
@@ -511,6 +581,11 @@ def finish(run: AgentRun) -> Finished:
     # 쓰기의 결과는 코드가 먼저 말한다. LLM 의 글이 전부 지워지거나 비어도, 이미 바뀐 장바구니를 두고
     # 422 나 "처리하지 못했어요"가 나가지 않는다
     outcome_lines = _outcomes(run, facts.titles)
+    if run.checkout is not None:
+        outcome_lines.append(_checkout_line(run.checkout))
+    elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):
+        # "쿠폰 적용해서 장바구니에 넣어 줘": 장바구니에는 쿠폰이 없다(#631)
+        outcome_lines.append(COUPON_LATER)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
     if not reply:
         if removed:
@@ -530,6 +605,7 @@ def finish(run: AgentRun) -> Finished:
         tool_calls=calls,
         resolved_reference=_resolved(run),
         selection=_selection(calls),
-        buttons=_buttons(calls, run.ctx.logged_in),
+        buttons=_buttons(calls, run.ctx.logged_in, order=run.checkout is not None),
+        checkout=_checkout(run.checkout),
     )
     return Finished(data, removed)

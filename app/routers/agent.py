@@ -22,7 +22,7 @@ from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
 from app.core.config import get_settings
-from app.gateway.commerce_provider import get_catalog, get_commerce
+from app.gateway.commerce_provider import get_catalog, get_commerce, get_finder
 from app.gateway.llm import LLMUnavailableError, get_chat_model
 
 logger = logging.getLogger(__name__)
@@ -126,8 +126,16 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         comparer = LlmComparer(catalog, model)
         # 한 턴은 LLM 을 최대 4번(비교는 한 번 더) 부른다. LLM 호출 하나의 제한(LLM_TIMEOUT_SECONDS)만으로는
         # 턴 전체가 길어져서 턴 전체를 따로 끊는다
-        async with asyncio.timeout(get_settings().agent_turn_timeout_seconds):
-            run = await run_agent(req, model=model, gateway=gateway, comparer=comparer)
+        settings = get_settings()
+        async with asyncio.timeout(settings.agent_turn_timeout_seconds):
+            run = await run_agent(
+                req,
+                model=model,
+                gateway=gateway,
+                comparer=comparer,
+                finder=get_finder(),
+                checkout=settings.agent_checkout,
+            )
         finished = finish(run)
     except TimeoutError:
         # AI 는 장바구니를 바꾸지 않으므로(actions 만 돌려준다) 끊겨도 바뀐 것이 없다

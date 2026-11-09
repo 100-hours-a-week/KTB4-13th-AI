@@ -11,8 +11,19 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent.errors import RefError, ToolErrorCode
-from app.agent.schemas import AgentActRequest, ContextCard, ToolName, Turn
+from app.agent.schemas import (
+    AgentActRequest,
+    ContextCard,
+    OwnedCouponIn,
+    ToolName,
+    Turn,
+)
+from app.gateway.book_finder import FoundBook
 from app.gateway.commerce import CartLine
+
+# 책 찾기(#631)를 줄 때만 LLM 에게 보이는 목록. 주지 않을 때는 도구 설명에서 이 값과 설명을 뺀다(descriptors)
+SEARCH_SOURCE = "search"
+SEARCH_SOURCE_NOTE = ", search=이번에 book_search 로 찾은 책"
 
 
 class BookRef(BaseModel):
@@ -21,10 +32,10 @@ class BookRef(BaseModel):
     # 모르는 칸을 막아서 LLM 이 isbn 을 끼워 넣어도 받지 않는다. "1" 같은 문자열 번호도 받지 않는다.
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    source: Literal["card", "cart", "focused"] = Field(
+    source: Literal["card", "cart", "focused", "search"] = Field(
         description=(
             "어느 목록의 책인가. card=직전에 보여 준 추천 카드, cart=마지막으로 조회한 장바구니, "
-            "focused=사용자가 지금 보고 있는 책"
+            "focused=사용자가 지금 보고 있는 책" + SEARCH_SOURCE_NOTE
         )
     )
     n: int | None = Field(
@@ -72,6 +83,14 @@ class TurnContext:
     # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
     # LLM 이 본 적 없는 목록의 n번째가 실행된다. 묶음이 끝나 결과를 LLM 에게 돌려줄 때 commit_cart_view 로 올린다.
     pending_cart: list[CartLine] | None = None
+    # 카드 밖 책 찾기(#631). 켜져 있을 때만 book.search 를 주고, 고르기를 맡긴 말에 확인 없이 담는다
+    checkout_enabled: bool = False
+    # 마지막 book.search 의 결과(search n 번호의 기준)와, 이번 턴에 찾은 책 전부(ISBN → 책)
+    search_results: list[FoundBook] = field(default_factory=list)
+    found: dict[str, FoundBook] = field(default_factory=dict)
+    # 사용자의 보유 쿠폰과 포인트 잔액(요청에서 온 값). 주문 화면에 채울 쿠폰·포인트를 고를 때 쓴다
+    owned_coupons: list[OwnedCouponIn] = field(default_factory=list)
+    point_balance: int | None = None
 
     def commit_cart_view(self) -> None:
         """한 묶음의 도구 결과를 LLM 에게 돌려줄 때 부른다. 이 묶음에서 조회한 장바구니가 다음 번호의 기준이 된다."""
@@ -89,6 +108,8 @@ class TurnContext:
             allow_tools=None if req.allow_tools is None else list(req.allow_tools),
             message=req.message,
             turns=list(req.recent_turns),
+            owned_coupons=list(req.owned_coupons),
+            point_balance=req.point_balance,
         )
 
 
@@ -110,6 +131,12 @@ def resolve(ctx: TurnContext, ref: BookRef) -> str:
         if ref.n > len(ctx.cart_snapshot):
             raise RefError(ToolErrorCode.BOOK_NOT_IN_CART)
         return ctx.cart_snapshot[ref.n - 1].isbn
+
+    if ref.source == "search":
+        assert ref.n is not None  # BookRef 가 보장한다
+        if ref.n > len(ctx.search_results):
+            raise RefError(ToolErrorCode.BOOK_NOT_IN_SEARCH)
+        return ctx.search_results[ref.n - 1].isbn
 
     if ctx.focused_isbn is None:
         raise RefError(ToolErrorCode.NO_FOCUSED_BOOK)

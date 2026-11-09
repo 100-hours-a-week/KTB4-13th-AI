@@ -23,14 +23,17 @@ from langchain_core.messages import (
 )
 from langgraph.graph import END, START, StateGraph
 
-from app.agent import descriptors, guard, prompts
+from app.agent import checkout as checkout_plan
+from app.agent import descriptors, evidence, guard, prompts
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import AgentActRequest, ToolCall, ToolName
-from app.agent.tools import execute, view_result
+from app.agent.tools import ARG_MODELS, delegated, execute, picked_ref, view_result
 from app.agent.view import llm_view
+from app.gateway.book_finder import BookFinder
 from app.gateway.commerce import (
+    CartLine,
     CommerceError,
     CommerceErrorCode,
     CommerceGateway,
@@ -67,6 +70,8 @@ class AgentRun:
     ctx: TurnContext  # 끝난 뒤의 상태(마지막으로 조회한 장바구니 등)
     # BE 가 반영할 장바구니 변경(#489). 처음과 끝 장바구니의 차이다
     actions: list[CartAction] = field(default_factory=list)
+    # "주문해 줘"로 책을 담았을 때 주문 화면에 채울 쿠폰과 포인트(#631). 그 밖에는 None
+    checkout: checkout_plan.Plan | None = None
 
 
 class _State(TypedDict):
@@ -111,6 +116,13 @@ def _reply(ctx: TurnContext, call: ToolCall, call_id: str, name: str) -> ToolMes
 _RULE_FAILURES = frozenset(code.value for code in CommerceErrorCode)
 
 
+def _added(result: dict[str, Any]) -> dict[str, Any]:
+    """코드가 담은 결과를 모델에게 보여 줄 모양으로. 성공이면 ok, 아니면 그 이유만."""
+    if result.get("ok") is True:
+        return {"ok": True}
+    return {"ok": False, "error": result.get("error")}
+
+
 def _roll_back(calls: list[ToolCall]) -> bool:
     """한 묶음에서 쓰기가 성공하기도 하고 장바구니 규칙에 걸리기도 했나."""
     writes = [c for c in calls if c.name in guard.WRITE_TOOLS]
@@ -147,14 +159,25 @@ async def _rolled_back(
     return out
 
 
+def _offered(ctx: TurnContext, finder: BookFinder | None) -> list[ToolName] | None:
+    """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만 준다(#631). None 이면 전부다."""
+    if finder is not None:
+        return ctx.allow_tools
+    names = ctx.allow_tools if ctx.allow_tools is not None else list(ARG_MODELS)
+    return [name for name in names if name != ToolName.BOOK_SEARCH]
+
+
 def build_graph(
     model: Any,
     gateway: CommerceGateway,
     ctx: TurnContext,
     comparer: Comparer | None = None,
+    finder: BookFinder | None = None,
 ):
     """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다."""
-    tools = descriptors.tool_definitions(ctx.allow_tools)
+    tools = descriptors.tool_definitions(
+        _offered(ctx, finder), checkout=ctx.checkout_enabled
+    )
     # 허용한 도구가 하나도 없으면 도구 없이 부른다(빈 도구 목록은 공급자가 거절한다)
     can_choose = model.bind_tools(tools) if tools else model
     # 반복을 다 썼을 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
@@ -225,7 +248,12 @@ def build_graph(
                 )
                 continue
             call = await execute(
-                ctx, gateway, name, requested["args"], comparer=comparer
+                ctx,
+                gateway,
+                name,
+                requested["args"],
+                comparer=comparer,
+                finder=finder,
             )
             slots.append((len(replies), requested["id"], requested["name"]))
             recorded.append(call)
@@ -240,6 +268,40 @@ def build_graph(
                 c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
                 for c in state["tool_calls"]
             )
+        # 골라서 담으라고 맡긴 말이면 고른 책을 코드가 담는다(#631). 모델에게 맡기면 고르기만 하고 끝냈다
+        # (평가 checkout-05). 담은 결과는 고르기 결과에 붙여 모델에게 돌려준다
+        # 뒤에서부터 본다. 담은 기록을 고르기 기록 바로 뒤에 끼워 넣어도 앞의 자리가 밀리지 않는다
+        for position in reversed(range(len(recorded))):
+            call = recorded[position]
+            if not (
+                call.name == ToolName.SELECTION_PICK
+                and call.result.get("ok") is True
+                and delegated(ctx)
+            ):
+                continue
+            adds = []
+            for book in call.result["chosen"]:
+                ref = picked_ref(ctx, book["isbn"])
+                if ref is not None:
+                    adds.append(
+                        await execute(ctx, gateway, ToolName.CART_ADD, {"book": ref})
+                    )
+            recorded[position + 1 : position + 1] = adds
+            at, call_id, call_name = slots[position]
+            updated = call.model_copy(
+                update={
+                    "result": {
+                        **call.result,
+                        "added": [
+                            {"isbn": a.arguments.get("isbn"), **_added(a.result)}
+                            for a in adds
+                        ],
+                    }
+                }
+            )
+            recorded[position] = updated
+            replies[at] = _reply(ctx, updated, call_id, call_name)
+
         # JSON 이 깨진 호출. 실행하지 않고 이유만 돌려준다
         for index, broken in enumerate(getattr(ai, "invalid_tool_calls", None) or []):
             replies.append(
@@ -300,20 +362,30 @@ async def run_agent(
     model: Any,
     gateway: CommerceGateway,
     comparer: Comparer | None = None,
+    finder: BookFinder | None = None,
+    checkout: bool = False,
 ) -> AgentRun:
     """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
 
     comparer 가 없으면 book.compare 는 쓸 수 없다. 소개글을 읽는 호출은 도구를 고르는 model 과 따로
     한다(소개글 속 지시문이 도구 선택에 섞이지 않게).
+
+    checkout 이 켜져 있으면(#631) 골라서 담으라고 맡긴 말에 확인 없이 담고, "주문해 줘"로 담았으면 주문 화면에
+    채울 쿠폰과 포인트를 고른다. finder 가 있으면 카드 밖의 책을 찾는 book.search 를 준다.
     """
     ctx = TurnContext.from_request(req)
+    ctx.checkout_enabled = checkout
+    if not checkout:
+        finder = None  # 기능이 꺼져 있으면 찾을 곳이 있어도 책 찾기를 주지 않는다
     await prefetch_cart(ctx, gateway)
     start = list(ctx.cart_snapshot or [])
-    graph = build_graph(model, gateway, ctx, comparer)
+    graph = build_graph(model, gateway, ctx, comparer, finder)
     out: _State = await graph.ainvoke(
         {
             "messages": [
-                SystemMessage(prompts.SYSTEM_PROMPT),
+                SystemMessage(
+                    prompts.system_prompt(search=finder is not None, order=checkout)
+                ),
                 SystemMessage(prompts.state_message(ctx)),
                 HumanMessage(req.message),
             ],
@@ -325,11 +397,15 @@ async def run_agent(
     )
     final_text = _text(out["messages"][-1])
     actions: list[CartAction] = []
+    plan: checkout_plan.Plan | None = None
     if any(
         call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
         for call in out["tool_calls"]
     ):
-        actions = diff_cart(start, await gateway.get_cart(ctx.user_id))
+        end = await gateway.get_cart(ctx.user_id)
+        actions = diff_cart(start, end)
+        if checkout and ctx.logged_in and evidence.wants_order(ctx):
+            plan = _plan(ctx, actions, end)
     return AgentRun(
         final_text=final_text,
         not_shopping=not out["tool_calls"]
@@ -341,4 +417,28 @@ async def run_agent(
         timings=out["timings"],
         ctx=ctx,
         actions=actions,
+        checkout=plan,
     )
+
+
+def _plan(
+    ctx: TurnContext, actions: list[CartAction], end: list[CartLine]
+) -> checkout_plan.Plan | None:
+    """이번 턴에 담은 책(set)으로 주문 화면에 채울 쿠폰과 포인트를 고른다. 담은 책이 없으면 None.
+
+    가격은 끝 장바구니의 값이다(찾은 책은 BE 상품 상세, 카드 책은 요청에 실린 BE 값). 쿠폰 대상은 찾은 책만 안다.
+    """
+    prices = {line.isbn: line.price for line in end}
+    lines = []
+    for action in actions:
+        price = prices.get(action.isbn)
+        if action.op != "set" or action.quantity is None or price is None:
+            continue
+        found = ctx.found.get(action.isbn)
+        coupon_ids = found.coupon_ids if found is not None else frozenset()
+        lines.append(
+            checkout_plan.OrderLine(action.isbn, price, action.quantity, coupon_ids)
+        )
+    if not lines:
+        return None
+    return checkout_plan.plan(lines, ctx.owned_coupons, ctx.point_balance)

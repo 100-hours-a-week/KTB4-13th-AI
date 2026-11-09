@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     # ⑦ 한 턴(LLM 호출 최대 4번과 도구 실행)의 시간 제한. 명세 ⑦ 의 504 "생성 30초 초과". llm_timeout_seconds 는
     # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
     agent_turn_timeout_seconds: float = 30
+    # ⑦ 카드 밖 책 찾기·주문 화면·쿠폰과 포인트(#631). 켜면 BE 공개 검색으로 카드에 없는 책을 찾아 담고, "주문해
+    # 줘"면 주문 화면 버튼과 쓸 쿠폰·포인트(checkout)를 돌려준다. BE#533 이 배포되기 전에는 BE 가 목록 밖 ISBN 과
+    # 주문 화면 목적지를 거절해 턴이 실패하므로 기본은 끈다.
+    agent_checkout: bool = False
+    # BE 공개 API 주소. 로그인 없이 읽는 검색과 상품 상세만 부른다(사용자 권한은 쓰지 않는다). 비어 있으면 책
+    # 찾기를 하지 않는다. COMMERCE_MOCK 이면 비워도 가공의 서가로 찾는다
+    be_public_api_base_url: str = ""
+    # BE 공개 API 호출 하나의 시간 제한(초). BE 검색은 안에서 AI 검색을 다시 부른다(새 검색어 약 2초)
+    be_public_api_timeout_seconds: float = 5
 
     # --- 관심사별 홈 추천(#395) ---
     # 켜면(기본) ⑥이 관심사 점수와 추천 목록을 저장하고, 홈과 더 보기가 그 목록을 읽는다. 끄면 새 표·칸

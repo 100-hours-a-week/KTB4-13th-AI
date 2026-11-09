@@ -33,6 +33,9 @@ MAX_CART_LINES = 30
 MAX_QUANTITY = 500
 MAX_OFFERS = 20
 MAX_TITLE_CHARS = 500
+# 보유 쿠폰(#631). BE 에는 한도가 없어 넉넉히 둔다. 넘으면 400 이 아니라 요청 검사에서 걸린다
+MAX_OWNED_COUPONS = 100
+MAX_COUPON_NAME_CHARS = 255
 
 
 class ToolName(StrEnum):
@@ -44,6 +47,8 @@ class ToolName(StrEnum):
     CART_UPDATE = "cart.update"
     CART_REMOVE = "cart.remove"
     BOOK_OFFER = "book.offer"
+    # 카드 밖 책 찾기(BE 공개 검색, #631)
+    BOOK_SEARCH = "book.search"
     # AI 서버 안에서 처리하는 것
     SELECTION_PICK = "selection.pick"
     BOOK_COMPARE = "book.compare"
@@ -123,6 +128,23 @@ class OfferIn(_Strict):
     in_stock: bool
 
 
+class OwnedCouponIn(_Strict):
+    """BE 가 실어 보낸 사용자의 보유 쿠폰 하나(#631, BE#533). 결제에서 쓸 수 있는 것만 온다.
+
+    owned_coupon_id 는 결제(useOwnedCouponId)에 쓰는 번호이고, coupon_id 는 상품 상세의 couponIds 와 맞춰
+    어느 책에 쓸 수 있는지 보는 번호다. 정률 쿠폰의 discount 는 비율(0.10 = 10%)이다.
+    """
+
+    owned_coupon_id: int = Field(ge=1)
+    coupon_id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=MAX_COUPON_NAME_CHARS)
+    type: Literal["NONE", "FIXED_AMOUNT", "PERCENT_RATE"]
+    discount: float = Field(ge=0)
+    min_order_amount: Won = Field(ge=0)
+    # 만료 시각은 BE 가 거른 뒤라 쓰지 않는다. 받기만 한다
+    expired_at: str | None = None
+
+
 class AgentActRequest(_Strict):
     # LLM 이 정하지 않고 이 값을 그대로 쓴다.
     user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
@@ -145,6 +167,12 @@ class AgentActRequest(_Strict):
     # 본다(장바구니가 비어 있고 가격을 모르는 상태로 답한다)
     cart: list[CartItemIn] = Field(default_factory=list, max_length=MAX_CART_LINES)
     offers: list[OfferIn] = Field(default_factory=list, max_length=MAX_OFFERS)
+    # 사용자의 보유 쿠폰과 포인트 잔액(#631). "주문해 줘"면 이번에 담은 책에 쓸 쿠폰과 포인트를 고른다. BE 가
+    # 아직 보내지 않으면 없는 것으로 본다
+    owned_coupons: list[OwnedCouponIn] = Field(
+        default_factory=list, max_length=MAX_OWNED_COUPONS
+    )
+    point_balance: Won | None = Field(default=None, ge=0)
 
     @field_validator("message", mode="after")
     @classmethod
@@ -159,7 +187,7 @@ class AgentActRequest(_Strict):
         return tail_turns(value)
 
     # BE 는 비어 있는 목록을 null 로 보낼 수 있다(⑤⑥과 같게).
-    @field_validator("context_cards", "cart", "offers", mode="before")
+    @field_validator("context_cards", "cart", "offers", "owned_coupons", mode="before")
     @classmethod
     def _null_is_empty(cls, value: object) -> object:
         return [] if value is None else value
@@ -308,6 +336,17 @@ class Action(_Out):
         return {k: v for k, v in handler(self).items() if v is not None}
 
 
+class Checkout(_Out):
+    """주문 화면에 미리 채울 쿠폰과 포인트(#631). 이번 턴에 담은 책으로만 계산한다.
+
+    BE 가 결제 요청(useOwnedCouponId, usePoint)의 이름으로 바꿔 FE 에 넘긴다(BE#533). 쓸 쿠폰이 없으면
+    owned_coupon_id 가 null 이다. 실제 금액은 결제 때 BE 가 다시 검사한다.
+    """
+
+    owned_coupon_id: int | None
+    use_point: int = Field(ge=0)
+
+
 class AgentActData(_Out):
     reply: str
     # true 면 쇼핑 요청이 아니라서 아무것도 하지 않았다. 호출자는 일반 챗봇 흐름으로 처리한다.
@@ -318,6 +357,16 @@ class AgentActData(_Out):
     resolved_reference: ResolvedReference | None
     selection: Selection | None
     buttons: list[Button]
+    # "주문해 줘"로 책을 담았을 때 주문 화면에 채울 쿠폰과 포인트(#631). 그 밖에는 칸을 싣지 않는다(명세 예시 모양
+    # 그대로. BE 는 없으면 null 로 읽는다)
+    checkout: Checkout | None = None
+
+    @model_serializer(mode="wrap")
+    def _drop_empty_checkout(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("checkout") is None:
+            data.pop("checkout", None)
+        return data
 
     @model_validator(mode="after")
     def _not_shopping_does_nothing(self) -> Self:
@@ -328,6 +377,7 @@ class AgentActData(_Out):
             or self.resolved_reference
             or self.selection
             or self.buttons
+            or self.checkout
         ):
             raise ValueError(
                 "not_shopping 이면 아무것도 하지 않았으므로 나머지가 비어 있어야 한다"

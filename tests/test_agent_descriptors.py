@@ -36,6 +36,7 @@ def test_구현한_도구만_설명을_준다() -> None:
         "cart_update",
         "cart_remove",
         "book_offer",
+        "book_search",
         "selection_pick",
         "book_compare",
         "ui_guide",
@@ -82,7 +83,7 @@ def test_책을_가리키는_인자에_쓰는_법이_설명되어_있다() -> No
     assert (
         book["description"] == "담을 책"
     )  # 정의 쪽 설명이 아니라 자리의 설명이 이긴다
-    assert book["properties"]["source"]["enum"] == ["card", "cart", "focused"]
+    assert book["properties"]["source"]["enum"] == ["card", "cart", "focused", "search"]
     assert "몇 번째" in book["properties"]["n"]["description"]
     assert book["required"] == ["source"]
 
@@ -93,7 +94,12 @@ def test_책_목록_인자는_개수_제한이_스키마에_있다() -> None:
 
     assert books["minItems"] == 1
     assert books["maxItems"] == 10
-    assert books["items"]["properties"]["source"]["enum"] == ["card", "cart", "focused"]
+    assert books["items"]["properties"]["source"]["enum"] == [
+        "card",
+        "cart",
+        "focused",
+        "search",
+    ]
 
 
 def test_화면_안내는_고를_수_있는_화면이_정해져_있다() -> None:

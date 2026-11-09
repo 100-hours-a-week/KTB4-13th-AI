@@ -33,6 +33,7 @@ from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
+from app.gateway.book_finder import FakeBookFinder, FoundBook
 from app.gateway.commerce import CommerceError
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.commerce_provider import get_commerce
@@ -70,6 +71,28 @@ async def build_commerce(data: dict, case: dict) -> tuple[FakeCommerce, int]:
         if not book["active"]:
             fake.discontinue(book["isbn"])
     return fake, uid
+
+
+def finder_for(data: dict, case: dict) -> FakeBookFinder | None:
+    """카드 밖 책 찾기를 켠 사례(#631, checkout: true)가 찾을 가공의 서가. 판매 중인 책만 찾힌다(BE 검색과 같다).
+
+    상품 번호는 서가 순서이고, 책마다 쓸 수 있는 쿠폰 번호는 서가의 coupon_ids 다.
+    """
+    if not case.get("checkout"):
+        return None
+    return FakeBookFinder(
+        FoundBook(
+            b["isbn"],
+            number,
+            b["title"],
+            None,
+            b["price"],
+            b["stock"] > 0,
+            frozenset(b.get("coupon_ids", [])),
+        )
+        for number, b in enumerate(data["catalog"], start=1)
+        if b["active"]
+    )
 
 
 def _error_status(exc: BaseException) -> int:
@@ -192,7 +215,12 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
             async with asyncio.timeout(timeout):
                 # 서버와 같이 요청에 실린 값으로 만든 복사본 위에서 돈다. 가짜 BE 는 actions 를 반영할 때만 쓴다
                 run = await run_agent(
-                    req, model=model, gateway=get_commerce(req), comparer=comparer
+                    req,
+                    model=model,
+                    gateway=get_commerce(req),
+                    comparer=comparer,
+                    finder=finder_for(data, case),
+                    checkout=bool(case.get("checkout")),
                 )
             finished = finish(run)
             data = finished.data.model_dump(mode="json")
@@ -420,7 +448,7 @@ def _select(data: dict, args: argparse.Namespace) -> list[dict]:
 def _regrade(path: Path, args: argparse.Namespace) -> None:
     """저장한 결과의 실행 기록은 그대로 두고 채점만 다시 한다. 채점 기준을 바꿨을 때 이전 결과를 견주려고 쓴다."""
     saved = json.loads(path.read_text(encoding="utf-8"))
-    data = grade.load_cases()
+    data = grade.load_cases(_cases_path(args))
     cases = {c["id"]: c for c in data["cases"]}
     results = saved["results"]
     for r in results:
@@ -442,12 +470,25 @@ def _regrade(path: Path, args: argparse.Namespace) -> None:
     print(format_report(summary))
 
 
+def _cases_path(args: argparse.Namespace) -> Path:
+    if not args.cases:
+        return grade.CASES_PATH
+    if args.cases == "checkout":
+        return grade.CHECKOUT_CASES_PATH
+    return Path(args.cases)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "--model",
         default="",
         help="모델 ID. 없으면 AGENT_LLM_MODEL_ID, LLM_MODEL_ID 순",
+    )
+    parser.add_argument(
+        "--cases",
+        default="",
+        help="사례 파일. 없으면 cases.json. checkout 이면 checkout_cases.json(#631)",
     )
     parser.add_argument("--repeat", type=int, default=1, help="사례마다 돌릴 횟수")
     parser.add_argument(
@@ -480,7 +521,7 @@ def main(argv: list[str] | None = None) -> None:
     if settings.llm_mock:
         raise SystemExit("LLM_MOCK 이 켜져 있어 실제 모델을 부를 수 없다")
     model_id = args.model or settings.agent_llm_model_id or settings.llm_model_id
-    data = grade.load_cases()
+    data = grade.load_cases(_cases_path(args))
     cases = _select(data, args)
     if not cases:
         raise SystemExit("고른 사례가 없다")

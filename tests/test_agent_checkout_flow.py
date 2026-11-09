@@ -1,0 +1,752 @@
+"""⑦ 카드 밖 책 찾기·고르기를 맡긴 담기·주문 화면과 쿠폰·포인트(#631) 테스트. LLM 없이 돈다.
+
+여기서 지키려는 것
+- 찾은 책은 사용자가 원하는 책을 말로 그렸을 때만 담긴다. "그거"처럼 보인 책을 가리킨 말로는 담기지 않는다
+- 골라서 담으라고 맡긴 말만 확인 없이 담고, 그 응답에는 확인받을 조합(selection)을 싣지 않는다(BE 는 selection 이
+  있으면 actions 를 보지 않는다)
+- "주문해 줘"로 담았을 때만 주문 화면 버튼과 checkout 이 나가고, 쿠폰·포인트는 BE 결제 규칙대로 고른다
+- 기능을 끄면(기본) 지금과 똑같다: 책 찾기 도구가 없고, 고른 책은 확인 버튼으로만 담는다
+"""
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from app.agent import evidence
+from app.agent.checkout import OrderLine, discount_of, plan
+from app.agent.errors import ToolErrorCode
+from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
+from app.agent.graph import run_agent
+from app.agent.reference import TurnContext
+from app.agent.reply import COUPON_LATER, ORDER_SCREEN, finish
+from app.agent.schemas import (
+    AgentActData,
+    Checkout,
+    OwnedCouponIn,
+    ToolName,
+    parse_request,
+)
+from app.agent.tools import execute
+from app.gate import rules, shopping
+from app.gateway.book_finder import (
+    FakeBookFinder,
+    FinderUnavailable,
+    FoundBook,
+    HttpBookFinder,
+)
+from app.gateway.commerce_provider import get_commerce
+
+UID = 1
+P1, P2, P3, P4 = (f"97911{n:08d}" for n in (1, 2, 3, 4))
+CARD_A = "9788900000011"
+
+
+def _coupon(
+    owned: int, coupon: int, kind: str, discount: float, minimum: int = 0
+) -> OwnedCouponIn:
+    return OwnedCouponIn(
+        owned_coupon_id=owned,
+        coupon_id=coupon,
+        name=f"쿠폰{owned}",
+        type=kind,  # type: ignore[arg-type]
+        discount=discount,
+        min_order_amount=minimum,
+    )
+
+
+def _shelf() -> list[FoundBook]:
+    return [
+        FoundBook(
+            P1, 101, "처음 배우는 개발 입문서", "가", 18000, True, frozenset({3})
+        ),
+        FoundBook(P2, 102, "개발 입문서 실전편", "나", 22000, True, frozenset({3, 9})),
+        FoundBook(P3, 103, "개발 입문서 품절판", "다", 15000, False, frozenset()),
+        FoundBook(P4, 104, "파이썬 입문서", "라", 20000, True, frozenset()),
+    ]
+
+
+# --- 쿠폰·포인트 계산 ---
+
+
+def test_할인이_가장_큰_쿠폰과_남은_금액만큼_포인트를_고른다() -> None:
+    lines = [
+        OrderLine(P1, 18000, 1, frozenset({3})),
+        OrderLine(P2, 22000, 1, frozenset({3})),
+    ]
+    coupons = [
+        _coupon(7, 3, "FIXED_AMOUNT", 3000, 30000),
+        _coupon(8, 3, "PERCENT_RATE", 0.1, 30000),  # 40,000 × 10% = 4,000
+    ]
+
+    result = plan(lines, coupons, point_balance=5000)
+
+    assert result.amount == 40000
+    assert result.coupon is not None and result.coupon.owned_coupon_id == 8
+    assert result.discount == 4000
+    assert result.use_point == 5000
+
+
+def test_대상이_아니거나_최소_금액이_모자라면_쓰지_않는다() -> None:
+    lines = [OrderLine(P1, 18000, 1, frozenset({3}))]
+    coupons = [
+        _coupon(1, 9, "FIXED_AMOUNT", 5000),  # 이 책이 대상이 아니다
+        _coupon(2, 3, "FIXED_AMOUNT", 3000, 30000),  # 18,000 < 30,000
+        _coupon(3, 3, "NONE", 0),
+    ]
+
+    result = plan(lines, coupons, point_balance=None)
+
+    assert result.coupon is None
+    assert result.use_point == 0
+
+
+def test_할인이_주문_금액보다_크면_쓰지_않는다() -> None:
+    lines = [OrderLine(P1, 5000, 1, frozenset({3}))]
+
+    assert plan(lines, [_coupon(1, 3, "FIXED_AMOUNT", 6000)], 0).coupon is None
+
+
+def test_포인트는_쿠폰을_뺀_금액까지만_쓴다() -> None:
+    lines = [OrderLine(P1, 10000, 1, frozenset({3}))]
+
+    result = plan(lines, [_coupon(1, 3, "FIXED_AMOUNT", 3000)], point_balance=50000)
+
+    assert result.use_point == 7000
+
+
+def test_할인이_같으면_보유_쿠폰_번호가_작은_쪽이다() -> None:
+    lines = [OrderLine(P1, 30000, 1, frozenset({3}))]
+    coupons = [
+        _coupon(9, 3, "FIXED_AMOUNT", 3000),
+        _coupon(4, 3, "PERCENT_RATE", 0.1),
+    ]
+
+    chosen = plan(lines, coupons, 0).coupon
+    assert chosen is not None and chosen.owned_coupon_id == 4
+
+
+def test_정률은_원_아래를_자르지_않고_견주고_포인트는_내림한다() -> None:
+    lines = [OrderLine(P1, 12345, 1, frozenset({3}))]
+    coupon = _coupon(1, 3, "PERCENT_RATE", 0.15)
+
+    assert str(discount_of(coupon, 12345)) == "1851.75"
+    result = plan(lines, [coupon], point_balance=99999)
+    assert result.discount == 1851
+    assert result.use_point == 10493  # 12345 - 1851.75 = 10493.25 → 내림
+
+
+# --- BE 공개 API ---
+
+
+def _be(handler) -> HttpBookFinder:
+    return HttpBookFinder("https://be.test", 5, transport=httpx.MockTransport(handler))
+
+
+def _ok(data) -> httpx.Response:
+    return httpx.Response(200, json={"success": True, "data": data})
+
+
+def test_검색한_뒤_상품_상세로_가격_재고_쿠폰을_채운다() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/api/v1/search":
+            assert request.url.params["query"] == "개발 입문서"
+            assert request.url.params["size"] == "5"
+            return _ok(
+                {
+                    "items": [
+                        {"isbn": P1, "productId": 101, "title": "책1", "author": "가"},
+                        {"isbn": None, "productId": 102, "title": "ISBN 없음"},
+                        {"isbn": P3, "productId": 103, "title": "상세 실패"},
+                        {"isbn": P4, "productId": 104, "title": "품절"},
+                    ]
+                }
+            )
+        product = int(request.url.path.rsplit("/", 1)[-1])
+        if product == 103:
+            return httpx.Response(404, json={"success": False})
+        return _ok(
+            {
+                "discountedPrice": 13500.00 if product == 101 else 9000,
+                "stockQuantity": 3 if product == 101 else 0,
+                "couponIds": [3, 9] if product == 101 else [],
+            }
+        )
+
+    books = asyncio.run(_be(handler).find("개발 입문서", 5))
+
+    assert books == [
+        FoundBook(P1, 101, "책1", "가", 13500, True, frozenset({3, 9})),
+        FoundBook(P4, 104, "품절", None, 9000, False, frozenset()),
+    ]
+    assert not any(
+        "/products/102" in url for url in seen
+    )  # ISBN 없는 책은 상세도 읽지 않는다
+
+
+def test_검색이_실패하면_FinderUnavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    with pytest.raises(FinderUnavailable):
+        asyncio.run(_be(handler).find("파이썬", 5))
+
+
+def test_가짜_서가는_검색어_낱말이_많이_든_책부터_준다() -> None:
+    finder = FakeBookFinder(_shelf())
+
+    found = asyncio.run(finder.find("개발 입문서", 3))
+
+    assert [b.isbn for b in found] == [P1, P2, P3]
+
+
+# --- 말 읽기 ---
+
+
+def _ctx(message: str, **overrides) -> TurnContext:
+    values = {
+        "user_id": UID,
+        "logged_in": True,
+        "cards": [],
+        "focused_isbn": None,
+        "allow_tools": None,
+        "message": message,
+        "checkout_enabled": True,
+    }
+    values.update(overrides)
+    return TurnContext(**values)
+
+
+@pytest.mark.parametrize(
+    ("message", "order"),
+    [
+        ("개발 입문서 두 권 골라서 쿠폰 적용해서 주문해 줘", True),
+        ("파이썬 입문서 하나 사 줘", True),
+        ("결제까지 해 줘", True),
+        ("파이썬 입문서 하나 담아 줘", False),
+        ("주문 내역 보여줘", False),
+        ("주문한 책 언제 와?", False),
+    ],
+)
+def test_주문하겠다는_말만_주문으로_본다(message: str, order: bool) -> None:
+    assert evidence.wants_order(_ctx(message)) is order
+
+
+@pytest.mark.parametrize(
+    ("message", "delegated"),
+    [
+        ("3만원 안으로 두 권 골라서 담아줘", True),
+        ("알아서 골라서 주문해 줘", True),
+        ("3만원 안에서 2권 골라줘", False),  # 고르기만 맡겼다
+        ("1번 담아줘", False),
+    ],
+)
+def test_고르기와_담기를_함께_맡긴_말만_위임이다(message: str, delegated: bool) -> None:
+    assert evidence.delegates_pick(_ctx(message)) is delegated
+
+
+def test_사_달라는_말은_행동을_말한_것이다() -> None:
+    assert evidence.states_action(_ctx("파이썬 입문서 하나 사 줘"))
+
+
+# --- 도구 ---
+
+
+def _snapshot_request(message: str, **extra) -> dict:
+    payload = {
+        "user_id": UID,
+        "message": message,
+        "context_cards": [],
+        "user_context": {"logged_in": True},
+        "idempotency_key": "idem_631",
+        "cart": [],
+        "offers": [],
+    }
+    payload.update(extra)
+    return payload
+
+
+def _tool_ctx(message: str, **overrides):
+    req = parse_request(_snapshot_request(message))
+    assert req is not None
+    ctx = TurnContext.from_request(req)
+    ctx.checkout_enabled = True
+    ctx.cart_snapshot = []
+    for key, value in overrides.items():
+        setattr(ctx, key, value)
+    return ctx, get_commerce(req)
+
+
+def _exec(ctx, gateway, name, args, finder=None):
+    return asyncio.run(execute(ctx, gateway, name, args, finder=finder))
+
+
+def search(n: int) -> dict:
+    return {"source": "search", "n": n}
+
+
+def test_찾은_책은_장바구니_복사본이_알게_되어_담을_수_있다() -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 하나 담아 줘")
+    finder = FakeBookFinder(_shelf())
+
+    found = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "개발 입문서"}, finder)
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(2)})
+
+    # "입문서"만 맞는 P4 는 두 낱말이 다 맞는 책 뒤에 온다
+    assert [b["isbn"] for b in found.result["books"]] == [P1, P2, P3, P4]
+    assert added.result == {"ok": True}
+    assert asyncio.run(gateway.get_cart(UID))[0].isbn == P2
+    assert gateway.actions()[0].isbn == P2
+
+
+def test_보인_책을_가리킨_말로는_찾은_책을_담지_않는다() -> None:
+    ctx, gateway = _tool_ctx("그거 담아줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+
+    blocked = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+
+    assert blocked.result["error"] == ToolErrorCode.REFERENCE_NOT_STATED.value
+    assert "찾은 책 1번" in blocked.result["ask"]
+    assert gateway.actions() == []
+
+
+def test_두_권_골라서의_두_권은_책마다의_수량이_아니다() -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 두 권 골라서 담아 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1), "quantity": 2})
+
+    assert added.arguments["quantity"] == 1
+
+
+def test_품절인_찾은_책은_담지_못한다() -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 품절판 담아 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(3)})
+
+    assert added.result["error"] == "INSUFFICIENT_PRODUCT_STOCK"
+
+
+def test_검색이_실패하면_이유만_남긴다() -> None:
+    class Broken:
+        async def find(self, query, size):
+            raise FinderUnavailable("x")
+
+    ctx, gateway = _tool_ctx("파이썬 책 담아줘")
+    call = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "파이썬"}, Broken())
+
+    assert call.result == {"ok": False, "error": ToolErrorCode.SEARCH_FAILED.value}
+
+
+def test_찾을_곳이_없으면_책_찾기는_막힌다() -> None:
+    ctx, gateway = _tool_ctx("파이썬 책 담아줘")
+
+    call = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "파이썬"})
+
+    assert call.result["error"] == ToolErrorCode.TOOL_NOT_IMPLEMENTED.value
+
+
+def test_찾았으면_조합은_찾은_책_안에서_고르고_맡겼으면_바로_담는다() -> None:
+    ctx, gateway = _tool_ctx("4만원 안으로 개발 입문서 두 권 골라서 담아 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+
+    picked = _exec(
+        ctx, gateway, ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2}
+    )
+    first = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+    second = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(2)})
+
+    assert {b["isbn"] for b in picked.result["chosen"]} == {P1, P2}  # 품절 P3 는 뺀다
+    assert first.result == {"ok": True} and second.result == {"ok": True}
+
+
+def test_기능이_꺼져_있으면_고른_책은_확인_버튼으로만_담는다() -> None:
+    ctx, gateway = _tool_ctx(
+        "4만원 안으로 두 권 골라서 담아 줘", checkout_enabled=False
+    )
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+    _exec(ctx, gateway, ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})
+
+    blocked = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+
+    assert blocked.result["error"] == ToolErrorCode.CONFIRMATION_REQUIRED.value
+
+
+# --- 한 턴 전체 ---
+
+
+def _turn(message: str, replies, *, checkout=True, finder=True, **extra):
+    req = parse_request(_snapshot_request(message, **extra))
+    assert req is not None
+    model = ScriptedModel(replies)
+    run = asyncio.run(
+        run_agent(
+            req,
+            model=model,
+            gateway=get_commerce(req),
+            finder=FakeBookFinder(_shelf()) if finder else None,
+            checkout=checkout,
+        )
+    )
+    return run, finish(run).data, model
+
+
+COUPONS = [
+    {
+        "owned_coupon_id": 7,
+        "coupon_id": 3,
+        "name": "IT 3천원",
+        "type": "FIXED_AMOUNT",
+        "discount": 3000.00,
+        "min_order_amount": 30000.00,
+        "expired_at": "2026-11-30T23:59:59",
+    }
+]
+
+
+def test_골라서_주문해_달라면_담고_주문_화면과_쿠폰_포인트를_준다() -> None:
+    _, data, _ = _turn(
+        "개발 입문서 두 권 골라서 쿠폰 적용해서 주문해 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls(
+                (ToolName.CART_ADD, {"book": search(1)}),
+                (ToolName.CART_ADD, {"book": search(2)}),
+            ),
+            ai_text("두 권을 담았어요. 주문을 완료했어요."),
+        ],
+        owned_coupons=COUPONS,
+        point_balance=5000.00,
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [
+        ("set", P1, 1),
+        ("set", P2, 1),
+    ]
+    assert data.checkout == Checkout(owned_coupon_id=7, use_point=5000)
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert data.selection is None
+    assert "IT 3천원 쿠폰(3,000원 할인)과 포인트 5,000원을 적용해 둘게요" in data.reply
+    assert "주문을 완료했어요" not in data.reply  # 주문서를 만들지 않았다
+    dumped = data.model_dump(mode="json")
+    assert dumped["checkout"] == {"owned_coupon_id": 7, "use_point": 5000}
+
+
+def test_담기만_하면_장바구니_버튼이고_checkout이_없다() -> None:
+    _, data, _ = _turn(
+        "개발 입문서 하나 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.CART_ADD, {"book": search(1)})),
+            ai_text("담았어요."),
+        ],
+        owned_coupons=COUPONS,
+        point_balance=5000,
+    )
+
+    assert data.checkout is None
+    assert "checkout" not in data.model_dump(mode="json")
+    assert [b.target for b in data.buttons] == ["CART-001"]
+
+
+def test_쿠폰_적용해서_장바구니에_넣어_달라면_쿠폰은_주문_화면에서라고_알린다() -> None:
+    _, data, _ = _turn(
+        "개발 입문서 하나 쿠폰 적용해서 장바구니에 넣어 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.CART_ADD, {"book": search(1)})),
+            ai_text("담았어요."),
+        ],
+    )
+
+    assert COUPON_LATER in data.reply
+    assert data.checkout is None
+
+
+def test_골라서_담으라고_맡기면_고른_책을_코드가_담고_조합은_싣지_않는다() -> None:
+    # 모델이 고르기만 하고 끝내도 담긴다(평가 checkout-05). BE 는 selection 이 있으면 actions 를 보지 않는다
+    run, data, model = _turn(
+        "4만원 안으로 개발 입문서 두 권 골라서 주문해 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("골라 드렸어요."),
+        ],
+        point_balance=1000,
+    )
+
+    assert {a.isbn for a in data.actions} == {P1, P2}
+    assert data.selection is None
+    assert all(b.action != "confirm_selection" for b in data.buttons)
+    assert [b.target for b in data.buttons] == [ORDER_SCREEN]
+    assert data.checkout == Checkout(owned_coupon_id=None, use_point=1000)
+    names = [c.name for c in run.tool_calls]
+    assert names == [
+        ToolName.BOOK_SEARCH,
+        ToolName.SELECTION_PICK,
+        ToolName.CART_ADD,
+        ToolName.CART_ADD,
+    ]
+    seen = model.calls[-1][-1].content
+    assert '"added"' in seen and "찾은 책 1번" in seen and P1 not in seen
+
+
+def test_코드가_담은_책을_모델이_또_담아도_담았다고_말한다() -> None:
+    _, data, _ = _turn(
+        "4만원 안으로 개발 입문서 두 권 골라서 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_calls((ToolName.CART_ADD, {"book": search(1)})),
+            ai_text("담았어요."),
+        ],
+    )
+
+    assert "《처음 배우는 개발 입문서》를 장바구니에 담았어요" in data.reply
+    assert "이미 장바구니에" not in data.reply
+
+
+def test_골라만_달라면_기능이_켜져_있어도_확인_버튼이다() -> None:
+    _, data, _ = _turn(
+        "카드 중에 4만원 안에서 2권 골라줘",
+        [
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("골랐어요."),
+        ],
+        context_cards=[
+            {"isbn": P1, "rank": 1, "match_score": 90},
+            {"isbn": P2, "rank": 2, "match_score": 80},
+        ],
+        offers=[
+            {"isbn": P1, "title": "책1", "price": 18000, "in_stock": True},
+            {"isbn": P2, "title": "책2", "price": 22000, "in_stock": True},
+        ],
+    )
+
+    assert data.actions == []
+    assert data.selection is not None
+    assert any(b.action == "confirm_selection" for b in data.buttons)
+
+
+def test_제목을_말한_책이_품절이면_다른_찾은_책을_대신_담지_않는다() -> None:
+    # 평가 checkout-04: "테스트 주도 개발 책"이 품절이라 모델이 다른 책을 담았다
+    ctx, gateway = _tool_ctx("개발 입문서 품절판 담아 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "개발 입문서"},
+        FakeBookFinder(_shelf()),
+    )
+
+    other = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+
+    assert other.result["error"] == ToolErrorCode.REFERENCE_NOT_STATED.value
+    assert gateway.actions() == []
+
+
+def test_주문해_달라도_담은_책이_없으면_주문_화면으로_보내지_않는다() -> None:
+    _, data, _ = _turn(
+        "개발 입문서 품절판 주문해 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.CART_ADD, {"book": search(3)})),
+            ai_text("품절이에요."),
+        ],
+        owned_coupons=COUPONS,
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
+    assert all(b.target != ORDER_SCREEN for b in data.buttons)
+
+
+def test_기능이_꺼져_있으면_책_찾기를_주지_않고_주문_화면도_없다() -> None:
+    _, data, model = _turn(
+        "1번 주문해 줘",
+        [ai_text("주문은 할 수 없어요.")],
+        checkout=False,
+        finder=False,
+    )
+
+    offered = {tool["function"]["name"] for tool in model.tools_seen[0]}
+    assert "book_search" not in offered
+    assert data.checkout is None
+    assert "주문서를 만들거나" not in model.calls[0][0].content
+
+
+def test_찾을_곳이_없으면_켜져_있어도_책_찾기를_주지_않는다() -> None:
+    _, _, model = _turn("파이썬 책 담아줘", [ai_text("못 찾았어요.")], finder=False)
+
+    offered = {tool["function"]["name"] for tool in model.tools_seen[0]}
+    assert "book_search" not in offered
+    assert "주문서를 만들거나" in model.calls[0][0].content  # 주문 안내는 켜져 있다
+
+
+def test_LLM에게는_찾은_책의_ISBN이_보이지_않는다() -> None:
+    _, _, model = _turn(
+        "개발 입문서 하나 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_text("어느 책을 담을까요?"),
+        ],
+    )
+
+    seen = json.dumps([m.content for m in model.calls[-1]], ensure_ascii=False)
+    assert P1 not in seen and "찾은 책 1번" in seen
+
+
+# --- 요청·응답 모양 ---
+
+
+def test_보유_쿠폰과_포인트를_받는다() -> None:
+    req = parse_request(
+        _snapshot_request("주문해 줘", owned_coupons=COUPONS, point_balance=5000.0)
+    )
+
+    assert req is not None
+    assert req.owned_coupons[0].min_order_amount == 30000
+    assert req.point_balance == 5000
+
+
+def test_보유_쿠폰이_null이면_빈_목록이다() -> None:
+    req = parse_request(_snapshot_request("주문해 줘", owned_coupons=None))
+
+    assert req is not None and req.owned_coupons == []
+
+
+def test_포인트에_원_아래가_있으면_400이다() -> None:
+    assert parse_request(_snapshot_request("주문해 줘", point_balance=10.5)) is None
+
+
+def test_쇼핑이_아님_응답에는_checkout이_없다() -> None:
+    assert "checkout" not in AgentActData.not_shopping_reply().model_dump(mode="json")
+
+
+def test_챗봇_요청의_쿠폰과_포인트가_쇼핑_요청으로_넘어간다() -> None:
+    payload = {
+        **_snapshot_request("주문해 줘", owned_coupons=COUPONS, point_balance=5000),
+        "spec": {},
+    }
+
+    req = shopping.to_agent_request(payload)
+
+    assert req is not None and req.owned_coupons[0].owned_coupon_id == 7
+
+
+# --- 문지기 ---
+
+
+@pytest.mark.parametrize("message", ["파이썬 입문서 하나 사 줘", "파이썬 책 사 주세요"])
+def test_카드가_없어도_사_달라는_말은_쇼핑이다(message: str) -> None:
+    assert rules.route(message, False, False, False, False) == "shop"
+
+
+def test_검사_주세요는_사_달라는_말이_아니다() -> None:
+    assert rules.decide("검사 주세요", False, False, False, False).kind == "neither"
+
+
+# --- 평가 묶음(evals/agent/checkout_cases.json) ---
+
+
+def _checkout_cases() -> dict:
+    from evals.agent import grade
+
+    return grade.load_cases(grade.CHECKOUT_CASES_PATH)
+
+
+def test_평가_사례는_API가_받는_모양이고_기능을_켠_채로_돈다() -> None:
+    data = _checkout_cases()
+    catalog = {book["isbn"] for book in data["catalog"]}
+    ids = [case["id"] for case in data["cases"]]
+    users = [case["request"]["user_id"] for case in data["cases"]]
+
+    assert len(set(ids)) == len(ids) and len(set(users)) == len(users)
+    for case in data["cases"]:
+        assert case["checkout"] is True
+        assert case["kind"] in data["kinds"]
+        assert parse_request(case["request"]) is not None, case["id"]
+        assert set(case["expect"]["cart"]) <= catalog
+
+
+def test_평가는_기대한_checkout과_다르면_실패로_센다() -> None:
+    from evals.agent import grade
+
+    case = {"expect": {"outcome": "executed", "cart": {}, "checkout": None}}
+    record = {
+        "status": 200,
+        "reply": "",
+        "data": {"buttons": [], "checkout": {"owned_coupon_id": 1, "use_point": 0}},
+        "cart": {},
+        "start_cart": {},
+        "others": {},
+        "start_others": {},
+    }
+
+    assert any("쿠폰·포인트" in p for p in grade._check_reply(case, record))
+
+
+def test_평가의_가짜_서가는_판매_중인_책만_찾는다() -> None:
+    from evals.agent.run import finder_for
+
+    data = _checkout_cases()
+    finder = finder_for(data, {"checkout": True})
+    assert finder is not None
+
+    found = asyncio.run(finder.find("웹 개발", 5))
+
+    assert all(book.isbn != "9788900001124" for book in found)  # 판매 중지 책
+    assert finder_for(data, {}) is None
+
+
+def test_책_찾기를_주지_않으면_책을_가리키는_인자에도_찾은_책이_없다() -> None:
+    # 기능을 끈 평가에서 없는 도구를 말하는 설명 때문에 모델이 멈췄다(describe-01)
+    from app.agent.descriptors import tool_definitions
+
+    names = [name for name in ToolName if name != ToolName.BOOK_SEARCH]
+    text = json.dumps(tool_definitions(names), ensure_ascii=False)
+
+    assert "book_search" not in text
+    assert '"search"' not in text
+
+
+def test_찾을_곳을_받아도_기능이_꺼져_있으면_책_찾기를_주지_않는다() -> None:
+    _, _, model = _turn("파이썬 책 담아줘", [ai_text("못 찾았어요.")], checkout=False)
+
+    offered = {tool["function"]["name"] for tool in model.tools_seen[0]}
+    assert "book_search" not in offered

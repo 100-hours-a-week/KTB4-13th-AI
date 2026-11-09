@@ -21,6 +21,8 @@ from typing import Any
 from app.agent.errors import ToolErrorCode
 
 CASES_PATH = Path(__file__).resolve().parent / "cases.json"
+# 카드 밖 책 찾기·주문 화면(#631). 기능을 켠 채로 도는 작은 묶음이라 기준선(cases.json)과 따로 둔다
+CHECKOUT_CASES_PATH = Path(__file__).resolve().parent / "checkout_cases.json"
 
 # 장바구니를 바꾸는 도구. app.agent.guard.WRITE_TOOLS 의 이름(점 표기)과 같다
 WRITE_TOOL_NAMES = frozenset({"cart.add", "cart.update", "cart.remove"})
@@ -141,6 +143,10 @@ def _check_reply(case: dict, record: dict) -> list[str]:
     for wanted in expect.get("buttons_include", []):
         if not any(all(b.get(k) == v for k, v in wanted.items()) for b in buttons):
             problems.append(f"있어야 하는 버튼이 없음: {wanted}")
+    if "checkout" in expect and _data(record).get("checkout") != expect["checkout"]:
+        problems.append(
+            f"주문 화면 쿠폰·포인트가 기대와 다름: {_data(record).get('checkout')}"
+        )
     if expect.get("others_unchanged") and record["others"] != record["start_others"]:
         problems.append("다른 사용자의 장바구니가 바뀜")
     return problems

@@ -9,6 +9,12 @@
 
 from app.agent.schemas import AgentActRequest
 from app.core.config import get_settings
+from app.gateway.book_finder import (
+    BookFinder,
+    FakeBookFinder,
+    FoundBook,
+    HttpBookFinder,
+)
 from app.gateway.catalog import CatalogGateway
 from app.gateway.catalog_db import DbCatalog
 from app.gateway.commerce import BookOffer, CartLine
@@ -48,6 +54,35 @@ def get_commerce(req: AgentActRequest) -> SnapshotCommerce:
         for offer in req.offers
     ]
     return SnapshotCommerce(cart, offers)
+
+
+def get_finder() -> BookFinder | None:
+    """카드 밖 책을 찾을 곳(#631). 기능이 꺼져 있거나 찾을 곳이 없으면 None 이고, 그러면 book.search 를 주지 않는다.
+
+    BE 공개 API 주소가 있으면 BE 를 읽는다. 없고 COMMERCE_MOCK 이 켜진 로컬이면 위의 가공의 서가에서 찾는다.
+    """
+    settings = get_settings()
+    if not settings.agent_checkout:
+        return None
+    if settings.be_public_api_base_url:
+        return HttpBookFinder(
+            settings.be_public_api_base_url, settings.be_public_api_timeout_seconds
+        )
+    if settings.commerce_mock:
+        # 가공의 서가 책마다 상품 번호를 매기고, 쿠폰 1번은 모든 책에 쓸 수 있게 둔다(손으로 시험하기 쉽게)
+        return FakeBookFinder(
+            FoundBook(
+                book.isbn,
+                number,
+                book.title,
+                None,
+                book.price,
+                book.stock > 0,
+                frozenset({1}),
+            )
+            for number, book in enumerate(_DEV_BOOKS, start=1)
+        )
+    return None
 
 
 def get_catalog() -> CatalogGateway:
