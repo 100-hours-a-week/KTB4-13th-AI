@@ -50,7 +50,7 @@ def _bypass_service_token():
 
 
 class _IdempotencyConn:
-    """idempotency_records 표를 메모리 딕셔너리로 흉내 내는 연결. app.core.idempotency 의 질의 두 개만 받는다."""
+    """idempotency_records 표를 메모리 딕셔너리로 흉내 내는 연결. app.core.idempotency 의 질의 세 개만 받는다."""
 
     def __init__(self, rows: dict) -> None:
         self.rows = rows
@@ -65,7 +65,11 @@ class _IdempotencyConn:
             "stored_response": json.dumps(response, ensure_ascii=False),
         }
 
-    async def execute(self, query: str, key: str, body_hash: str, response: str):
+    async def execute(self, query: str, *args: str):
+        if query.startswith("DELETE"):
+            # 오래된 기록 지우기. 메모리 기록에는 저장 시각이 없어 지울 것이 없다
+            return "DELETE 0"
+        key, body_hash, response = args
         if key in self.rows:
             raise asyncpg.UniqueViolationError("duplicate key")
         self.rows[key] = (body_hash, json.loads(response))
