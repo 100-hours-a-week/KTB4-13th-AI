@@ -12,7 +12,7 @@ import asyncpg
 from app.core import products
 from app.feed import exclusion
 from app.feed.cursor import Page
-from app.feed.schemas import FeedRequest
+from app.feed.schemas import FeedRequest, response_item
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
 
@@ -21,7 +21,7 @@ from app.search.schemas import SearchFilters
 MAX_BOOKS = 500
 
 # 가격·재고는 상품 표에서 읽는다. 책 표의 가격 칸은 복제가 채우지 않는다(#207).
-# isbn 은 BE 와 책을 주고받는 키다(#308). 책 표에 값을 채우기 전인 책은 null 로 나간다.
+# isbn 은 BE 와 책을 주고받는 키다(#308). book_id 는 정렬에만 쓰고 응답에는 싣지 않는다.
 _COLUMNS = (
     "b.book_id, b.isbn13 AS isbn, b.title, b.author,"
     f" {products.price_sql('b')} AS price, b.cover_url, {products.in_stock_sql('b')} AS in_stock"
@@ -147,5 +147,5 @@ async def fetch(
         *params,
     )
     has_more = len(rows) > size and page.offset + size < MAX_BOOKS
-    items = [{**dict(r), "match_score": 0} for r in rows[:size]]
+    items = [response_item({**dict(r), "match_score": 0}) for r in rows[:size]]
     return items, has_more

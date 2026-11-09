@@ -463,6 +463,11 @@ _SAVED = interest_page.Stored(
 )
 
 
+def _saved_book_id(item: dict) -> int:
+    """응답에는 book_id 가 없다(#308). _saved_item 의 ISBN 으로 책 번호를 되찾는다."""
+    return int(item["isbn"]) - 9780000000000
+
+
 def _surface(surface: str, **params):
     return parse_query([("user_id", "1"), ("surface", surface), *params.items()])
 
@@ -474,7 +479,7 @@ async def _personalized_page(conn, req, page, centroid, tag_weights, excluded=No
 def _saved_item(book_id: int, score: int = 80) -> dict:
     return {
         "book_id": book_id,
-        "isbn": None,
+        "isbn": str(9780000000000 + book_id),
         "title": "책",
         "author": None,
         "price": None,
@@ -520,7 +525,7 @@ def test_플래그가_켜지고_저장된_목록이_있으면_홈은_벡터_조�
 ) -> None:
     outcome = _from_saved(monkeypatch, _surface("home", size="2"), count=3)
 
-    assert [item["book_id"] for item in outcome.items] == [0, 1]
+    assert [_saved_book_id(item) for item in outcome.items] == [0, 1]
     assert "category" not in outcome.items[0]  # 응답 칸만 나간다
     assert (outcome.cold_start, outcome.degraded) == (False, None)
     page = cursor.read(_surface("home", size="2", cursor=outcome.next_cursor))
@@ -544,7 +549,7 @@ def test_취향_벡터가_없는_프로필도_저장된_목록이_있으면_그_
         monkeypatch, _surface("home", size="2"), count=3, profile_row=_COLD_ROW
     )
 
-    assert [item["book_id"] for item in outcome.items] == [0, 1]
+    assert [_saved_book_id(item) for item in outcome.items] == [0, 1]
     assert outcome.cold_start is False
 
 
@@ -572,7 +577,7 @@ def test_더_보기도_거르고_남은_책이_첫_쪽을_채우면_저장된_�
 ) -> None:
     outcome = _from_saved(monkeypatch, _surface("recommend_more", size="2"), count=2)
 
-    assert [item["book_id"] for item in outcome.items] == [0, 1]
+    assert [_saved_book_id(item) for item in outcome.items] == [0, 1]
 
 
 def test_더_보기에서_거르고_남은_책이_첫_쪽도_못_채우면_그_자리에서_조회한다(
@@ -599,7 +604,7 @@ def test_저장된_목록으로_시작한_더_보기는_모자라도_그_목록�
         count=3,
     )
 
-    assert [item["book_id"] for item in second.items] == [2]
+    assert [_saved_book_id(item) for item in second.items] == [2]
     assert second.next_cursor is None
 
 

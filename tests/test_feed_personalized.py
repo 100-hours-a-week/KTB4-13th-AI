@@ -54,6 +54,11 @@ def _isbn(book_id: int) -> str:
     return str(9780000000000 + book_id)
 
 
+def _book_id(item: dict) -> int | None:
+    """응답의 ISBN 으로 테스트 책 번호를 되찾는다(_isbn 의 반대). 응답에는 book_id 가 없다(#308)."""
+    return None if item["isbn"] is None else int(item["isbn"]) - 9780000000000
+
+
 def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = None):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -125,13 +130,13 @@ def _fetch(req, tag_weights=None, page=None):
 def test_유사도가_높은_책이_먼저고_점수가_함께_나간다() -> None:
     items = _fetch(_request())
 
-    assert [item["book_id"] for item in items] == [9100701, 9100702, 9100703]
+    assert [_book_id(item) for item in items] == [9100701, 9100702, 9100703]
     # 인기 집계와 카테고리 점수가 없으면 유사도 항만 남는다(0.6 × 100).
     assert [item["match_score"] for item in items] == [60, 30, 0]
 
 
 def test_산_책은_빠진다() -> None:
-    assert 9100704 not in [item["book_id"] for item in _fetch(_request())]
+    assert 9100704 not in [_book_id(item) for item in _fetch(_request())]
 
 
 def test_프로필의_카테고리_점수가_더해진다() -> None:
@@ -144,15 +149,15 @@ def test_프로필의_카테고리_점수가_더해진다() -> None:
 def test_점수_하한보다_낮은_책은_뺀다() -> None:
     items = _fetch(_request(match_score_min="50"))
 
-    assert [item["book_id"] for item in items] == [9100701]
+    assert [_book_id(item) for item in items] == [9100701]
 
 
 def test_최신순과_가격순은_후보_안에서_다시_줄_세운다() -> None:
     newest = _fetch(_request(sort="newest"))
     cheapest = _fetch(_request(sort="price_asc"))
 
-    assert [item["book_id"] for item in newest] == [9100702, 9100703, 9100701]
-    assert [item["book_id"] for item in cheapest] == [9100703, 9100702, 9100701]
+    assert [_book_id(item) for item in newest] == [9100702, 9100703, 9100701]
+    assert [_book_id(item) for item in cheapest] == [9100703, 9100702, 9100701]
     assert [(i["price"], i["in_stock"]) for i in cheapest] == [
         (10000, True),
         (15000, True),
@@ -164,18 +169,10 @@ def test_size_만큼만_준다() -> None:
     assert len(_fetch(_request(size="2"))) == 2
 
 
-def test_책마다_ISBN을_싣는다() -> None:
-    items = _fetch(_request())
-
-    assert items
-    assert all(item["isbn"] == _isbn(item["book_id"]) for item in items)
-
-
 def test_응답에는_명세의_칸만_나간다() -> None:
     item = _fetch(_request())[0]
 
     assert set(item) == {
-        "book_id",
         "isbn",
         "title",
         "author",
@@ -224,7 +221,7 @@ def _ids_excluding(book_ids: list[int], **params) -> list[int]:
             {},
             exclusion.owned(book_ids),
         )
-        return [item["book_id"] for item in items]
+        return [_book_id(item) for item in items]
 
     return _run(check)
 

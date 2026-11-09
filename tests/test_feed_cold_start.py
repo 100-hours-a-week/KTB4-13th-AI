@@ -48,6 +48,11 @@ def _isbn(book_id: int) -> str:
     return str(9780000000000 + book_id)
 
 
+def _book_id(item: dict) -> int | None:
+    """응답의 ISBN 으로 테스트 책 번호를 되찾는다(_isbn 의 반대). 응답에는 book_id 가 없다(#308)."""
+    return None if item["isbn"] is None else int(item["isbn"]) - 9780000000000
+
+
 def _fetch(
     params,
     user_id: int = _USER,
@@ -102,7 +107,7 @@ def _fetch(
             )
             if full:
                 return items, has_more
-            return [item["book_id"] for item in items], has_more
+            return [_book_id(item) for item in items], has_more
         finally:
             await tx.rollback()
             await conn.close()
@@ -135,17 +140,21 @@ def test_가격순() -> None:
 @pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
 def test_가격과_재고는_상품_표에서_읽는다(sort: str) -> None:
     items, _ = _fetch([("sort", sort)], full=True)
-    by_id = {item["book_id"]: item for item in items}
+    by_id = {_book_id(item): item for item in items}
 
     assert (by_id[9100602]["price"], by_id[9100602]["in_stock"]) == (9000, True)
 
 
 @pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
-def test_책마다_ISBN을_싣는다(sort: str) -> None:
+def test_책은_ISBN으로만_가리키고_book_id는_싣지_않는다(sort: str) -> None:
     items, _ = _fetch([("sort", sort)], full=True)
 
     assert items
-    assert all(item["isbn"] == _isbn(item["book_id"]) for item in items)
+    assert all(
+        set(item)
+        == {"isbn", "title", "author", "price", "cover_url", "in_stock", "match_score"}
+        for item in items
+    )
 
 
 def test_상품이_없는_책은_가격순에는_빠지고_다른_목록에는_가격_없이_나온다() -> None:
@@ -153,7 +162,7 @@ def test_상품이_없는_책은_가격순에는_빠지고_다른_목록에는_�
     newest, _ = _fetch([("sort", "newest")], without_product=(9100602,), full=True)
 
     assert 9100602 not in cheapest
-    assert [(i["price"], i["in_stock"]) for i in newest if i["book_id"] == 9100602] == [
+    assert [(i["price"], i["in_stock"]) for i in newest if _book_id(i) == 9100602] == [
         (None, False)
     ]
 
@@ -205,9 +214,11 @@ def test_최신순에서_같은_연도는_번호순이다() -> None:
         try:
             for book_id in (9100611, 9100612):
                 await conn.execute(
-                    "INSERT INTO v_books (book_id, title, price, in_stock, category, pub_year)"
-                    " VALUES ($1, '책', 10000, true, '피드테스트같은연도', 2099)",
+                    "INSERT INTO v_books"
+                    " (book_id, title, price, in_stock, category, pub_year, isbn13)"
+                    " VALUES ($1, '책', 10000, true, '피드테스트같은연도', 2099, $2)",
                     book_id,
+                    _isbn(book_id),
                 )
             await conn.execute(
                 "INSERT INTO v_book_popularity VALUES (9100612, 9999, NULL, 0, now())"
@@ -223,7 +234,7 @@ def test_최신순에서_같은_연도는_번호순이다() -> None:
             items, _ = await cold_start.fetch(
                 conn, req, Page(issued_at=_NOW), exclusion.owned([])
             )
-            return [item["book_id"] for item in items]
+            return [_book_id(item) for item in items]
         finally:
             await tx.rollback()
             await conn.close()

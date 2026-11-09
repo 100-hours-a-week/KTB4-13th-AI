@@ -15,7 +15,7 @@ from app.core import popularity, products
 from app.core.pgvector import to_vector_literal
 from app.feed import exclusion, scoring
 from app.feed.cursor import Page
-from app.feed.schemas import FeedRequest
+from app.feed.schemas import FeedRequest, response_item
 from app.search.filters import build_where
 from app.search.schemas import SearchFilters
 from app.search.vector import EF_SEARCH
@@ -234,18 +234,4 @@ def rank(
     items.sort(key=_ORDER[req.sort])
     window = items[page.offset : page.offset + req.size]
     has_more = len(items) > page.offset + req.size
-    return [_response_item(row) for row in window], has_more
-
-
-def _response_item(row: dict[str, Any]) -> dict[str, Any]:
-    """응답에 나가는 칸만 남긴다(명세 ④). 채점에 쓴 유사도·분류는 내보내지 않는다."""
-    return {
-        "book_id": row["book_id"],
-        "isbn": row["isbn"],
-        "title": row["title"],
-        "author": row["author"],
-        "price": row["price"],
-        "cover_url": row["cover_url"],
-        "in_stock": row["in_stock"],
-        "match_score": row["match_score"],
-    }
+    return [response_item(row) for row in window], has_more
