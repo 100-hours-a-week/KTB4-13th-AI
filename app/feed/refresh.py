@@ -17,7 +17,6 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 
-from app.core import history
 from app.feed import interest_feed
 from app.profile import interests
 from app.profile import service as profile_service
@@ -111,7 +110,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         )
         row = await conn.fetchrow(_PROFILE_SQL, user_id)
         vectors = json.loads(row["interest_vectors"])
-        owned, disliked = await _owned(conn, user_id, row)
+        owned, disliked = _owned(row)
         # 매칭 점수에 쓰는 내 책은 ⑥ 처럼 관심사마다 다시 가른다. 저장된 칸을 늘리지 않으려는 것이다(#483)
         anchors = await profile_service.book_anchors(
             conn, list(json.loads(row["book_first_seen"] or "{}")), disliked
@@ -140,16 +139,13 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         )
 
 
-async def _owned(
-    conn: asyncpg.Connection, user_id: int, row: asyncpg.Record
-) -> tuple[set[int], set[int]]:
+def _owned(row: asyncpg.Record) -> tuple[set[int], set[int]]:
     """목록에서 뺄 가진 책과 그중 2점 이하 리뷰를 단 책. ⑥ 이 목록과 함께 저장해 둔 것이다(#537).
 
     ⑨ 는 요청이 없어 이력을 받지 못한다. 밤 배치는 이력이 바뀐 사용자의 ⑥ 을 먼저 부르므로 저장된 값에 그날
-    이력까지 들어 있다. 이 값이 생기기 전에 저장된 목록만 복제 표의 이력으로 뺀다. 복제 표를 읽는 길을 지울 때
-    (#307) 같이 지운다.
+    이력까지 들어 있다. 이 값이 생기기 전에 저장된 목록은 빼는 책 없이 다시 뽑는다. 복제한 사용자 표는
+    지웠다(#307). 다음에 ⑥ 이 불리면 채워진다.
     """
     if row["owned"] is None:
-        hist = await history.read(conn, user_id)
-        return set(hist.weights) | hist.disliked_book_ids, hist.disliked_book_ids
+        return set(), set()
     return set(json.loads(row["owned"])), set(json.loads(row["disliked"] or "[]"))

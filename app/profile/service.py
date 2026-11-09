@@ -124,13 +124,12 @@ def _now() -> datetime:
 
 
 async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.History:
-    """산 책·나의 도서관 책·리뷰. 요청에 실려 왔으면 그것을, 아니면 복제 표를 읽는다(#327).
+    """산 책·나의 도서관 책·리뷰. BE 가 요청에 실어 보낸 것으로 계산한다(#327).
 
-    칸이 없으면 BE 가 아직 보내지 않는 것이라 지금처럼 복제 표에서 읽는다. 복제를 멈출 때 이 길을
-    빼고, 그때부터 칸이 없으면 이력이 없는 것이 된다(#307). 빈 이력이 오면 복제 표를 읽지 않는다.
+    칸이 없으면 이력이 없는 것이다. 복제한 사용자 표에서 읽던 길은 복제를 멈추며 없앴다(#307).
     """
     if req.history is None:
-        return await history.read(conn, req.user_id)
+        return history.History()
     return await history.from_request(
         conn,
         purchased_isbns=req.history.purchased_isbns,
