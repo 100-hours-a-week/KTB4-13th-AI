@@ -29,6 +29,8 @@ REQUIRED_INDEXES = (
     "v_products_price_order_idx",
     # 요청으로 받은 ISBN 으로 책을 찾는 색인(#311)
     "v_books_isbn13_key",
+    # 책장 사진이 책등 제목으로 찾는 다듬은 제목 색인(#615)
+    "v_books_title_key_trgm_idx",
 )
 
 

@@ -136,11 +136,18 @@ class _Conn:
     """검색어마다 정해 둔 줄을 돌려주는 가짜 연결. 받은 SQL 과 검색어를 남긴다."""
 
     def __init__(
-        self, by_query: dict[str, list[dict]], by_isbn: dict[str, dict] | None = None
+        self,
+        by_query: dict[str, list[dict]],
+        by_isbn: dict[str, dict] | None = None,
+        *,
+        by_key_query: dict[str, list[dict]] | None = None,
     ) -> None:
+        # by_query 는 띄어쓰기만 뺀 제목 검색, by_key_query 는 다듬은 제목 검색이 돌려줄 줄
         self.by_query = by_query
+        self.by_key_query = by_key_query or {}
         self.by_isbn = by_isbn or {}
         self.queries: list[str] = []
+        self.sqls: list[str] = []
         self.executed: list[str] = []
         self.fetched_isbns: list[str] = []
 
@@ -151,8 +158,12 @@ class _Conn:
         self.executed.append(sql)
 
     async def fetch(self, sql: str, query: str, limit: int):
-        self.queries.append(query)
-        return self.by_query.get(query, [])
+        if query not in self.queries:
+            self.queries.append(query)
+        self.sqls.append(sql)
+        key_sql = match_shelf._SEARCH_SQLS[1]
+        rows = self.by_key_query if sql == key_sql else self.by_query
+        return rows.get(query, [])
 
     async def fetchrow(self, sql: str, isbn: str):
         self.fetched_isbns.append(isbn)
@@ -196,8 +207,44 @@ def test_한_글자_제목은_검색하지_않는다() -> None:
     assert conn.queries == []
 
 
-def test_검색이_색인과_같은_식을_쓴다() -> None:
-    # 띄어쓰기를 뺀 제목 색인(20260922 마이그레이션)은 식이 같아야 탄다
-    assert (
-        "translate(b.title, E' \\t\\u3000\\u00a0', '') % $1" in match_shelf._SEARCH_SQL
+def test_띄어쓰기만_뺀_제목으로_찾으면_다듬은_제목으로는_찾지_않는다() -> None:
+    book = _book("(박미정의) 깃&깃허브 입문")
+    conn = _Conn({"박미정의깃깃허브입문": [_row(book)]})
+
+    found, _ = asyncio.run(match_shelf.match(conn, _spine("박미정의 깃 & 깃허브 입문")))
+
+    assert found == book
+    nospace_sql, _ = match_shelf._SEARCH_SQLS
+    assert conn.sqls == [nospace_sql]
+
+
+def test_확정하지_못하면_다듬은_제목으로_다시_찾는다() -> None:
+    # 앞 괄호 말이 길면 띄어쓰기만 뺀 제목과는 비슷함이 0.31 이라 후보에 못 든다(#615)
+    book = _book(
+        "(오라클, 딜로이트 출신 전문가가 알려 주는) 챗GPT시대 기업이 살아남는 법"
     )
+    near = _book("챗GPT 시대의 기업")
+    conn = _Conn(
+        {"챗gpt시대기업이살아남는법": [_row(near)]},
+        by_key_query={"챗gpt시대기업이살아남는법": [_row(book)]},
+    )
+
+    found, via = asyncio.run(
+        match_shelf.match(conn, _spine("챗GPT시대 기업이 살아남는 법"))
+    )
+
+    assert (found, via) == (book, "text")
+    assert conn.sqls == list(match_shelf._SEARCH_SQLS)
+
+
+def test_다시_찾아도_확정하지_못하면_못_찾음이다() -> None:
+    conn = _Conn({}, by_key_query={"covertjava": [_row(_book("자바의 정석"))]})
+
+    assert asyncio.run(match_shelf.match(conn, _spine("COVERT JAVA"))) == (None, None)
+
+
+def test_검색이_색인과_같은_식을_쓴다() -> None:
+    nospace_sql, key_sql = match_shelf._SEARCH_SQLS
+    # 다듬은 제목 색인(20261109 마이그레이션)과 띄어쓰기를 뺀 제목 색인(20260922)은 식이 같아야 탄다
+    assert f"{match_shelf._KEY_TITLE} % $1" in key_sql
+    assert "translate(b.title, E' \\t\\u3000\\u00a0', '') % $1" in nospace_sql
