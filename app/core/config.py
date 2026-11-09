@@ -50,13 +50,14 @@ class Settings(BaseSettings):
     # 뽑는 일이라 작은 모델로 충분하고, 평가도 작은 모델로 잰다. 챗봇과 같은 값을 쓰면 운영에서는
     # 평가에 쓴 것과 다른 모델로 돌게 되어 따로 둔다.
     extraction_llm_model_id: str = ""
-    # ⑤ 취향 뽑기를 자체 서빙 LLM(GPU 서버의 vLLM 처럼 OpenAI 호환인 곳)으로 부를지(#569 운영 시범). off(기본)면
-    # 지금처럼 API 만 쓴다. on 이면 자체 서빙을 먼저 부르고, 실패하거나 시간을 넘기면 지금 API 로 다시 부른다. 스팟
-    # GPU 는 회수될 수 있어서다. 주소나 모델이 비어 있으면 on 이어도 API 만 쓴다(서버가 뜰 때 경고). 켜기는 이
-    # 기본값을 바꾸는 PR 로 한다.
-    extraction_self_hosted_mode: Literal["off", "on"] = "off"
+    # ⑤ 취향 뽑기를 자체 서빙 LLM(GPU 서버의 vLLM 처럼 OpenAI 호환인 곳)으로 부를지(#569 운영 시범). on(기본)이면
+    # 자체 서빙을 먼저 부르고, 실패하거나 시간을 넘기면 지금 API 로 다시 부른다. 스팟 GPU 는 회수될 수 있고 밤에만
+    # 켜 두기 때문이다. off 면 API 만 쓴다. 주소가 비어 있으면 on 이어도 API 만 쓴다(서버가 뜰 때 경고). 주소는
+    # GPU 서버가 있는 환경의 설정에만 넣고, 켜고 끄기는 이 기본값을 바꾸는 PR 로 한다.
+    extraction_self_hosted_mode: Literal["off", "on"] = "on"
     extraction_self_hosted_base_url: str = ""
-    extraction_self_hosted_model_id: str = ""
+    # GPU 서버 vLLM 의 --served-model-name 과 같아야 한다. 올린 모델을 바꿔도 이 이름은 그대로 둔다(#569).
+    extraction_self_hosted_model_id: str = "bookjeok-extraction"
     # 자체 서빙 서버가 키를 검사할 때만 채운다. 외부 API 키를 다른 서버로 보내지 않으려고 따로 둔다.
     extraction_self_hosted_api_key: str = ""
     # 자체 서빙 호출 하나의 제한(초). 넘기면 API 로 다시 부르는데, 둘을 합친 시간도 llm_timeout_seconds 안에
