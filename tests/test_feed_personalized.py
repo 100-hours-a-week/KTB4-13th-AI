@@ -84,11 +84,6 @@ def _run(check, *, sort: str = "match", extra: list[tuple[str, str]] | None = No
                     to_vector_literal(_vector(similarity)),
                     DIM,
                 )
-            await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100704, $2, 'PAID')",
-                _USER,
-                _T0,
-            )
             return await check(conn)
         finally:
             await tx.rollback()
@@ -108,10 +103,19 @@ def _request(**params):
     )
 
 
+# 산 책은 요청으로 온다(#330). 복제한 사용자 표는 읽지 않는다(#307).
+_OWNED = exclusion.owned([9100704])
+
+
 def _fetch(req, tag_weights=None, page=None):
     async def check(conn):
         items, _ = await personalized.fetch(
-            conn, req, page or Page(issued_at=_NOW), _CENTROID, tag_weights or {}
+            conn,
+            req,
+            page or Page(issued_at=_NOW),
+            _CENTROID,
+            tag_weights or {},
+            _OWNED,
         )
         return items
 
@@ -191,9 +195,9 @@ def test_정확_계산은_벡터_색인을_쓰지_않는다(distance: str, uses_
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         try:
-            excluded = exclusion.replicated(_USER, _NOW)
+            excluded = _OWNED
             sql = "EXPLAIN " + personalized._SQL.format(
-                distance=distance, where="", excluded=excluded.sql(2), limit="$5"
+                distance=distance, where="", excluded=excluded.sql(2), limit="$3"
             )
             rows = await conn.fetch(
                 sql, to_vector_literal(_CENTROID), *excluded.params, 500
@@ -225,8 +229,8 @@ def _ids_excluding(book_ids: list[int], **params) -> list[int]:
     return _run(check)
 
 
-def test_받은_책을_빼고_복제_표의_이력은_보지_않는다() -> None:
-    # 복제 표에는 9100704 를 산 것으로 남아 있다. 요청은 9100701 을 가졌다고 한다.
+def test_받은_책만_뺀다() -> None:
+    # 요청은 9100701 을 가졌다고 한다. 9100704 는 이번에는 가진 책이 아니라 나온다.
     assert _ids_excluding([9100701]) == [9100704, 9100702, 9100703]
 
 

@@ -70,14 +70,12 @@ async def fetch(
     req: FeedRequest,
     page: Page,
     tag_weights: dict[str, float],
-    excluded: exclusion.Exclusion | None = None,
+    excluded: exclusion.Exclusion,
 ) -> tuple[list[dict[str, Any]], bool]:
     """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다.
 
-    `excluded` 를 주지 않으면 복제한 사용자 표의 이력으로 뺀다.
+    `excluded` 는 목록에서 뺄 책의 조건이다(app/feed/exclusion.py).
     """
-    if excluded is None:
-        excluded = exclusion.replicated(req.user_id, page.issued_at)
     filters = SearchFilters(
         category=req.category,
         pub_year_from=req.pub_year_from,

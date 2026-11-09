@@ -65,11 +65,6 @@ def _run(check):
                     book_id,
                     book_id,
                 )
-            await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100804, $2, 'PAID')",
-                _USER,
-                _T0,
-            )
             return await check(conn)
         finally:
             await tx.rollback()
@@ -84,9 +79,15 @@ def _request(**params):
     )
 
 
+# 산 책은 요청으로 온다(#330). 복제한 사용자 표는 읽지 않는다(#307).
+_OWNED = exclusion.owned([9100804])
+
+
 def _fetch(req, tag_weights):
     async def check(conn):
-        items, _ = await rule_only.fetch(conn, req, Page(issued_at=_NOW), tag_weights)
+        items, _ = await rule_only.fetch(
+            conn, req, Page(issued_at=_NOW), tag_weights, _OWNED
+        )
         return [(item["book_id"], item["match_score"]) for item in items]
 
     return _run(check)
@@ -119,7 +120,7 @@ def test_산_책은_빠진다() -> None:
 def test_책마다_ISBN을_싣는다() -> None:
     async def check(conn):
         items, _ = await rule_only.fetch(
-            conn, _request(), Page(issued_at=_NOW), {_LIKED: 4}
+            conn, _request(), Page(issued_at=_NOW), {_LIKED: 4}, _OWNED
         )
         return [(item["book_id"], item["isbn"]) for item in items]
 
@@ -134,7 +135,7 @@ def test_책마다_ISBN을_싣는다() -> None:
 def test_가격과_재고는_상품_표에서_읽는다() -> None:
     async def check(conn):
         items, _ = await rule_only.fetch(
-            conn, _request(size="1"), Page(issued_at=_NOW), {_LIKED: 4}
+            conn, _request(size="1"), Page(issued_at=_NOW), {_LIKED: 4}, _OWNED
         )
         return [(item["price"], item["in_stock"]) for item in items]
 
@@ -179,11 +180,8 @@ def test_책_표를_통째로_훑지_않는다() -> None:
         try:
             rows = await cold_start.run_ordered(
                 conn,
-                "EXPLAIN "
-                + rule_only.candidates_sql("", exclusion.replicated(_USER, _NOW)),
-                _USER,
-                2.0,
-                _NOW,
+                "EXPLAIN " + rule_only.candidates_sql("", _OWNED),
+                *_OWNED.params,
                 500,
                 [_LIKED, "한국문학"],
                 [4.0, 2.0],
@@ -215,8 +213,8 @@ def _ids_excluding(book_ids: list[int]) -> set[int]:
     return _run(check) & {book_id for book_id, _, _ in _BOOKS}
 
 
-def test_받은_책을_빼고_복제_표의_이력은_보지_않는다() -> None:
-    # 복제 표에는 9100804 를 산 것으로 남아 있다. 요청은 9100802 를 가졌다고 한다.
+def test_받은_책만_뺀다() -> None:
+    # 요청은 9100802 를 가졌다고 한다. 9100804 는 이번에는 가진 책이 아니라 나온다.
     assert _ids_excluding([9100802]) == {9100801, 9100803, 9100804}
 
 

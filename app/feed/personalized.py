@@ -126,15 +126,13 @@ async def _nearest(
     page: Page,
     centroid: list[float],
     filters: SearchFilters,
-    excluded: exclusion.Exclusion | None = None,
+    excluded: exclusion.Exclusion,
 ) -> list[asyncpg.Record]:
     """취향 벡터와 가까운 책 CANDIDATE_LIMIT 권. 필터가 있으면 걸리는 책 수로 뽑는 방법을 정한다.
 
     같은 요청(같은 필터)이면 어느 DB 연결에서 돌아도 같은 방법·같은 계획으로 뽑는다. 쪽마다 다시 뽑기
     때문에, 쪽마다 방법이 달라지면 가까운 500권이 달라져 책이 중복되거나 빠진다(#196).
     """
-    if excluded is None:
-        excluded = exclusion.replicated(req.user_id, page.issued_at)
     limit_param = 2 + len(excluded.params)
     where, filter_params = build_where(filters, first_param=limit_param + 1)
     filtered = bool(where)
@@ -189,11 +187,11 @@ async def fetch(
     page: Page,
     centroid: list[float],
     tag_weights: dict[str, float],
-    excluded: exclusion.Exclusion | None = None,
+    excluded: exclusion.Exclusion,
 ) -> tuple[list[dict[str, Any]], bool]:
     """(이번 페이지 목록, 다음 페이지가 있는지). 점수 하한과 정렬을 적용한다.
 
-    `excluded` 를 주지 않으면 복제한 사용자 표의 이력으로 뺀다.
+    `excluded` 는 목록에서 뺄 책의 조건이다(app/feed/exclusion.py).
     """
     filters = SearchFilters(
         category=req.category,
