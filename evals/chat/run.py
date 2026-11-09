@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from app.core import isbn
 from app.core.products import price_sql
 from evals.chat.grade import load_cases
 
@@ -162,21 +163,41 @@ async def fetch_books(database_url: str, book_ids: list[int]) -> dict[str, dict]
     }
 
 
+def _all_cards(runs: list[dict[str, list[dict]]]) -> list[dict]:
+    return [c for r in runs for ts in r.values() for t in ts for c in t["cards"]]
+
+
 def _card_book_ids(runs: list[dict[str, list[dict]]]) -> list[int]:
-    return sorted(
-        {
-            c["book_id"]
-            for r in runs
-            for ts in r.values()
-            for t in ts
-            for c in t["cards"]
-        }
-    )
+    return sorted({c["book_id"] for c in _all_cards(runs) if c["book_id"] is not None})
+
+
+async def fill_book_ids(conn: asyncpg.Connection, cards: list[dict]) -> None:
+    """응답 카드에는 book_id 가 없다(#308). 채점과 지난 원본은 책 번호로 책을 찾아서, 카드의 ISBN 으로 채운다.
+
+    옛 코드의 응답처럼 책 번호가 이미 있는 카드는 그대로 둔다. 책 표에 없는 ISBN 은 None 으로 남는다.
+    """
+    missing = [c for c in cards if c.get("book_id") is None and c.get("isbn")]
+    if not missing:
+        return
+    found = await isbn.book_id_map(conn, sorted({c["isbn"] for c in missing}))
+    for card in missing:
+        card["book_id"] = found.get(card["isbn"])
+
+
+async def _fill_run_book_ids(
+    database_url: str, runs: list[dict[str, list[dict]]]
+) -> None:
+    conn = await asyncpg.connect(database_url)
+    try:
+        await fill_book_ids(conn, _all_cards(runs))
+    finally:
+        await conn.close()
 
 
 def refill_books(path: Path, database_url: str) -> None:
     """원본의 책 정보를 지금 DB 로 다시 채운다. 평가 DB 는 고정이라 그때와 같은 값이 나온다."""
     raw = json.loads(path.read_text(encoding="utf-8"))
+    asyncio.run(_fill_run_book_ids(database_url, raw["runs"]))
     raw["books"] = asyncio.run(fetch_books(database_url, _card_book_ids(raw["runs"])))
     path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
     print(f"책 정보를 다시 채움: {path} (책 {len(raw['books'])}권)")
@@ -256,6 +277,7 @@ def main() -> None:
             encoding="utf-8",
         )
 
+    asyncio.run(_fill_run_book_ids(database_url, runs))
     books = asyncio.run(fetch_books(database_url, _card_book_ids(runs)))
     if args.server_log:
         log = Path(args.server_log).read_text(encoding="utf-8", errors="replace")

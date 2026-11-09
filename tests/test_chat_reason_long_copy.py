@@ -154,7 +154,7 @@ def test_책_소개를_옮긴_긴_이유는_null이고_카드와_한_줄_이유�
 
     copied, other = _post()
 
-    assert copied["book_id"] == 616964
+    assert copied["title"] == BOOK["title"]
     assert copied["reason_long"] is None
     assert copied["reason_short"] == "퇴근 후의 일상을 다룬 에세이예요."
     assert copied["match_basis"] == [{"label": "주제", "detail": "퇴근 후 그림"}]

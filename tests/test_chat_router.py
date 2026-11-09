@@ -27,6 +27,9 @@ from app.search.schemas import SearchFilters
 
 client = TestClient(app)
 
+# 후보 책의 ISBN. 카드는 ISBN 으로만 책을 가리킨다(#308)
+_ISBN = "9788936434120"
+
 
 def _fake_model(reply: str) -> RunnableLambda:
     """정해진 답을 돌려주는 가짜 모델. 체인의 모델 칸에 그대로 끼워진다."""
@@ -93,6 +96,7 @@ def fake_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
         return [
             {
                 "book_id": 1088,
+                "isbn": _ISBN,
                 "title": "달러구트 꿈 백화점",
                 "author": "이미예",
                 "description": "잠든 사이 꿈을 사고파는 상점 이야기.",
@@ -137,7 +141,7 @@ def test_명세의_초기_spec으로_보내면_200과_계약_봉투를_돌려준
     # reply는 LLM이 이 턴에 만든 문장 그대로다 — 고정 문구가 아니다(#158).
     assert data["reply"] == "비 오는 날 분위기에 맞춰 골라봤어요."
     assert len(data["cards"]) == 1
-    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["isbn"] == _ISBN
     assert data["cards"][0]["reason_short"] == "잔잔한 판타지예요."
     # match_score는 candidates에 get_candidates가 이미 채워 둔 값 그대로다(#129).
     assert data["cards"][0]["match_score"] == 25
@@ -157,7 +161,7 @@ def test_LLM이_실패하면_degraded_true로_규칙_기반_카드를_돌려준�
     assert data["degraded"] is True
     assert len(data["cards"]) == 1
     card = data["cards"][0]
-    assert card["book_id"] == 1088
+    assert card["isbn"] == _ISBN
     assert card["match_score"] == 25
     assert card["reason_short"]
     assert card["reason_long"] is None
@@ -195,7 +199,7 @@ def test_카드_생성_LLM_실패가_로그에_남는다(
     assert data["degraded"] is True
     # 카드 생성만 실패해도 후보는 이미 있으니 규칙 기반 카드로 채운다(#129).
     assert len(data["cards"]) == 1
-    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["isbn"] == _ISBN
     assert "카드 생성 실패" in caplog.text
 
 
@@ -248,7 +252,7 @@ def test_cards가_null이면_degraded로_규칙_기반_카드를_낸다(
     data = res.json()["data"]
     assert data["degraded"] is True
     assert len(data["cards"]) == 1
-    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["isbn"] == _ISBN
 
 
 def test_cards_항목이_문자열이면_그_카드만_건너뛴다(
@@ -271,7 +275,7 @@ def test_cards_항목이_문자열이면_그_카드만_건너뛴다(
     data = res.json()["data"]
     assert data["degraded"] is False
     assert len(data["cards"]) == 1
-    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["isbn"] == _ISBN
 
 
 def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
@@ -396,6 +400,7 @@ def test_parse_match_basis_리스트가_아니면_빈_배열() -> None:
 def _candidate(book_id: int, match_score: int, popularity: float = 0.0) -> dict:
     return {
         "book_id": book_id,
+        "isbn": _isbn(book_id),
         "title": f"책{book_id}",
         "author": "작가",
         "price": 10000,
@@ -403,6 +408,10 @@ def _candidate(book_id: int, match_score: int, popularity: float = 0.0) -> dict:
         "match_score": match_score,
         "popularity": popularity,
     }
+
+
+def _isbn(book_id: int) -> str:
+    return str(9780000000000 + book_id)
 
 
 def test_rule_based_cards는_match_score_상위_CARD_LIMIT개만_담는다() -> None:
@@ -414,7 +423,7 @@ def test_rule_based_cards는_match_score_상위_CARD_LIMIT개만_담는다() -> 
     ]
     cards = chat._rule_based_cards(candidates)
 
-    assert [c["book_id"] for c in cards] == [2, 3, 1]
+    assert [c["isbn"] for c in cards] == [_isbn(2), _isbn(3), _isbn(1)]
     assert [c["rank"] for c in cards] == [1, 2, 3]
     # 명세: LLM 장애 시 reason_short는 규칙, reason_long은 null, match_basis는 없음.
     assert all(c["reason_short"] for c in cards)
@@ -427,7 +436,7 @@ def test_rule_based_cards는_동점이면_인기_다음_번호_순이다() -> No
 
     cards = chat._rule_based_cards(candidates)
 
-    assert [c["book_id"] for c in cards] == [2, 5]
+    assert [c["isbn"] for c in cards] == [_isbn(2), _isbn(5)]
 
 
 def test_rule_based_cards는_후보가_없으면_빈_배열() -> None:
@@ -865,7 +874,7 @@ def test_spec_갱신_응답이_patch로_병합해도_Spec_모양이_아니면_�
     # 카드로 채운다(#129) — 두 번째 대사(book_id 1088짜리)를 그대로 삼킨 게
     # 아니라는 것은 reason_long이 null인 것으로 구분된다(LLM 카드라면 채워짐).
     assert len(data["cards"]) == 1
-    assert data["cards"][0]["book_id"] == 1088
+    assert data["cards"][0]["isbn"] == _ISBN
     assert data["cards"][0]["reason_long"] is None
     # 갱신 안 되고 요청에 보낸 spec 그대로. model_dump()는 filters의 생략된
     # 키도 채워 돌려주므로 요청 그대로의 {} 와는 모양이 다르다 — 파싱해서 비교.
@@ -1234,7 +1243,6 @@ def test_카드가_없고_빠진_정보가_있으면_지어낸_조건_대신_그
 # BE 와 책을 ISBN 으로 주고받기(#317)
 # ---------------------------------------------------------------------------
 
-_ISBN = "9788936434120"
 _CARD_REPLY = '{"reply": "골라봤어요.", "cards": [{"book_id": 1088, "reason_short": "잔잔해요."}]}'
 
 
@@ -1252,7 +1260,7 @@ def _one_candidate(**extra) -> list[dict]:
     ]
 
 
-def test_카드에_후보의_ISBN을_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_카드는_ISBN으로만_책을_가리킨다(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
         return _one_candidate(isbn=_ISBN)
 
@@ -1264,13 +1272,17 @@ def test_카드에_후보의_ISBN을_싣는다(monkeypatch: pytest.MonkeyPatch) 
         "cards"
     ][0]
 
-    # book_id 는 BE 가 ISBN 으로 옮길 때까지 같이 싣는다.
-    assert (card["book_id"], card["isbn"]) == (1088, _ISBN)
+    assert "book_id" not in card
+    assert card["isbn"] == _ISBN
 
 
 def test_ISBN을_아직_채우지_않은_책의_카드는_isbn이_null이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def _fake(spec, exclude_book_ids, user_id, owned_book_ids=None) -> list[dict]:
+        return _one_candidate()
+
+    monkeypatch.setattr(chat, "get_candidates", _fake)
     model = _sequenced_model(_spec_reply(), _CARD_REPLY)
     monkeypatch.setattr(chat, "get_chat_model", lambda: model)
 
@@ -1281,9 +1293,10 @@ def test_ISBN을_아직_채우지_않은_책의_카드는_isbn이_null이다(
     assert card["isbn"] is None
 
 
-def test_규칙_기반_카드에도_ISBN을_싣는다() -> None:
+def test_규칙_기반_카드도_ISBN으로만_책을_가리킨다() -> None:
     cards = chat._rule_based_cards(_one_candidate(isbn=_ISBN))
 
+    assert "book_id" not in cards[0]
     assert cards[0]["isbn"] == _ISBN
 
 

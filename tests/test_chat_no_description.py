@@ -190,7 +190,7 @@ def test_모델이_소개글_없는_책의_한_줄_이유를_빠뜨려도_카드
 
     cards = _post()["cards"]
 
-    assert [c["book_id"] for c in cards] == [2]
+    assert [c["title"] for c in cards] == ["토지"]
     assert cards[0]["reason_short"] == "찾으신 박경리의 『토지』예요."
 
 

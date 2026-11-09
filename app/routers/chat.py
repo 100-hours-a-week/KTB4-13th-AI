@@ -1061,7 +1061,6 @@ def _rule_based_cards(candidates: list[dict]) -> list[dict]:
     )
     return [
         {
-            "book_id": c["book_id"],
             "isbn": c.get("isbn"),
             "rank": rank,
             "match_score": c["match_score"],
@@ -1493,7 +1492,6 @@ async def generate_cards(
             continue
         cards.append(
             {
-                "book_id": book_id,
                 "isbn": book.get("isbn"),
                 "rank": rank,
                 "match_score": book["match_score"],

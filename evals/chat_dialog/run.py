@@ -31,6 +31,7 @@ import asyncpg
 import httpx
 
 from app.core.products import price_sql
+from evals.chat.run import fill_book_ids
 
 HERE = Path(__file__).parent
 INITIAL_SPEC = {
@@ -262,6 +263,8 @@ async def run_dialog(
             }
             for c in data.get("cards") or []
         ]
+        async with pool.acquire() as conn:
+            await fill_book_ids(conn, cards)
         turns.append(
             {
                 "msg": message,
@@ -294,7 +297,11 @@ async def run_dialog(
             shown = list(
                 dict.fromkeys(shown + [c["isbn"] for c in cards if c.get("isbn")])
             )
-            books.update(await fetch_books(pool, [c["book_id"] for c in cards]))
+            books.update(
+                await fetch_books(
+                    pool, [c["book_id"] for c in cards if c["book_id"] is not None]
+                )
+            )
         final = bot_turn == MAX_BOT_TURNS
         prompt = SIMULATOR_PROMPT.format(
             want=scenario["want"],
