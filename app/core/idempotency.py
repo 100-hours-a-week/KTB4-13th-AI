@@ -50,10 +50,21 @@ async def lookup(
     return json.loads(row["stored_response"])
 
 
+# 명세는 "최소 24시간 보관"이다. 그보다 오래된 기록은 새 기록을 저장할 때 지운다. 지우는 장치가 없으면
+# 쇼핑 응답이 끝없이 남아, 탈퇴한 사용자의 것도 지울 길이 없다(#270). created_at 색인을 탄다
+_FORGET_SQL = (
+    "DELETE FROM idempotency_records WHERE created_at < now() - interval '24 hours'"
+)
+
+
 async def remember(
     conn: asyncpg.Connection, key: str, body_hash_: str, response: dict[str, Any]
 ) -> None:
-    """성공(200) 응답만 저장한다. 실패는 저장하지 않아 재시도하면 다시 처리한다."""
+    """성공(200) 응답만 저장한다. 실패는 저장하지 않아 재시도하면 다시 처리한다.
+
+    저장하기 전에 24시간 넘은 기록을 지운다.
+    """
+    await conn.execute(_FORGET_SQL)
     try:
         await conn.execute(
             "INSERT INTO idempotency_records"
