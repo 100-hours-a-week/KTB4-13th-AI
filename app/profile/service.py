@@ -161,10 +161,8 @@ async def _rebuild_on(
     예산으로 만들어 저장하고 작업은 None 이다. 두 경우 모두 같은 재료와 같은 저장(build_queue)을 쓴다.
     """
     hist = await _history(conn, req)
-    # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
-    # 같은 책을 두 번 적어 보내도(두 칸에 나눠 보내도) 한 번만 치고, 합쳐서 앞에서부터 상한만큼 쓴다.
-    liked_by_isbn = await isbn.to_book_ids(conn, req.used_liked_isbns())
-    liked = list(dict.fromkeys([*liked_by_isbn, *req.used_liked_book_ids()]))
+    # 좋아한 책은 ISBN 으로 온다(#308). 같은 책을 두 번 적어 보내도 한 번만 치고, 앞에서부터 상한만큼 쓴다.
+    liked = list(dict.fromkeys(await isbn.to_book_ids(conn, req.used_liked_isbns())))
     liked = liked[:USED_LIKED_BOOKS]
     weights = compute.book_weights(liked, hist.weights, hist.disliked_book_ids)
     vectors = await book_vectors(conn, list(weights))

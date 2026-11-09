@@ -1,7 +1,7 @@
 """⑥ /preferences/profile 의 요청 모양과 검사 규칙."""
 
 from datetime import datetime
-from typing import Annotated, Self
+from typing import Self
 from zoneinfo import ZoneInfo
 
 from pydantic import (
@@ -62,11 +62,7 @@ class Onboarding(_Strict):
     criteria: list[str] = Field(default_factory=list, max_length=MAX_CRITERIA)
     categories: list[str] = Field(default_factory=list, max_length=MAX_CATEGORIES)
     tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS)
-    liked_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
-        default_factory=list
-    )
-    # 같은 것을 ISBN 으로 받는 칸(#308). BE 가 ISBN 으로 옮기는 동안은 둘 다 받고, 다 옮기면
-    # liked_book_ids 를 뺀다.
+    # 옛 칸 liked_book_ids 는 BE 가 ISBN 으로 옮겨 뺐다(#308)
     liked_isbns: list[Isbn13] = Field(default_factory=list)
 
     # 온보딩의 칸은 전부 목록이다. 취향 카드를 지우면 그 칸이 null 로 온다.
@@ -172,9 +168,6 @@ class ProfileRequest(_Strict):
     @classmethod
     def _null_is_empty(cls, value: object) -> object:
         return _null_as_empty(value)
-
-    def used_liked_book_ids(self) -> list[int]:
-        return self.onboarding.liked_book_ids[:USED_LIKED_BOOKS]
 
     def used_liked_isbns(self) -> list[str]:
         return self.onboarding.liked_isbns[:USED_LIKED_BOOKS]
