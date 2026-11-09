@@ -353,14 +353,14 @@ def test_질의_유사도와_취향_유사도가_함께_있으면_둘_다_반영
 
 
 @pytest.mark.parametrize("cold_start_row", [False, True])
-def test_저장된_취향_벡터가_없으면_구매_이력이_있어도_취향을_반영하지_않는다(
+def test_저장된_취향_벡터가_없으면_취향을_반영하지_않는다(
     cold_start_row: bool,
 ) -> None:
     """#266 — BE는 개인화 추천에 동의한 사용자만 ⑥을 부른다. 프로필이 없으면 동의하지 않은 사용자다.
 
     이력으로 임시 취향을 만들던 경로(#246)를 뺐다. 프로필이 없는 사용자와 재료 없이 cold_start로
-    저장된 사용자 모두, _LIKED 분류의 책(9100920)을 샀어도 같은 분류·같은 벡터의 후보(9100921)에
-    취향 유사도 항도 카테고리 항도 붙지 않는다.
+    저장된 사용자 모두, _LIKED 분류의 책(9100920)과 같은 분류·같은 벡터의 후보(9100921)에
+    취향 유사도 항도 카테고리 항도 붙지 않는다. 구매 이력은 복제 표가 없어져(#307) 넣지 않는다.
     """
 
     async def check(conn):
@@ -374,9 +374,6 @@ def test_저장된_취향_벡터가_없으면_구매_이력이_있어도_취향�
                 " VALUES ($1, '{}'::jsonb, true, 1)",
                 _USER,
             )
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100920, now(), 'PAID')", _USER
-        )
         candidates = _candidates(9100921)
         await chat._attach_match_scores(conn, candidates, _USER, _spec())
         return candidates
