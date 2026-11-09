@@ -1,9 +1,10 @@
-"""⑥ 취향 프로필 만들기와 고치기: POST·PUT /preferences/profile
+"""⑥ 취향 프로필 만들기·고치기·지우기: POST·PUT·DELETE /preferences/profile
 
 명세: docs/wiki/ai/1-model-api/spec.md ⑥ POST /preferences/profile
 LLM을 쓰지 않는다. 이력과 요청으로 취향 프로필을 다시 계산해 taste_profile 에 저장한다.
 만들 때는 POST, 고칠 때는 PUT 으로 부른다(#303). 메서드만 다르고 받는 본문과 하는 계산은 같다.
 멱등 키는 받기만 하고 확인하지 않는다. 요청이 오면 항상 계산한다(#303).
+지우기는 BE 가 회원 최종 탈퇴, 개인화 동의 철회 때 부른다. 그 사용자의 프로필 줄을 지운다(#270).
 """
 
 import json
@@ -16,7 +17,7 @@ from pydantic import ValidationError
 
 from app.core import body, responses
 from app.profile import service
-from app.profile.schemas import ProfileRequest
+from app.profile.schemas import ProfileRequest, parse_delete_query
 
 logger = logging.getLogger(__name__)
 
@@ -66,3 +67,20 @@ async def profile(request: Request) -> JSONResponse:
         return responses.error(500, "internal_server_error")
 
     return responses.success(response["message"], response["data"])
+
+
+# 이미 없어도 200 이다. BE 가 탈퇴 처리를 다시 돌려도 실패로 보이지 않게 하고, 그래서 멱등 키를 받지
+# 않는다. LLM 과 임베딩을 부르지 않아 503, 504 는 없다(#270).
+@router.delete("/profile")
+async def delete_profile(request: Request) -> JSONResponse:
+    user_id = parse_delete_query(request.query_params.multi_items())
+    if user_id is None:
+        return responses.error(400, "invalid_request")
+
+    try:
+        deleted = await service.delete(user_id)
+    except Exception:
+        logger.exception("취향 프로필 지우기 실패")
+        return responses.error(500, "internal_server_error")
+
+    return responses.success("profile_delete_success", {"deleted": deleted})

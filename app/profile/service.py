@@ -347,3 +347,25 @@ async def rebuild_locked_on(
 async def rebuild(req: ProfileRequest) -> dict[str, Any]:
     async with db.get_pool().acquire() as conn:
         return await rebuild_locked_on(conn, req)
+
+
+_DELETE_SQL = "DELETE FROM taste_profile WHERE user_id = $1"
+
+
+async def delete_on(conn: asyncpg.Connection, user_id: int) -> bool:
+    """그 사용자의 프로필 줄을 지운다. 지운 줄이 있었으면 True 다(#270).
+
+    BE 가 회원 최종 탈퇴, 개인화 동의 철회 때 부른다. 관심사, 홈 추천 목록, 직전 목록도 같은 줄에 있어
+    함께 지워진다. 프로필 계산과 같은 사용자별 잠금을 잡아, 둘이 겹치면 차례로 처리되고 나중에 온 요청의
+    결과가 남는다. 뒤에서 목록을 만들던 작업은 있는 줄을 고치기만 해서(build_queue.save) 지운 줄을
+    되살리지 않는다.
+    """
+    async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", LOCK_SPACE, user_id)
+        status = await conn.execute(_DELETE_SQL, user_id)
+    return status == "DELETE 1"
+
+
+async def delete(user_id: int) -> bool:
+    async with db.get_pool().acquire() as conn:
+        return await delete_on(conn, user_id)

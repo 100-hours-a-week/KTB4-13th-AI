@@ -908,3 +908,29 @@ def test_켜져_있어도_rebuild_on_은_그_자리에서_설정한_예산으로
         {"book_id": 9100201, "interest": "요리", "match_score": 80}
     ]
     assert row["feed_version"] == 1
+
+
+def test_지우면_그_사용자의_줄이_사라지고_다시_지우면_지운_것이_없다(at_now) -> None:
+    async def check(conn):
+        await service.rebuild_on(conn, _request())
+        first = await service.delete_on(conn, _USER)
+        second = await service.delete_on(conn, _USER)
+        return first, second, await _row(conn)
+
+    assert _run(check) == (True, False, None)
+
+
+def test_지운_뒤에_뒤에서_만들던_목록이_저장돼도_줄이_되살아나지_않는다(
+    submitted, interest_feed, at_now
+) -> None:
+    # 탈퇴 처리와 프로필 계산의 뒤 작업이 겹쳐도 지운 프로필이 다시 생기면 안 된다(#270)
+    interest_feed.feeds = [Feed([Placed(9100201, "요리", 80)], ())]
+
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _async_request())
+        [job] = submitted
+        deleted = await service.delete_on(conn, _USER)
+        saved = await build_queue.build_and_save(conn, job)
+        return deleted, saved, await _row(conn)
+
+    assert _run_with_interest_tables(check) == (True, False, None)

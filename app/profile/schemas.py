@@ -4,7 +4,14 @@ from datetime import datetime
 from typing import Annotated, Self
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.core import categories
 from app.core.config import get_settings
@@ -175,3 +182,25 @@ class ProfileRequest(_Strict):
     def used_memories(self) -> list[Memory]:
         """쓰는 취향 기억. 넘으면 저장한 때가 최근인 것만 쓴다. 저장한 때 순으로 돌려준다(명세 ⑥)."""
         return sorted(self.memories, key=lambda m: m.created_at)[-USED_MEMORIES:]
+
+
+class ProfileDeleteQuery(BaseModel):
+    """DELETE /preferences/profile 의 쿼리(#270). 주소에 실려 문자열로 오므로 숫자로 읽는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: int = Field(ge=INT32_MIN, le=INT32_MAX)
+
+
+def parse_delete_query(items: list[tuple[str, str]]) -> int | None:
+    """쿼리가 계약에 맞으면 user_id, 아니면 None.
+
+    같은 키가 두 번 오면(user_id=1&user_id=2) 어느 사용자를 지울지 모호해 None 이다(④ 쿼리와 같음).
+    """
+    keys = [key for key, _ in items]
+    if len(keys) != len(set(keys)):
+        return None
+    try:
+        return ProfileDeleteQuery.model_validate(dict(items)).user_id
+    except ValidationError:
+        return None

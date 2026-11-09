@@ -124,8 +124,8 @@ def test_PUT도_계산이나_저장이_실패하면_공통_형식의_500이다(
     assert res.json() == {"message": "internal_server_error", "data": None}
 
 
-@pytest.mark.parametrize("method", ["get", "patch", "delete"])
-def test_POST와_PUT_말고는_받지_않는다(method: str) -> None:
+@pytest.mark.parametrize("method", ["get", "patch"])
+def test_POST_PUT_DELETE_말고는_받지_않는다(method: str) -> None:
     assert client.request(method, "/preferences/profile").status_code == 405
 
 
@@ -548,3 +548,76 @@ def test_기억이_상한을_넘으면_저장한_때가_최근인_것만_저장�
     assert len(used) == USED_MEMORIES
     assert [m.keyword for m in used[:2]] == ["2", "3"]
     assert used[-1].keyword == f"{USED_MEMORIES + 1}"
+
+
+@pytest.fixture
+def fake_delete(monkeypatch: pytest.MonkeyPatch) -> list:
+    """받은 user_id 를 모아 두고, 123 만 지울 프로필이 있었다고 답한다."""
+    calls: list = []
+
+    async def _fake(user_id):
+        calls.append(user_id)
+        return user_id == 123
+
+    monkeypatch.setattr(profile.service, "delete", _fake)
+    return calls
+
+
+def test_DELETE는_그_사용자의_프로필을_지우고_지운_줄이_있었는지_돌려준다(
+    fake_delete: list,
+) -> None:
+    res = client.delete("/preferences/profile?user_id=123")
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "message": "profile_delete_success",
+        "data": {"deleted": True},
+    }
+    assert fake_delete == [123]
+
+
+def test_DELETE는_지울_프로필이_없어도_200이고_deleted가_false다(
+    fake_delete: list,
+) -> None:
+    # 탈퇴 처리를 다시 돌려도 실패로 보이지 않게 한다(#270)
+    res = client.delete("/preferences/profile?user_id=7")
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "message": "profile_delete_success",
+        "data": {"deleted": False},
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "?user_id=",
+        "?user_id=abc",
+        "?user_id=1.5",
+        "?user_id=2147483648",
+        "?user_id=1&user_id=2",
+        "?user_id=1&size=3",
+    ],
+)
+def test_DELETE의_user_id가_없거나_계약과_다르면_400이고_지우지_않는다(
+    fake_delete: list, query: str
+) -> None:
+    res = client.delete("/preferences/profile" + query)
+
+    assert res.status_code == 400
+    assert res.json() == {"message": "invalid_request", "data": None}
+    assert fake_delete == []
+
+
+def test_DELETE가_실패하면_공통_형식의_500이다(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _boom(user_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(profile.service, "delete", _boom)
+
+    res = client.delete("/preferences/profile?user_id=123")
+
+    assert res.status_code == 500
+    assert res.json() == {"message": "internal_server_error", "data": None}
