@@ -175,7 +175,7 @@ def _body(
     message: str,
     spec: dict,
     recent: list[dict],
-    shown: list[int],
+    shown: list[str],
     visible: list[dict],
     conv: str,
 ) -> dict:
@@ -201,7 +201,7 @@ def _body(
         "spec": spec,
         "message": message,
         "recent_turns": recent[-MAX_RECENT_TURNS:],
-        "exclude_book_ids": shown,
+        "exclude_isbns": shown,
         "idempotency_key": str(uuid.uuid4()),
         "conversation_id": conv,
         "user_context": {"logged_in": True},
@@ -291,7 +291,9 @@ async def run_dialog(
         ]
         if cards:
             visible = cards
-            shown = list(dict.fromkeys(shown + [c["book_id"] for c in cards]))
+            shown = list(
+                dict.fromkeys(shown + [c["isbn"] for c in cards if c.get("isbn")])
+            )
             books.update(await fetch_books(pool, [c["book_id"] for c in cards]))
         final = bot_turn == MAX_BOT_TURNS
         prompt = SIMULATOR_PROMPT.format(

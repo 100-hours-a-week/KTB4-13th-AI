@@ -59,7 +59,9 @@ def test_요청은_BE_대화방_경로처럼_쇼핑_칸을_싣는다() -> None:
             "match_score": 30,
         }
     ]
-    body = _body("2번", {"intent": "semantic"}, [], [1], visible, "eval-1")
+    body = _body(
+        "2번", {"intent": "semantic"}, [], ["9780000000001"], visible, "eval-1"
+    )
     assert body["context_cards"] == [
         {"isbn": "9780000000001", "rank": 1, "match_score": 30}
     ]

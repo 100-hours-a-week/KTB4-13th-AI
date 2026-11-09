@@ -49,7 +49,7 @@ def _request(**overrides) -> dict:
         "spec": INITIAL_SPEC,
         "message": "비 오는 날 읽을 책 추천해줘",
         "recent_turns": [],
-        "exclude_book_ids": [],
+        "exclude_isbns": [],
         "image_ref": None,
     }
     body.update(overrides)

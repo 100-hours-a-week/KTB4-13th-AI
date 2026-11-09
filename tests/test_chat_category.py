@@ -223,7 +223,7 @@ def _post(
             "spec": _INITIAL_SPEC,
             "message": message,
             "recent_turns": [],
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
         },
     )
 
@@ -286,7 +286,7 @@ def test_책_표_조회가_실패하면_공통_형식의_500이다(
             "spec": _INITIAL_SPEC,
             "message": "추리 소설 추천해줘",
             "recent_turns": [],
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
         },
     )
 

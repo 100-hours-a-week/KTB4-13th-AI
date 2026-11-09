@@ -68,7 +68,7 @@ def _card_prompt(
             "spec": INITIAL_SPEC,
             "message": message,
             "recent_turns": recent_turns,
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
             "image_ref": None,
         },
     )
@@ -215,7 +215,7 @@ def test_카드_말풍선에서_되풀이_문장을_뺀다(monkeypatch: pytest.M
             "spec": INITIAL_SPEC,
             "message": "비 오는 날 읽을 책 추천해줘",
             "recent_turns": [],
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
             "image_ref": None,
         },
     )

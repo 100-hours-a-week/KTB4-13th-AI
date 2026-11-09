@@ -129,7 +129,7 @@ def _post() -> list[dict]:
             "spec": INITIAL_SPEC,
             "message": "퇴근길에 가볍게 읽을 에세이 추천해줘",
             "recent_turns": [],
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
             "image_ref": None,
         },
     )

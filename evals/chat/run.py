@@ -79,7 +79,7 @@ def run_case(base_url: str, token: str, case: dict) -> tuple[str, list[dict]]:
             "spec": spec,
             "message": message,
             "recent_turns": recent[-MAX_RECENT_TURNS:],
-            "exclude_book_ids": shown,
+            "exclude_isbns": shown,
         }
         started = time.monotonic()
         status, payload = _request(f"{base_url}/recommendations/chat", token, body)
@@ -124,7 +124,7 @@ def run_case(base_url: str, token: str, case: dict) -> tuple[str, list[dict]]:
             {"role": "user", "text": message[:MAX_TURN_CHARS]},
             {"role": "assistant", "text": said[:MAX_TURN_CHARS]},
         ]
-        shown = list(dict.fromkeys(shown + [c["book_id"] for c in cards]))
+        shown = list(dict.fromkeys(shown + [c["isbn"] for c in cards if c.get("isbn")]))
     return str(case["no"]), turns
 
 

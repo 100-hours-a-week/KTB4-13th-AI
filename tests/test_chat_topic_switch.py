@@ -206,7 +206,7 @@ def _request(**overrides) -> dict:
         "spec": INITIAL_SPEC,
         "message": "데미안이랑 비슷한 느낌의 책 있어?",
         "recent_turns": [],
-        "exclude_book_ids": [],
+        "exclude_isbns": [],
         "image_ref": None,
     }
     body.update(overrides)

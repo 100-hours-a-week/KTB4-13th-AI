@@ -78,7 +78,7 @@ def _request(**overrides) -> dict:
         "spec": INITIAL_SPEC,
         "message": "비 오는 날 읽을 책 추천해줘",
         "recent_turns": [],
-        "exclude_book_ids": [],
+        "exclude_isbns": [],
         "image_ref": None,
     }
     body.update(overrides)
@@ -1287,9 +1287,10 @@ def test_규칙_기반_카드에도_ISBN을_싣는다() -> None:
     assert cards[0]["isbn"] == _ISBN
 
 
-def test_exclude_isbns는_book_id로_바꿔_exclude_book_ids와_합친다(
+def test_이미_보여_준_책은_exclude_isbns로만_받는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """옛 칸 exclude_book_ids 는 BE 가 ISBN 으로 옮겨 뺐다(#308). 보내도 400 없이 무시한다."""
     seen: dict = {}
 
     async def _lookup(isbns: list[str]) -> list[int]:
@@ -1311,7 +1312,7 @@ def test_exclude_isbns는_book_id로_바꿔_exclude_book_ids와_합친다(
     )
 
     assert res.status_code == 200
-    assert seen == {"isbns": [_ISBN], "exclude": [1, 777]}
+    assert seen == {"isbns": [_ISBN], "exclude": [777]}
 
 
 def test_exclude_isbns가_없으면_책_표를_조회하지_않는다(
