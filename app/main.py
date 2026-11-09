@@ -12,7 +12,16 @@ from app.core.config import get_settings
 from app.feed import build_queue
 from app.gateway import embedding, llm
 from app.profile import labels
-from app.routers import agent, chat, embeddings, extractions, feed, profile, search
+from app.routers import (
+    agent,
+    chat,
+    embeddings,
+    extractions,
+    feed,
+    profile,
+    search,
+    shelf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +133,7 @@ app.include_router(search.router, dependencies=_auth_required)
 app.include_router(embeddings.router, dependencies=_auth_required)
 app.include_router(feed.router, dependencies=_auth_required)
 app.include_router(profile.router, dependencies=_auth_required)
+app.include_router(shelf.router, dependencies=_auth_required)
 
 
 @app.get("/health")
