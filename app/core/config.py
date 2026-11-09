@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
     agent_turn_timeout_seconds: float = 30
 
+    # --- 사진으로 책 찾기(#615) ---
+    # 사진 속 글자를 읽는 호출만 쓰는 모델. 비어 있으면 llm_model_id 를 쓴다. 사진을 받는 모델이어야 한다.
+    # 시험은 google/gemini-4-argon 으로 했다(#615 시험 결과).
+    photo_llm_model_id: str = ""
+    # 사진 주소(image_ref)가 이 중 하나로 시작할 때만 연다. 쉼표로 여러 개. 비어 있으면(기본) 어떤 주소도 열지
+    # 않는다. 예: https://<버킷>.s3.ap-northeast-2.amazonaws.com/<사진 폴더>/
+    photo_image_url_prefixes: str = ""
+    # 사진 한 장(받기·읽기·찾기 전체)의 시간 제한. 빽빽한 책장은 한 번 읽는 데 60초를 넘기기도 해서
+    # llm_timeout_seconds(30초)와 따로 둔다. 모델 호출 하나의 제한도 이 값이다.
+    photo_timeout_seconds: float = 60
+
     # --- 관심사별 홈 추천(#395) ---
     # 켜면(기본) ⑥이 관심사 점수와 추천 목록을 저장하고, 홈과 더 보기가 그 목록을 읽는다. 끄면 새 표·칸
     # (book_classes, taste_profile 의 새 칸)을 읽지도 쓰지도 않는다(#440). 켜 두려면 DB 에 그 마이그레이션과
