@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from langchain_core.language_models import FakeListChatModel
 
-from app.gateway.llm import LLMUnavailableError
+from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
 from app.photo import read
 
 
@@ -143,7 +143,10 @@ def test_사진_종류를_적은_대로_받는다() -> None:
     assert photo.photo_type == "shelf"
 
 
-def test_사진_읽기는_사진_전용_모델과_시간_제한을_쓴다(monkeypatch) -> None:
+@pytest.mark.parametrize(("total", "model_timeout"), [(60, 40), (30, 20)])
+def test_사진_읽기는_사진_전용_모델과_더_짧은_시간_제한을_쓴다(
+    monkeypatch, total: float, model_timeout: float
+) -> None:
     seen = {}
 
     def fake(**kwargs):
@@ -154,8 +157,24 @@ def test_사진_읽기는_사진_전용_모델과_시간_제한을_쓴다(monkey
     monkeypatch.setattr(
         read.get_settings(), "photo_llm_model_id", "google/gemini-4-argon"
     )
-    monkeypatch.setattr(read.get_settings(), "photo_timeout_seconds", 60)
+    monkeypatch.setattr(read.get_settings(), "photo_timeout_seconds", total)
 
     asyncio.run(read.read("data:image/jpeg;base64,AAAA"))
 
-    assert seen == {"model_id": "google/gemini-4-argon", "timeout_seconds": 60}
+    assert seen == {
+        "model_id": "google/gemini-4-argon",
+        "timeout_seconds": model_timeout,
+    }
+
+
+def test_모델_호출이_끝나지_않아도_읽기_시간_제한에_끊는다(monkeypatch) -> None:
+    _fake_model('{"photo_type": "none", "books": []}', monkeypatch)
+    monkeypatch.setattr(read.get_settings(), "photo_timeout_seconds", 0.06)
+
+    async def slow_invoke(chain, inputs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(read, "invoke_chain", slow_invoke)
+
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(read.read("data:image/jpeg;base64,AAAA"))

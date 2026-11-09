@@ -107,8 +107,16 @@ async def _scan(image_ref: str) -> ScanResult:
         return ScanResult(photo_type, [])
     books = text.books[:MAX_BOOKS]
     # 한 연결에서 차례로 찾는다. 한 사진이 연결 여러 개를 쥐면 같은 때 들어온 다른 요청이 기다린다
+    items: list[Item] = []
     async with db.get_pool().acquire() as conn:
-        items = [await find(conn, book, photo_type) for book in books]
+        for book in books:
+            try:
+                item = await find(conn, book, photo_type)
+            except TimeoutError:
+                # DB 조회 제한에 걸린 책만 넘긴다. 사진 전체 제한은 CancelledError 로 전달된다.
+                logger.warning("사진 책 찾기: 한 권의 DB 조회 제한 시간 초과")
+                item = Item("NOT_FOUND", read_text(book))
+            items.append(item)
     return ScanResult(photo_type, merge(items))
 
 

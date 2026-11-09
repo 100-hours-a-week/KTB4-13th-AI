@@ -8,6 +8,7 @@ OCR 엔진을 따로 두지 않고 모델 한 번으로 읽는 것은 시험에�
 권씩 잘라 읽는 것보다 통째로 한 번 읽는 쪽이 싸고 나았다(집 81권 대 72권).
 """
 
+import asyncio
 import re
 from typing import Literal
 
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.core.config import get_settings
 from app.gateway.llm import (
+    LLMTimeoutError,
     LLMUnavailableError,
     get_chat_model,
     invoke_chain,
@@ -139,9 +141,10 @@ async def read(image_url: str) -> PhotoText:
     app/gateway/llm.py).
     """
     settings = get_settings()
+    timeout_seconds = settings.photo_timeout_seconds * (2 / 3)
     model = get_chat_model(
         model_id=settings.photo_llm_model_id or None,
-        timeout_seconds=settings.photo_timeout_seconds,
+        timeout_seconds=timeout_seconds,
     )
     message = HumanMessage(
         content=[
@@ -150,7 +153,13 @@ async def read(image_url: str) -> PhotoText:
             {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
         ]
     )
-    raw = await invoke_chain(model | message_text | parse_json_response, [message])
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            raw = await invoke_chain(
+                model | message_text | parse_json_response, [message]
+            )
+    except TimeoutError as e:
+        raise LLMTimeoutError("사진 읽기가 제한 시간을 넘겼습니다") from e
     try:
         return PhotoText.model_validate(raw)
     except ValidationError as e:

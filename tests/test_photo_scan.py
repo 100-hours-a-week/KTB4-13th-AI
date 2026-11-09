@@ -111,6 +111,31 @@ def test_책장은_책장_규칙으로_왼쪽부터_찾는다(monkeypatch, pool)
     assert pool.acquired == 1
 
 
+def test_조회_시간을_넘긴_책만_못_찾음으로_넘긴다(monkeypatch, pool) -> None:
+    first = _book(1, "토지")
+    last = _book(2, "파과")
+    _photo(
+        monkeypatch,
+        PhotoText(
+            photo_type="shelf",
+            books=[BookText(title=title) for title in ["토지", "느린 책", "파과"]],
+        ),
+    )
+
+    async def match(conn, text):
+        if text.title == "느린 책":
+            raise TimeoutError
+        return {"토지": first, "파과": last}[text.title], "text"
+
+    monkeypatch.setattr(scan.match_shelf, "match", match)
+
+    assert [(item.state, item.read_text, item.book) for item in _run().items] == [
+        ("FOUND", "토지", first),
+        ("NOT_FOUND", "느린 책", None),
+        ("FOUND", "파과", last),
+    ]
+
+
 def test_표지는_표지_규칙으로_찾고_후보는_못_찾음이다(monkeypatch, pool) -> None:
     found_book = _book(5, "불편한 편의점")
     _photo(
@@ -202,6 +227,19 @@ def test_제한_시간을_넘기면_시간_초과다(monkeypatch, pool) -> None:
         await asyncio.sleep(1)
 
     monkeypatch.setattr(scan.fetch, "fetch", slow_fetch)
+
+    with pytest.raises(scan.ScanTimeoutError):
+        _run()
+
+
+def test_책을_찾는_중에도_사진_전체_시간_제한을_지킨다(monkeypatch, pool) -> None:
+    monkeypatch.setattr(scan.get_settings(), "photo_timeout_seconds", 0.05)
+    _photo(monkeypatch, PhotoText(photo_type="shelf", books=[BookText(title="토지")]))
+
+    async def slow_match(conn, text):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(scan.match_shelf, "match", slow_match)
 
     with pytest.raises(scan.ScanTimeoutError):
         _run()
