@@ -324,14 +324,9 @@ def test_history가_오면_요청의_이력으로_계산한다(
 
 @pytest.mark.parametrize("history", [None, {}], ids=["history 없음", "빈 history"])
 def test_history가_없거나_비면_이력이_없는_것으로_계산한다(
-    monkeypatch: pytest.MonkeyPatch, at_now: datetime, history
+    at_now: datetime, history
 ) -> None:
     # 복제한 사용자 표는 읽지 않는다. 복제를 멈추고 지운다(#307).
-    async def _no_replica(conn, user_id, until=None):
-        raise AssertionError("복제 표를 읽었다")
-
-    monkeypatch.setattr(service.history, "read", _no_replica)
-
     async def check(conn):
         overrides = {} if history is None else {"history": history}
         return await _rebuilt(conn, **overrides)
