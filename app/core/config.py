@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # BE 공개 API 호출 하나의 시간 제한(초). BE 검색은 안에서 AI 검색을 다시 부른다(새 검색어 약 2초)
     be_public_api_timeout_seconds: float = 5
 
+    # --- 사진으로 책 찾기(#615) ---
+    # 사진 속 글자를 읽는 호출만 쓰는 모델. 비어 있으면 llm_model_id 를 쓴다. 사진을 받는 모델이어야 한다.
+    # 시험은 google/gemini-4-argon 으로 했다(#615 시험 결과).
+    photo_llm_model_id: str = ""
+    # 사진 주소(image_ref)가 이 중 하나로 시작할 때만 연다. 쉼표로 여러 개. 비어 있으면(기본) 어떤 주소도 열지
+    # 않는다. 예: https://<버킷>.s3.ap-northeast-2.amazonaws.com/<사진 폴더>/
+    photo_image_url_prefixes: str = ""
+    # 사진 한 장(받기·읽기·찾기 전체)의 시간 제한. 모델에는 이 시간의 2/3만 써서 DB 검색 시간을 남긴다.
+    photo_timeout_seconds: float = 60
+
     # --- 관심사별 홈 추천(#395) ---
     # 켜면(기본) ⑥이 관심사 점수와 추천 목록을 저장하고, 홈과 더 보기가 그 목록을 읽는다. 끄면 새 표·칸
     # (book_classes, taste_profile 의 새 칸)을 읽지도 쓰지도 않는다(#440). 켜 두려면 DB 에 그 마이그레이션과
