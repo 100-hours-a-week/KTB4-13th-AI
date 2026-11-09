@@ -128,3 +128,11 @@ def test_쇼핑_에이전트도_헤더가_없으면_401이다() -> None:
 
     assert res.status_code == 401
     assert res.json() == {"message": "unauthorized", "data": None}
+
+
+def test_사진_책_찾기도_헤더가_없으면_401이다() -> None:
+    # 나의 도서관 사진(#615). 새 라우터를 붙이면서 인증이 빠지지 않았는지 본다.
+    res = client.post("/shelf/scans", json={})
+
+    assert res.status_code == 401
+    assert res.json() == {"message": "unauthorized", "data": None}
