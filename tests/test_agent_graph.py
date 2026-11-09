@@ -1,6 +1,6 @@
 """⑦ 그래프(app/agent/graph.py) 테스트(#356). 가짜 LLM(ScriptedModel)과 가짜 BE 로 돈다.
 
-여기서 지키려는 것: LLM 이 무엇을 고르든 반복은 3번에서 멈추고, LLM 에게는 ISBN 이 한 번도 보이지 않고, 막힌
+여기서 지키려는 것: LLM 이 무엇을 고르든 반복은 상한(MAX_TOOL_STEPS)이나 턴 시간 예산에서 멈추고, LLM 에게는 ISBN 이 한 번도 보이지 않고, 막힌
 호출은 BE 를 바꾸지 못하며, 실행하지 않은 호출에도 LLM 에게 이유가 돌아간다. 실제 LLM 의 인자 정확도는
 여기서 재지 않는다(실제 모델 탐침은 이슈 #356 의 코멘트에 있다).
 """
@@ -316,7 +316,7 @@ def test_허용한_도구가_하나도_없으면_도구_없이_부른다() -> No
 # --- 반복 상한 ---
 
 
-def test_반복은_3번에서_멈추고_마지막_호출은_도구를_못_쓰게_한다() -> None:
+def test_반복은_상한에서_멈추고_마지막_호출은_도구를_못_쓰게_한다() -> None:
     run, model, _fake_be = _run(
         [ai_calls((ToolName.CART_VIEW, {}))] * MAX_TOOL_STEPS
         + [ai_text("여기까지 확인했어요.")]
@@ -346,6 +346,80 @@ def test_상한을_다_쓰지_않으면_상한에_걸린_것이_아니다() -> N
     run, _model, _fake_be = _run([ai_calls((ToolName.CART_VIEW, {})), ai_text("끝.")])
 
     assert run.hit_cap is False
+
+
+def test_반복_상한은_넉넉하게_6번이다() -> None:
+    # 카드 밖 책 찾기(#631)로 "장바구니 보기 → 주제마다 검색 → 담기 → 품절이면 다시 찾기"까지 이어질 수 있다
+    assert MAX_TOOL_STEPS == 6
+
+
+class _Clock:
+    """perf_counter 대신 쓰는 시계. 부를 때마다 step 초씩 간다."""
+
+    def __init__(self, step: float) -> None:
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+def test_턴_시간이_다_되어_가면_도구를_그만_쓰고_답한다(monkeypatch) -> None:
+    # 30초 제한이면 10초를 남기고(20초에) 멈춘다. 시계는 부를 때마다 4초씩 가서 첫 반복 뒤에 20초를 넘는다
+    monkeypatch.setattr(graph_module, "perf_counter", _Clock(4.0))
+    model = ScriptedModel(
+        [ai_calls((ToolName.CART_VIEW, {})), ai_text("장바구니를 확인했어요.")]
+    )
+
+    run = asyncio.run(
+        run_agent(_request(), model=model, gateway=_fake(), turn_seconds=30)
+    )
+
+    assert run.iterations == 1
+    assert run.out_of_time is True
+    assert run.hit_cap is False
+    assert model.bind_kwargs == [{}, {"tool_choice": "none"}]
+    assert run.final_text == "장바구니를 확인했어요."
+
+
+def test_시간이_다_된_뒤의_호출이_그래도_도구를_부르면_실행하지_않는다(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "perf_counter", _Clock(4.0))
+    fake = _fake()
+    model = ScriptedModel(
+        [
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_calls((ToolName.CART_ADD, {"book": card(1)})),
+        ]
+    )
+
+    run = asyncio.run(run_agent(_request(), model=model, gateway=fake, turn_seconds=30))
+
+    assert [c.name for c in run.tool_calls] == [ToolName.CART_VIEW]
+    assert fake.cart_state(UID) == {}
+
+
+def test_짧은_제한은_그_3분의_1만_남긴다(monkeypatch) -> None:
+    # 평가·테스트처럼 제한이 5초면 10초를 남길 수 없다. 5/3초를 남기므로 처음부터 막히지는 않는다
+    monkeypatch.setattr(graph_module, "perf_counter", _Clock(0.1))
+    model = ScriptedModel([ai_calls((ToolName.CART_VIEW, {})), ai_text("끝.")])
+
+    run = asyncio.run(
+        run_agent(_request(), model=model, gateway=_fake(), turn_seconds=5)
+    )
+
+    assert run.out_of_time is False
+    assert model.bind_kwargs == [{}, {}]
+
+
+def test_시간_제한을_주지_않으면_반복_상한만_본다(monkeypatch) -> None:
+    monkeypatch.setattr(graph_module, "perf_counter", _Clock(100.0))
+    run, model, _fake_be = _run([ai_calls((ToolName.CART_VIEW, {})), ai_text("끝.")])
+
+    assert run.out_of_time is False
+    assert model.bind_kwargs == [{}, {}]
 
 
 def test_한_번에_부를_수_있는_도구_수를_넘으면_넘는_호출은_실행하지_않는다() -> None:

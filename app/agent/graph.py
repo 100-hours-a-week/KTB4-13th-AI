@@ -1,9 +1,9 @@
 """⑦ LLM 이 도구를 고르고 코드가 검사·실행하는 반복(#356). LangGraph 로 만든다(9/21 팀 결정).
 
 순서: 도구 고르기(LLM) → 부른 도구를 순서대로 검사하고 실행(코드, tools.execute) → 결과를 LLM 에게 돌려주고
-다시 고르기. 최대 MAX_TOOL_STEPS 번 반복하고, 다 썼으면 마지막 호출은 도구를 못 쓰게 해서 항상 글로 된
-답으로 끝낸다. 결과는 /agent/act 응답이 아니라 "그래프 실행 결과"(AgentRun)다. 응답 조립과 숫자·행동
-검사는 마무리 단계(7단계)가 한다.
+다시 고르기. 최대 MAX_TOOL_STEPS 번 반복하고, 다 썼거나 턴 시간이 ANSWER_MARGIN_SECONDS 만큼만 남았으면 마지막
+호출은 도구를 못 쓰게 해서 항상 글로 된 답으로 끝낸다. 결과는 /agent/act 응답이 아니라 "그래프 실행 결과"(AgentRun)다.
+응답 조립과 숫자·행동 검사는 마무리 단계(7단계)가 한다.
 
 LLM 호출은 invoke_chain 을 거친다. /health 의 LLM 상태와 provider 예외 변환을 ③⑤와 같은 길로 묶기 위해서다.
 """
@@ -42,10 +42,24 @@ from app.gateway.commerce import (
 from app.gateway.commerce_snapshot import CartAction, diff_cart
 from app.gateway.llm import invoke_chain
 
-# 명세 ⑦: tool 반복은 최대 3번
-MAX_TOOL_STEPS = 3
+# 도구 반복 상한. 처음 명세는 3번이었다. 카드 밖 책 찾기(#631)가 들어오며 한 턴이 "장바구니 보기 → 주제마다 검색
+# → 담기 → 품절이면 다시 찾아 담기"처럼 길어질 수 있어 넉넉히 6번으로 둔다. 반복이 길어져 느려지는 것은 횟수가
+# 아니라 아래 시간 예산이 막는다. 모델이 도구를 더 부르려 할 때만 반복이 늘어나므로 짧은 턴은 그대로다.
+MAX_TOOL_STEPS = 6
 # 반복 상한은 횟수만 막는다. LLM 이 한 번에 수십 개를 부르는 것도 막는다.
 MAX_CALLS_PER_STEP = 5
+# 한 턴의 시간 제한(agent_turn_timeout_seconds)이 이만큼 남으면 도구를 더 쓰지 않고 답을 쓰게 한다. 제한을 넘기면
+# 504 로 턴 전체가 실패해 그때까지 한 일도 버려지므로, 마지막 답 쓰기 호출이 끝날 시간을 남기고 멈춘다. 제한이
+# 짧으면(평가·테스트) 제한의 1/3 만 남긴다. 운영의 30초에서는 10초다.
+ANSWER_MARGIN_SECONDS = 10.0
+
+
+def _deadline(turn_seconds: float | None) -> float | None:
+    """도구를 그만 쓸 때(perf_counter 값). 제한이 없으면 None."""
+    if turn_seconds is None:
+        return None
+    margin = min(ANSWER_MARGIN_SECONDS, turn_seconds / 3)
+    return perf_counter() + max(0.0, turn_seconds - margin)
 
 
 @dataclass(frozen=True)
@@ -72,6 +86,8 @@ class AgentRun:
     actions: list[CartAction] = field(default_factory=list)
     # "주문해 줘"로 책을 담았을 때 주문 화면에 채울 쿠폰과 포인트(#631). 그 밖에는 None
     checkout: checkout_plan.Plan | None = None
+    # 턴 시간이 다 되어 가서 도구를 그만 쓰고 답하게 했다(반복 상한 전에)
+    out_of_time: bool = False
 
 
 class _State(TypedDict):
@@ -80,6 +96,8 @@ class _State(TypedDict):
     timings: Annotated[list[StepTiming], operator.add]
     iterations: int
     llm_calls: int
+    # 마지막 도구 고르기 호출이 시간 예산을 넘겨 도구를 못 쓰게 한 호출이었다
+    out_of_time: bool
 
 
 def _error_message(
@@ -173,18 +191,24 @@ def build_graph(
     ctx: TurnContext,
     comparer: Comparer | None = None,
     finder: BookFinder | None = None,
+    deadline: float | None = None,
 ):
-    """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다."""
+    """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다.
+
+    deadline(perf_counter 값)이 지나면 도구를 더 쓰지 않고 답하게 한다. None 이면 반복 상한만 본다.
+    """
     tools = descriptors.tool_definitions(
         _offered(ctx, finder), checkout=ctx.checkout_enabled
     )
     # 허용한 도구가 하나도 없으면 도구 없이 부른다(빈 도구 목록은 공급자가 거절한다)
     can_choose = model.bind_tools(tools) if tools else model
-    # 반복을 다 썼을 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
+    # 반복을 다 썼거나 시간이 다 되어 갈 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
     must_answer = model.bind_tools(tools, tool_choice="none") if tools else model
 
     async def choose(state: _State) -> dict[str, Any]:
-        runnable = can_choose if state["iterations"] < MAX_TOOL_STEPS else must_answer
+        out_of_time = deadline is not None and perf_counter() >= deadline
+        may_use_tools = state["iterations"] < MAX_TOOL_STEPS and not out_of_time
+        runnable = can_choose if may_use_tools else must_answer
         started = perf_counter()
         ai: AIMessage = await invoke_chain(runnable, state["messages"])
         usage = getattr(ai, "usage_metadata", None) or {}
@@ -198,6 +222,7 @@ def build_graph(
             "messages": [ai],
             "timings": [timing],
             "llm_calls": state["llm_calls"] + 1,
+            "out_of_time": out_of_time and state["iterations"] < MAX_TOOL_STEPS,
         }
 
     def route(state: _State) -> Literal["act", "end"]:
@@ -207,7 +232,11 @@ def build_graph(
             or getattr(last, "invalid_tool_calls", None)
         )
         # 도구를 못 쓰게 한 마지막 호출이 그래도 도구를 부르면 실행하지 않고 끝낸다
-        if wants_tools and state["iterations"] < MAX_TOOL_STEPS:
+        if (
+            wants_tools
+            and state["iterations"] < MAX_TOOL_STEPS
+            and not state["out_of_time"]
+        ):
             return "act"
         return "end"
 
@@ -364,6 +393,7 @@ async def run_agent(
     comparer: Comparer | None = None,
     finder: BookFinder | None = None,
     checkout: bool = False,
+    turn_seconds: float | None = None,
 ) -> AgentRun:
     """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
 
@@ -372,14 +402,18 @@ async def run_agent(
 
     checkout 이 켜져 있으면(#631) 골라서 담으라고 맡긴 말에 확인 없이 담고, "주문해 줘"로 담았으면 주문 화면에
     채울 쿠폰과 포인트를 고른다. finder 가 있으면 카드 밖의 책을 찾는 book.search 를 준다.
+
+    turn_seconds 는 부르는 쪽이 이 턴에 거는 시간 제한이다. 남은 시간이 ANSWER_MARGIN_SECONDS(짧은 제한이면 그
+    1/3)보다 적으면 도구를 그만 쓰고 답하게 한다. None 이면 반복 상한만 본다.
     """
+    deadline = _deadline(turn_seconds)
     ctx = TurnContext.from_request(req)
     ctx.checkout_enabled = checkout
     if not checkout:
         finder = None  # 기능이 꺼져 있으면 찾을 곳이 있어도 책 찾기를 주지 않는다
     await prefetch_cart(ctx, gateway)
     start = list(ctx.cart_snapshot or [])
-    graph = build_graph(model, gateway, ctx, comparer, finder)
+    graph = build_graph(model, gateway, ctx, comparer, finder, deadline)
     out: _State = await graph.ainvoke(
         {
             "messages": [
@@ -393,6 +427,7 @@ async def run_agent(
             "timings": [],
             "iterations": 0,
             "llm_calls": 0,
+            "out_of_time": False,
         }
     )
     final_text = _text(out["messages"][-1])
@@ -418,6 +453,7 @@ async def run_agent(
         ctx=ctx,
         actions=actions,
         checkout=plan,
+        out_of_time=out["out_of_time"],
     )
 
 

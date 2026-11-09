@@ -124,8 +124,9 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         model = agent_model()
         # 비교는 소개글을 읽는 별도 호출이다. 도구를 고르는 호출과 메시지를 섞지 않는다
         comparer = LlmComparer(catalog, model)
-        # 한 턴은 LLM 을 최대 4번(비교는 한 번 더) 부른다. LLM 호출 하나의 제한(LLM_TIMEOUT_SECONDS)만으로는
-        # 턴 전체가 길어져서 턴 전체를 따로 끊는다
+        # 한 턴은 LLM 을 최대 MAX_TOOL_STEPS+1 번(비교는 그만큼 더) 부른다. LLM 호출 하나의 제한
+        # (LLM_TIMEOUT_SECONDS)만으로는 턴 전체가 길어져서 턴 전체를 따로 끊는다. 끊기기 전에 답을 쓰도록 같은 제한을
+        # 그래프에도 알려 준다(남은 시간이 적으면 도구를 그만 쓴다)
         settings = get_settings()
         async with asyncio.timeout(settings.agent_turn_timeout_seconds):
             run = await run_agent(
@@ -135,6 +136,7 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
                 comparer=comparer,
                 finder=get_finder(),
                 checkout=settings.agent_checkout,
+                turn_seconds=settings.agent_turn_timeout_seconds,
             )
         finished = finish(run)
     except TimeoutError:
@@ -155,10 +157,11 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         return ShopTurn(error=responses.error(500, "internal_server_error"))
 
     logger.info(
-        "⑦ 완료 llm_calls=%d iterations=%d hit_cap=%s tool_calls=%d removed=%s ms=%.0f",
+        "⑦ 완료 llm_calls=%d iterations=%d hit_cap=%s out_of_time=%s tool_calls=%d removed=%s ms=%.0f",
         run.llm_calls,
         run.iterations,
         run.hit_cap,
+        run.out_of_time,
         len(run.tool_calls),
         finished.removed,
         sum(t.ms for t in run.timings),

@@ -750,3 +750,151 @@ def test_찾을_곳을_받아도_기능이_꺼져_있으면_책_찾기를_주지
 
     offered = {tool["function"]["name"] for tool in model.tools_seen[0]}
     assert "book_search" not in offered
+
+
+# --- 한 턴에 여러 번 찾기, 제목과 권수 (#631 평가 checkout-h04·h05) ---
+
+
+def _search_twice(message: str):
+    ctx, gateway = _tool_ctx(message)
+    finder = FakeBookFinder(_shelf())
+    first = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "개발"}, finder)
+    second = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "파이썬"}, finder)
+    return ctx, gateway, first, second
+
+
+def test_두_번_찾으면_찾은_책_번호가_턴_전체로_이어_붙는다() -> None:
+    # 마지막 검색 기준으로 매겼더니 두 검색의 책이 둘 다 1번이 되어 같은 책을 두 번 담았다(h04)
+    from app.agent.view import llm_view
+
+    ctx, gateway, first, second = _search_twice(
+        "개발 입문서 하나랑 파이썬 책 하나 담아 줘"
+    )
+
+    assert [b.isbn for b in ctx.search_results] == [P1, P2, P3, P4]
+    assert [b["book"] for b in llm_view(ctx, first)["books"]] == [
+        "찾은 책 1번",
+        "찾은 책 2번",
+        "찾은 책 3번",
+    ]
+    assert [b["book"] for b in llm_view(ctx, second)["books"]] == ["찾은 책 4번"]
+
+    a = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+    b = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(4)})
+
+    assert a.result == b.result == {"ok": True}
+    assert [(x.isbn, x.quantity) for x in gateway.actions()] == [(P1, 1), (P4, 1)]
+
+
+def test_다시_나온_책은_처음_번호를_그대로_쓴다() -> None:
+    from app.agent.view import llm_view
+
+    ctx, gateway = _tool_ctx("개발 입문서 담아 줘")
+    finder = FakeBookFinder(_shelf())
+    _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "파이썬"}, finder)
+    again = _exec(ctx, gateway, ToolName.BOOK_SEARCH, {"query": "입문서"}, finder)
+
+    assert [b.isbn for b in ctx.search_results] == [P4, P1, P2, P3]
+    # 두 번째 검색에도 P4 가 나오지만 번호는 처음 찾았을 때의 1번이다
+    labels = {b["title"]: b["book"] for b in llm_view(ctx, again)["books"]}
+    assert labels["파이썬 입문서"] == "찾은 책 1번"
+    assert labels["처음 배우는 개발 입문서"] == "찾은 책 2번"
+
+
+def test_제목을_말한_검색이_주제로_그린_다른_검색의_책을_막지_않는다() -> None:
+    # 제목 판정을 턴 전체로 했더니 "파이썬"(제목 낱말)이 첫 검색의 책까지 근거 없음으로 막았다
+    ctx, gateway, _, _ = _search_twice("개발 입문서 하나랑 파이썬 입문서 담아 줘")
+
+    described = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(2)})
+    named = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(4)})
+
+    assert described.result == {"ok": True}
+    assert named.result == {"ok": True}
+
+
+def test_한_검색_안에서는_제목을_말한_책만_담는다() -> None:
+    # 검색마다 따로 보아도 같은 검색 안의 "제목을 말했으면 그 책만"은 그대로다(checkout-04)
+    ctx, gateway, _, _ = _search_twice("개발 입문서 품절판이랑 파이썬 책 담아 줘")
+
+    other = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1)})
+
+    assert other.result["error"] == ToolErrorCode.REFERENCE_NOT_STATED.value
+
+
+def test_제목을_말하고_권수를_말하면_그_책의_수량이다() -> None:
+    # "두 권 = 서로 다른 책" 규칙이 제목을 말한 책에도 걸려 3권이 1권이 됐다(h05)
+    ctx, gateway = _tool_ctx("파이썬 입문서 3권 주문해 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "파이썬"},
+        FakeBookFinder(_shelf()),
+    )
+
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1), "quantity": 3})
+
+    assert added.result == {"ok": True}
+    assert added.arguments["quantity"] == 3
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "파이썬 입문서 담아 줘",  # 권수를 말하지 않았다(모델이 채운 수량은 믿지 않는다)
+        "입문서 세 권 골라서 담아 줘",  # 고르기를 맡긴 말의 권수는 서로 다른 책의 수다
+    ],
+)
+def test_제목과_권수를_같이_말하지_않으면_한_권이다(message: str) -> None:
+    ctx, gateway = _tool_ctx(message)
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "파이썬"},
+        FakeBookFinder(_shelf()),
+    )
+
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1), "quantity": 3})
+
+    assert added.arguments["quantity"] == 1
+
+
+def test_두_주제를_한_턴에_찾아_하나씩_담는다() -> None:
+    _, data, model = _turn(
+        "개발 입문서 하나랑 파이썬 책 하나 담아 줘",
+        [
+            ai_calls(
+                (ToolName.BOOK_SEARCH, {"query": "개발"}),
+                (ToolName.BOOK_SEARCH, {"query": "파이썬"}),
+            ),
+            ai_calls(
+                (ToolName.CART_ADD, {"book": search(1)}),
+                (ToolName.CART_ADD, {"book": search(4)}),
+            ),
+            ai_text("두 권을 담았어요."),
+        ],
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [
+        ("set", P1, 1),
+        ("set", P4, 1),
+    ]
+    # LLM 은 두 번째 검색의 책을 4번으로 받았다
+    seen = json.dumps(
+        [m.content for m in model.calls[1] if getattr(m, "type", "") == "tool"],
+        ensure_ascii=False,
+    )
+    assert "찾은 책 4번" in seen
+
+
+def test_주문_화면이_켜지면_사겠다는_말도_되묻지_말라고_알려_준다() -> None:
+    # 평가 checkout-h03: "…구매하고 싶어요"에 책을 찾고도 "담아 드릴까요?"라고 되물었다
+    from app.agent import prompts
+
+    on = prompts.system_prompt(search=True, order=True)
+    off = prompts.system_prompt(search=False, order=False)
+
+    assert "사겠다고 한 말도 주문해 달라는 말이다" in on
+    assert "그 책을 그 권수로 담는다" in on
+    assert "사겠다고 한 말" not in off

@@ -196,6 +196,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "llm_calls": 0,
         "iterations": 0,
         "hit_cap": False,
+        "out_of_time": False,
         "tokens_in": 0,
         "tokens_out": 0,
         # BE 가 actions 를 반영하다 거절한 오류 이름(#489). 이때 사용자는 reply 대신 BE 안내 문구를 본다
@@ -221,6 +222,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                     comparer=comparer,
                     finder=finder_for(data, case),
                     checkout=bool(case.get("checkout")),
+                    turn_seconds=timeout,
                 )
             finished = finish(run)
             data = finished.data.model_dump(mode="json")
@@ -233,6 +235,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 llm_calls=run.llm_calls,
                 iterations=run.iterations,
                 hit_cap=run.hit_cap,
+                out_of_time=run.out_of_time,
                 tokens_in=sum(t.input_tokens for t in run.timings),
                 tokens_out=sum(t.output_tokens for t in run.timings),
             )
@@ -356,6 +359,12 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
             if okay
             else 0,
             "hit_cap": sum(1 for r in okay if r["hit_cap"]),
+            # 시간 예산이 다 되어 도구를 그만 쓰게 한 턴과, 도구 반복 수의 분포(상한을 정하는 근거)
+            "out_of_time": sum(1 for r in okay if r.get("out_of_time")),
+            "iterations": {
+                str(k): v
+                for k, v in sorted(Counter(r["iterations"] for r in okay).items())
+            },
             "status_counts": dict(Counter(str(r["status"]) for r in records)),
             "removed_reasons": dict(Counter(x for r in records for x in r["removed"])),
             "executed_without_confirm": unconfirmed,
@@ -407,6 +416,8 @@ def format_report(summary: dict) -> str:
         f"| 지연(ms) 중앙 / p95 / 최대 | {m['ms_median']:,.0f} / {m['ms_p95']:,.0f} / {m['ms_max']:,.0f} |",
         f"| 토큰(평균) 입력 / 출력 | {m['tokens_in_avg']:,.0f} / {m['tokens_out_avg']:,.0f} |",
         f"| 반복 상한에 걸림 | {m['hit_cap']}회 |",
+        f"| 시간이 다 되어 도구를 멈춤 | {m.get('out_of_time', 0)}회 |",
+        f"| 도구 반복 수 분포 | {m.get('iterations') or '-'} |",
         f"| 확인 없이 실행된 조합 | {m['executed_without_confirm']}회 |",
         f"| 코드가 막은 쓰기 시도(모델이 짐작) | {m.get('blocked_writes', 0)}회 |",
         f"| BE 가 actions 반영을 거절 | {m.get('be_rejected') or '없음'} |",

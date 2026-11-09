@@ -20,12 +20,17 @@ def label(ctx: TurnContext, isbn: str) -> str:
             return f"장바구니 {position}번째"
     if ctx.focused_isbn == isbn:
         return "지금 보는 책"
+    if (number := search_number(ctx, isbn)) is not None:
+        return f"찾은 책 {number}번"
+    return "목록 밖의 책"
+
+
+def search_number(ctx: TurnContext, isbn: str) -> int | None:
+    """찾은 책의 번호(이번 턴의 검색 전체에 이어 붙인 차례). 찾은 책이 아니면 None."""
     for position, book in enumerate(ctx.search_results, start=1):
         if book.isbn == isbn:
-            return f"찾은 책 {position}번"
-    if isbn in ctx.found:
-        return "찾은 책"  # 앞의 검색에서 찾은 책. 번호는 마지막 검색 기준이라 붙이지 않는다
-    return "목록 밖의 책"
+            return position
+    return None
 
 
 def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
@@ -60,17 +65,18 @@ def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
         }
 
     if call.name == ToolName.BOOK_SEARCH and "books" in result:
-        # 번호는 cart_add 가 {"source": "search", "n": 번호}로 가리킬 때 쓴다
+        # 번호는 cart_add 가 {"source": "search", "n": 번호}로 가리킬 때 쓴다. 이번 턴의 검색 전체에 이어 붙인
+        # 번호라, 두 번째 검색의 책은 앞 검색의 책 다음 번호부터다. 장바구니에 이미 있는 책이어도 찾은 책 번호로 보인다
         return {
             "books": [
                 {
-                    "book": f"찾은 책 {position}번",
+                    "book": f"찾은 책 {search_number(ctx, book['isbn'])}번",
                     "title": book["title"],
                     "author": book["author"],
                     "price": book["price"],
                     "in_stock": book["in_stock"],
                 }
-                for position, book in enumerate(result["books"], start=1)
+                for book in result["books"]
             ]
         }
 

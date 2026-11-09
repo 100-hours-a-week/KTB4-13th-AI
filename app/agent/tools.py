@@ -311,10 +311,13 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
     isbn = resolve(ctx, args.book)
     quantity = 1 if args.quantity is None else args.quantity
     # 찾은 책이나 코드가 고른 책에서 "두 권 골라서"의 두 권은 서로 다른 책의 수다. 모델이 그 수를 한 책의 수량으로
-    # 채워도 "두 권씩"처럼 말하지 않았으면 한 권만 담는다(#631)
+    # 채워도 "두 권씩"처럼 말하지 않았으면 한 권만 담는다(#631). 다만 찾은 책의 제목을 말하고 권수를 말했으면
+    # ("AI 모델 서빙 실전 3권") 그 권수는 그 책의 수량이다
     if (
-        args.book.source == "search" or isbn in ctx.picked
-    ) and not evidence.states_each(ctx):
+        (args.book.source == "search" or isbn in ctx.picked)
+        and not evidence.states_each(ctx)
+        and not evidence.states_copies(ctx, isbn)
+    ):
         quantity = 1
     arguments = {"isbn": isbn, "quantity": quantity}
     # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
@@ -503,7 +506,9 @@ async def _search(
 ) -> _Done:
     """카드 밖의 책을 BE 공개 검색으로 찾는다(#631). 장바구니는 건드리지 않는다.
 
-    찾은 책은 "search n"으로 가리킨다(마지막 검색 기준). 가격·재고는 BE 상품 상세의 값이라, 장바구니 복사본에
+    찾은 책은 "search n"으로 가리킨다. 번호는 이번 턴의 검색 전체에 이어 붙는다. 마지막 검색 기준으로 매겼더니
+    "알고리즘 책이랑 리눅스 책 하나씩"에서 두 검색의 책이 둘 다 1번이 되어 같은 책을 두 번 담았다(평가 checkout-h04).
+    앞에서 찾은 책이 다시 나오면 처음 번호를 그대로 쓴다. 가격·재고는 BE 상품 상세의 값이라, 장바구니 복사본에
     받아 두면 cart.add 가 카드 책처럼 담는다. 담은 결과는 actions 로 BE 에 가고 BE 가 다시 검사한다(BE#533).
     """
     arguments = {"query": args.query}
@@ -511,7 +516,14 @@ async def _search(
         books = await finder.find(args.query, SEARCH_SIZE)
     except FinderUnavailable:
         return arguments, _fail(ToolErrorCode.SEARCH_FAILED.value)
-    ctx.search_results = books
+    known = {book.isbn for book in ctx.search_results}
+    ctx.search_results = [
+        *ctx.search_results,
+        *(book for book in books if book.isbn not in known),
+    ]
+    round_no = max(ctx.search_round.values(), default=0) + 1
+    for book in books:
+        ctx.search_round.setdefault(book.isbn, round_no)
     ctx.found.update({book.isbn: book for book in books})
     ctx.titles.update({book.isbn: book.title for book in books})
     if isinstance(gateway, OfferMemory):

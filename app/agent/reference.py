@@ -85,9 +85,12 @@ class TurnContext:
     pending_cart: list[CartLine] | None = None
     # 카드 밖 책 찾기(#631). 켜져 있을 때만 book.search 를 주고, 고르기를 맡긴 말에 확인 없이 담는다
     checkout_enabled: bool = False
-    # 마지막 book.search 의 결과(search n 번호의 기준)와, 이번 턴에 찾은 책 전부(ISBN → 책)
+    # 이번 턴에 book.search 로 찾은 책을 찾은 차례대로(search n 번호의 기준, 검색이 여러 번이면 이어 붙는다)와
+    # 같은 책들의 ISBN → 책
     search_results: list[FoundBook] = field(default_factory=list)
     found: dict[str, FoundBook] = field(default_factory=dict)
+    # 찾은 책이 이번 턴의 몇 번째 검색에서 처음 나왔나(ISBN → 1부터). "제목을 말했으면 그 책만"은 검색마다 따로 본다
+    search_round: dict[str, int] = field(default_factory=dict)
     # 사용자의 보유 쿠폰과 포인트 잔액(요청에서 온 값). 주문 화면에 채울 쿠폰·포인트를 고를 때 쓴다
     owned_coupons: list[OwnedCouponIn] = field(default_factory=list)
     point_balance: int | None = None

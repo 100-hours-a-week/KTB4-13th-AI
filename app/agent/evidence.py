@@ -563,11 +563,16 @@ _COUPON = re.compile(r"쿠폰|포인트|할인")
 def _search_evidence(ctx: TurnContext, isbn: str, message: str) -> bool:
     """찾은 책의 근거. 사용자가 찾은 책 중 어느 책의 제목을 말했으면("테스트 주도 개발 책") 그 책만 근거가 있다.
     그 책이 품절이라고 제목이 다른 책을 대신 담지 않는다(평가 checkout-04). 제목을 말하지 않고 주제·종류로 그렸으면
-    ("파이썬 입문서 하나") 찾은 책 어느 것이든 고르기를 맡긴 것이다."""
+    ("파이썬 입문서 하나") 찾은 책 어느 것이든 고르기를 맡긴 것이다.
+
+    한 턴에 여러 번 찾았으면 검색마다 따로 본다. "개발 입문서 하나랑 파이썬 입문서 담아 줘"에서 두 번째 검색의 책
+    제목을 말했다고 첫 번째 검색(주제로 그린 책)의 책까지 막지 않는다."""
+    same = ctx.search_round.get(isbn)
     named = {
         book.isbn
         for n, book in enumerate(ctx.search_results, start=1)
-        if _says_title(ctx, BookRef(source="search", n=n), book.isbn, message)
+        if ctx.search_round.get(book.isbn) == same
+        and _says_title(ctx, BookRef(source="search", n=n), book.isbn, message)
     }
     if named:
         return isbn in named
@@ -602,6 +607,22 @@ _EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
 def states_each(ctx: TurnContext) -> bool:
     """책마다의 수량을 말했는가("두 권씩", "각각 2권"). 없으면 "두 권"은 서로 다른 책의 수다."""
     return ctx.message is not None and bool(_EACH.search(normalize(ctx.message)))
+
+
+def states_copies(ctx: TurnContext, isbn: str) -> bool:
+    """찾은 책 하나의 제목을 말하고 권수를 말했는가("AI 모델 서빙 실전 3권 주문해 줘"). 그러면 "3권"은 서로 다른
+    책의 수가 아니라 그 책의 수량이다(평가 checkout-h05). 고르기를 맡긴 말("두 권 골라서")의 권수는 그대로 서로
+    다른 책의 수다."""
+    if ctx.message is None or not states_quantity(ctx):
+        return False
+    message = normalize(ctx.message)
+    if _CHOOSE.search(message):
+        return False
+    return any(
+        book.isbn == isbn
+        and _says_title(ctx, BookRef(source="search", n=n), isbn, message)
+        for n, book in enumerate(ctx.search_results, start=1)
+    )
 
 
 def mentions_coupon(ctx: TurnContext) -> bool:
