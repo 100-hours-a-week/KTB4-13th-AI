@@ -13,6 +13,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
+from app.core.config import Settings
 from app.extraction import service
 from app.extraction.schemas import ExtractionRequest, parse_request
 from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
@@ -544,6 +545,23 @@ def test_꺼져_있거나_설정이_비면_API만_부른다(
 
     assert [item["strength"] for item in _extract()] == [3]
     assert [call["route"] for call in called] == ["api"]
+
+
+def test_자체_서빙은_기본으로_켜져_있고_모델_이름은_GPU_서버와_맞춘_이름이다(
+    monkeypatch,
+) -> None:
+    # 운영 시범(#569)은 이 기본값으로 켠다. 운영 설정에는 주소만 넣는다. 이름이 GPU 서버 vLLM 의
+    # --served-model-name 과 다르면 호출마다 404 로 API 에 넘어가 시범이 조용히 API 로만 돈다
+    monkeypatch.delenv("EXTRACTION_SELF_HOSTED_MODE", raising=False)
+    monkeypatch.delenv("EXTRACTION_SELF_HOSTED_MODEL_ID", raising=False)
+    monkeypatch.delenv("EXTRACTION_SELF_HOSTED_BASE_URL", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.extraction_self_hosted_mode == "on"
+    assert settings.extraction_self_hosted_model_id == "bookjeok-extraction"
+    # 주소는 GPU 서버가 있는 환경의 설정에만 넣는다. 비어 있으면 API 만 쓴다(위 테스트)
+    assert settings.extraction_self_hosted_base_url == ""
 
 
 def test_자체_서빙_서버가_키를_검사하면_그_키를_넘긴다(
