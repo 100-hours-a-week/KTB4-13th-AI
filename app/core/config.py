@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # 분류라 작고 빠른 모델로 충분하다. 평가도 작은 모델(gpt-4o-mini)로 쟀다. 챗봇과 같은 값이면 운영에서는
     # 더 큰 모델이 이 호출을 하게 되어 따로 둔다.
     relation_llm_model_id: str = ""
+    # ③ 판정 두 개(문지기의 애매한 말 판정, 새 요청 판정)를 무엇으로 물을지. llm(기본)이면 지금처럼 챗봇 LLM 이 JSON 으로
+    # 답하고, jev 면 판정 전용 모델 Jev 가 고른 선택지와 확신만 돌려준다(app/gateway/decision.py). 11/02 같은 사례 비교에서
+    # 정확도는 같거나 조금 낫고(86.3% → 89.6%) 해석 단계가 p50 0.5초 빨랐다. Jev 는 OpenRouter 키로 부른다. ZDR 을
+    # 지킨다는 문서가 없어 LLM_PROVIDER=openrouter(ZDR 켬)면 jev 여도 쓰지 않는다. 켜기는 이 기본값을 바꾸는 PR로 한다.
+    chat_judge: Literal["llm", "jev"] = "llm"
+    # 실측한 모델. 같은 이름 아래 스냅숏이 바뀔 수 있어 바꿀 때는 같은 사례로 다시 잰다.
+    jev_model_id: str = "typesafe/jev-1.14"
+    jev_url: str = "https://openrouter.ai/api/alpha/decisions"
     llm_base_url: str = "http://localhost:11434/v1"
     prompt_version: str = "v1"
     llm_timeout_seconds: int = 30

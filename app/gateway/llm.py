@@ -129,17 +129,30 @@ def report_models() -> None:
     로그에서 바로 보이게 한다. 모델 이름을 코드 기본값으로 두지 않는 것은 모델 ID 형식이 공급자마다
     달라서다(로컬 Ollama 등, 위 get_chat_model 의 게이트웨이 원칙).
     """
+    # decision 이 이 모듈의 예외를 쓰므로 위에서 가져오면 서로를 부른다
+    from app.gateway import decision
+
     settings = get_settings()
     if settings.llm_mock:
         # 가짜 응답만 쓰므로 어느 모델도 부르지 않는다
         return
     shared = settings.llm_model_id or "(비어 있음)"
-    own_models = (
+    jev = decision.enabled()
+    own_models = [
         ("EXTRACTION_LLM_MODEL_ID", "⑤ 취향 뽑기", settings.extraction_llm_model_id),
         ("RELATION_LLM_MODEL_ID", "③ 새 요청 판정", settings.relation_llm_model_id),
         ("AGENT_LLM_MODEL_ID", "⑦ 쇼핑 에이전트", settings.agent_llm_model_id),
-    )
+    ]
+    if jev:
+        # Jev 로 물으면 새 요청 판정은 이 모델을 안 쓴다
+        own_models = [m for m in own_models if m[0] != "RELATION_LLM_MODEL_ID"]
     parts = [f"공용 {shared}"]
+    if jev:
+        parts.append(f"③ 문지기·새 요청 판정 {settings.jev_model_id}")
+    elif reason := decision.skip_reason(settings):
+        logger.warning(
+            "CHAT_JUDGE 가 jev 지만 %s — ③ 판정 두 개는 LLM 으로 묻습니다", reason
+        )
     for name, feature, model_id in own_models:
         parts.append(f"{feature} {model_id or '공용'}")
         if not model_id:
