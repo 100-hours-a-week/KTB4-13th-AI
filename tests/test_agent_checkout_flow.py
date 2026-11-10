@@ -257,6 +257,29 @@ def test_사_달라는_말은_행동을_말한_것이다() -> None:
     assert evidence.states_action(_ctx("파이썬 입문서 하나 사 줘"))
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "파이썬 책 결제해 줘",
+        "리눅스 책 바로 주문할게요",
+        "알고리즘 책 하나 구매하고 싶어요",
+    ],
+)
+def test_주문하겠다는_말은_담으라는_말이기도_하다(message: str) -> None:
+    # 주문 말로 읽고 담기는 막으면 주문 화면을 못 연다. "결제해 줘"가 그랬다(11/10 평가 checkout-m09)
+    ctx = _ctx(message)
+
+    assert evidence.wants_order(ctx)
+    assert evidence.states_action(ctx)
+
+
+def test_기능을_끄면_결제해_달라는_말로는_담지_않는다() -> None:
+    # 꺼진 ⑦ 은 주문 화면이 없다. 결제는 못 한다고 알릴 말이다(main 과 같다)
+    assert not evidence.states_action(
+        _ctx("파이썬 책 결제해 줘", checkout_enabled=False)
+    )
+
+
 def test_기능을_끄면_사_달라는_말은_행동을_말한_것이_아니다() -> None:
     # 꺼져 있으면 이 말에 장바구니를 바꾸지 않는다. main 과 같다
     assert not evidence.states_action(
@@ -1112,6 +1135,75 @@ def test_제목을_말하고_권수를_말하면_그_책의_수량이다() -> No
 
     assert added.result == {"ok": True}
     assert added.arguments["quantity"] == 3
+
+
+@pytest.mark.parametrize("given", [{"quantity": 1}, {}])
+def test_제목과_권수를_말했으면_모델이_빠뜨린_수량을_코드가_채운다(given: dict) -> None:
+    # 실제 모델이 "리눅스 명령어 사전 두 권 사 주세요"에 수량을 1로 채우거나 비워 한 권만 담았다(checkout-m08)
+    ctx, gateway = _tool_ctx("파이썬 입문서 두 권 사 주세요")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "파이썬"},
+        FakeBookFinder(_shelf()),
+    )
+
+    added = _exec(ctx, gateway, ToolName.CART_ADD, {"book": search(1), **given})
+
+    assert added.result == {"ok": True}
+    assert added.arguments["quantity"] == 2
+
+
+@pytest.mark.parametrize(
+    ("message", "copies"),
+    [
+        ("파이썬 입문서 두 권 사 주세요", 2),
+        ("파이썬 입문서 3권 주문해 줘", 3),
+        (
+            "입문서 세 권 골라서 담아 줘",
+            None,
+        ),  # 고르기를 맡긴 권수는 서로 다른 책의 수다
+        ("파이썬 입문서 담아 줘", None),  # 권수를 말하지 않았다
+    ],
+)
+def test_제목과_권수를_말했을_때만_그_권수를_준다(
+    message: str, copies: int | None
+) -> None:
+    ctx, gateway = _tool_ctx(message)
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "파이썬"},
+        FakeBookFinder(_shelf()),
+    )
+    isbn = next(b.isbn for b in ctx.search_results if b.title == "파이썬 입문서")
+
+    assert evidence.copies_of(ctx, isbn) == copies
+
+
+def test_책마다_권수가_다르면_모델이_채운_수량을_쓴다() -> None:
+    # 어느 수가 어느 책의 것인지 낱말로 모른다
+    ctx, gateway = _tool_ctx("파이썬 입문서 2권이랑 개발 입문서 실전편 3권 담아 줘")
+    _exec(
+        ctx,
+        gateway,
+        ToolName.BOOK_SEARCH,
+        {"query": "입문서"},
+        FakeBookFinder(_shelf()),
+    )
+    python = next(
+        n
+        for n, book in enumerate(ctx.search_results, start=1)
+        if book.title == "파이썬 입문서"
+    )
+
+    added = _exec(
+        ctx, gateway, ToolName.CART_ADD, {"book": search(python), "quantity": 2}
+    )
+
+    assert added.arguments["quantity"] == 2
 
 
 @pytest.mark.parametrize(

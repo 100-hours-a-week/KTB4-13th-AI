@@ -28,7 +28,7 @@ import re
 from app.agent.errors import RefError, ToolErrorCode
 from app.agent.prompts import PROMPT_TURNS
 from app.agent.reference import BookRef, TurnContext
-from app.agent.schemas import ContextCard
+from app.agent.schemas import MAX_QUANTITY, ContextCard
 
 # 말로 쓴 순서. "두 번째", "첫 번째". "두 번 담아줘"(횟수)와 헷갈리지 않게 "번째"/"째"가 있어야 순서로 본다
 _NATIVE = {
@@ -66,6 +66,7 @@ _CART_NUMBER = re.compile(
     r"장바구니\s*(?:에서|의|에\s*(?:있는|담긴))?\s*(?:거|것|책)?\s*(?:중(?:에서?)?)?\s*"
     rf"({_ORDINAL_WORD}(?:\s*(?:이랑|랑|하고|와|과|및|,)\s*{_ORDINAL_WORD})*)"
 )
+_CARD_MENTION = re.compile(r"카드\s*(\d+)\s*번")
 
 # 장바구니는 최근에 담은 책이 1번이라 "처음 담은 거"가 마지막 번호다. 카드는 보인 순서라 "맨 처음"이 1번이다
 # 위치 낱말은 "맨/제일/가장" 뒤에 위치를 말하는 낱말이 오는 일반 규칙이다. 표현을 하나씩 늘리지 않는다(#397).
@@ -239,13 +240,68 @@ def _says_number(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> boo
     )
 
 
+def _cart_book(ctx: TurnContext, position: int) -> str | None:
+    """장바구니 그 번째 줄의 책. 그 줄이 없거나 장바구니를 모르면 None."""
+    snapshot = ctx.cart_snapshot or []
+    return snapshot[position - 1].isbn if 1 <= position <= len(snapshot) else None
+
+
+# 장바구니 답변에서 책 앞에 붙는 번호("1번째는 《…》", "2번: 《…》", "3. 《…》").
+_LISTED_POSITION = re.compile(
+    r"(\d+)\s*(?:번째|번|째)(?:는|은)?(?:\s+|:\s*|(?=[《「]))"
+)
+_LISTED_ITEM = re.compile(r"^\s*(\d+)[.)]\s+", re.MULTILINE)
+
+
+def listed_cart(ctx: TurnContext) -> bool:
+    """직전 에이전트의 말이 장바구니를 번호로 두 줄 이상 늘어놓았나.
+
+    카드 제목을 상태에 보여 준 뒤로(graph.prefetch_card_titles) 모델이 숫자만 말한 번호를 카드로 읽는다. "장바구니
+    보여줘" 다음의 "2번은 빼 주세요"는 방금 본 장바구니 목록의 번호일 수 있어서, 이때는 카드로 읽은 것도 근거로 보지
+    않고 두 책을 짚어 묻는다. 예전(카드 번호만 보여 줄 때)에도 이 대화는 되물었다(모델이 장바구니로 읽고 코드가 막음).
+    """
+    if not ctx.turns or ctx.turns[-1].role != "assistant":
+        return False
+    text = normalize(ctx.turns[-1].text)
+    if "장바구니" not in text:
+        return False
+    positions = {int(n) for n in _LISTED_POSITION.findall(_CARD_MENTION.sub(" ", text))}
+    positions.update(int(n) for n in _LISTED_ITEM.findall(text))
+    return len(positions) >= 2
+
+
+def _names_card_number(ctx: TurnContext, number: int | None) -> bool:
+    """사용자가 숫자만 쓰지 않고 '카드 2번'처럼 어느 목록인지 말했나."""
+    return ctx.message is not None and any(
+        int(n) == number for n in _CARD_MENTION.findall(normalize(ctx.message))
+    )
+
+
+def cart_for_bare_number(ctx: TurnContext, ref: BookRef, isbn: str) -> int | None:
+    """숫자만 말한 번호를 모델이 카드로 읽었는데, 직전에 장바구니를 번호로 늘어놓았고 그 번째 줄이 다른 책이면 그
+    번째(listed_cart). card_for_bare_number 의 반대 방향이다."""
+    if (
+        ctx.message is None
+        or ref.source != "card"
+        or not listed_cart(ctx)
+        or _names_card_number(ctx, ref.n)
+    ):
+        return None
+    in_cart, bare = numbers(normalize(ctx.message))
+    if ref.n in in_cart or ref.n not in bare:
+        return None
+    other = _cart_book(ctx, ref.n)
+    return ref.n if other not in (None, isbn) else None
+
+
 def card_for_bare_number(
     ctx: TurnContext, ref: BookRef, isbn: str
 ) -> ContextCard | None:
     """숫자만 말한 번호를 모델이 장바구니 줄로 읽었는데 같은 번호의 카드가 다른 책이면 그 카드(#528).
 
     사용자가 장바구니 목록을 보다가 "2번"이라고 했을 수도 있어서, 코드가 카드로 바꿔 실행하지 않는다. 바꿔 실행하면
-    반대 방향으로 같은 사고가 난다. 두 책을 짚어 어느 책인지 묻게 한다(tools._unstated).
+    반대 방향으로 같은 사고가 난다. 두 책을 짚어 어느 책인지 묻게 한다(tools._unstated). 빼기에서 그 카드 책이
+    장바구니에 있고 직전에 장바구니를 번호로 보여 주지 않았으면 카드로 바꿔 뺀다(removal_card).
     """
     if ctx.message is None or ref.source != "cart":
         return None
@@ -255,6 +311,32 @@ def card_for_bare_number(
     return next(
         (card for card in ctx.cards if card.rank == ref.n and card.isbn != isbn), None
     )
+
+
+def removal_card(ctx: TurnContext, ref: BookRef) -> BookRef | None:
+    """빼기에서 숫자만 말한 "2번"을 모델이 장바구니 2번째로 읽었을 때, 카드 2번으로 바꿀 그 카드. 바꾸지 않으면 None.
+
+    카드가 보이면 숫자만 말한 번호는 카드 번호다(프롬프트 지킬 것 1, #528). 모델은 빼기를 장바구니 일로 보고 장바구니
+    줄로 읽는 일이 잦아서, 코드가 두 책을 짚어 되물었다(11/10 평가 remove-13 3번 다, 카드 제목을 보여 준 뒤에도). 카드
+    2번 책이 장바구니에 있으면 "카드 2번 책을 빼라"는 말로 읽을 수 있으므로 그 책을 뺀다. 아래면 바꾸지 않는다(되묻는다).
+    - 직전에 에이전트가 장바구니를 번호로 늘어놓았고 사용자는 카드라고 말하지 않았다
+    - 카드 2번 책이 장바구니에 없다. 뺄 수 없으니 바꿀 까닭이 없다
+    - 사용자가 장바구니의 책을 번호, 제목, 위치로 따로 가리켰다
+    """
+    if ctx.message is None or ref.source != "cart":
+        return None
+    if listed_cart(ctx) and not _names_card_number(ctx, ref.n):
+        return None
+    cart_isbn = _cart_book(ctx, ref.n)
+    if cart_isbn is None:
+        return None
+    card = card_for_bare_number(ctx, ref, cart_isbn)
+    if card is None or card.isbn not in {line.isbn for line in ctx.cart_snapshot or []}:
+        return None
+    message = normalize(ctx.message)
+    if _says_position(message, ctx, ref) or _says_title(ctx, ref, cart_isbn, message):
+        return None
+    return BookRef(source="card", n=card.rank)
 
 
 def _explicit(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool:
@@ -271,6 +353,13 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     """사용자의 말에 이 책을 가리키는 근거가 있는가. 말을 모르면(message 가 None) 검사하지 않는다."""
     if ctx.message is None or ref.source == "focused":
         return True
+    # 번호가 두 목록에서 서로 다른 책을 가리키면 한 목록에 책이 하나뿐이어도 되묻는다.
+    if cart_for_bare_number(ctx, ref, isbn) is not None or (
+        ref.source == "cart"
+        and listed_cart(ctx)
+        and card_for_bare_number(ctx, ref, isbn) is not None
+    ):
+        return False
     message = normalize(ctx.message)
     # 가리킬 수 있는 책이 하나뿐이면 짐작이 아니다
     if _list_size(ctx, ref) <= 1:
@@ -327,7 +416,6 @@ _PROPOSAL = re.compile(r"\?|까요|드릴까")
 _NEGATION = re.compile(r"말고|아니|싫|그만|지\s*(?:마|말)|않|안\s*(?:담|넣|빼|사|살)")
 # 동의 뒤에 길게 이어지는 말은 다른 요청이 섞인 것이라 동의로만 보지 않는다
 _MAX_AGREEMENT_CHARS = 30
-_CARD_MENTION = re.compile(r"카드\s*(\d+)\s*번")
 _CART_MENTION = re.compile(r"장바구니\s*(\d+)\s*번째")
 
 
@@ -393,7 +481,8 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
 #
 # 이번 말이 행동을 스스로 말할 때만 쓴다. "네", "어?"처럼 행동을 말하지 않은 짧은 말은 직전에 한 권을 짚어
 # 제안한 말에 대한 동의일 때만 근거다(_from_history, #397). 알림("담았어요") 뒤의 "네"는 시킨 것이 아니다.
-# 행동 낱말은 장바구니를 바꾸는 것뿐이다(담기, 빼기, 수량 바꾸기). "주세요"는 "알려 주세요"와 겹쳐 넣지 않았다.
+# 행동 낱말은 states_action 과 같다(담기, 빼기, 수량 바꾸기, 사기, "하나 주세요"처럼 달라는 말). 11/10 까지는 담기·빼기·수량
+# 낱말만 봤다. "주세요"는 수량이나 지시어가 붙은 꼴(_GIVE)만 세서 "알려 주세요"는 아니다.
 # 책을 다른 말로 꾸며 가리키면("예쁜 거", "제일 싼 거") 대화의 책이 아니라 그 말이 가리키는 책이다. 코드는 그
 # 뜻을 확인할 수 없으므로 이 길로 풀지 않는다(모델이 그 책을 짚어 묻는다). "그거", "이 책" 같은 지시어는 꾸밈이 아니다.
 _OTHER_BOOK = re.compile(r"다른|딴\s*(?:거|것|책)")
@@ -430,19 +519,46 @@ def _turn_books(ctx: TurnContext, text: str) -> set[str]:
     return named
 
 
-def _from_topic(ctx: TurnContext, isbn: str, message: str) -> bool:
-    """최근 대화에서 사용자와 에이전트가 짚은 책이 이 책 한 권뿐이고, 이번 말이 그 책에 할 행동을 말하며 다른 책을
-    가리키지 않는가."""
+def topic_book(ctx: TurnContext) -> str | None:
+    """최근 대화(모델에게 보여 준 줄)에서 사용자와 에이전트가 짚은 책이 한 권뿐이면 그 책의 ISBN. 아니면 None.
+
+    카드 제목을 다 모르면 정하지 않는다(needs_card_titles). 제목으로 이야기한 카드를 못 알아보고 한 권뿐이라고 잘못
+    볼 수 있다."""
     if not ctx.turns or needs_card_titles(ctx):
-        return False
-    if not _CART_ACTION.search(message) or _DESCRIBED.search(
-        _DEICTIC.sub(" ", message)
-    ):
-        return False
+        return None
     named: set[str] = set()
     for turn in ctx.turns[-PROMPT_TURNS:]:
         named |= _turn_books(ctx, turn.text)
-    if named != {isbn}:
+    return next(iter(named)) if len(named) == 1 else None
+
+
+def topic_name(ctx: TurnContext) -> str | None:
+    """topic_book 을 LLM 에게 보여 줄 이름. 카드에 있으면 "카드 2번 《제목》", 아니면 "장바구니 1번째 《제목》"."""
+    isbn = topic_book(ctx)
+    if isbn is None:
+        return None
+    card = next((c for c in ctx.cards if c.isbn == isbn), None)
+    if card is not None:
+        return f"카드 {card.rank}번 《{ctx.titles[isbn]}》"
+    for position, line in enumerate(ctx.cart_snapshot or [], start=1):
+        if line.isbn == isbn:
+            return f"장바구니 {position}번째 《{line.title}》"
+    return None
+
+
+def _from_topic(ctx: TurnContext, isbn: str, message: str) -> bool:
+    """최근 대화에서 사용자와 에이전트가 짚은 책이 이 책 한 권뿐이고, 이번 말이 그 책에 할 행동을 말하며 다른 책을
+    가리키지 않는가.
+
+    행동은 states_action 과 같은 낱말로 본다(담기·빼기·수량 바꾸기에 더해 "살게요", "하나 주세요", "두 권"). 예전에는
+    담기·빼기 낱말만 봐서 한 책을 물은 뒤의 "좋네요 하나 주세요", "그럼 하나 살게요"가 3번 다 막혔다(11/10 평가
+    multiturn-04·07·08). "하나 주세요"의 "주세요"는 앞에 수량이나 지시어가 붙은 꼴(_GIVE)만 세서 "알려 주세요"는 아니다.
+    """
+    if not _says_action(ctx, message, quantity=False) or _DESCRIBED.search(
+        _DEICTIC.sub(" ", message)
+    ):
+        return False
+    if topic_book(ctx) != isbn:
         return False
     return not (
         _NEGATION.search(message)
@@ -464,6 +580,15 @@ def states_quantity(ctx: TurnContext) -> bool:
     return ctx.message is not None and bool(_QUANTITY.search(normalize(ctx.message)))
 
 
+def said_quantity_lately(ctx: TurnContext) -> bool:
+    """사용자가 이번 말이나 모델에게 보여 준 대화의 자기 말에서 수량을 말했는가("두 권 담아줘" → "어느 책?" → "1번이요").
+    말을 모르면(message 가 None) 검사하지 않는다(말한 것으로 본다)."""
+    if ctx.message is None:
+        return True
+    users = [t.text for t in ctx.turns[-PROMPT_TURNS:] if t.role == "user"]
+    return any(_QUANTITY.search(normalize(text)) for text in [ctx.message, *users])
+
+
 # --- 행동 (#531) ---
 # 위의 근거 검사는 어느 책인지만 본다. "1번이 마음에 들어"에는 "1번"이 있어서 책은 정해지지만 담으라는 말은 없다.
 # 실제 모델로 재 보니(#530 대화 평가) 모델이 이런 관심 표현을 담기로 읽어, 대화 30개 중 23개에서 시키지 않은 책을
@@ -479,10 +604,25 @@ _BUY = re.compile(r"살게|살래|사\s*갈게|사고\s*싶|(?:구매|구입|주
 # "사 줘"(#631). 카드 밖 책을 찾아 담는 ⑦(AGENT_CHECKOUT)이 켜졌을 때만 장바구니를 바꾸라는 말로 본다.
 # 꺼져 있으면 _BUY 만 본다(main 과 같다)
 _BUY_REQUEST = re.compile(r"(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)")
+# 수량 뒤의 달라는 말은 "한 권"만이 아니다("두 권 주세요", "3권 줘")
 _GIVE = re.compile(
-    r"(?:하나|한\s*(?:권|개)|거|걸로|것|번|책)\s*(?:주세요|줘|주실래요|줄래|주시겠어요)"
+    r"(?:하나|(?:\d+|한|두|세|네|다섯)\s*(?:권|개)|거|걸로|것|번|책)\s*(?:주세요|줘|주실래요|줄래|주시겠어요)"
 )
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
+
+
+def _says_action(ctx: TurnContext, message: str, *, quantity: bool = True) -> bool:
+    """이번 말에 장바구니를 바꾸라는 낱말이 있는가(normalize 한 말). 이력은 보지 않는다.
+
+    quantity 가 거짓이면 수량만 말한 것("두 권")은 세지 않는다. 대화의 책(_from_topic)에서는 수량만 말한 답이 담으라는
+    말이 아니다(#418 short-04: 재고를 물은 뒤 "두 권"). "두 권 주세요"처럼 달라는 말이 붙으면 _GIVE 로 센다.
+    """
+    patterns = [_CART_ACTION, _BUY, _GIVE] + [_QUANTITY] * quantity
+    if ctx.checkout_enabled:
+        # 주문하겠다는 말(wants_order 와 같은 낱말)도 담으라는 말이다. 주문 화면은 담은 책으로 연다. 이 낱말이 빠져
+        # "파이썬 책 결제해 줘"가 주문 말로는 읽히고 담기는 ACTION_NOT_STATED 로 막혔다(11/10 평가 checkout-m09)
+        patterns += [_BUY_REQUEST, _ORDER]
+    return any(pattern.search(message) for pattern in patterns)
 
 
 def _asks_action(text: str) -> bool:
@@ -498,10 +638,7 @@ def states_action(ctx: TurnContext) -> bool:
     if ctx.message is None:
         return True
     message = normalize(ctx.message)
-    patterns = [_CART_ACTION, _BUY, _GIVE, _QUANTITY]
-    if ctx.checkout_enabled:
-        patterns.append(_BUY_REQUEST)
-    if any(pattern.search(message) for pattern in patterns):
+    if _says_action(ctx, message):
         return True
     return (
         "?" not in message
@@ -509,6 +646,29 @@ def states_action(ctx: TurnContext) -> bool:
         and ctx.turns[-1].role == "assistant"
         and _asks_action(ctx.turns[-1].text)
     )
+
+
+# 금액을 말한 꼴: "3만원", "4만 원", "2만7천원", "37,000원", "만 원", "삼만원". 금액 없이 "예산 안에서"만 말하면 아니다.
+# 놓치면(금액을 말했는데 못 알아보면) 고르기가 막히고, 잘못 잡으면 예전처럼 모델이 정한 예산으로 고른다. 그래서 넓게 잡는다
+_MONEY = re.compile(
+    r"\d[\d,]*\s*(?:만|천|원)"
+    r"|[이삼사오육칠팔구십]\s*만|[이삼사오육칠팔구]\s*천\s*원"
+    r"|(?<![가-힣\d])(?:만|천)\s*원"
+)
+
+
+def states_budget(ctx: TurnContext) -> bool:
+    """사용자가 이번 말이나 앞선 자기 말에서 금액을 말했는가. 말을 모르면(message 가 None) 검사하지 않는다.
+
+    예산 고르기(selection.pick)는 금액이 있어야 한다. 실제 모델이 금액 없는 말("1번 하나 주세요", "리눅스 명령어 사전
+    두 권 사 주세요")에 예산 칸을 1원·0원으로 지어내 "조합이 없다"고 답했다(11/10 평가 add-11·checkout-m08·06).
+    프롬프트에는 이미 "예산을 지어내지 않는다"가 있어서 코드가 막는다. 앞선 말도 보는 것은 "4만원 안에서 골라 줘" →
+    "몇 권 고를까요?" → "두 권이요"처럼 금액이 앞 차례에 있을 수 있어서다.
+    """
+    if ctx.message is None:
+        return True
+    texts = [ctx.message, *(turn.text for turn in ctx.turns if turn.role == "user")]
+    return any(_MONEY.search(text) for text in texts)
 
 
 def natural_refs(ctx: TurnContext, isbn: str) -> list[BookRef]:
@@ -624,6 +784,31 @@ def states_copies(ctx: TurnContext, isbn: str) -> bool:
         and _says_title(ctx, BookRef(source="search", n=n), isbn, message)
         for n, book in enumerate(ctx.search_results, start=1)
     )
+
+
+# 수량을 말한 꼴의 수. _QUANTITY 와 같은 꼴이다("두 권", "3권", "두 개")
+_COPY_COUNT = re.compile(
+    r"(?<![가-힣\d])(\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:권|개|부)"
+)
+
+
+def copies_of(ctx: TurnContext, isbn: str) -> int | None:
+    """찾은 책의 제목과 권수를 말했으면(states_copies) 그 권수. 수를 하나만 말했을 때만 준다.
+
+    "리눅스 명령어 사전 두 권 사 주세요"에 실제 모델이 수량을 1로 채워 5번 중 3번 한 권만 담았다(11/10 평가
+    checkout-m08). 수량은 사용자 말에서 오는 값이라 코드가 채운다. "A 2권이랑 B 3권"처럼 수가 여럿이면 어느 책의
+    수인지 낱말로 모르니 None(모델이 채운 값을 쓴다).
+    """
+    if not states_copies(ctx, isbn) or ctx.message is None:
+        return None
+    counts = {
+        int(word) if word.isdigit() else _NATIVE[word]
+        for word in _COPY_COUNT.findall(normalize(ctx.message))
+    }
+    if len(counts) != 1:
+        return None
+    (count,) = counts
+    return count if 1 <= count <= MAX_QUANTITY else None
 
 
 def mentions_coupon(ctx: TurnContext) -> bool:

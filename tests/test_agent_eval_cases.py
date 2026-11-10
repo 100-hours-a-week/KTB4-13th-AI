@@ -26,7 +26,7 @@ GROUPS = {"typical", "guard"}
 EXPECTED_COUNTS = {
     "add": 6,
     "update": 3,
-    "remove": 6,
+    "remove": 7,
     "view": 4,
     "offer": 3,
     "pick": 6,
@@ -46,7 +46,7 @@ EXPECTED_COUNTS = {
     "describe": 2,
     "short": 3,
     "long": 2,
-    "multiturn": 3,
+    "multiturn": 10,
     "delegate": 2,
     "interest": 3,
 }
@@ -54,20 +54,27 @@ EXPECTED_COUNTS = {
 # 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다. 근거 검사를 고치기 전에 쓴 사례(#418)를 더했다.
 HELDOUT_COUNTS = {
     "ask": 6,
-    "update": 6,
-    "remove": 4,
-    "mixed": 4,
-    "followup": 4,
-    "tone": 2,
+    "update": 8,
+    "remove": 7,
+    "mixed": 5,
+    "followup": 5,
+    "tone": 3,
     "info": 1,
     "describe": 1,
-    "short": 2,
+    "short": 3,
     "long": 1,
-    "multiturn": 3,
-    "notshop": 1,
+    "multiturn": 14,
+    "notshop": 2,
     "outofscope": 1,
     "delivery": 1,
     "interest": 3,
+    # 버전 12(실제 입구로 재기): 그때까지 heldout 이 없던 종류
+    "add": 4,
+    "view": 2,
+    "offer": 2,
+    "compare": 1,
+    "already": 1,
+    "loggedout": 1,
 }
 # 이번 말 앞의 대화(history)를 가질 수 있는 종류. followup 은 반드시 가진다. interest 는 알림 뒤의 말을 본다(#531)
 HISTORY_KINDS = {"followup", "short", "multiturn", "interest"}
@@ -206,7 +213,7 @@ def test_종류마다_묶음이_정해져_있고_두_묶음_개수가_맞다() -
         assert info["about"], kind
     by_group = Counter(_KINDS[case["kind"]]["group"] for case in _DEV)
 
-    assert dict(by_group) == {"typical": 68, "guard": 29}
+    assert dict(by_group) == {"typical": 76, "guard": 29}
 
 
 def test_split은_dev와_heldout_둘뿐이다() -> None:

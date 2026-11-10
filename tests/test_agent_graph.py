@@ -256,9 +256,50 @@ def test_LLM이_받는_첫_메시지는_지시와_요청_상태와_사용자_말
     assert isinstance(system, SystemMessage) and system.content == prompts.SYSTEM_PROMPT
     assert isinstance(state, SystemMessage)
     assert "로그인: 예" in state.content
-    assert "카드 1번, 카드 2번" in state.content
+    assert "카드 1번 《책1》, 카드 2번 《책2》" in state.content
     assert "지금 보고 있는 책: 있음" in state.content
     assert isinstance(user, HumanMessage) and user.content == "1번 담아줘"
+
+
+def test_카드_제목을_읽지_못하면_번호만_보여_준다() -> None:
+    fake = _fake()
+
+    async def broken(isbns):
+        raise CommerceError(CommerceErrorCode.PRODUCT_NOT_FOUND)
+
+    fake.get_offers = broken  # type: ignore[method-assign]
+    _run_result, model, _fake_be = _run([ai_text("네.")], _request("1번 담아줘"), fake)
+
+    state = model.calls[0][1]
+    assert "카드 1번, 카드 2번 (제목과 가격은 book_offer 로 확인한다)" in state.content
+
+
+def _turns_on(req: AgentActRequest, *pairs: tuple[str, str]) -> AgentActRequest:
+    return req.model_copy(
+        update={"recent_turns": [Turn(role=r, text=t) for r, t in pairs]}
+    )
+
+
+def test_최근_대화에서_한_권만_이야기했으면_그_책을_상태에_보여_준다() -> None:
+    req = _turns_on(
+        _request("좋네요 하나 주세요"),
+        ("user", "1번 얼마예요?"),
+        ("assistant", "《책1》은 10,000원이에요."),
+    )
+    _run_result, model, _fake_be = _run([ai_text("네.")], req)
+
+    assert "- 최근 대화에서 이야기한 책: 카드 1번 《책1》" in model.calls[0][1].content
+
+
+def test_최근_대화에서_두_권을_이야기했으면_대화의_책을_보여_주지_않는다() -> None:
+    req = _turns_on(
+        _request("좋네요 하나 주세요"),
+        ("user", "1번이랑 2번 얼마예요?"),
+        ("assistant", "《책1》은 10,000원, 《책2》는 20,000원이에요."),
+    )
+    _run_result, model, _fake_be = _run([ai_text("네.")], req)
+
+    assert "최근 대화에서 이야기한 책" not in model.calls[0][1].content
 
 
 def test_로그인하지_않았으면_요청_상태에_그렇게_적힌다() -> None:

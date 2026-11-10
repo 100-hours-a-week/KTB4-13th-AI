@@ -44,11 +44,12 @@ def test_앞뒤_공백은_결과를_바꾸지_않는다() -> None:
     assert rules.classify("  1번 담아줘  ", True) == rules.classify("1번 담아줘", True)
 
 
-def test_규칙_버전은_3이다() -> None:
+def test_규칙_버전은_5다() -> None:
     # 규칙을 바꾸면 버전을 올리고 이유를 PR 에 적는다. 이 시험이 깨지면 그 약속을 떠올리게 하는 자리다.
     # 1 = 라우팅 기준선(#404), 2 = 카드를 가리키는 추천 말·③ 묻기의 답·카드 평가 말을 ③으로(#530),
     # 3 = 가격·출간연도만 말한 짧은 말과 ③ 두 갈래 질문의 답을 ③으로, 담기 질문은 ⑦의 서술어만(#545)
-    assert rules.RULES_VERSION == 4
+    # 4 = 카드 밖 책을 찾는 서버에서 "사 줘"를 장바구니 낱말로(#631), 5 = 같은 서버에서 권수 바로 뒤의 "구매·구입·사고 싶"
+    assert rules.RULES_VERSION == 5
 
 
 # 직전 챗봇 말이 ③의 묻기(넓은 첫 요청에 원하는 것을 물은 말)면, 장바구니 낱말이 없는 답은 추천이다(#530)
@@ -441,3 +442,52 @@ def test_담기를_물은_뒤의_조건_말은_그_답일_수_있어_보지_않�
         rules.decide("2만원 이하로", cards_shown=True, after_action=True).basis
         != "조건만 말함"
     )
+
+
+# --- v5: 권수 바로 뒤의 사겠다는 말(카드 밖 책을 찾는 서버) ---
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "면접 준비용 CS 책 하나 구매하고 싶어요",
+        "쿠버네티스 책 한 권 구입하고 싶어요",
+        "리눅스 명령어 사전 두 권 사고 싶어요",
+        "파이썬 입문서 하나 사고 싶어요",  # v4 의 "파이썬 입문서 하나 사 줘"와 같이 다룬다
+    ],
+)
+def test_권수_뒤의_사겠다는_말은_주문_서버에서만_장바구니_낱말이다(
+    message: str,
+) -> None:
+    on = rules.decide(message, False, buy_requests=True)
+    off = rules.decide(message, False)
+
+    assert on.lane == "shop" and on.sure and on.basis == "장바구니 낱말"
+    assert off.basis != "장바구니 낱말"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "구매할 책 추천해줘",  # v2 에서 일부러 추천으로 둔 말
+        "구매할 만한 파이썬 입문서 추천해 주세요",
+        "중고로 구입할 만한 책 있을까",
+    ],
+)
+def test_권수_없이_구매만_말한_추천_요청은_추천이다(message: str) -> None:
+    decision = rules.decide(message, False, buy_requests=True)
+
+    assert decision.lane == "recommend" and decision.sure
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "선물로 책을 사고 싶은데 뭐가 좋을까요",
+        "친구 생일 선물로 책 사고 싶어요",
+        "구입하기 전에 미리 알아보고 싶어요",
+    ],
+)
+def test_권수_없이_사고_싶다는_말은_판정에_맡긴다(message: str) -> None:
+    # 낱말로 정하면 고르는 말까지 ⑦이 받아 말로 그린 책을 아무거나 찾아 담을 수 있다
+    assert not rules.decide(message, False, buy_requests=True).sure

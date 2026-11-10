@@ -91,9 +91,8 @@ def system_prompt(*, search: bool, order: bool) -> str:
 
 
 def state_message(ctx: TurnContext) -> str:
-    """이번 요청의 상태. 번호만 알려 주고 ISBN 은 알려 주지 않는다."""
-    ranks = sorted({card.rank for card in ctx.cards})
-    cards = ", ".join(f"카드 {rank}번" for rank in ranks) if ranks else "없음"
+    """이번 요청의 상태. 번호와 제목만 알려 주고 ISBN 은 알려 주지 않는다."""
+    cards = _card_list(ctx)
     login = (
         "예"
         if ctx.logged_in
@@ -103,10 +102,39 @@ def state_message(ctx: TurnContext) -> str:
     return (
         "[이번 요청의 상태]\n"
         f"- 로그인: {login}\n"
-        f"- 직전에 보여 준 추천 카드: {cards} (제목과 가격은 book_offer 로 확인한다)\n"
+        f"- 직전에 보여 준 추천 카드: {cards}\n"
         f"- 사용자가 지금 보고 있는 책: {focused}"
         + _cart_lines(ctx)
+        + _topic_line(ctx)
         + _history_lines(ctx)
+    )
+
+
+def _card_list(ctx: TurnContext) -> str:
+    """카드 번호와, 코드가 미리 읽은 제목(graph.prefetch_card_titles). 제목을 다 모르면 번호만 준다."""
+    cards = sorted(ctx.cards, key=lambda card: card.rank)
+    if not cards:
+        # 예전 글 그대로 둔다. "(… book_offer 로 확인한다)"를 빼니 카드 없이 책 값을 묻는 말("쿠버네티스 입문 가이드
+        # 얼마예요?")에 모델이 찾아보지 않고 쇼핑 요청이 아니라고 답했다(11/10 평가 checkout-m10 5번 다)
+        return "없음 (제목과 가격은 book_offer 로 확인한다)"
+    if any(card.isbn not in ctx.titles for card in cards):
+        numbers = ", ".join(f"카드 {card.rank}번" for card in cards)
+        return f"{numbers} (제목과 가격은 book_offer 로 확인한다)"
+    named = ", ".join(
+        f"카드 {card.rank}번 《{ctx.titles[card.isbn]}》" for card in cards
+    )
+    return f"{named} (가격과 재고는 book_offer 로 확인한다)"
+
+
+def _topic_line(ctx: TurnContext) -> str:
+    """최근 대화에서 이야기한 책이 한 권뿐이면 그 책(evidence.topic_book). 한 책을 물은 뒤 "하나 주세요", "그럼 살게요"처럼
+    책을 다시 말하지 않은 말에 LLM 이 도구를 부르지 않고 "담아 드릴게요"라고만 하거나 어느 책인지 되물었다(11/10 평가 v13).
+    코드가 정한 책만 보여 준다. 근거 검사(evidence._from_topic)도 같은 책만 받는다."""
+    if ctx.topic is None:
+        return ""
+    return (
+        f"\n- 최근 대화에서 이야기한 책: {ctx.topic} (사용자가 이번 말에서 책을 따로 말하지 않고 담기, 사기, 수량을 말하면 "
+        "이 책이다. '다른 거'처럼 다른 책을 찾는 말이면 이 책이 아니다)"
     )
 
 

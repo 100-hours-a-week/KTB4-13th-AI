@@ -416,6 +416,27 @@ async def prefetch_cart(ctx: TurnContext, gateway: CommerceGateway) -> None:
         return
 
 
+async def prefetch_card_titles(ctx: TurnContext, gateway: CommerceGateway) -> None:
+    """직전 카드 책의 제목을 코드가 먼저 읽어 [이번 요청의 상태]에 보여 준다.
+
+    카드는 번호만 보여 주고 제목은 LLM 이 book.offer 로 읽게 했더니 흔한 흐름 두 가지가 막혔다(11/10 평가 v13).
+    - 카드가 보일 때 "2번 빼 주세요": LLM 은 제목이 보이는 장바구니 목록만 보고 장바구니 2번째로 읽어서, 코드가 두
+      책을 짚어 되물었다(remove-13, 3번 다)
+    - 한 책을 물은 뒤 "하나 주세요": 대화에서 이야기한 책을 알아보려면 카드 제목이 다 있어야 해서(evidence.needs_card_titles)
+      LLM 이 제목을 읽기 전에는 그 책을 알 수 없었다
+    BE 가 카드 책의 제목·가격·재고를 요청(offers)에 실어 보내므로(A안) BE 를 다시 부르지 않는다. 가격과 재고는 보여
+    주지 않는다. 답의 가격은 book.offer 결과로만 말한다(답변 검사의 근거). 읽지 못하면 지금까지처럼 번호만 보여 준다.
+    """
+    missing = list(dict.fromkeys(c.isbn for c in ctx.cards if c.isbn not in ctx.titles))
+    if not missing:
+        return
+    try:
+        offers = await gateway.get_offers(missing)
+    except CommerceError:
+        return
+    ctx.titles.update({offer.isbn: offer.title for offer in offers})
+
+
 async def run_agent(
     req: AgentActRequest,
     *,
@@ -443,6 +464,8 @@ async def run_agent(
     if not checkout:
         finder = None  # 기능이 꺼져 있으면 찾을 곳이 있어도 책 찾기를 주지 않는다
     await prefetch_cart(ctx, gateway)
+    await prefetch_card_titles(ctx, gateway)
+    ctx.topic = evidence.topic_name(ctx)
     start = list(ctx.cart_snapshot or [])
     graph = build_graph(model, gateway, ctx, comparer, finder, deadline)
     out: _State = await graph.ainvoke(

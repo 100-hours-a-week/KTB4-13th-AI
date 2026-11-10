@@ -413,7 +413,8 @@ _ASK = [c for c in _CASES.values() if c["expect"]["outcome"] == "ask_back"]
 # 아직 근거로 못 읽는 말(#418). "좋네요 하나 주세요"의 "주세요"는 "알려 주세요"와 겹쳐 행동 낱말에 넣지 않았다.
 # 고치기 전에 쓴 heldout 이라 이 사례를 보고 규칙을 바꾸지 않는다. 막히면 모델이 그 책을 짚어 묻는다.
 # strict 라서 근거로 읽히게 되는 순간 실패하므로 그때 여기서 뺀다.
-_EVIDENCE_GAPS = {"multiturn-04"}
+# multiturn-04("좋네요 하나 주세요")는 11/10 에 대화의 책 행동 낱말을 states_action 과 같게 해서 풀었다
+_EVIDENCE_GAPS: set[str] = set()
 _EXECUTED_PARAMS = [
     pytest.param(
         case,
@@ -930,7 +931,18 @@ TALK_PY = (
 
 
 @pytest.mark.parametrize(
-    "message", ["응 담아", "그럼 두 권 담아줘", "그거 담아줘", "오케이 넣어줘"]
+    "message",
+    [
+        "응 담아",
+        "그럼 두 권 담아줘",
+        "그거 담아줘",
+        "오케이 넣어줘",
+        # 11/10: 사기·달라는 말·수량도 행동이다(states_action 과 같은 낱말)
+        "좋네요 하나 주세요",
+        "좋아요 그걸로 주세요",
+        "그럼 살게요",
+        "그럼 두 권 주세요",
+    ],
 )
 def test_대화에서_한_권만_이야기했고_행동을_말하면_그_책이_근거다(message: str) -> None:
     ctx = _history(_ctx(message, cards=[PY, DB, K8S]), *TALK_PY)
@@ -949,6 +961,11 @@ def test_대화에서_한_권만_이야기했고_행동을_말하면_그_책이_
         "그거 말고 담아줘",
         "제일 싼 거 담아줘",  # 꾸며서 가리킨 책은 코드가 뜻을 확인할 수 없다
         "예쁜 책 담아줘",
+        "좋네요",  # 감탄만 했다(#531)
+        "가격 다시 알려 주세요",  # "주세요"만으로는 달라는 말이 아니다
+        "음 다른 걸로 하나 주세요",
+        "싼 거 하나 주세요",
+        "두 권",  # 수량만 말한 답은 담으라는 말이 아니다(#418 short-04)
     ],
 )
 def test_행동을_말하지_않거나_다른_책을_뜻하면_대화의_책은_근거가_아니다(
@@ -1131,3 +1148,62 @@ def test_실행하는_사례는_모두_행동을_말했다(case: dict) -> None:
     ctx = _case_ctx(case)
 
     assert evidence.states_action(ctx), (case["id"], case["request"]["message"])
+
+
+def test_대화에서_한_권만_이야기했으면_그_책의_이름을_준다() -> None:
+    ctx = _history(_ctx("하나 주세요", cards=[PY, DB, K8S]), *TALK_PY)
+
+    assert evidence.topic_book(ctx) == PY
+    assert evidence.topic_name(ctx) == "카드 1번 《처음 만나는 파이썬》"
+
+
+def test_두_권을_이야기했거나_카드_제목을_모르면_대화의_책이_없다() -> None:
+    two = _history(
+        _ctx("하나 주세요", cards=[PY, DB, K8S]),
+        ("user", "1번이랑 2번 가격 알려 줘"),
+        (
+            "assistant",
+            "《처음 만나는 파이썬》은 15,000원, 《데이터베이스 설계 노트》는 22,000원이에요.",
+        ),
+    )
+    unknown = _history(
+        _ctx("하나 주세요", cards=[PY, DB, K8S], know_titles=False), *TALK_PY
+    )
+
+    assert evidence.topic_name(two) is None
+    assert evidence.topic_name(unknown) is None
+
+
+LISTED = (
+    ("user", "장바구니 보여줘"),
+    (
+        "assistant",
+        (
+            "장바구니에는 3권 종류가 있습니다.\n1번째는 《소프트웨어 설계의 기본기》 1권, 2번째는 《알고리즘 문제 해결 전략》 1권, "
+            "3번째는 《데이터베이스 설계 노트》 1권입니다."
+        ),
+    ),
+)
+
+
+def test_장바구니를_번호로_보여_준_뒤의_숫자는_카드로_읽어도_근거가_아니다() -> None:
+    # 카드 2번(DB)은 장바구니 3번째에 있고 장바구니 2번째는 다른 책(ALGO)이다
+    ctx = _history(
+        _ctx("2번은 빼 주세요", cards=[PY, DB, K8S], cart=[SW, ALGO, DB]), *LISTED
+    )
+
+    assert evidence.listed_cart(ctx)
+    assert not evidence.has_evidence(ctx, _card(2), DB)
+    assert evidence.cart_for_bare_number(ctx, _card(2), DB) == 2
+
+
+def test_장바구니를_보여_주지_않았으면_숫자만_말한_번호는_카드다() -> None:
+    ctx = _history(
+        _ctx("2번은 빼 주세요", cards=[PY, DB, K8S], cart=[SW, ALGO, DB]),
+        ("user", "2번 얼마예요?"),
+        ("assistant", "《데이터베이스 설계 노트》는 22,000원이에요."),
+    )
+
+    assert not evidence.listed_cart(ctx)
+    assert evidence.has_evidence(ctx, _card(2), DB)
+    assert evidence.cart_for_bare_number(ctx, _card(2), DB) is None

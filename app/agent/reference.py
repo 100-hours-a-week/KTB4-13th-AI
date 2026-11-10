@@ -73,8 +73,10 @@ class TurnContext:
     message: str | None = None
     # 이번 말 앞의 대화(요청의 recent_turns). LLM 에게 보여 주고, 근거 검사가 직전 에이전트의 말을 본다(#397)
     turns: list[Turn] = field(default_factory=list)
-    # 이번 턴에 알게 된 카드 책의 제목(book.offer 결과). 장바구니 책의 제목은 cart_snapshot 에 있다
+    # 이번 턴에 알게 된 카드 책의 제목(턴 시작에 미리 읽은 것과 book.offer 결과). 장바구니 책의 제목은 cart_snapshot 에 있다
     titles: dict[str, str] = field(default_factory=dict)
+    # 최근 대화에서 이야기한 책이 한 권뿐이면 LLM 에게 보여 줄 그 책의 이름("카드 2번 《제목》"). 턴 시작에 코드가 정한다
+    topic: str | None = None
     # 이번 턴에 selection.pick 이 고른 책. 사용자가 확인하기 전에는 담지 못한다(tools._add)
     picked: set[str] = field(default_factory=set)
     # 이번 턴에 성공한 쓰기가 있다(되돌린 것은 빼고, graph 가 묶음마다 다시 정한다). 있으면 골라 담기를 하지

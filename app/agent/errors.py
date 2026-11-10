@@ -48,6 +48,8 @@ class ToolErrorCode(StrEnum):
     SEPARATE_TURN_REQUIRED = "SEPARATE_TURN_REQUIRED"
     # 예산 안에서 그 권수를 채울 조합이 없다(재고 있는 직전 카드 안에서만 고른다)
     NO_COMBINATION = "NO_COMBINATION"
+    # 사용자가 금액을 말하지 않았는데 예산 고르기를 불렀다. 모델이 예산을 지어내지 않게 코드가 막는다
+    BUDGET_NOT_STATED = "BUDGET_NOT_STATED"
     # 비교하려는 책에 소개글이 없다
     NO_DESCRIPTION = "NO_DESCRIPTION"
     # 소개글을 읽어 차이를 요약하는 호출이 실패했다
