@@ -1255,8 +1255,13 @@ MAX_REASON_SHORT_CHARS = 80
 # 사용자 말에 반응하지 못하고 검색 문장을 되읊었다. 10/19 평가 417턴에서 말풍선의 88%가 카드에 보이는 제목을
 # 다시 늘어놓았고 70%가 "추천합니다"로 끝났다. 그래서 이번 메시지와 최근 대화를 넣고, 제목 나열과 그 맺음말을 막는다.
 #
-# JSON 에서 cards 를 reply 보다 먼저 쓰게 한다. 말풍선이 고른 책을 말하는데, 답 칸을 먼저 쓰면 모델이 말한 책과
-# 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유 칸보다 먼저 나오면 추론이 나빠짐).
+# JSON 은 고른 책(picks) → 말풍선(reply) → 카드 이유(cards) 순서로 쓰게 한다. 말풍선이 고른 책을 말하니 책을 먼저
+# 고르게 한다 — 답 칸을 먼저 쓰면 모델이 말한 책과 실제로 고른 카드가 어긋날 수 있다(Tam 외, EMNLP 2024: 답 칸이 이유
+# 칸보다 먼저 나오면 추론이 나빠짐. #540 이 그래서 cards 를 reply 앞에 뒀다). 대신 reply 를 카드 이유 앞에 두어 SSE 가
+# 말풍선을 먼저 보낸다. cards 가 앞이면 말풍선이 카드를 다 쓴 뒤에야 나와 SSE 로 당겨지는 폭이 ~0.3초였다. 11/02
+# 실측(4o, 5번씩 중앙값)에서 말풍선은 6.25초 → 2.74초로 당겨지고 전체는 6.28초 → 8.76초로 늦어졌다.
+# 이유를 쓰기 전에 말풍선을 쓰니 책 설명을 말풍선에 몰아 썼다(평균 97 → 142자). 그래서 책마다의 설명은 카드 이유에
+# 쓰라고 못박는다.
 #
 # 말풍선의 마지막 문장이 사용자에게 차례를 넘긴다({turn_end}, #545). 10/21 평가 원본에서 카드 턴 말풍선이 다음 말을
 # 건넨 적이 0/39였다. 명세상 카드가 있으면 followup 이 null 이라 매 턴 사용자가 다시 말을 꺼내야 했고, 대화가 아니라
@@ -1291,7 +1296,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "아래 책 목록 중 위 조건에 맞는 책을 최대 {limit}권 골라라.\n"
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. "
-    "cards에 적은 차례가 화면의 1번, 2번, 3번이다.\n"
+    "picks에 적은 차례가 화면의 1번, 2번, 3번이다. cards에는 picks의 책을 같은 차례로 적어라.\n"
     "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
@@ -1302,13 +1307,15 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "사정을 털어놓았으면 그 사정에 한마디 답하고, 바뀐 조건은 이번에 고른 책을 말하는 문장에 녹여라. 요청을 "
     '"~을 찾으셨군요"처럼 되풀이하며 시작하지 마라. 책 제목은 '
     "카드에 보이니 말풍선에 늘어놓지 말고, 이번에 고른 책들이 어떤 결인지 한마디로 말하라. "
+    "책마다의 내용 설명은 뒤의 cards 이유에 쓰니 말풍선에 쓰지 마라. "
     "{turn_end}\n"
     + voice.RULES
-    + '다음 JSON 형식으로만 답하라: {{"cards": [{{"book_id": 정수, '
+    + '다음 JSON 형식으로만, 이 칸 순서대로 답하라: {{"picks": [고른 책의 book_id 정수], '
+    '"reply": "말풍선에 보일 1-2문장", '
+    '"cards": [{{"book_id": 정수, '
     '"reason_short": "한 줄 이유(80자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
-    '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
-    '"reply": "말풍선에 보일 1-2문장"}}\n\n'
+    '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
 )
 
@@ -1408,6 +1415,30 @@ def _parse_match_basis(raw: Any) -> list[dict]:
     ]
 
 
+def _order_by_picks(raw_cards: list, picks: object) -> list:
+    """카드를 picks 차례로 세운다. 화면 차례는 말풍선을 쓰기 전에 고른 picks 다.
+
+    picks 가 정수 목록이 아니면 cards 차례를 그대로 쓴다. picks 에 없는 카드는 picks 의 카드 뒤에 둔다 —
+    모델이 picks 를 빠뜨렸다고 카드를 버리면 카드가 0장이 될 수 있다. 카드가 없는 pick 은 건너뛴다.
+    """
+    if not isinstance(picks, list):
+        return raw_cards
+    order = {}
+    for book_id in picks:
+        if isinstance(book_id, int) and not isinstance(book_id, bool):
+            order.setdefault(book_id, len(order))
+    if not order:
+        return raw_cards
+
+    def rank(item: object) -> int:
+        book_id = item.get("book_id") if isinstance(item, dict) else None
+        return (
+            order.get(book_id, len(order)) if isinstance(book_id, int) else len(order)
+        )
+
+    return sorted(raw_cards, key=rank)
+
+
 @dataclass(frozen=True)
 class CardResult:
     cards: list[dict]
@@ -1489,6 +1520,7 @@ async def generate_cards(
     else:
         reply = voice.without_echo(reply.strip())
 
+    raw_cards = _order_by_picks(raw_cards, parsed.get("picks"))
     cards = []
     for rank, item in enumerate(raw_cards[:CARD_LIMIT], start=1):
         if not isinstance(item, dict):
