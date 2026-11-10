@@ -382,3 +382,41 @@ def test_저장된_취향_벡터가_없으면_취향을_반영하지_않는다(
 
     # 취향도 카테고리 점수도 인기 행도 없다.
     assert candidates[0]["match_score"] == 0
+
+
+@pytest.mark.parametrize("anchor_has_vector", [True, False])
+def test_관계를_물은_턴은_목록_책의_바닥_아래로_매기지_않는다(
+    monkeypatch: pytest.MonkeyPatch, anchor_has_vector: bool
+) -> None:
+    """책 추천 에이전트가 관계를 물은 턴(book_to_book)은 기준 책과 견주고, 목록 책의 바닥(이웃 가운데 0.854 → 0.425)을 둔다.
+
+    기준 책 벡터가 없어도(기준 책 소개글 없음) 요청 문장으로 돌아가지 않는다 — 요청 문장을 임베딩하지 않는다.
+    벡터 없는 후보(9100931)·기준 책과 먼 후보(9100932)는 바닥, 가까운 후보(9100933)는 그 유사도대로 받는다.
+    """
+
+    async def _no_embed(texts, purpose):
+        raise AssertionError("관계를 물은 턴은 요청 문장을 임베딩하지 않는다")
+
+    async def check(conn):
+        monkeypatch.setattr(chat.embedding, "embed", _no_embed)
+        for book_id in (9100931, 9100932, 9100933):
+            await _insert_book(conn, book_id, None)
+        await _insert_embedding(conn, 9100932, 0.70)
+        await _insert_embedding(conn, 9100933, 0.90)
+        candidates = _candidates(9100931, 9100932, 9100933)
+        await chat._attach_match_scores(
+            conn,
+            candidates,
+            _USER,
+            _spec(semantic="성장 소설"),
+            query_vector=_vector(1.0) if anchor_has_vector else None,
+            book_to_book=True,
+        )
+        return candidates
+
+    scores = [c["match_score"] for c in _run(check)]
+    # QUERY_SIMILARITY_WEIGHT(0.5) × 부분 점수. 카테고리·인기·취향은 0. 바닥 0.425 → 21
+    if anchor_has_vector:
+        assert scores == [21, 21, 50]
+    else:
+        assert scores == [21, 21, 21]

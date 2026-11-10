@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,16 +27,27 @@ from fastapi.responses import JSONResponse, Response
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from app.chat import asking, invented_mood, jobs, shown, streaming, topic_switch
+from app.chat import (
+    asking,
+    invented_mood,
+    jobs,
+    lanes,
+    picking,
+    reading_graph,
+    recall,
+    shown,
+    streaming,
+    topic_switch,
+)
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, isbn, popularity, responses, voice
+from app.core import body, categories, db, editions, isbn, popularity, responses, voice
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
-from app.feed import personalized, scoring
+from app.feed import interest_scoring, personalized, scoring
 from app.gate import judge as gate_judge
 from app.gate import rules as gate_rules
 from app.gate import shopping
@@ -169,6 +181,8 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
 #
 # {ask_rule}은 이번 말이 넓은 첫 요청에 물은 질문의 답일 때 싣는 규칙(app/chat/asking.py)이다. 그 밖의 턴에는 빈 문자열이라
 # 프롬프트가 그 전과 같다.
+#
+# {agent_rule}은 CHAT_AGENT 를 켰을 때만 싣는다(AGENT_RULE). 끄면 빈 문자열이라 프롬프트가 그 전과 같다.
 SPEC_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇의 조건(spec) 갱신기다. 이번 메시지를 보고 조건 중 "
     "실제로 바뀌는 값만 JSON으로 답하라 — 언급되지 않은 값은 답에 아예 "
@@ -242,7 +256,46 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     "제목만 말한 예시(형식일 뿐 실제 값 아님) — 메시지가 "
     '"데미안"이면:\n'
     '{{"intent": "exact", "exact": {{"title": "데미안"}}}}'
+    # 에이전트 칸은 켰을 때만 채운다. 안 채우면 빈 문자열이라 이 기능 전 프롬프트와 같다
+    "{agent_rule}"
+).partial(agent_rule="")
+
+# 책 추천 에이전트(CHAT_AGENT)가 1단계 호출에 더 받는 칸(app/chat/lanes.py). 호출을 늘리지 않으려고 같은 호출에 얹는다.
+# - anchor_card·anchor_title·relation: 사용자가 짚은 기준 책과, 그 책에 대해 물은 관계. 함께 읽은 책을 묻는 말을 보여
+#   준 책에 대한 질문(turn: answer)으로 읽으면 새 책을 못 찾아, 새 책 찾기라고 따로 적는다. 칸 이름을 "anchor"로 했더니
+#   mini 가 spec 의 anchor_book 에 번호를 넣었다
+# - 떠올린 제목(titles)은 여기서 받지 않고 따로 부른다(app/chat/recall.py). 같은 호출에서는 4o 가 22권 중 18권을 지어냈다
+#   (11/10 실험 1)
+# - anchor_title 은 모양과 예시를 적는다. 모양 없이 "그 책"이라고만 적었더니 4o 가 제목으로 짚은 기준 책 6문장 중 2문장은
+#   글자로("데미안") 냈고, 4문장은 아예 안 냈다("아몬드 같은 소설"을 semantic 에만 담음, 11/10 실험 1)
+# 프롬프트 맨 끝에 둔다. 조건 규칙 사이에 두었더니 "바뀌는 값만 답하라"에 눌려 4o·mini 모두 칸을 내지 않았다(11/10 점검
+# 3문장). 맨 끝에 두자 이번엔 mini 가 조건 칸을 빼고 빈 {} 를 냈다("파이썬 처음인데 예제로 따라 하고 싶어" 4번 중 0~1번만
+# semantic, 끄면 3/3). 그래서 조건 칸을 먼저 정하고 빼지 말라고 적는다.
+# 이 글은 프롬프트 틀이 아니라 채우는 값이라 중괄호를 겹쳐 쓰지 않는다.
+AGENT_RULE = (
+    "\n\n추가 칸 — 먼저 위 규칙대로 조건 칸(intent, semantic, filters 등)을 정하고, 그 칸들과 함께 아래 칸도 "
+    "판단해 같은 JSON 에 더 넣어라. 이 칸들은 조건 칸을 대신하지 않는다. 위에서 바뀌는 값만 넣으라고 했어도 이 칸들은 "
+    "해당하면 넣는다. 해당하지 않는 칸만 뺀다. 이 칸들 때문에 위 규칙으로 넣을 semantic·filters 같은 조건 칸을 빼지 "
+    "마라.\n"
+    "- anchor_card: 이번 메시지가 보여 준 책 하나를 번호·순서·지시어로 짚거나, 그 책을 읽고 이어서 궁금한 것을 말하면 "
+    "그 책의 번호(정수). 보여 준 책이 여럿인데 어느 책인지 말하지 않았으면 넣지 않는다. anchor_book 칸에는 번호를 넣지 "
+    "마라.\n"
+    '- anchor_title: 보여 준 책이 아닌 책의 제목을 말하며 그 책을 기준으로 삼으면 {"title": "그 책 제목", "author": '
+    '"저자"} 모양으로 넣는다. "X 읽은 사람들", "X 같은 책", "X처럼", "X 재밌게 읽었는데", "X 끝냈는데"의 X 가 그 책이다. '
+    "author 는 확실히 알 때만 넣는다.\n"
+    '- relation: 기준 책을 읽은 사람들이 함께(또, 같이) 읽은 책을 물으면 "co", 기준 책과 비슷한 책을 더 원하면'
+    '("X 같은", "X처럼", "결이 비슷한") "similar".\n'
+    "기준 책을 읽은 사람들이 함께 읽은 책이나 기준 책과 비슷한 책을 찾는 말은 질문이 아니라 새 책을 찾는 말이다. "
+    'turn 을 "answer" 로 하지 마라.\n'
+    "형식 예시(값은 설명일 뿐 베끼지 마라) — 보여 준 2번 책을 읽은 사람들이 함께 읽은 책을 물으면: "
+    '{"anchor_card": 2, "relation": "co"} / 메시지가 "『X』 읽은 사람들은 또 뭐 읽어?"면: '
+    '{"anchor_title": {"title": "X"}, "relation": "co"} / 메시지가 "X처럼 따뜻한 소설"이면: '
+    '{"semantic": "X처럼 따뜻한 소설", "anchor_title": {"title": "X"}, "relation": "similar"}'
 )
+
+
+def _agent_on() -> bool:
+    return get_settings().chat_agent
 
 
 def _format_recent_turns(turns: list[Turn]) -> str:
@@ -374,6 +427,7 @@ async def _ask_spec_patch(
             "spec_json": json.dumps(spec.model_dump(), ensure_ascii=False),
             "message": message,
             "ask_rule": asking.rule(ask_stage),
+            "agent_rule": AGENT_RULE if _agent_on() else "",
         },
     )
 
@@ -470,12 +524,92 @@ class SpecUpdate:
 
     ask 는 넓은 첫 요청이라 찾기 전에 물을 말과 답 보기다(#530, #505). 그때 spec 은 메시지에서 알게 된 조건까지
     갱신한다. 다음 턴이 그 위에서 답을 더한다.
+
+    plan 은 CHAT_AGENT 를 켰을 때 1단계가 더 낸 기준 책·관계다(app/chat/lanes.py). 끄면 늘 비었다.
+
+    recall 은 CHAT_AGENT 를 켰을 때 1단계와 나란히 보낸 떠올린 제목 호출이다(app/chat/recall.py). 쓸 턴이면 갈래를
+    모을 때 받고(_recalled_within_grace), 안 쓸 턴이면 호출부가 끊는다. 끄면 늘 None 이다.
     """
 
     spec: Spec
     degraded: bool
     answer: bool = False
     ask: asking.Ask | None = None
+    plan: lanes.Plan = lanes.EMPTY_PLAN
+    recall: "asyncio.Task[tuple[lanes.Title, ...]] | None" = None
+
+
+def _plan(patch: dict, first: dict) -> lanes.Plan:
+    """1단계 patch 에서 에이전트 칸을 꺼낸다. 새 요청이라 빈 조건에서 다시 뽑은 patch 는 보여 준 책을 모르므로
+    기준 책과 관계는 처음 patch 의 것을 쓴다."""
+    if not _agent_on():
+        return lanes.EMPTY_PLAN
+    plan = lanes.parse_plan(patch)
+    if patch is first:
+        return plan
+    first_plan = lanes.parse_plan(first)
+    return lanes.Plan(
+        anchor=plan.anchor or first_plan.anchor,
+        relation=plan.relation or first_plan.relation,
+        named=plan.named or first_plan.named,
+    )
+
+
+# 떠올린 제목 호출(app/chat/recall.py)은 1단계와 나란히 가고, 갈래를 모을 때 검색과 나란히 받는다. 그때까지 못 끝났으면
+# 이만큼만 더 기다리고 버린다. 11/10 실험 1(gpt-4o, 12번)에서 이 호출은 턴 시작부터 1.6~2.5초, 1단계가 끝난 뒤 0.3~1.6초
+# 더 걸렸다. 검색이 도는 동안 대부분 끝난다. 넓은 첫 요청 판정(SCOPE_GRACE_SECONDS)과 같은 한도를 둔다.
+RECALL_GRACE_SECONDS = 2.0
+
+
+def _may_recall(message: str) -> bool:
+    """떠올린 제목을 부를 턴인가. 보여 준 책이나 특정 책을 기준으로 삼는 말이면 부르지 않는다(기준 책 목록을 쓴다).
+
+    주제 말이 하나도 없는 말("책 추천해줘", "아무거나 추천해 줄래?")에도 부르지 않는다. 떠올릴 거리가 없어 되묻는 턴인데
+    호출이 1단계와 나란히 나가 LLM 을 두 번 불렀다(11/10 실험 2). 주제 말은 1단계 주제 되찾기(_recover_topic)와 같은 낱말
+    규칙으로 본다. 낱말 규칙이 모르는 말("ㅋㅋㅋ", 인사)은 주제로 보고 부른다 — 놓치면 떠올린 제목 갈래가 통째로 빠진다.
+    """
+    if not _agent_on() or lanes.points_at_book(message):
+        return False
+    words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
+    return any(_is_topic_word(w) for w in words)
+
+
+async def _recall_titles(
+    message: str, recent_turns: list[Turn]
+) -> tuple[lanes.Title, ...]:
+    """떠올린 제목 호출. 실패하면 빈 목록이다 — 떠올린 제목은 덤이라 없어도 검색으로 답한다.
+
+    어떤 예외도 밖으로 내지 않는다. 이 호출은 턴과 나란히 돌다 쓰지 않으면 끊기는데, 끝난 작업의 예외를 아무도 받지
+    않으면 이벤트 루프가 경고만 남기고 원인을 잃는다.
+    """
+    chain = recall.RECALL_PROMPT | get_chat_model() | message_text | parse_json_response
+    try:
+        answer = await invoke_chain(
+            chain,
+            {"message": message, "recent_turns": _format_recent_turns(recent_turns)},
+        )
+    except Exception:
+        logger.warning("떠올린 제목 호출 실패 — 검색으로만 찾는다", exc_info=True)
+        return ()
+    return recall.parse(answer)
+
+
+async def _recalled_within_grace(
+    task: "asyncio.Task[tuple[lanes.Title, ...]]",
+) -> tuple[lanes.Title, ...]:
+    try:
+        return await asyncio.wait_for(task, timeout=RECALL_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "떠올린 제목 호출이 갈래 모으기보다 %.1f초 넘게 늦어 버린다",
+            RECALL_GRACE_SECONDS,
+        )
+        return ()
+
+
+def _drop(task: "asyncio.Task | None") -> None:
+    if task is not None and not task.done():
+        task.cancel()
 
 
 async def update_spec(
@@ -515,6 +649,12 @@ async def update_spec(
     scope = (
         asyncio.create_task(_judge_scope(message)) if ask_stage == "may_ask" else None
     )
+    recalling = (
+        asyncio.create_task(_recall_titles(message, recent_turns))
+        if _may_recall(message)
+        else None
+    )
+    handed_over = False
     try:
         previous = topic_switch.previous_request(spec)
         if ask_stage == "answered":
@@ -539,17 +679,33 @@ async def update_spec(
                 new_request = await _relation_within_grace(relation)
         if patch.get("turn") == "answer":
             return SpecUpdate(spec, degraded=False, answer=True)
+        first = patch
         if new_request:
             fresh = topic_switch.fresh_spec(spec)
             restarted = await _restart_patch(message, fresh)
             if restarted is not None:
                 logger.info("주제가 바뀌어 앞 조건을 비웠다")
                 base, patch = fresh, restarted
+        if _agent_on():
+            # 기준 책은 에이전트 칸(anchor_card)으로 받는다. 모델이 spec 의 anchor_book(book_id 칸)에 카드 번호를 넣는
+            # 일이 있었다(11/10 점검, gpt-4o-mini). 그대로 겹쳐 쓰면 번호가 엉뚱한 book_id 로 남는다
+            patch = {k: v for k, v in patch.items() if k != "anchor_book"}
         updated = Spec.model_validate(_merge_spec_patch(base, patch))
         ask = await _scope_within_grace(scope) if scope is not None else None
         if ask is not None and _is_pinned(updated):
             ask = None
-        return SpecUpdate(updated, degraded=False, ask=ask)
+        plan = _plan(patch, first)
+        # 제목·저자를 콕 집은 요청과 기준 책을 짚은 요청에는 떠올린 제목을 쓰지 않는다. 묻는 턴에도 안 쓴다
+        handed_over = (
+            ask is None and updated.intent == "semantic" and plan.anchor is None
+        )
+        return SpecUpdate(
+            updated,
+            degraded=False,
+            ask=ask,
+            plan=plan,
+            recall=recalling if handed_over else None,
+        )
     except LLMUnavailableError:
         logger.exception("spec 갱신 실패")
         return SpecUpdate(spec, degraded=True)
@@ -568,6 +724,8 @@ async def update_spec(
         # 대답 턴으로 일찍 돌아가거나 1단계가 실패하면 판정은 쓰지 않는다
         if scope is not None and not scope.done():
             scope.cancel()
+        if not handed_over:
+            _drop(recalling)
 
 
 def _query_text(spec: Spec) -> str:
@@ -950,6 +1108,33 @@ async def _embed_query_semantic(text: str) -> list[float] | None:
     return vectors[0]
 
 
+# 함께 대출·마니아 이웃 책과 기준 책의 유사도 가운데 값(평가 DB, 기준 책 300권 — 아래 docstring). 목록에 든 책의 바닥이다
+LISTED_SIMILARITY = 0.854
+
+
+def _book_similarity_part(similarity: float | None) -> float:
+    """기준 책과 후보 책의 코사인 유사도를 0–1 로. 요청 문장 ↔ 책의 구간(0.85–0.95)을 쓰면 관계 카드가 0~19% 였다(11/10
+    점검). 평가 DB 에서 잰 책 ↔ 책 유사도(기준 책 300권): 함께 읽은 책 가운데 0.854·위 10% 0.891, 마니아 추천 가운데
+    0.854·위 10% 0.899, 아무 책 둘 가운데 0.814·위 10% 0.840. ④ 관심사 목록이 책 ↔ 책에 쓰는 구간(0.82–0.90, #483)이 이
+    분포에 맞아 같은 구간을 쓴다 — 아무 책은 거의 0, 이웃 책 가운데는 약 0.4 다.
+
+    이 식으로 매기는 책은 기준 책의 함께 대출·마니아 목록에서 온 책뿐이다(관계를 물은 턴에는 떠올린 제목을 부르지 않고,
+    검색 책은 요청 문장으로 이미 매겼다). 목록에 든 것이 기준 책과 이어진 근거라, 유사도가 낮거나 벡터가 없어도(소개글 없음)
+    이웃 책 가운데 값(LISTED_SIMILARITY)보다 낮게 매기지 않는다. 그 전에는 『데미안』의 마니아 추천 『죄와 벌』·『이방인』,
+    소개글 없는 함께 읽은 책이 0% 로 나왔다(11/10 실험 2).
+    """
+    span = (
+        interest_scoring.BOOKS_SIMILARITY_CEILING
+        - interest_scoring.BOOKS_SIMILARITY_FLOOR
+    )
+    measured = (
+        LISTED_SIMILARITY if similarity is None else max(similarity, LISTED_SIMILARITY)
+    )
+    return min(
+        1.0, max(0.0, (measured - interest_scoring.BOOKS_SIMILARITY_FLOOR) / span)
+    )
+
+
 def _chat_match_score(
     query_similarity: float | None,
     taste_similarity: float | None,
@@ -958,14 +1143,22 @@ def _chat_match_score(
     catalog_max: float | None,
     *,
     has_taste: bool,
+    book_to_book: bool = False,
 ) -> int:
     """③ 전용 매칭 점수(#222) — 이번 요청 조건과의 유사도를 메인으로 쓴다.
 
     ④(app.feed.scoring.match_score)와 계산식이 다르다(명세 ③ 각주). 취향
     유사도는 ④와 같은 원칙으로 없으면 0으로 두고 남은 비중을 재분배하지
     않는다 — 축소 응답도 같은 잣대를 쓰기 위해서다.
+
+    book_to_book 이면 query_similarity 가 요청 문장이 아니라 기준 책과의 유사도다(책 추천 에이전트가 관계를 물은 턴).
     """
-    total = QUERY_SIMILARITY_WEIGHT * scoring.similarity_part(query_similarity)
+    query_part = (
+        _book_similarity_part(query_similarity)
+        if book_to_book
+        else scoring.similarity_part(query_similarity)
+    )
+    total = QUERY_SIMILARITY_WEIGHT * query_part
     total += CHAT_CATEGORY_WEIGHT * scoring.category_part(category_raw)
     total += CHAT_POPULARITY_WEIGHT * scoring.popularity_part(
         popularity_value, catalog_max
@@ -976,7 +1169,13 @@ def _chat_match_score(
 
 
 async def _attach_match_scores(
-    conn: asyncpg.Connection, candidates: list[dict], user_id: int, spec: Spec
+    conn: asyncpg.Connection,
+    candidates: list[dict],
+    user_id: int,
+    spec: Spec,
+    *,
+    query_vector: list[float] | None = None,
+    book_to_book: bool = False,
 ) -> None:
     """후보마다 match_score를 채운다(명세 2단계 축소판, #129).
 
@@ -1034,13 +1233,17 @@ async def _attach_match_scores(
     # #222 — semantic이 있으면(이번 요청의 조건) 그 임베딩과 후보 책들의 유사도를
     # 구해 ③ 전용 식으로 점수를 낸다. 없거나 임베딩이 실패하면 has_query가 False로
     # 남아 아래에서 옛 식(④와 동일)으로 그대로 폴백한다.
-    has_query = False
+    # query_vector 를 주면(책 추천 에이전트가 관계를 물은 턴의 기준 책 벡터) 이번 요청 문장 대신 그것과 견준다.
+    # book_to_book(관계를 물은 턴)인데 기준 책 벡터가 없으면(기준 책 소개글 없음) 요청 문장으로 돌아가지 않고 유사도를 모르는
+    # 것으로 둔다 — 목록 책의 바닥(_book_similarity_part)을 받는다. 돌아가면 소개글 없는 『혼자 공부하는 파이썬』의 함께 읽은
+    # 책이 0% 로 나왔다(11/10 재측정).
+    has_query = book_to_book
     query_similarities: dict[int, float] = {}
-    if spec.semantic:
+    if query_vector is None and spec.semantic and not book_to_book:
         query_vector = await _embed_query_semantic(spec.semantic)
-        if query_vector is not None:
-            has_query = True
-            query_similarities = await _fetch_similarities(conn, book_ids, query_vector)
+    if query_vector is not None:
+        has_query = True
+        query_similarities = await _fetch_similarities(conn, book_ids, query_vector)
 
     fields = {r["book_id"]: r for r in rows}
     for c in candidates:
@@ -1055,6 +1258,7 @@ async def _attach_match_scores(
                 c["popularity"],
                 catalog_max,
                 has_taste=has_centroid,
+                book_to_book=book_to_book,
             )
         else:
             c["match_score"] = scoring.match_score(
@@ -1584,7 +1788,11 @@ def _title_key(title: str | None) -> str:
     return _NON_WORD.sub("", _TITLE_PREFIX.sub("", title or "")).lower()
 
 
-def _without_unshown_titles(reply: str, titles: list[str]) -> str | None:
+def _without_unshown_titles(
+    reply: str,
+    titles: list[str],
+    split: Callable[[str], list[str]] = voice.sentences_of,
+) -> str | None:
     """말풍선에서 카드에 없는 책 제목을 짚은 문장을 뺀다. 다 빠지면 None — 호출부가 기본 문구로 채운다."""
     keys = [key for key in map(_title_key, titles) if key]
 
@@ -1594,10 +1802,425 @@ def _without_unshown_titles(reply: str, titles: list[str]) -> str | None:
 
     kept = [
         sentence
-        for sentence in voice.sentences_of(reply)
+        for sentence in split(reply)
         if all(shown(name) for name in _NAMED_TITLE.findall(sentence))
     ]
     return " ".join(kept) or None
+
+
+# --- 책 추천 에이전트(CHAT_AGENT, 11/10 설계): 세 갈래 후보 → 판단 호출 → 카드·질문·한 번 더 찾기 ---
+# 갈래 모으기는 app/chat/lanes.py, 판단 호출의 글과 이유 규칙은 app/chat/picking.py 에 있다. 여기서는 순서만 잇는다.
+# 끄면(기본) 이 부분을 지나지 않고 지금의 검색 → 카드 생성 그대로다.
+_LANE_ASK_REPLY = "찾으시는 것에 따라 두 갈래로 나뉘어요."
+# 보여 준 카드가 여럿인데 "이거 읽은 사람들은 또 뭐 봐?"처럼 어느 책인지 말하지 않았을 때(lanes.fill_plan 의 ask_card)
+_WHICH_CARD_REPLY = "보여 드린 책 중 어느 책을 말씀하시는 건가요?"
+_WHICH_CARD_FOLLOWUP = (
+    "번호로 알려 주시면 그 책을 읽은 분들이 함께 읽은 책을 찾아 드릴게요. "
+    '예) "2번 읽은 사람들은 또 뭐 읽었어?"'
+)
+
+
+@dataclass
+class _LaneTurn:
+    """한 턴의 세 갈래 후보와, 한 번 더 찾을 때 다시 쓸 것들."""
+
+    req: ChatRequest
+    spec: Spec
+    plan: lanes.Plan
+    anchor: lanes.Anchor | None
+    shown_ids: list[int]
+    owned: list[int] | None
+    graph: reading_graph.ReadingGraph | None
+    skip: lanes.Skip
+    pool: list[dict]
+
+
+def _uses_lanes(spec: Spec, plan: lanes.Plan) -> bool:
+    """세 갈래로 찾을 턴인가. 제목·저자를 콕 집은 요청은 그 책 자체를 찾는 말이라 지금처럼 검색만 한다."""
+    return spec.intent == "semantic" or plan.anchor is not None
+
+
+async def _no_books() -> list[dict]:
+    return []
+
+
+async def _recalled_books(
+    recalling: "asyncio.Task[tuple[lanes.Title, ...]]",
+) -> list[dict]:
+    """B — 떠올린 제목 호출을 받아 책 표에서 찾는다."""
+    return await lanes.titled_books(await _recalled_within_grace(recalling))
+
+
+async def _settle_pool(
+    turn: _LaneTurn,
+    searched: list[dict],
+    *others: list[dict],
+    others_first: bool = False,
+) -> list[dict]:
+    """갈래들을 합치고 뺄 책을 뺀 뒤, 새로 들어온 책에 점수와 이웃 줄을 붙인다.
+
+    검색(A)은 get_candidates 가 사용자 조건·뺄 책·점수를 이미 다뤘다. 다른 갈래 책에는 여기서 같은 조건을 건다.
+    목록 순서는 검색 먼저다. others_first 면 다른 갈래를 앞에 둔다(비슷한 책을 더 원할 때 — 마니아 목록 중심).
+    """
+    spec, graph = turn.spec, turn.graph
+    passed = [
+        [b for b in lane if lanes.passes(b, spec.filters, spec.exact.publisher)]
+        for lane in others
+    ]
+    pool = [
+        b
+        for b in lanes.merge(
+            *((*passed, searched) if others_first else (searched, *passed)),
+            graph=graph,
+        )
+        if not turn.skip.blocks(b, graph)
+    ]
+    unscored = [b for b in pool if "match_score" not in b]
+    if unscored:
+        async with db.get_pool().acquire() as conn:
+            await _attach_match_scores(
+                conn,
+                unscored,
+                turn.req.user_id,
+                spec,
+                query_vector=await _anchor_vector(conn, turn),
+                # 관계를 물은 턴이면 기준 책 벡터가 없어도 책끼리 식으로 매긴다(목록 책의 바닥을 받는다)
+                book_to_book=turn.anchor is not None and turn.plan.relation is not None,
+            )
+    if graph is not None:
+        await lanes.attach_neighbor_lines(
+            graph, [b for b in pool if "neighbors" not in b], turn.skip
+        )
+    return pool
+
+
+async def _anchor_vector(
+    conn: asyncpg.Connection, turn: _LaneTurn
+) -> list[float] | None:
+    """관계를 물은 턴이면 기준 책의 벡터. 다른 갈래 책의 매칭 % 를 이번 요청 문장 대신 이것과 견줘 매긴다.
+
+    "이 책 읽은 사람들은 또 뭐 읽었어?"의 요청 문장은 기준 책 제목뿐이라, 그와 견주면 함께 읽은 책이 모두 0~5% 로
+    나왔다(11/10 점검). 사용자가 물은 것은 기준 책과의 관계라 기준 책과 견준다. 벡터가 없는 책(소개글 없음)이면 None.
+    """
+    anchor = turn.anchor
+    if anchor is None or anchor.book_id is None or turn.plan.relation is None:
+        return None
+    raw = await conn.fetchval(
+        "SELECT embedding::text FROM book_embeddings WHERE book_id = $1", anchor.book_id
+    )
+    return json.loads(raw) if raw else None
+
+
+async def _gather_lanes(
+    req: ChatRequest,
+    spec: Spec,
+    plan: lanes.Plan,
+    shown_cards: list[tuple[int, str]],
+    shown_books: list[shown.ShownBook],
+    shown_ids: list[int],
+    owned: list[int] | None,
+    *,
+    recalling: "asyncio.Task[tuple[lanes.Title, ...]] | None" = None,
+) -> _LaneTurn:
+    """검색(A)·떠올린 제목(B)·기준 책 이웃(C)을 나란히 모아 한 목록으로 만든다.
+
+    사용자가 기준 책을 읽은 사람들이 함께 읽은 책을 물으면(relation co) 그 목록에서만 고른다. 검색어로 찾은 책이
+    섞이면 "함께 읽은 책"이라는 답이 틀린다. 기준 책의 목록이 없으면 지금처럼 찾는다.
+
+    recalling 은 1단계와 나란히 보낸 떠올린 제목 호출이다. 기준 책이 있는 턴에는 쓰지 않는다(기준 책 목록을 쓴다).
+    """
+    graph = reading_graph.get()
+    anchor = await lanes.resolve_anchor(plan, shown_cards, shown_books, graph)
+    excluded = set(shown_ids) | set(spec.exclude)
+    skip = lanes.Skip(
+        book_ids=excluded | set(owned or []),
+        edition_keys=await _fetch_edition_keys(list(excluded)),
+    )
+    if anchor is not None and anchor.book_id is not None:
+        skip.book_ids.add(anchor.book_id)
+    if anchor is not None and anchor.work is not None:
+        skip.works.add(anchor.work)
+    # "이 작가 말고": 기준 책 저자의 책은 한 권도 내지 않는다(한 장까지 허용하는 저자 제한보다 세다)
+    if (
+        plan.other_author
+        and anchor is not None
+        and (author := editions.author_key(anchor.author))
+    ):
+        skip.authors.add(author)
+    has_lists = (
+        graph is not None
+        and anchor is not None
+        and anchor.work is not None
+        and graph.has_lists(anchor.work)
+    )
+    relation_only = plan.relation == "co" and has_lists
+    search_spec = spec
+    if not _query_text(spec) and plan.anchor is not None and not has_lists:
+        # 기준 책을 짚었는데 못 찾았거나 그 책의 목록이 없다. 검색어도 없으면 카드가 0장이라 사용자 말로 찾는다.
+        # 제목으로 기준 책을 짚는 말("데미안 읽은 사람들은 또 뭐 읽어?")에는 1단계가 검색어를 비우는 일이 많다(11/10 실험 1)
+        search_spec = spec.model_copy(
+            update={"semantic": (req.message or "")[:MAX_QUERY_CHARS] or None}
+        )
+    if anchor is not None:
+        _drop(recalling)
+        recalling = None
+    started = asyncio.get_running_loop().time()
+    searched, titled, related = await asyncio.gather(
+        get_candidates(search_spec, shown_ids, req.user_id, owned_book_ids=owned)
+        if _query_text(search_spec) and not relation_only
+        else _no_books(),
+        _recalled_books(recalling) if recalling is not None else _no_books(),
+        lanes.neighbor_books(graph, anchor, lanes.relation_kinds(plan.relation))
+        if graph is not None and anchor is not None
+        else _no_books(),
+    )
+    turn = _LaneTurn(req, spec, plan, anchor, shown_ids, owned, graph, skip, [])
+    # 비슷한 책을 더 원하면 기준 책의 마니아 목록을 앞에 둔다. 11/10 점검에서 검색 결과가 앞에 있자 판단 호출이 『데미안』
+    # 마니아 목록 대신 검색에 걸린 자기계발 "성장" 책 3권을 골랐다
+    if plan.relation == "similar" and related:
+        turn.pool = await _settle_pool(
+            turn, searched, related, titled, others_first=True
+        )
+    else:
+        turn.pool = await _settle_pool(turn, searched, titled, related)
+    logger.info(
+        "세 갈래: 검색 %d · 떠올린 제목 %d · 기준 책 이웃 %d → 후보 %d권(%.2f초)%s",
+        len(searched),
+        len(titled),
+        len(related),
+        len(turn.pool),
+        asyncio.get_running_loop().time() - started,
+        " — 함께 읽은 책만" if relation_only else "",
+    )
+    return turn
+
+
+async def _judge(
+    turn: _LaneTurn, *, may_ask: bool, may_search: bool, on_reply: ReplySink | None
+) -> picking.Decision | None:
+    """판단 호출. 실패하면 None(호출부가 규칙 카드로 대신한다)."""
+    inputs = picking.prompt_inputs(
+        recent_turns=_format_recent_turns(turn.req.recent_turns),
+        message=turn.req.message or "",
+        intro=_card_prompt_intro(turn.spec) + _card_prompt_conditions(turn.spec),
+        listing=picking.format_listing(turn.pool),
+        limit=CARD_LIMIT,
+        may_ask=may_ask,
+        may_search=may_search,
+        relation=turn.plan.relation if turn.anchor is not None else None,
+    )
+    try:
+        if on_reply is None:
+            chain = (
+                picking.JUDGE_PROMPT
+                | get_chat_model()
+                | message_text
+                | parse_json_response
+            )
+            answer = await invoke_chain(chain, inputs)
+        else:
+            preview = streaming.ReplyPreview(on_reply, _preview_reply)
+
+            async def feed(text: str) -> None:
+                # 한 번 더 찾을 때는 이 말풍선을 쓰지 않으니 먼저 보내지 않는다
+                if picking.streams_reply(text):
+                    await preview.feed(text)
+
+            answer = await stream_json(
+                picking.JUDGE_PROMPT | get_chat_model(), inputs, feed
+            )
+    except LLMUnavailableError:
+        logger.exception("판단 호출 실패")
+        return None
+    return picking.parse(answer, may_ask=may_ask, may_search=may_search)
+
+
+async def _search_again(turn: _LaneTurn, query: str) -> None:
+    """판단 호출이 낸 새 검색어로 검색(A)만 다시 하고, 떠올린 제목·기준 책 이웃은 그대로 둔다."""
+    retry = turn.spec.model_copy(
+        update={
+            "intent": "semantic",
+            "semantic": query,
+            "exact": turn.spec.exact.model_copy(update={"title": None, "author": None}),
+        }
+    )
+    searched = await get_candidates(
+        retry, turn.shown_ids, turn.req.user_id, owned_book_ids=turn.owned
+    )
+    kept = [b for b in turn.pool if any(lane != "search" for lane, _ in b["sources"])]
+    turn.pool = await _settle_pool(turn, searched, kept)
+    logger.info("다시 찾기: 검색 %d권 → 후보 %d권", len(searched), len(turn.pool))
+
+
+def _graph_source(book: dict) -> tuple[str, str] | None:
+    return next(
+        (
+            (lane, anchor)
+            for lane, anchor in book.get("sources") or []
+            if lane in ("co", "mania")
+        ),
+        None,
+    )
+
+
+def _lane_reasons(
+    item: dict, book: dict, spec: Spec, *, relation_asked: bool = False
+) -> tuple[str, Any, list[dict]] | None:
+    """카드 한 장의 (한 줄 이유, 긴 이유, 근거). 한 줄 이유를 못 만들면 None(카드에서 뺀다).
+
+    소개글이 있으면 모델이 소개로 쓴 이유를 쓴다. 그래프에서 온 책이면 관계 사실을 근거 맨 앞에 두고, 모델 글이
+    목록으로 알 수 없는 것("많이 읽은")을 말하면 관계 사실 문장으로 바꾼다. 소개글이 없으면 모델 글을 쓰지 않는다
+    (#86): 그래프 책은 관계 사실, 떠올린 책은 확인된 칸(저자·연도·분류), 제목·저자로 찾은 책은 "찾으신 …"이다.
+
+    사용자가 기준 책과의 관계("이 책 읽은 사람들은 또 뭐 읽었어?")를 물었으면(relation_asked) 그래프 책의 한 줄 이유는
+    소개글이 있어도 관계 사실이다. 그 물음의 답이 관계다.
+    """
+    source = _graph_source(book)
+    if _has_description(book):
+        reason_short = item.get("reason_short")
+        reason_long = _unless_copied(item.get("reason_long"), book)
+        basis = picking.without_placeholder_basis(
+            _parse_match_basis(item.get("match_basis"))
+        )
+        if source is not None:
+            if (
+                relation_asked
+                or not isinstance(reason_short, str)
+                or picking.overclaims(reason_short)
+            ):
+                reason_short = picking.relation_reason(*source)
+            if isinstance(reason_long, str) and picking.overclaims(reason_long):
+                reason_long = None
+            basis = [picking.relation_basis(*source), *basis][:3]
+    elif source is not None:
+        reason_short = picking.relation_reason(*source)
+        reason_long, basis = None, [picking.relation_basis(*source)]
+    elif spec.intent == "exact":
+        reason_short, reason_long, basis = _no_description_reason(book), None, []
+    else:
+        reason_short, reason_long, basis = picking.confirmed_reason(book), None, []
+    if not isinstance(reason_short, str) or not reason_short.strip():
+        return None
+    return reason_short.strip(), reason_long, basis
+
+
+def _lane_reply(reply: str | None, picked: list[dict]) -> str | None:
+    """말풍선 후처리. 카드에 없는 책을 짚은 문장, 목록으로 알 수 없는 것을 말한 문장을 빼고, 끝에 코드가 쓴 두 갈래
+    제안 문장(picking.proposal)을 붙인다. 제안 문장이 있으면 모델이 이웃 줄의 책을 짚은 문장은 뺀다 — 같은 제안이
+    두 번 나가지 않게."""
+    proposal = picking.proposal(picked)
+    if reply is None:
+        return proposal
+    neighbors = [b.get("neighbors") or {} for b in picked]
+    allowed = [b["title"] for b in picked]
+    if proposal is None:
+        allowed += [
+            t
+            for n in neighbors
+            for kind in reading_graph.KINDS
+            for t in n.get(kind, [])
+        ]
+    co_titles = {t for n in neighbors for t in n.get("co", [])}
+    co_titles |= {
+        b["title"] for b in picked if any(lane == "co" for lane, _ in b["sources"])
+    }
+    cleaned = _without_unshown_titles(
+        voice.without_echo(reply), allowed, picking.sentences
+    )
+    if cleaned is not None:
+        cleaned = picking.without_overclaims(cleaned, co_titles)
+    if cleaned is not None:
+        cleaned = voice.without_vague_question(cleaned)
+    return picking.with_proposal(cleaned, proposal, _REPLY_MAX_CHARS)
+
+
+def _lane_cards(
+    decision: picking.Decision, turn: _LaneTurn
+) -> tuple[list[dict], str | None]:
+    """판단 호출이 고른 책으로 카드를 만든다. 같은 저자 책은 한 장까지다(마니아 목록은 같은 저자 쏠림이 25%).
+
+    저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다.
+    """
+    by_id = {b["book_id"]: b for b in turn.pool}
+    one_per_author = turn.spec.intent == "semantic" and not turn.spec.exact.author
+    cards: list[dict] = []
+    picked: list[dict] = []
+    authors: set[str] = set()
+    for item in decision.cards:
+        if len(cards) == CARD_LIMIT:
+            break
+        if not isinstance(item, dict):
+            continue
+        book = by_id.get(item.get("book_id"))
+        if book is None or any(p is book for p in picked):
+            continue
+        author = editions.author_key(book.get("author"))
+        if one_per_author and author and author in authors:
+            continue
+        reasons = _lane_reasons(
+            item,
+            book,
+            turn.spec,
+            relation_asked=turn.anchor is not None and turn.plan.relation is not None,
+        )
+        if reasons is None:
+            continue
+        reason_short, reason_long, basis = reasons
+        authors.add(author)
+        picked.append(book)
+        cards.append(
+            {
+                "isbn": book.get("isbn"),
+                "rank": len(cards) + 1,
+                "match_score": book["match_score"],
+                "title": book["title"],
+                "author": book["author"],
+                "price": book.get("price"),
+                "cover_url": book.get("cover_url"),
+                "reason_short": reason_short,
+                "reason_long": reason_long,
+                "match_basis": basis,
+            }
+        )
+    return cards, _lane_reply(decision.reply, picked)
+
+
+def _fallback_pool(pool: list[dict]) -> list[dict]:
+    """판단 호출이 실패했을 때 규칙 카드를 고를 후보. 사용자 말로 찾은 책(검색·떠올린 제목)이 있으면 그것만 본다."""
+    asked = [
+        b for b in pool if any(lane in ("search", "title") for lane, _ in b["sources"])
+    ]
+    return asked or pool
+
+
+async def _pick_from_lanes(
+    turn: _LaneTurn, *, may_ask: bool, on_reply: ReplySink | None
+) -> tuple[CardResult, tuple[str, str] | None]:
+    """판단 호출로 고른다. (카드 결과, 카드 대신 물을 (reply, followup)). 한 번 더 찾기는 턴마다 한 번이다."""
+    if not turn.pool:
+        return CardResult([], None, False), None
+    decision = await _judge(turn, may_ask=may_ask, may_search=True, on_reply=on_reply)
+    if decision is not None and decision.action == "search_again":
+        logger.info("판단 호출이 놓친 조건이 있다고 해 한 번 더 찾는다")
+        try:
+            await _search_again(turn, decision.query or "")
+        except Exception:
+            logger.exception("다시 찾기 실패 — 처음 후보로 고른다")
+        decision = await _judge(
+            turn, may_ask=may_ask, may_search=False, on_reply=on_reply
+        )
+    if decision is None:
+        return CardResult(
+            _rule_based_cards(_fallback_pool(turn.pool)), None, True
+        ), None
+    logger.info("판단 호출: %s", decision.action)
+    if decision.action == "ask":
+        return CardResult([], None, False), (
+            _fit_reply(decision.reply or _LANE_ASK_REPLY),
+            _fit_followup(decision.question or ""),
+        )
+    cards, reply = _lane_cards(decision, turn)
+    return CardResult(cards, reply, False), None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
@@ -2186,6 +2809,7 @@ async def _recommend(
         logger.info("대답 턴: 검색하지 않고 답했다")
         return await _answer_response(req, lane, shown_books)
     spec, spec_degraded = update.spec, update.degraded
+    turn: _LaneTurn | None = None
     try:
         # 분야 값 검사가 책 표를 읽다 실패해도, ISBN을 book_id로 바꾸다 실패해도
         # 후보 검색 실패와 같은 500이다.
@@ -2194,28 +2818,74 @@ async def _recommend(
         spec = _recover_topic(spec, req.message)
         shown_ids = await _shown_book_ids(req)
         owned = await _owned_book_ids(req)
-        candidates = await get_candidates(
-            spec, shown_ids, req.user_id, owned_book_ids=owned
+        plan = lanes.fill_plan(
+            update.plan,
+            req.message or "",
+            [book.rank for book in shown_books],
+            {book.rank: book.title for book in shown_books},
         )
+        if plan.ask_card and _agent_on():
+            # 카드가 여럿인데 어느 책을 읽은 사람들인지 말하지 않았다. 아무 카드나 찍지 않고 번호를 묻는다(LLM·검색 없이)
+            _drop(update.recall)
+            logger.info("함께 읽은 책을 물었는데 어느 카드인지 몰라 번호를 묻는다")
+            return responses.success(
+                "recommend_success",
+                _with_lane(
+                    {
+                        "reply": _WHICH_CARD_REPLY,
+                        "spec": spec.model_dump(),
+                        "recognition": None,
+                        "cards": [],
+                        "followup": _WHICH_CARD_FOLLOWUP,
+                        "buttons": [],
+                        "degraded": False,
+                    },
+                    lane,
+                ),
+            )
+        if not spec_degraded and _agent_on() and _uses_lanes(spec, plan):
+            turn = await _gather_lanes(
+                req,
+                spec,
+                plan,
+                shown_cards or [],
+                shown_books,
+                shown_ids,
+                owned,
+                recalling=update.recall,
+            )
+            candidates = turn.pool
+        else:
+            _drop(update.recall)
+            candidates = await get_candidates(
+                spec, shown_ids, req.user_id, owned_book_ids=owned
+            )
     except Exception:
+        _drop(update.recall)
         # 그대로 두면 FastAPI 기본 500(text/plain)이 나가 공통 응답 형식이 깨진다.
         logger.exception("후보 검색 실패")
         return responses.error(500, "internal_server_error")
 
     # 첫 턴에만 묻는다. 이어지는 턴은 사용자가 이미 답하는 중이라 같은 걸 또 묻지 않는다.
     slot_question = None if req.recent_turns else _slot_question(req.message)
+    # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
+    may_ask = slot_question is None and not _bot_asked_last(req.recent_turns)
+    lane_ask: tuple[str, str] | None = None
     if spec_degraded:
         # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위
         # CARD_LIMIT권을 규칙으로 낸다(#129).
         result = CardResult(_rule_based_cards(candidates), None, True)
+    elif turn is not None:
+        result, lane_ask = await _pick_from_lanes(
+            turn, may_ask=may_ask, on_reply=on_reply
+        )
     else:
         result = await generate_cards(
             candidates,
             spec,
             message=req.message,
             recent_turns=req.recent_turns,
-            # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
-            may_ask=slot_question is None and not _bot_asked_last(req.recent_turns),
+            may_ask=may_ask,
             on_reply=on_reply,
         )
     cards, llm_reply, degraded = result.cards, result.reply, result.degraded
@@ -2225,11 +2895,15 @@ async def _recommend(
     # 자체가 없으면(검색 결과 없음 등 — 이때는 generate_cards가 LLM을 아예
     # 안 부르므로 llm_reply도 없다) "골라봤어요"가 어색해 못 찾음 안내로 바꾼다.
     no_card_reply, followup = None, None
-    if not cards:
+    if lane_ask is not None:
+        # 판단 호출이 후보가 두 갈래로 갈린다며 물었다. 카드 없이 그 질문을 followup 으로 준다(명세: 카드가 없으면 followup)
+        no_card_reply, followup = lane_ask
+    elif not cards:
         no_card_reply, followup = _no_card_response(
             spec,
             req.message,
-            had_candidates=bool(candidates),
+            # 판단 호출이 맞는 책이 없다고 본 것은 카드 생성 실패가 아니다. 조건이나 주제를 묻는 쪽으로 간다
+            had_candidates=bool(candidates) and turn is None,
             slot_question=slot_question,
         )
 

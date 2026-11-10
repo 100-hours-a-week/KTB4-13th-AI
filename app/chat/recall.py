@@ -1,0 +1,34 @@
+"""③ 떠올린 제목(B) 호출 — 사용자 말에 맞는 실제 책 제목·저자를 LLM 이 떠올린다(CHAT_AGENT).
+
+1단계(조건 갱신)와 나란히 따로 부른다. 처음에는 1단계 호출에 칸을 얹었는데, 11/10 실험 1(gpt-4o, 4문항)에서 4o 가
+22권을 냈고 그중 책 표에서 찾힌 것은 4권(한 문항)이었다. 나머지는 저자가 "홍길동"·"이순신"인 지어낸 책이었다. 같은 날
+따로 부른 비교(포크 세션, 18문항 × 3회)에서는 떠올린 제목 75개 중 26권을 찾았고, B 에서만 나온 잘 맞는 카드가 12장,
+B 때문에 나빠진 카드는 0장이었다(평균 점수 차이는 흔들림 안). 프롬프트는 그 비교에 쓴 것이다.
+
+나란히 부르므로 1단계가 낸 조건 문장을 모른다. 최근 대화를 같이 싣는다. 책인지는 책 표가 정한다(app/chat/lanes.py,
+제목과 저자가 둘 다 맞는 책만).
+"""
+
+from typing import Any
+
+from langchain_core.prompts import ChatPromptTemplate
+
+from app.chat.lanes import Title, parse_titles
+
+RECALL_PROMPT = ChatPromptTemplate.from_template(
+    "너는 책을 많이 아는 서점 직원이다.\n\n"
+    "최근 대화:\n{recent_turns}\n\n"
+    '손님이 이렇게 말했다: "{message}"\n\n'
+    "이 말에 맞는, 실제로 출간된 책을 최대 6권 떠올려라. 한국어판이 나온 책만, 제목과 저자를 확실히 아는 책만 적는다. "
+    "확실하지 않으면 적게 적거나 빈 목록을 낸다. 손님이 말한 대상(어린이·중학생·직장인 등)과 형식(소설·그림책·입문서·"
+    "에세이·시집 등)을 지켜라. 책을 찾는 말이 아니면(인사, 보여 준 책에 대한 질문) 빈 목록을 낸다.\n"
+    "title 은 한국어판 제목, author 는 한국어판 표지에 적힌 저자 이름(한국어)이다.\n"
+    'JSON 으로만 답하라: {{"titles": [{{"title": "제목", "author": "저자"}}]}}'
+)
+
+
+def parse(answer: Any) -> tuple[Title, ...]:
+    """호출 답에서 떠올린 제목을 꺼낸다. 모양이 틀리면 빈 목록."""
+    if not isinstance(answer, dict):
+        return ()
+    return parse_titles(answer.get("titles"))
