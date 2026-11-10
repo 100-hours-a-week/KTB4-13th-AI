@@ -77,12 +77,15 @@ def _flatten(node: Any, defs: dict[str, Any]) -> Any:
     return node
 
 
+# 책 찾기를 줄 때만 설명에 들어가는 말. 주지 않으면 tool_definitions 가 뺀다(_without_search 는 인자의 설명만 다룬다)
+_PICK_SEARCH_NOTE = "(이번에 book_search 로 찾았으면 찾은 책)"
+
 # 카드 밖 책 찾기·주문 화면이 켜져 있을 때(#631) 바뀌는 설명. 꺼져 있으면 위의 설명 그대로다(평가 기준선)
 _CHECKOUT_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.SELECTION_PICK: (
         "'3만원 안에서 2권 골라줘'처럼 예산(금액)과 권수를 둘 다 말했을 때만 쓴다. 사용자가 1번, 2번, 제목처럼 "
-        "책을 직접 말했거나 금액을 말하지 않았으면 쓰지 않는다. 직전에 보여 준 추천 카드(이번에 book_search 로 "
-        "찾았으면 찾은 책) 안에서 예산 이하이면서 취향 점수 합이 가장 큰 조합을 코드가 고른다. 책은 직접 지정하지 "
+        f"책을 직접 말했거나 금액을 말하지 않았으면 쓰지 않는다. 직전에 보여 준 추천 카드{_PICK_SEARCH_NOTE} "
+        "안에서 예산 이하이면서 취향 점수 합이 가장 큰 조합을 코드가 고른다. 책은 직접 지정하지 "
         "않는다. 가격과 재고는 이 도구가 확인한다. 고르기만 맡겼으면('골라줘') 장바구니를 바꾸지 않고, 고른 책은 "
         "사용자가 확인하기 전에 cart_add 로 담지 않는다(담기 버튼은 응답에 자동으로 붙는다). 사용자가 '골라서 담아 "
         "줘', '골라서 주문해 줘'처럼 고르기와 담기를 함께 맡겼으면 도구가 고른 책을 바로 담고 결과의 added 에 알려 "
@@ -123,12 +126,16 @@ def tool_definitions(
         if allowed is not None and name not in allowed:
             continue
         schema = args_model.model_json_schema()
+        description = descriptions[name]
+        if not search:
+            # 책 찾기를 주지 않는데 설명이 book_search 를 말하면 모델이 없는 도구를 찾으려다 멈춘다(#637 리뷰)
+            description = description.replace(_PICK_SEARCH_NOTE, "")
         definitions.append(
             {
                 "type": "function",
                 "function": {
                     "name": llm_name(name),
-                    "description": descriptions[name],
+                    "description": description,
                     "parameters": _flatten(schema, schema.get("$defs", {}))
                     if search
                     else _without_search(_flatten(schema, schema.get("$defs", {}))),

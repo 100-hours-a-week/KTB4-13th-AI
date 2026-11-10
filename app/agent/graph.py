@@ -318,12 +318,18 @@ def build_graph(
             added_from = (
                 gateway.checkpoint() if isinstance(gateway, Restorable) else None
             )
+            # 한 번에 담는 수는 모델이 도구를 한 번에 부를 때와 같은 상한이다. 넘는 책은 담지 않고 이유를 알린다
+            skipped: list[str] = []
             for book in call.result["chosen"]:
                 ref = picked_ref(ctx, book["isbn"])
-                if ref is not None:
-                    adds.append(
-                        await execute(ctx, gateway, ToolName.CART_ADD, {"book": ref})
-                    )
+                if ref is None:
+                    continue
+                if len(adds) >= MAX_CALLS_PER_STEP:
+                    skipped.append(book["isbn"])
+                    continue
+                adds.append(
+                    await execute(ctx, gateway, ToolName.CART_ADD, {"book": ref})
+                )
             if added_from is not None and _roll_back(adds):
                 gateway.restore(added_from)
                 adds = await _rolled_back(ctx, gateway, adds)
@@ -341,6 +347,14 @@ def build_graph(
                         "added": [
                             {"isbn": a.arguments.get("isbn"), **_added(a.result)}
                             for a in adds
+                        ]
+                        + [
+                            {
+                                "isbn": isbn,
+                                "ok": False,
+                                "error": ToolErrorCode.TOO_MANY_CALLS.value,
+                            }
+                            for isbn in skipped
                         ],
                     }
                 }

@@ -16,6 +16,8 @@ import httpx
 import pytest
 
 from app.agent import evidence
+from app.agent import graph as graph_module
+from app.agent import reply as reply_module
 from app.agent import tools as tools_module
 from app.agent.checkout import OrderLine, discount_of, plan
 from app.agent.errors import ToolErrorCode
@@ -591,6 +593,55 @@ def test_골라서_주문해_달라면_담고_주문_화면과_쿠폰_포인트�
     assert dumped["checkout"] == {"owned_coupon_id": 7, "use_point": 5000}
 
 
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "주문 화면에서 주문을 마무리해 주세요.",
+        "결제를 마무리하시면 돼요.",
+        "주문 화면에서 결제를 완료해 주세요.",
+        "주문을 완료하시면 재고가 잡혀요.",
+        "결제를 완료하려면 주문 화면으로 가세요.",
+        "구매를 마무리하세요.",
+    ],
+)
+def test_주문을_마무리하라는_부탁은_거짓_완료가_아니다(sentence: str) -> None:
+    assert reply_module._ORDER_CLAIM.search(sentence) is None
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "주문을 완료했어요.",
+        "주문이 완료되었습니다.",
+        "결제가 완료됐어요.",
+        "주문을 마무리했어요.",
+        "주문을 마쳤어요.",
+        "구매를 끝냈어요.",
+        "주문 완료!",
+        "주문해 드렸어요.",
+        "결제를 마무리해 드렸어요.",
+    ],
+)
+def test_주문을_했다는_말은_여전히_거짓_완료로_본다(sentence: str) -> None:
+    assert reply_module._ORDER_CLAIM.search(sentence) is not None
+
+
+def test_주문_화면에서_마무리하라는_말은_답에_남는다() -> None:
+    _, data, _ = _turn(
+        "개발 입문서 두 권 골라서 주문해 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls(
+                (ToolName.CART_ADD, {"book": search(1)}),
+                (ToolName.CART_ADD, {"book": search(2)}),
+            ),
+            ai_text("두 권을 담았어요. 주문 화면에서 주문을 마무리해 주세요."),
+        ],
+    )
+
+    assert "주문 화면에서 주문을 마무리해 주세요" in data.reply
+
+
 def test_담기만_하면_장바구니_버튼이고_checkout이_없다() -> None:
     _, data, _ = _turn(
         "개발 입문서 하나 담아 줘",
@@ -686,6 +737,28 @@ def test_골라서_담는_두_권_중_하나가_한도에_걸리면_모두_되�
     assert "가득 차서" in data.reply
     assert "함께 부탁하신 것 중 하나가 안 돼서" in data.reply
     assert data.checkout is None
+
+
+def test_코드가_담는_책에도_한_번에_담는_수_상한이_걸린다(monkeypatch) -> None:
+    # 모델이 cart.add 를 한 번에 여럿 시킬 때(MAX_CALLS_PER_STEP)와 같다. 넘는 책은 담지 않고 이유를 알린다(#637 리뷰)
+    monkeypatch.setattr(graph_module, "MAX_CALLS_PER_STEP", 1)
+    run, data, _ = _turn(
+        "4만원 안으로 개발 입문서 두 권 골라서 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("골라서 담았어요."),
+        ],
+    )
+
+    pick = next(c for c in run.tool_calls if c.name == ToolName.SELECTION_PICK)
+    first, second = (book["isbn"] for book in pick.result["chosen"])
+    assert [a.isbn for a in data.actions] == [first]
+    assert [(a["isbn"], a.get("error")) for a in pick.result["added"]] == [
+        (first, None),
+        (second, ToolErrorCode.TOO_MANY_CALLS.value),
+    ]
+    assert len([c for c in run.tool_calls if c.name == ToolName.CART_ADD]) == 1
 
 
 def test_골라서_담는_두_권이_모두_들어가면_되돌리지_않는다() -> None:

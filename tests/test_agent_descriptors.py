@@ -271,3 +271,37 @@ def test_어떤_결과에도_ISBN이_남지_않는다() -> None:
 
     for call in calls:
         assert not re.search(r"[0-9]{13}", json.dumps(llm_view(_ctx(), call)))
+
+
+# --- 책 찾기를 주지 않을 때 (#637 리뷰 5번) ---
+
+
+def test_책_찾기를_주지_않으면_골라_담기_설명에도_찾은_책이_없다() -> None:
+    # 기능을 켰는데 BE 공개 API 주소가 비었거나 allow_tools 에 book.search 가 없는 설정. 없는 도구를 말하면 모델이
+    # 찾으려다 멈춘다(describe-01)
+    given = [ToolName.SELECTION_PICK, ToolName.CART_ADD, ToolName.CART_VIEW]
+
+    definitions = tool_definitions(given, checkout=True)
+
+    assert "book_search" not in json.dumps(definitions, ensure_ascii=False)
+    assert "찾은 책" not in json.dumps(definitions, ensure_ascii=False)
+
+
+def test_책_찾기를_주면_골라_담기_설명이_찾은_책을_말한다() -> None:
+    definitions = tool_definitions(None, checkout=True)
+
+    pick = next(
+        d
+        for d in definitions
+        if d["function"]["name"] == llm_name(ToolName.SELECTION_PICK)
+    )
+    assert "book_search" in pick["function"]["description"]
+
+
+def test_기능을_끄면_책_찾기를_주지_않는_설명에_찾은_책이_없다() -> None:
+    # 예전부터 그랬다. 켠 쪽(위)이 같은 결과를 내야 한다
+    given = [ToolName.SELECTION_PICK, ToolName.CART_ADD, ToolName.CART_VIEW]
+
+    definitions = tool_definitions(given, checkout=False)
+
+    assert "book_search" not in json.dumps(definitions, ensure_ascii=False)
