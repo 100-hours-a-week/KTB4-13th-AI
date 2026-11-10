@@ -231,9 +231,12 @@ def _ctx(message: str, **overrides) -> TurnContext:
         ("개발 입문서 두 권 골라서 쿠폰 적용해서 주문해 줘", True),
         ("파이썬 입문서 하나 사 줘", True),
         ("결제까지 해 줘", True),
+        ("1번 주문", True),
+        ("2번 구매!", True),
         ("파이썬 입문서 하나 담아 줘", False),
         ("주문 내역 보여줘", False),
         ("주문한 책 언제 와?", False),
+        ("주문내역", False),
     ],
 )
 def test_주문하겠다는_말만_주문으로_본다(message: str, order: bool) -> None:

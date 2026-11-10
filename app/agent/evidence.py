@@ -401,7 +401,7 @@ def _says_title(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool
 #  2) 사용자가 그 책을 "그거", "이거", "방금 거"로 가리켰다
 # 선택지를 나열한 말에 대한 "네"는 어느 책인지 모르므로 근거가 아니다.
 _AGREE = re.compile(
-    r"^\s*(?:네|넵|예|응|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|오케이|ok|okay)(?![가-힣])",
+    r"^\s*(?:네|넵|넹|예|응|웅|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|ㄱㄱ|고고|오케이|ok|okay)(?![가-힣])",
     re.IGNORECASE,
 )
 _DEICTIC = re.compile(
@@ -433,7 +433,16 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     named |= {card.isbn for card in ctx.cards if card.rank in ranks}
     spoken = _flat(text)
     known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
-    named |= {isbn for isbn, title in known.items() if _flat(title) in spoken}
+    # 번호로 짚은 책의 제목 안에 든 제목은 그 책을 말한 것이다. 권마다 ISBN 이 다른 시리즈처럼 카드 여러 장의 제목이
+    # 같으면("카드 1번 《한강》을 담을까요?") 제목 일치로 다른 《한강》까지 세어 한 권을 짚은 말이 아니게 되고, "네"가
+    # 근거가 못 되어 같은 질문만 되풀이했다(11/11 dev)
+    numbered = [_flat(known[isbn]) for isbn in named if isbn in known]
+    named |= {
+        isbn
+        for isbn, title in known.items()
+        if _flat(title) in spoken
+        and not any(_flat(title) in numbered_title for numbered_title in numbered)
+    }
     return named
 
 
@@ -717,6 +726,8 @@ _ADD = re.compile(
 _ORDER = re.compile(
     r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
     r"|바로\s*(?:주문|구매|결제)|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)|살게|살래|사고\s*싶"
+    # 말이 "주문"으로 끝나는 꼴("1번 주문"). 주문해 달라는 말을 줄인 것이다. "주문 내역", "주문했어?"는 끝이 아니다
+    r"|(?:주문|구매|결제)\s*[.!~]*$"
 )
 _COUPON = re.compile(r"쿠폰|포인트|할인")
 
