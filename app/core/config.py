@@ -142,9 +142,9 @@ class Settings(BaseSettings):
     # --- ③ 책 추천 에이전트(11/10 설계) ---
     # 켜면 1단계 호출이 검색어와 함께 떠올린 책 제목·기준 책을 내고, 검색(A)·떠올린 제목(B)·기준 책의 함께 대출·마니아
     # 목록(C)을 나란히 모은 한 목록을 판단 호출이 보고 카드·질문·한 번 더 찾기 중 하나를 고른다(app/chat/lanes.py,
-    # app/chat/picking.py). 말풍선 마지막 문장은 고른 책의 함께 대출·마니아 목록에서 두 갈래를 제안한다. 끄면(기본)
-    # 지금의 검색 → 카드 생성 그대로다. ⑦ 쇼핑 에이전트와는 상관없다. 켜기는 평가 뒤 이 기본값을 바꾸는 PR로 한다.
-    chat_agent: bool = False
+    # app/chat/picking.py). 말풍선 마지막 문장은 고른 책의 함께 대출·마니아 목록에서 두 갈래를 제안한다. 기본은 켬(#646).
+    # 끄면 예전의 검색 → 카드 생성 그대로다(문제가 생기면 CHAT_AGENT=false 로 되돌린다). ⑦ 쇼핑 에이전트와는 상관없다.
+    chat_agent: bool = True
     # 함께 대출·마니아 그래프 파일(app/jobs/build_reading_graph.py 가 만든다). 없으면 C 갈래와 제안 줄 없이 돈다.
     reading_graph_path: str = "data/reading_graph.json.gz"
 

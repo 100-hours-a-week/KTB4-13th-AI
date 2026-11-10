@@ -1238,3 +1238,50 @@ def test_이웃_책_DB_조회가_실패하면_그_갈래만_빼고_검색_책으
     listing = prompts[0].split("책 목록:\n", 1)[1]
     assert "AI 2041" not in listing
     assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+
+
+def test_설정이_없으면_에이전트가_켜진다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # tests/conftest.py 는 예전 경로를 보려고 CHAT_AGENT=false 를 넣는다. 운영처럼 값이 없을 때를 본다
+    monkeypatch.delenv("CHAT_AGENT", raising=False)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    assert get_settings().chat_agent is True
+
+
+def test_SSE면_판단_호출의_말풍선을_먼저_보내고_done_에_카드를_싣는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_search(monkeypatch, SEARCHED)
+    _use_model(
+        monkeypatch,
+        {"semantic": "반도체 산업"},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 301, "reason_short": "반도체 산업 입문서예요."}],
+            "reply": "산업 흐름부터 잡기 좋은 책이에요.",
+        },
+    )
+    body = {
+        "user_id": 1,
+        "consented": True,
+        "spec": SPEC,
+        "message": "반도체 산업 책 추천해줘",
+        "recent_turns": [],
+        "exclude_isbns": [],
+        "image_ref": None,
+    }
+
+    res = client.post(
+        "/recommendations/chat", json=body, headers={"Accept": "text/event-stream"}
+    )
+
+    assert res.status_code == 200
+    events = []
+    for block in res.text.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.split("\n"))
+        events.append((lines["event"], json.loads(lines["data"])))
+    assert [name for name, _ in events] == ["delta", "done"]
+    done = events[1][1]["data"]
+    assert events[0][1]["text"] == done["reply"]
+    assert [c["title"] for c in done["cards"]] == ["반도체 입문"]

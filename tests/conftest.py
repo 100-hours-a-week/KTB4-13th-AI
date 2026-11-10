@@ -21,6 +21,9 @@ os.environ.setdefault("INTEREST_FEED", "false")
 # 취향 뽑기 자체 서빙(#569)도 기본값이 켜져 있다. 주소가 없으면 API 만 쓰지만 서버가 뜰 때마다 경고를 남겨,
 # 경고 수를 세는 테스트가 깨진다. 같은 까닭으로 꺼진 경로를 기본으로 보고, 켠 동작은 그 테스트가 직접 켠다.
 os.environ.setdefault("EXTRACTION_SELF_HOSTED_MODE", "off")
+# ③ 책 추천 에이전트(#646)도 기본값이 켜져 있다. 챗봇 테스트 대부분은 예전 경로(검색 → 카드 생성)를 보고, 이 경로는
+# CHAT_AGENT=false 로 되돌릴 때 그대로 쓰인다. 켠 동작은 tests/test_chat_agent.py 가 직접 켠다.
+os.environ.setdefault("CHAT_AGENT", "false")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
 from app.core import db
