@@ -3,10 +3,11 @@
 지금의 카드 생성 호출(CARD_PROMPT)을 대신한다. 이 호출은 턴마다 한 번이고, 한 번 더 찾을 때만 두 번이다. 그 앞에 1단계와,
 1단계와 나란히 가는 떠올린 제목 호출(app/chat/recall.py)이 있다.
 
-- 카드: 사용자 말에 맞는 책만 최대 3장. 셋을 채우려고 맞지 않는 책을 넣지 않는다. 말풍선 마지막 문장은 고른 책의
-  함께 읽은 책(옆으로 넓히기)·마니아 추천(같은 분야 더 보기)에서 두 갈래를 제안한다. 이 문장은 코드가 쓴다(proposal) —
-  모델에게 맡기니 4o 는 제안 없이 한 문장으로 끝냈다(11/10 점검). 제안은 카드로 내지 않는다 — 카드에는 "제안" 표시가
-  없고, 넓히기 책은 매칭 % 가 낮아 엉뚱한 추천처럼 보인다(11/10 결정)
+- 카드: 사용자 말에 맞는 책만 최대 3장. 셋을 채우려고 맞지 않는 책을 넣지 않는다. 고른 책에 함께 읽은 책(옆으로
+  넓히기)·마니아 추천(같은 분야 더 보기) 줄이 있으면 그 두 갈래를 답 보기로 제안한다(proposal_options). 코드가 쓴다 —
+  모델에게 맡기니 4o 는 제안 없이 한 문장으로 끝냈다(11/10 점검). 제안한 책을 카드로 내지 않는다 — 카드에는 "제안"
+  표시가 없고, 넓히기 책은 매칭 % 가 낮아 엉뚱한 추천처럼 보인다(11/10 결정). 처음엔 말풍선 끝 문장으로 붙였는데
+  줄글이라 읽기 어려워(11/10 사용자) followup 의 보기 줄로 옮겼다(#652). 누르면 그 갈래의 카드가 다음 턴에 나온다
 - 질문: 후보가 서로 다른 방향으로 갈려 고를 수 없을 때, 목록에서 나온 두 갈래로 묻는다
 - 한 번 더 찾기: 사용자 말의 조건 하나를 어느 후보도 맞히지 못하면, 놓친 조건과 새 검색어를 낸다. 턴마다 한 번만
 
@@ -24,6 +25,7 @@ from typing import Any, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 
+from app.chat import options
 from app.chat.lanes import display_title
 from app.core import voice
 
@@ -33,8 +35,6 @@ Action = Literal["cards", "ask", "search_again"]
 LISTING_DESCRIPTION_CHARS = 400
 MAX_QUERY_CHARS = 50
 MAX_REASON_SHORT_CHARS = 80
-# 제안 문장에 짚는 제목 길이. 말풍선 200자 안에 모델 문장도 남게 줄인다
-PROPOSAL_TITLE_CHARS = 25
 SOURCE_NOTE = "도서관 정보나루"
 
 _SOURCE_LABEL = {
@@ -49,18 +49,13 @@ _OVERCLAIM = re.compile(
     r"|그다음|더\s?깊"
 )
 _SIMILAR = re.compile(r"비슷")
-# 숫자로 끝나는 제목은 읽는 소리로 받침을 본다. 『AI 2041』(이천사십일)에 "를"을 붙였다(11/10 실험 2)
-_DIGIT_HAS_FINAL = frozenset("013678")
+# 숫자로 끝나는 제목은 읽는 소리로 받침을 본다(app/chat/options.has_object_final). 『AI 2041』(이천사십일)에 "를"을
+# 붙였다(11/10 실험 2)
 
 
 def _object_particle(word: str) -> str:
     """받침이 있으면 "을", 없으면 "를". 숫자는 읽는 소리(영·일·삼·육·칠·팔은 받침)로 보고, 그 밖의 글자는 "를"."""
-    last = word.rstrip()[-1:]
-    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 != 0:
-        return "을"
-    if last in _DIGIT_HAS_FINAL:
-        return "을"
-    return "를"
+    return "을" if options.has_object_final(word) else "를"
 
 
 def _clip(title: str, room: int) -> str:
@@ -146,54 +141,36 @@ def sentences(text: str) -> list[str]:
     ]
 
 
-def proposal(picked: list[dict]) -> str | None:
-    """말풍선 마지막 문장: 고른 책의 이웃 줄에서 옆으로 넓히기(함께 읽은 책)와 같은 분야 더 보기(마니아 추천)를 한 권씩.
+def proposal_options(picked: list[dict]) -> list[str]:
+    """고른 책의 이웃 줄에서 옆으로 넓히기(함께 읽은 책)와 같은 분야 더 보기(마니아 추천)를 답 보기로 하나씩 낸다.
 
-    앞 카드부터 줄이 있는 책을 찾는다. 카드에 이미 나온 책은 짚지 않는다. 함께 읽은 책은 함께 읽었다는 사실로만 말하고,
-    마니아 추천은 방향으로만 말한다 — 목록으로는 몇 명이 읽었는지, 무엇으로 골랐는지 모른다. 줄이 없으면 None.
-
-    같은 책이 함께 대출과 마니아 목록에 다 들어 있으면 두 갈래가 같은 책을 짚는다("…『더 커밍 웨이브』도 함께 읽었고, 같은
-    분야를 더 보려면 『더 커밍 웨이브』도 있어요", 11/10 실험 2·3에서 두 번). 마니아 쪽은 함께 대출에서 짚은 책을 건너뛴다.
-    이웃 줄의 제목은 부제를 뗀 제목이라 카드 제목도 둘 다 견준다.
+    앞 카드부터 카드에 없는 이웃이 있는 책을 기준 책으로 짚는다. 보기는 누르면 그대로 보낼 말이라 다음 턴의 해석이
+    알아듣게 쓴다 — 기준 책 『제목』(카드 제목과 맞춰 카드를 짚는다)과 "함께 읽"(함께 읽은 책 갈래)·"비슷한 책
+    더"(마니아 추천 갈래) 낱말(app/chat/lanes.py fill_plan). 제목은 자르지 않는다 — 잘린 제목은 카드와 맞지 않는다.
+    목록으로는 몇 명이 읽었는지·무엇으로 골랐는지 모르니 보기도 방향만 말한다. 줄이 없으면 [].
     """
     on_cards = {b["title"] for b in picked} | {
         display_title(b["title"]) for b in picked
     }
 
-    def first(kind: str, taken: set[str]) -> tuple[str, str] | None:
+    def anchor(kind: str, taken: set[str]) -> tuple[str, list[str]] | None:
         for book in picked:
-            for title in (book.get("neighbors") or {}).get(kind, []):
-                if title not in taken:
-                    return display_title(book["title"]), title
+            neighbors = (book.get("neighbors") or {}).get(kind, [])
+            if any(title not in taken for title in neighbors):
+                return display_title(book["title"]), neighbors
         return None
 
-    co = first("co", on_cards)
-    mania = first("mania", on_cards | ({co[1]} if co else set()))
-    room = PROPOSAL_TITLE_CHARS
-    other = (
-        f"같은 분야를 더 보려면 『{_clip(mania[1], room)}』도 있어요."
-        if mania
-        else None
-    )
-    if co is None:
-        return other
-    card, title = _clip(co[0], room), _clip(co[1], room)
-    readers = f"『{card}』{_object_particle(card)} 읽은 분들은 『{title}』도 함께 읽었"
-    if other is None:
-        return readers + "어요."
-    return f"{readers}고, {other}"
-
-
-def with_proposal(
-    reply: str | None, proposal_text: str | None, max_chars: int
-) -> str | None:
-    """말풍선 끝에 제안 문장을 붙인다. 길이를 넘으면 모델이 쓴 뒷 문장부터 덜어 낸다 — 제안 문장을 남긴다."""
-    if not proposal_text:
-        return reply
-    kept = sentences(reply or "")
-    while kept and len(" ".join([*kept, proposal_text])) > max_chars:
-        kept = kept[:-1]
-    return " ".join([*kept, proposal_text])
+    found: list[str] = []
+    co = anchor("co", on_cards)
+    if co:
+        found.append(f"『{co[0]}』 함께 읽은 책 보여줘")
+    # 마니아 목록이 함께 읽은 책 보기로 나올 책뿐이면 두 보기가 같은 책을 낸다(11/10 실험 2·3, 『더 커밍 웨이브』)
+    mania_found = anchor("mania", on_cards | set(co[1] if co else []))
+    if mania_found:
+        mania = mania_found[0]
+        with_particle = "과" if options.has_object_final(mania) else "와"
+        found.append(f"『{mania}』{with_particle} 비슷한 책 더 보여줘")
+    return found
 
 
 def overclaims(text: str) -> bool:
@@ -282,8 +259,9 @@ def format_listing(candidates: list[dict]) -> str:
 _ASK_ALLOWED = (
     "고를 만한 책들이 서로 다른 두 방향으로 갈리고 사용자의 말만으로는 어느 쪽인지 알 수 없어 한 권도 자신 있게 "
     "고를 수 없을 때만 고른다. question 에 그 두 방향을 목록의 소개나 출처에서 나온 말로 직접 말하며 어느 쪽인지 "
-    "묻는 한 문장을 쓴다. reply 는 이번 메시지에 짧게 반응하는 한 문장이다. 막연한 요청이어도 맞는 책이 있으면 "
-    "묻지 말고 cards 를 고른다."
+    "묻는 한 문장을 쓴다. options 에는 사용자가 그 두 방향 중 하나를 고를 때 그대로 보낼 짧은 말을 방향마다 하나씩 "
+    "2개 쓴다(각 20자 이내, 예: 그 방향의 책을 보여 달라는 말). reply 는 이번 메시지에 짧게 반응하는 한 문장이다. "
+    "막연한 요청이어도 맞는 책이 있으면 묻지 말고 cards 를 고른다."
 )
 _ASK_BLOCKED = "이번에는 고르지 마라."
 _SEARCH_ALLOWED = (
@@ -292,8 +270,8 @@ _SEARCH_ALLOWED = (
 )
 _SEARCH_BLOCKED = "이번에는 고르지 마라. 이미 한 번 다시 찾았다."
 _PROPOSE = (
-    "고른 책 아래에 함께 읽은 책·마니아 추천 줄이 있으면 말풍선에서 다른 책을 제안하지 마라. 다음에 읽을 방향을 "
-    "권하는 문장은 따로 붙는다. 줄이 없으면 사용자가 말한 것에 가장 맞는 한 권을 "
+    "고른 책 아래에 함께 읽은 책·마니아 추천 줄이 있으면 말풍선에서 다른 책을 제안하지 마라. 다음에 읽을 방향은 "
+    "화면에 따로 보기로 붙는다. 줄이 없으면 사용자가 말한 것에 가장 맞는 한 권을 "
     "『제목』으로 짚고 그 까닭을 책 소개에 있는 것으로 한마디 하라. "
 )
 _PROPOSE_NO_QUESTION = "마지막 문장은 묻는 말이 아니라 권하는 말로 끝내라. "
@@ -331,7 +309,7 @@ JUDGE_PROMPT = ChatPromptTemplate.from_template(
     '{{"action": "cards 또는 ask 또는 search_again", '
     '"cards": [{{"book_id": 정수, "reason_short": "한 줄 이유", "reason_long": "긴 이유", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
-    '"reply": "말풍선", "question": "ask 일 때 묻는 말", '
+    '"reply": "말풍선", "question": "ask 일 때 묻는 말", "options": ["ask 일 때 답 보기"], '
     '"missed": "search_again 일 때 놓친 조건", "query": "search_again 일 때 새 검색어"}}\n\n'
     "책 목록:\n{listing}"
 )
@@ -378,6 +356,8 @@ class Decision:
     cards: list[Any]
     reply: str | None
     question: str | None = None
+    # ask 일 때 질문 아래 답 보기(#652). 못 받았으면 비어 있고 질문만 한다
+    options: tuple[str, ...] = ()
     missed: str | None = None
     query: str | None = None
 
@@ -405,8 +385,31 @@ def parse(answer: dict, *, may_ask: bool, may_search: bool) -> Decision:
     if action == "ask" and may_ask and not cards:
         question = _text(answer.get("question"))
         if question:
-            return Decision("ask", [], reply, question=question)
+            return Decision(
+                "ask",
+                [],
+                reply,
+                question=question,
+                options=_ask_options(answer.get("options")),
+            )
     return Decision("cards", cards, reply)
+
+
+# 판단 호출이 물을 때의 답 보기 수와 길이. 질문이 두 방향을 묻는다. 길면 자르지 않고 버린다 — 잘린 말은 보낼 수 없다
+MAX_ASK_OPTIONS = 2
+MAX_ASK_OPTION_CHARS = 20
+
+
+def _ask_options(raw: Any) -> tuple[str, ...]:
+    """답 보기. 글자가 아니거나 길거나 겹친 것은 버린다. 둘이 안 되면 보기 없이 묻는다(한 방향만으로는 고르는 게 아니다)."""
+    if not isinstance(raw, list):
+        return ()
+    found = [
+        text
+        for text in dict.fromkeys(_text(item) for item in raw if isinstance(item, str))
+        if text and len(text) <= MAX_ASK_OPTION_CHARS
+    ][:MAX_ASK_OPTIONS]
+    return tuple(found) if len(found) == MAX_ASK_OPTIONS else ()
 
 
 _ACTION = re.compile(r'"action"\s*:\s*"(\w+)"')

@@ -25,6 +25,7 @@
 보기를 버튼(명세의 buttons)이나 새 응답 칸이 아니라 followup 문장에 넣는 것은 BE·FE 를 바꾸지 않으려서다. BE 는 ③ 응답의
 buttons 에 navigate 밖의 버튼이 오면 턴 전체를 AI 장애로 처리하고(AgentChatExternalMapper), 모르는 칸은 FE 에 넘기지
 않는다. FE 는 followup 을 줄바꿈까지 글자 그대로 보여 주므로(white-space: pre-wrap) 줄로 나눈 보기가 목록으로 보인다.
+보기 줄 모양은 app/chat/options.py 와 같다 — FE 가 그 줄을 버튼으로 그린다(#652).
 """
 
 import re
@@ -33,6 +34,8 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from langchain_core.prompts import ChatPromptTemplate
+
+from app.chat import options as option_lines
 
 # none: 묻지 않는다 / may_ask: 넓으면 물어도 된다(대화의 첫 요청) / answered: 이번 말은 직전 질문의 답이다
 Stage = Literal["none", "may_ask", "answered"]
@@ -53,7 +56,7 @@ MAX_OPTIONS = 4
 FOLLOWUP_MAX_CHARS = 190
 # 보기 줄의 머리. 번호를 달면 "2번"이라고만 답하게 되는데, 그 말에는 찾을 낱말이 없어 다음 턴에 최근 대화에서 보기를
 # 되찾아야 한다. 보기 글자를 그대로 말하면 그 말이 바로 검색어가 된다.
-OPTION_BULLET = "• "
+OPTION_BULLET = option_lines.BULLET
 CHOOSE = "이 중에 고르시거나 직접 말씀해 주세요."
 # 건너뛰기는 고정 문장이 안내한다. 모델이 그런 보기를 쓰면 겹쳐서 버린다.
 _SKIP_LIKE = re.compile(r"(아무거나|상관\s?없|다\s?좋아|잘\s?모르겠)")

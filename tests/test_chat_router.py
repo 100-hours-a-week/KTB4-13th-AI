@@ -1108,7 +1108,7 @@ def test_후보가_없고_걸린_조건이_있으면_그_조건을_짚어_되묻
     assert data["cards"] == []
     assert data["reply"] == "조건에 맞는 책을 아직 못 찾았어요."
     assert "1,000원 이하" in data["followup"]
-    assert '"가격은 상관없어요"' in data["followup"]
+    assert data["followup"].endswith("\n\n• 가격은 상관없어요")
 
 
 def test_후보는_있었는데_카드가_비면_조건_탓으로_되묻지_않는다(
@@ -1179,7 +1179,7 @@ def test_이어지는_턴의_지시어는_되묻지_않고_추천한다(
     assert data["followup"] is None
 
 
-def test_카드가_있어도_빠진_정보가_있으면_첫_턴에_reply_끝에_질문을_붙인다(
+def test_카드가_있어도_빠진_정보가_있으면_첫_턴에_카드_아래에서_묻는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     card_reply = (
@@ -1195,9 +1195,9 @@ def test_카드가_있어도_빠진_정보가_있으면_첫_턴에_reply_끝에_
 
     data = res.json()["data"]
     assert len(data["cards"]) == 1
-    assert data["followup"] is None  # 명세: 카드가 있으면 followup은 null
-    assert data["reply"].startswith("선물하기 좋은 책을 골라봤어요.\n\n받는 분이")
-    assert len(data["reply"]) <= 200
+    # 질문은 카드 아래(followup)에 둔다(#652). 명세는 카드가 있으면 followup 이 null 이라 따로 고친다
+    assert data["reply"] == "선물하기 좋은 책을 골라봤어요."
+    assert data["followup"].startswith("받는 분이")
 
 
 def test_빠진_정보_질문은_첫_턴에만_붙인다(monkeypatch: pytest.MonkeyPatch) -> None:

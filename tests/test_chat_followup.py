@@ -33,8 +33,10 @@ def test_걸린_조건을_이름으로_짚고_따라_말할_예시를_준다() -
     )
 
     assert reply == "조건에 맞는 책을 아직 못 찾았어요."
-    assert "2만원 이하, 2020년 이후 조건이 걸려 있어요." in followup
-    assert '"가격은 상관없어요" / "출간연도는 상관없어요"' in followup
+    assert followup == (
+        "2만원 이하, 2020년 이후 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요?\n\n"
+        "• 가격은 상관없어요\n• 출간연도는 상관없어요"
+    )
 
 
 def test_같은_종류의_조건_예시는_한_번만_준다() -> None:
@@ -81,8 +83,9 @@ def test_조건도_검색어도_없으면_분야를_고르게_한다() -> None:
     )
 
     assert reply == "추천해 드리려면 조금 더 알아야 해요."
-    assert "소설, 에세이, 인문, 경제경영, 자기계발, 과학" in followup
-    assert '"경제경영 책 추천해줘"처럼' in followup
+    # 분야는 답 보기 줄로 단다(#652). 누르면 그 말이 그대로 다음 메시지다
+    assert "\n\n• 소설 책 추천해줘\n• 에세이 책 추천해줘\n" in followup
+    assert followup.endswith("• 과학 책 추천해줘")
     assert "제목·저자" in followup
     assert "걸린 조건" not in followup
 
