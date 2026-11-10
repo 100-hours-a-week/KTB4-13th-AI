@@ -204,6 +204,9 @@ def build_graph(
     can_choose = model.bind_tools(tools) if tools else model
     # 반복을 다 썼거나 시간이 다 되어 갈 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
     must_answer = model.bind_tools(tools, tool_choice="none") if tools else model
+    # 도구를 그만 쓸 마감까지 남은 초. 마감은 LLM 을 부르기 전에만 보므로, 한 반복 안에서 느린 검색이 차례로 돌아
+    # 마감을 넘기지 않게 book.search 가 이것을 본다(#637 리뷰)
+    time_left = None if deadline is None else (lambda: deadline - perf_counter())
 
     async def choose(state: _State) -> dict[str, Any]:
         out_of_time = deadline is not None and perf_counter() >= deadline
@@ -283,6 +286,7 @@ def build_graph(
                 requested["args"],
                 comparer=comparer,
                 finder=finder,
+                time_left=time_left,
             )
             slots.append((len(replies), requested["id"], requested["name"]))
             recorded.append(call)
@@ -309,12 +313,25 @@ def build_graph(
             ):
                 continue
             adds = []
+            # 고른 책은 한 묶음이다. 하나라도 장바구니 규칙에 걸리면 모두 되돌린다. 모델이 cart.add 를 한 번에 여럿
+            # 시켰을 때와 같다(#488, #489). 코드가 담는 것은 위의 되돌리기 검사 뒤에 돌아서 여기서 따로 한다
+            added_from = (
+                gateway.checkpoint() if isinstance(gateway, Restorable) else None
+            )
             for book in call.result["chosen"]:
                 ref = picked_ref(ctx, book["isbn"])
                 if ref is not None:
                     adds.append(
                         await execute(ctx, gateway, ToolName.CART_ADD, {"book": ref})
                     )
+            if added_from is not None and _roll_back(adds):
+                gateway.restore(added_from)
+                adds = await _rolled_back(ctx, gateway, adds)
+                # 되돌린 쓰기는 바꾼 것이 아니다. 남은 쓰기(앞 묶음과 이 묶음의 다른 호출)로 다시 정한다
+                ctx.changed_cart = any(
+                    c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
+                    for c in [*state["tool_calls"], *recorded, *adds]
+                )
             recorded[position + 1 : position + 1] = adds
             at, call_id, call_name = slots[position]
             updated = call.model_copy(

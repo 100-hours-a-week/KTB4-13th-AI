@@ -15,6 +15,7 @@ LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 
 채운다. 기록하는 arguments 도 코드가 채운 값이다.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any, Literal
@@ -37,6 +38,10 @@ from app.gateway.commerce import (
 
 # book.search 가 한 번에 보여 주는 책 수. 많으면 LLM 이 읽을 것이 늘고 BE 상품 상세 호출도 는다
 SEARCH_SIZE = 5
+# 도구를 그만 쓸 마감(graph 의 시간 예산)이 코앞이거나 지난 뒤에 시작한 검색에 주는 시간. 마감은 마지막 답 쓰기
+# 호출을 위해 남겨 둔 시간(30초 제한에서 10초) 앞에 있다. 검색 하나의 한도는 BE 검색 5초 + 상세 5초라, 마감 직전에
+# 시작한 검색이 끝까지 기다리면 그 시간을 먹고 턴이 504 로 끝난다(#637 리뷰). 마감까지 남은 시간에 이만큼만 더 준다.
+SEARCH_GRACE_SECONDS = 2.0
 # 찾은 책으로 조합을 고를 때의 취향 점수 대신. 검색 순서가 앞인 책을 높게 친다
 _SEARCH_SCORE_TOP = 100
 _SEARCH_SCORE_STEP = 5
@@ -502,7 +507,11 @@ async def _compare(
 
 
 async def _search(
-    finder: BookFinder, ctx: TurnContext, gateway: CommerceGateway, args: SearchArgs
+    finder: BookFinder,
+    time_left: Callable[[], float] | None,
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    args: SearchArgs,
 ) -> _Done:
     """카드 밖의 책을 BE 공개 검색으로 찾는다(#631). 장바구니는 건드리지 않는다.
 
@@ -510,11 +519,22 @@ async def _search(
     "알고리즘 책이랑 리눅스 책 하나씩"에서 두 검색의 책이 둘 다 1번이 되어 같은 책을 두 번 담았다(평가 checkout-h04).
     앞에서 찾은 책이 다시 나오면 처음 번호를 그대로 쓴다. 가격·재고는 BE 상품 상세의 값이라, 장바구니 복사본에
     받아 두면 cart.add 가 카드 책처럼 담는다. 담은 결과는 actions 로 BE 에 가고 BE 가 다시 검사한다(BE#533).
+
+    time_left 는 도구를 그만 쓸 마감까지 남은 초다. 마감이 지났으면 검색하지 않고, 아니면 남은 시간(+여유)
+    안에 못 끝낸 검색을 끊는다. 둘 다 BE 를 읽지 못했을 때와 같이 SEARCH_FAILED 다. 한 반복에서 검색이 차례로 돌며
+    마감을 넘겨 턴이 504 로 끝나는 것을 막는다.
     """
     arguments = {"query": args.query}
+    budget: float | None = None
+    if time_left is not None:
+        left = time_left()
+        if left <= 0:
+            return arguments, _fail(ToolErrorCode.SEARCH_FAILED.value)
+        budget = left + SEARCH_GRACE_SECONDS
     try:
-        books = await finder.find(args.query, SEARCH_SIZE)
-    except FinderUnavailable:
+        async with asyncio.timeout(budget):
+            books = await finder.find(args.query, SEARCH_SIZE)
+    except (FinderUnavailable, TimeoutError):
         return arguments, _fail(ToolErrorCode.SEARCH_FAILED.value)
     known = {book.isbn for book in ctx.search_results}
     ctx.search_results = [
@@ -578,11 +598,13 @@ async def execute(
     *,
     comparer: Comparer | None = None,
     finder: BookFinder | None = None,
+    time_left: Callable[[], float] | None = None,
 ) -> ToolCall:
     """도구 하나를 실행하고 기록을 돌려준다. 막히거나 BE 가 거절해도 예외를 던지지 않는다.
 
     comparer 는 book.compare 만 쓴다. 없으면 그 도구는 TOOL_NOT_IMPLEMENTED 로 막힌다.
     finder 는 book.search 만 쓴다(#631). 없으면(기능이 꺼져 있으면) 같은 이유로 막힌다.
+    time_left 는 book.search 만 본다. 도구를 그만 쓸 마감까지 남은 초를 돌려주는 함수이고, 없으면 시간을 보지 않는다.
 
     grounded 는 이 결과가 실제로 실행해서 얻은 값이라는 뜻으로 true 로 둔다. 답변이 이 결과를
     뒷받침하는지는 마무리 단계(7단계)가 판단해서 바꾼다.
@@ -597,7 +619,7 @@ async def execute(
     if name == ToolName.BOOK_COMPARE and comparer is not None:
         handler = partial(_compare, comparer)
     if name == ToolName.BOOK_SEARCH and finder is not None:
-        handler = partial(_search, finder)
+        handler = partial(_search, finder, time_left)
     if handler is None:
         return _failed(name, given, ToolErrorCode.TOOL_NOT_IMPLEMENTED)
 

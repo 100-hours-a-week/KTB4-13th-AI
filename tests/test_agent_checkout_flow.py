@@ -10,11 +10,13 @@
 
 import asyncio
 import json
+from time import perf_counter
 
 import httpx
 import pytest
 
 from app.agent import evidence
+from app.agent import tools as tools_module
 from app.agent.checkout import OrderLine, discount_of, plan
 from app.agent.errors import ToolErrorCode
 from app.agent.fake_llm import ScriptedModel, ai_calls, ai_text
@@ -296,6 +298,121 @@ def search(n: int) -> dict:
     return {"source": "search", "n": n}
 
 
+class _SlowFinder:
+    """검색이 느린 BE. 몇 번 불렸는지 센다."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.calls = 0
+
+    async def find(self, query: str, size: int) -> list[FoundBook]:
+        self.calls += 1
+        await asyncio.sleep(self.seconds)
+        return _shelf()
+
+
+@pytest.fixture
+def no_grace(monkeypatch) -> None:
+    """검색에 마감 뒤로 얹어 주는 시간을 없앤다. 시험이 몇 초씩 기다리지 않게 한다."""
+    monkeypatch.setattr(tools_module, "SEARCH_GRACE_SECONDS", 0.0)
+
+
+def test_마감이_지났으면_책_찾기를_부르지_않는다() -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 하나 담아 줘")
+    finder = _SlowFinder(0.0)
+
+    found = asyncio.run(
+        execute(
+            ctx,
+            gateway,
+            ToolName.BOOK_SEARCH,
+            {"query": "개발 입문서"},
+            finder=finder,
+            time_left=lambda: -0.1,
+        )
+    )
+
+    assert found.result == {"ok": False, "error": ToolErrorCode.SEARCH_FAILED.value}
+    assert finder.calls == 0
+    assert ctx.search_results == []
+
+
+def test_마감까지_남은_시간_안에_못_끝낸_검색은_실패로_끝낸다(no_grace) -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 하나 담아 줘")
+    finder = _SlowFinder(5.0)
+
+    started = perf_counter()
+    found = asyncio.run(
+        execute(
+            ctx,
+            gateway,
+            ToolName.BOOK_SEARCH,
+            {"query": "개발 입문서"},
+            finder=finder,
+            time_left=lambda: 0.05,
+        )
+    )
+
+    assert perf_counter() - started < 1.0
+    assert found.result == {"ok": False, "error": ToolErrorCode.SEARCH_FAILED.value}
+    assert ctx.search_results == []
+
+
+def test_시간이_넉넉하면_검색은_그대로_돈다(no_grace) -> None:
+    ctx, gateway = _tool_ctx("개발 입문서 하나 담아 줘")
+
+    found = asyncio.run(
+        execute(
+            ctx,
+            gateway,
+            ToolName.BOOK_SEARCH,
+            {"query": "개발 입문서"},
+            finder=_SlowFinder(0.0),
+            time_left=lambda: 20.0,
+        )
+    )
+
+    assert len(found.result["books"]) == 4
+
+
+def test_한_반복에서_검색이_느려도_마감_뒤의_검색은_하지_않고_턴_시간_안에_답한다(
+    no_grace,
+) -> None:
+    # 턴 제한 0.9초면 0.3초를 남기고 0.6초에 도구를 그만 쓴다. 검색 하나가 0.4초 걸리니 세 번을 차례로 하면
+    # 1.2초다(운영의 30초에서 검색 5초 + 상세 5초 한도가 겹치는 모양). 마감 뒤의 검색은 부르지 않는다(#637 리뷰)
+    finder = _SlowFinder(0.4)
+    req = parse_request(_snapshot_request("개발 입문서 알아봐 줘"))
+    assert req is not None
+    model = ScriptedModel(
+        [
+            ai_calls(
+                (ToolName.BOOK_SEARCH, {"query": "개발 입문서"}),
+                (ToolName.BOOK_SEARCH, {"query": "파이썬 입문서"}),
+                (ToolName.BOOK_SEARCH, {"query": "데이터베이스"}),
+            ),
+            ai_text("찾아봤어요."),
+        ]
+    )
+
+    started = perf_counter()
+    run = asyncio.run(
+        run_agent(
+            req,
+            model=model,
+            gateway=get_commerce(req),
+            finder=finder,
+            checkout=True,
+            turn_seconds=0.9,
+        )
+    )
+
+    assert perf_counter() - started < 1.0
+    assert finder.calls < 3
+    errors = [c.result.get("error") for c in run.tool_calls]
+    assert errors[-1] == ToolErrorCode.SEARCH_FAILED.value
+    assert run.final_text == "찾아봤어요."
+
+
 def test_찾은_책은_장바구니_복사본이_알게_되어_담을_수_있다() -> None:
     ctx, gateway = _tool_ctx("개발 입문서 하나 담아 줘")
     finder = FakeBookFinder(_shelf())
@@ -531,6 +648,61 @@ def test_골라서_담으라고_맡기면_고른_책을_코드가_담고_조합�
     ]
     seen = model.calls[-1][-1].content
     assert '"added"' in seen and "찾은 책 1번" in seen and P1 not in seen
+
+
+def _full_cart(n: int) -> list[dict]:
+    return [
+        {
+            "isbn": f"97911{i:08d}",
+            "title": f"꽂힌 책{i}",
+            "price": 10000,
+            "quantity": 1,
+            "available": True,
+        }
+        for i in range(100, 100 + n)
+    ]
+
+
+def test_골라서_담는_두_권_중_하나가_한도에_걸리면_모두_되돌린다() -> None:
+    # 29권에 두 권을 담으면 두 번째가 30권 한도에 걸린다. 모델이 cart.add 두 개를 시켰다면 모두 되돌렸을 일이다.
+    # 코드가 대신 담아도 같아야 한다(#488, #489, #637 리뷰)
+    run, data, _ = _turn(
+        "4만원 안으로 개발 입문서 두 권 골라서 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("골라서 담았어요."),
+        ],
+        cart=_full_cart(29),
+    )
+
+    adds = [c for c in run.tool_calls if c.name == ToolName.CART_ADD]
+    assert [c.result.get("error") for c in adds] == [
+        "BATCH_ROLLED_BACK",
+        "CART_ITEM_LIMIT_EXCEEDED",
+    ]
+    assert data.actions == []
+    assert run.ctx.changed_cart is False
+    assert "가득 차서" in data.reply
+    assert "함께 부탁하신 것 중 하나가 안 돼서" in data.reply
+    assert data.checkout is None
+
+
+def test_골라서_담는_두_권이_모두_들어가면_되돌리지_않는다() -> None:
+    run, data, _ = _turn(
+        "4만원 안으로 개발 입문서 두 권 골라서 담아 줘",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_calls((ToolName.SELECTION_PICK, {"budget_total": 40000, "count": 2})),
+            ai_text("골라서 담았어요."),
+        ],
+        cart=_full_cart(5),
+    )
+
+    adds = [c for c in run.tool_calls if c.name == ToolName.CART_ADD]
+    assert [c.result.get("ok") for c in adds] == [True, True]
+    assert {a.isbn for a in data.actions} == {P1, P2}
+    assert run.ctx.changed_cart is True
 
 
 def test_코드가_담은_책을_모델이_또_담아도_담았다고_말한다() -> None:
