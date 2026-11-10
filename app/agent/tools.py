@@ -1,4 +1,4 @@
-"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358, #363). 장바구니·가격을 다루는 5개와 그 밖의 3개가 있다.
+"""⑦ LLM 이 부르는 도구를 실행한다(#354, #358, #363). 장바구니·가격을 다루는 5개와 그 밖의 도구가 있다.
 
 장바구니·가격 도구는 요청으로 받은 장바구니의 복사본을 읽고 바꾼다. BE 는 부르지 않고, 바뀐 것은 턴이 끝날 때
 actions 로 돌려준다(#489).
@@ -17,8 +17,10 @@ LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from functools import partial
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -26,8 +28,20 @@ from app.agent import evidence, guard, selection
 from app.agent.compare import CompareError, Comparer
 from app.agent.errors import RefError, ToolErrorCode
 from app.agent.reference import BookRef, TurnContext, resolve
+from app.agent.reviews import (
+    MAX_REVIEWS_READ,
+    MIN_REVIEWS_FOR_SUMMARY,
+    ReviewSummarizer,
+    ReviewSummaryError,
+)
 from app.agent.schemas import MAX_CONTEXT_CARDS, ToolCall, ToolName
 from app.gateway.book_finder import BookFinder, FinderUnavailable
+from app.gateway.book_info import (
+    BookInfo,
+    CouponInfo,
+    InfoUnavailable,
+    ProductDetail,
+)
 from app.gateway.commerce import (
     BookOffer,
     CartLine,
@@ -42,6 +56,10 @@ SEARCH_SIZE = 5
 # 호출을 위해 남겨 둔 시간(30초 제한에서 10초) 앞에 있다. 검색 하나의 한도는 BE 검색 5초 + 상세 5초라, 마감 직전에
 # 시작한 검색이 끝까지 기다리면 그 시간을 먹고 턴이 504 로 끝난다(#637 리뷰). 마감까지 남은 시간에 이만큼만 더 준다.
 SEARCH_GRACE_SECONDS = 2.0
+# book.detail 이 한 번에 보는 책 수. 책마다 BE 상품 상세를 한 번씩 부른다
+MAX_DETAIL_BOOKS = 3
+# BE 쿠폰의 만료 시각은 시간대 없이 한국 시각으로 온다("2026-12-01T00:00:00")
+_KST = ZoneInfo("Asia/Seoul")
 # 찾은 책으로 조합을 고를 때의 취향 점수 대신. 검색 순서가 앞인 책을 높게 친다
 _SEARCH_SCORE_TOP = 100
 _SEARCH_SCORE_STEP = 5
@@ -104,6 +122,18 @@ class SearchArgs(_Args):
     )
 
 
+class DetailArgs(_Args):
+    books: list[BookRef] = Field(
+        min_length=1,
+        max_length=MAX_DETAIL_BOOKS,
+        description="정보를 알아볼 책들(1~3권)",
+    )
+
+
+class ReviewsArgs(_Args):
+    book: BookRef = Field(description="리뷰를 볼 책")
+
+
 class CompareArgs(_Args):
     books: list[BookRef] = Field(
         min_length=2, max_length=3, description="소개글로 견줄 책들(2~3권)"
@@ -134,6 +164,8 @@ ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.CART_REMOVE: RemoveArgs,
     ToolName.BOOK_OFFER: OfferArgs,
     ToolName.BOOK_SEARCH: SearchArgs,
+    ToolName.BOOK_DETAIL: DetailArgs,
+    ToolName.BOOK_REVIEWS: ReviewsArgs,
     ToolName.SELECTION_PICK: PickArgs,
     ToolName.BOOK_COMPARE: CompareArgs,
     ToolName.UI_GUIDE: UiGuideArgs,
@@ -428,6 +460,13 @@ async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) ->
                 "title": o.title,
                 "price": o.price,
                 "in_stock": o.in_stock,
+                # 책 정보가 켜져 있으면 BE 가 보낸 남은 수량도 싣는다. "몇 권 남았어?"에 모델이 book_detail 대신 이
+                # 도구를 고르면 "재고가 있어요"로만 답했다(11/10 실측 6번 중 3번, 설명을 고쳐도 같았다)
+                **(
+                    {"stock_quantity": ctx.stock[o.isbn]}
+                    if ctx.book_info_enabled and o.isbn in ctx.stock
+                    else {}
+                ),
             }
             for o in offers
         ]
@@ -609,6 +648,188 @@ async def _search(
     }
 
 
+async def _bounded(
+    time_left: Callable[[], float] | None, start: Callable[[], Awaitable[Any]]
+) -> Any:
+    """BE 공개 API 호출을 도구를 그만 쓸 마감(+여유) 안에서 끝낸다. 마감이 지났으면 부르지 않고 TimeoutError.
+
+    호출은 start 로 받아 마감을 본 뒤에 시작한다(먼저 만들어 두면 마감이 지나도 이미 BE 를 부르고 있다).
+    """
+    budget: float | None = None
+    if time_left is not None:
+        left = time_left()
+        if left <= 0:
+            raise TimeoutError
+        budget = left + SEARCH_GRACE_SECONDS
+    async with asyncio.timeout(budget):
+        return await start()
+
+
+def _unexpired(coupon: CouponInfo, now: datetime) -> bool:
+    """만료되지 않은 쿠폰인가. 만료 시각을 못 읽으면 남긴다(결제 때 BE 가 다시 본다)."""
+    if coupon.expired_at is None:
+        return True
+    try:
+        expires = datetime.fromisoformat(coupon.expired_at)
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=_KST)
+    return expires > now
+
+
+def _coupon_view(coupon: CouponInfo, owned: set[int]) -> dict[str, Any]:
+    """쿠폰 하나를 결과에 싣는 모양. 정액은 원(discount_won), 정률은 퍼센트(discount_percent)다."""
+    out: dict[str, Any] = {"name": coupon.name, "owned": coupon.coupon_id in owned}
+    if coupon.kind == "FIXED_AMOUNT":
+        out["discount_won"] = int(coupon.discount)
+    else:
+        out["discount_percent"] = round(coupon.discount * 100, 1)
+    out["min_order_amount"] = coupon.min_order_amount
+    return out
+
+
+def _detail_view(
+    isbn: str, detail: ProductDetail, coupons: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    book: dict[str, Any] = {
+        "isbn": isbn,
+        "title": detail.title,
+        "author": detail.author,
+        "publisher": detail.publisher,
+        "published_at": detail.published_at,
+        "category": detail.category,
+        "price": detail.price,
+        "list_price": detail.list_price,
+        "stock_quantity": detail.stock_quantity,
+        "in_stock": detail.stock_quantity > 0,
+        # 리뷰 수·별점은 싣지 않는다. 상품 상세의 값이 리뷰 목록보다 늦어 리뷰가 있는 책을 "아직 리뷰가 없다"고
+        # 답했다(11/10 dev 실측). 리뷰는 book.reviews 가 목록으로 센다
+    }
+    if coupons is None:
+        book["coupons_unknown"] = True  # 쿠폰 정보를 못 읽었다. 없다고 말하면 안 된다
+    else:
+        book["coupons"] = coupons
+    return book
+
+
+async def _detail(
+    info: BookInfo,
+    time_left: Callable[[], float] | None,
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    args: DetailArgs,
+) -> _Done:
+    """책의 정보(출판사·출간일·분야·정가·재고 수량)와 쓸 수 있는 쿠폰을 BE 공개 API 로 읽는다(#650).
+
+    장바구니는 건드리지 않는다. 소개글은 싣지 않는다(소개글 속 지시문이 도구를 고르는 LLM 에게 가지 않게).
+    쿠폰은 BE 가 상품에 걸어 둔 것 중 만료되지 않은 것만 싣고, 사용자가 이미 가진 쿠폰이면 owned 로 표시한다.
+    상품 번호를 모르는 책(product_id 를 보내지 않는 예전 BE)은 missing 으로 알린다.
+    """
+    isbns = list(dict.fromkeys(resolve(ctx, ref) for ref in args.books))
+    arguments: dict[str, Any] = {"isbns": isbns}
+    ids = {isbn: ctx.product_id(isbn) for isbn in isbns}
+    known = {isbn: pid for isbn, pid in ids.items() if pid is not None}
+    if not known:
+        return arguments, _fail(ToolErrorCode.PRODUCT_UNKNOWN.value)
+    try:
+        details = await _bounded(time_left, lambda: info.details(list(known.values())))
+    except TimeoutError:
+        details = {}
+    found = {isbn: details[pid] for isbn, pid in known.items() if pid in details}
+    if not found:
+        return arguments, _fail(ToolErrorCode.INFO_FAILED.value)
+
+    coupon_ids = sorted({c for d in found.values() for c in d.coupon_ids})
+    coupons: dict[int, CouponInfo] | None = {}
+    if coupon_ids:
+        try:
+            listed = await _bounded(time_left, lambda: info.coupons(coupon_ids))
+            now = datetime.now(_KST)
+            coupons = {c.coupon_id: c for c in listed if _unexpired(c, now)}
+        except (InfoUnavailable, TimeoutError):
+            coupons = None
+    owned = {c.coupon_id for c in ctx.owned_coupons}
+
+    books = []
+    for isbn, detail in found.items():
+        ctx.titles[isbn] = detail.title
+        shown = (
+            None
+            if coupons is None
+            else [
+                _coupon_view(coupons[c], owned)
+                for c in sorted(detail.coupon_ids)
+                if c in coupons and coupons[c].kind != "NONE"
+            ]
+        )
+        books.append(_detail_view(isbn, detail, shown))
+    result: dict[str, Any] = {"books": books}
+    missing = [isbn for isbn in isbns if isbn not in found]
+    if missing:
+        result["missing"] = missing
+    return arguments, result
+
+
+async def _reviews(
+    info: BookInfo,
+    summarizer: ReviewSummarizer | None,
+    time_left: Callable[[], float] | None,
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    args: ReviewsArgs,
+) -> _Done:
+    """한 책의 리뷰 수·별점과, 리뷰가 넉넉하면 따로 읽는 호출이 쓴 요약(#650).
+
+    리뷰 원문은 결과에 싣지 않는다(다른 사용자가 쓴 글이라 지시문이 섞일 수 있다). 스포일러로 표시된 리뷰는
+    요약에 쓰지 않는다. 스포일러가 아닌 리뷰가 MIN_REVIEWS_FOR_SUMMARY 개보다 적으면 요약하지 않는다. 한두
+    사람의 말을 독자 전체의 평으로 부풀리지 않으려는 것이다.
+    """
+    isbn = resolve(ctx, args.book)
+    arguments = {"isbn": isbn}
+    pid = ctx.product_id(isbn)
+    if pid is None:
+        return arguments, _fail(ToolErrorCode.PRODUCT_UNKNOWN.value)
+    try:
+        details, reviews = await _bounded(
+            time_left,
+            lambda: asyncio.gather(
+                info.details([pid]), info.reviews(pid, MAX_REVIEWS_READ)
+            ),
+        )
+    except (InfoUnavailable, TimeoutError):
+        return arguments, _fail(ToolErrorCode.INFO_FAILED.value)
+    detail = details.get(pid)
+    if detail is None:
+        return arguments, _fail(ToolErrorCode.INFO_FAILED.value)
+    ctx.titles[isbn] = detail.title
+    readable = [r for r in reviews if not r.spoiler]
+    count, rate = detail.review_count, detail.review_rate
+    if len(reviews) > count:
+        # 상품 상세의 리뷰 수·평점이 리뷰 목록보다 늦다(11/10 dev: 리뷰 1개인 책의 reviewCount 0). 그대로 쓰면 리뷰가
+        # 있는데 "아직 없다"고 답한다. 목록에서 읽은 수와 그 평균을 쓴다
+        count = len(reviews)
+        rate = sum(r.rate for r in reviews) / count
+    result: dict[str, Any] = {
+        "ok": True,
+        "isbn": isbn,
+        "title": detail.title,
+        "review_count": count,
+        "review_rate": None if rate is None else round(rate, 1),
+        "summary": None,
+    }
+    if len(readable) < MIN_REVIEWS_FOR_SUMMARY:
+        result["note"] = "TOO_FEW_REVIEWS"  # 요약하지 않았다. 수와 별점만 말한다
+        return arguments, result
+    if summarizer is None:
+        return arguments, _fail(ToolErrorCode.REVIEW_SUMMARY_FAILED.value)
+    try:
+        result["summary"] = await summarizer.summarize(detail.title, readable)
+    except ReviewSummaryError as e:
+        return arguments, _fail(e.code.value)
+    return arguments, result
+
+
 async def _ui_guide(
     ctx: TurnContext, gateway: CommerceGateway, args: UiGuideArgs
 ) -> _Done:
@@ -644,12 +865,17 @@ async def execute(
     comparer: Comparer | None = None,
     finder: BookFinder | None = None,
     time_left: Callable[[], float] | None = None,
+    info: BookInfo | None = None,
+    summarizer: ReviewSummarizer | None = None,
 ) -> ToolCall:
     """도구 하나를 실행하고 기록을 돌려준다. 막히거나 BE 가 거절해도 예외를 던지지 않는다.
 
     comparer 는 book.compare 만 쓴다. 없으면 그 도구는 TOOL_NOT_IMPLEMENTED 로 막힌다.
     finder 는 book.search 만 쓴다(#631). 없으면(기능이 꺼져 있으면) 같은 이유로 막힌다.
-    time_left 는 book.search 만 본다. 도구를 그만 쓸 마감까지 남은 초를 돌려주는 함수이고, 없으면 시간을 보지 않는다.
+    info 는 book.detail·book.reviews 가 쓰는 BE 공개 상품 정보이고, summarizer 는 리뷰 요약을 쓰는 따로 부르는 호출이다
+    (#650). info 가 없으면 두 도구는 막힌다.
+    time_left 는 BE 공개 API 를 읽는 도구(book.search·book.detail·book.reviews)가 본다. 도구를 그만 쓸 마감까지 남은
+    초를 돌려주는 함수이고, 없으면 시간을 보지 않는다.
 
     grounded 는 이 결과가 실제로 실행해서 얻은 값이라는 뜻으로 true 로 둔다. 답변이 이 결과를
     뒷받침하는지는 마무리 단계(7단계)가 판단해서 바꾼다.
@@ -665,6 +891,10 @@ async def execute(
         handler = partial(_compare, comparer)
     if name == ToolName.BOOK_SEARCH and finder is not None:
         handler = partial(_search, finder, time_left)
+    if name == ToolName.BOOK_DETAIL and info is not None:
+        handler = partial(_detail, info, time_left)
+    if name == ToolName.BOOK_REVIEWS and info is not None:
+        handler = partial(_reviews, info, summarizer, time_left)
     if handler is None:
         return _failed(name, given, ToolErrorCode.TOOL_NOT_IMPLEMENTED)
 

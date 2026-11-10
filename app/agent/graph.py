@@ -8,6 +8,7 @@
 LLM 호출은 invoke_chain 을 거친다. /health 의 LLM 상태와 provider 예외 변환을 ③⑤와 같은 길로 묶기 위해서다.
 """
 
+import asyncio
 import json
 import operator
 from dataclasses import dataclass, field
@@ -28,10 +29,12 @@ from app.agent import descriptors, evidence, guard, prompts
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
+from app.agent.reviews import ReviewSummarizer
 from app.agent.schemas import AgentActRequest, ToolCall, ToolName
 from app.agent.tools import ARG_MODELS, delegated, execute, picked_ref, view_result
 from app.agent.view import llm_view
 from app.gateway.book_finder import BookFinder
+from app.gateway.book_info import BookInfo, InfoUnavailable
 from app.gateway.commerce import (
     CartLine,
     CommerceError,
@@ -177,12 +180,24 @@ async def _rolled_back(
     return out
 
 
-def _offered(ctx: TurnContext, finder: BookFinder | None) -> list[ToolName] | None:
-    """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만 준다(#631). None 이면 전부다."""
-    if finder is not None:
+# 책 정보·리뷰(#650). 읽을 곳(info)이 있을 때만 준다
+_INFO_TOOLS = frozenset({ToolName.BOOK_DETAIL, ToolName.BOOK_REVIEWS})
+
+
+def _offered(
+    ctx: TurnContext, finder: BookFinder | None, info: BookInfo | None = None
+) -> list[ToolName] | None:
+    """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만(#631), 책 정보·리뷰는 읽을 곳(info)이 있을 때만
+    준다(#650). None 이면 전부다."""
+    hidden: set[ToolName] = set()
+    if finder is None:
+        hidden.add(ToolName.BOOK_SEARCH)
+    if info is None:
+        hidden |= _INFO_TOOLS
+    if not hidden:
         return ctx.allow_tools
     names = ctx.allow_tools if ctx.allow_tools is not None else list(ARG_MODELS)
-    return [name for name in names if name != ToolName.BOOK_SEARCH]
+    return [name for name in names if name not in hidden]
 
 
 def build_graph(
@@ -192,13 +207,16 @@ def build_graph(
     comparer: Comparer | None = None,
     finder: BookFinder | None = None,
     deadline: float | None = None,
+    info: BookInfo | None = None,
+    summarizer: ReviewSummarizer | None = None,
 ):
     """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다.
 
     deadline(perf_counter 값)이 지나면 도구를 더 쓰지 않고 답하게 한다. None 이면 반복 상한만 본다.
+    info 가 있으면 책 정보·리뷰 도구를 준다(#650).
     """
     tools = descriptors.tool_definitions(
-        _offered(ctx, finder), checkout=ctx.checkout_enabled
+        _offered(ctx, finder, info), checkout=ctx.checkout_enabled
     )
     # 허용한 도구가 하나도 없으면 도구 없이 부른다(빈 도구 목록은 공급자가 거절한다)
     can_choose = model.bind_tools(tools) if tools else model
@@ -287,6 +305,8 @@ def build_graph(
                 comparer=comparer,
                 finder=finder,
                 time_left=time_left,
+                info=info,
+                summarizer=summarizer,
             )
             slots.append((len(replies), requested["id"], requested["name"]))
             recorded.append(call)
@@ -446,6 +466,9 @@ async def run_agent(
     finder: BookFinder | None = None,
     checkout: bool = False,
     turn_seconds: float | None = None,
+    info: BookInfo | None = None,
+    book_info: bool = False,
+    summarizer: ReviewSummarizer | None = None,
 ) -> AgentRun:
     """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
 
@@ -455,6 +478,9 @@ async def run_agent(
     checkout 이 켜져 있으면(#631) 골라서 담으라고 맡긴 말에 확인 없이 담고, "주문해 줘"로 담았으면 주문 화면에
     채울 쿠폰과 포인트를 고른다. finder 가 있으면 카드 밖의 책을 찾는 book.search 를 준다.
 
+    info 는 BE 공개 상품 정보다(#650). book_info 가 켜져 있으면 책 정보·리뷰 도구를 주고(리뷰 요약은 summarizer 가
+    한다), checkout 이 켜져 있으면 "주문해 줘"로 담은 카드·장바구니 책의 쿠폰 대상을 여기서 읽는다.
+
     turn_seconds 는 부르는 쪽이 이 턴에 거는 시간 제한이다. 남은 시간이 ANSWER_MARGIN_SECONDS(짧은 제한이면 그
     1/3)보다 적으면 도구를 그만 쓰고 답하게 한다. None 이면 반복 상한만 본다.
     """
@@ -463,16 +489,24 @@ async def run_agent(
     ctx.checkout_enabled = checkout
     if not checkout:
         finder = None  # 기능이 꺼져 있으면 찾을 곳이 있어도 책 찾기를 주지 않는다
+    offered_info = info if book_info else None
+    ctx.book_info_enabled = offered_info is not None
     await prefetch_cart(ctx, gateway)
     await prefetch_card_titles(ctx, gateway)
     ctx.topic = evidence.topic_name(ctx)
     start = list(ctx.cart_snapshot or [])
-    graph = build_graph(model, gateway, ctx, comparer, finder, deadline)
+    graph = build_graph(
+        model, gateway, ctx, comparer, finder, deadline, offered_info, summarizer
+    )
     out: _State = await graph.ainvoke(
         {
             "messages": [
                 SystemMessage(
-                    prompts.system_prompt(search=finder is not None, order=checkout)
+                    prompts.system_prompt(
+                        search=finder is not None,
+                        order=checkout,
+                        info=offered_info is not None,
+                    )
                 ),
                 SystemMessage(prompts.state_message(ctx)),
                 HumanMessage(req.message),
@@ -494,7 +528,8 @@ async def run_agent(
         end = await gateway.get_cart(ctx.user_id)
         actions = diff_cart(start, end)
         if checkout and ctx.logged_in and evidence.wants_order(ctx):
-            plan = _plan(ctx, actions, end)
+            coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
+            plan = _plan(ctx, actions, end, coupon_ids)
     return AgentRun(
         final_text=final_text,
         not_shopping=not out["tool_calls"]
@@ -511,21 +546,68 @@ async def run_agent(
     )
 
 
+# 주문 턴에 카드·장바구니 책의 쿠폰 대상을 읽는 데 쓰는 최대 시간(초). 넘으면 그 책은 대상을 모르는 것으로 본다
+COUPON_TARGET_SECONDS = 2.0
+
+
+async def _coupon_targets(
+    ctx: TurnContext,
+    actions: list[CartAction],
+    info: BookInfo | None,
+    deadline: float | None,
+) -> dict[str, frozenset[int]]:
+    """이번 턴에 담은 카드·장바구니 책에 걸린 쿠폰 번호(ISBN → 쿠폰 번호, #650).
+
+    찾은 책은 검색 때 이미 읽었다. 그 밖의 책은 요청의 상품 번호(BE#536)로 BE 공개 상품 상세를 읽는다. 쓸 쿠폰이
+    없거나 읽을 곳이 없거나 시간이 모자라면 읽지 않는다(그 책은 대상을 모르는 것으로 보고, 사용자가 주문 화면에서
+    고른다).
+    """
+    targets = {isbn: book.coupon_ids for isbn, book in ctx.found.items()}
+    if info is None or not ctx.owned_coupons:
+        return targets
+    wanted = {
+        action.isbn: pid
+        for action in actions
+        if action.op == "set"
+        and action.isbn not in targets
+        and (pid := ctx.product_ids.get(action.isbn)) is not None
+    }
+    if not wanted:
+        return targets
+    budget = COUPON_TARGET_SECONDS
+    if deadline is not None:
+        budget = min(budget, max(0.0, deadline - perf_counter()) + 1.0)
+    try:
+        async with asyncio.timeout(budget):
+            details = await info.details(list(wanted.values()))
+    except (TimeoutError, InfoUnavailable):
+        return targets
+    for isbn, pid in wanted.items():
+        if pid in details:
+            targets[isbn] = details[pid].coupon_ids
+    return targets
+
+
 def _plan(
-    ctx: TurnContext, actions: list[CartAction], end: list[CartLine]
+    ctx: TurnContext,
+    actions: list[CartAction],
+    end: list[CartLine],
+    coupon_targets: dict[str, frozenset[int]] | None = None,
 ) -> checkout_plan.Plan | None:
     """이번 턴에 담은 책(set)으로 주문 화면에 채울 쿠폰과 포인트를 고른다. 담은 책이 없으면 None.
 
-    가격은 끝 장바구니의 값이다(찾은 책은 BE 상품 상세, 카드 책은 요청에 실린 BE 값). 쿠폰 대상은 찾은 책만 안다.
+    가격은 끝 장바구니의 값이다(찾은 책은 BE 상품 상세, 카드 책은 요청에 실린 BE 값). 쿠폰 대상은 coupon_targets
+    (찾은 책과, 상품 번호로 읽은 카드·장바구니 책)에 있는 책만 안다.
     """
+    if coupon_targets is None:
+        coupon_targets = {isbn: book.coupon_ids for isbn, book in ctx.found.items()}
     prices = {line.isbn: line.price for line in end}
     lines = []
     for action in actions:
         price = prices.get(action.isbn)
         if action.op != "set" or action.quantity is None or price is None:
             continue
-        found = ctx.found.get(action.isbn)
-        coupon_ids = found.coupon_ids if found is not None else frozenset()
+        coupon_ids = coupon_targets.get(action.isbn, frozenset())
         lines.append(
             checkout_plan.OrderLine(action.isbn, price, action.quantity, coupon_ids)
         )

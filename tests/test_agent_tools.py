@@ -1072,14 +1072,17 @@ def test_비교_부품이_없으면_비교는_실행하지_않는다() -> None:
 
 
 def test_모든_도구에_인자_모델이_있고_실행기가_있다() -> None:
-    # 도구를 새로 만들면서 인자 모델이나 실행기를 빠뜨리지 않게. 비교와 책 찾기는 부품(comparer, finder)을 받아
-    # 실행해서 실행기 표에 없다
+    # 도구를 새로 만들면서 인자 모델이나 실행기를 빠뜨리지 않게. 비교·책 찾기·책 정보·리뷰는 부품(comparer, finder,
+    # info)을 받아 실행해서 실행기 표에 없다
     from app.agent.tools import _HANDLERS
 
     assert set(ARG_MODELS) == set(ToolName)
-    assert set(_HANDLERS) | {ToolName.BOOK_COMPARE, ToolName.BOOK_SEARCH} == set(
-        ToolName
-    )
+    assert set(_HANDLERS) | {
+        ToolName.BOOK_COMPARE,
+        ToolName.BOOK_SEARCH,
+        ToolName.BOOK_DETAIL,
+        ToolName.BOOK_REVIEWS,
+    } == set(ToolName)
 
 
 # --- 기록의 모양 ---

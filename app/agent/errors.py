@@ -55,6 +55,10 @@ class ToolErrorCode(StrEnum):
     # 소개글을 읽어 차이를 요약하는 호출이 실패했다
     COMPARE_FAILED = "COMPARE_FAILED"
     SEARCH_FAILED = "SEARCH_FAILED"  # BE 검색을 읽지 못했다(#631)
+    # 책 정보·리뷰(#650). 상품 번호를 모르는 책(예전 BE 가 보낸 카드), BE 상품 상세·리뷰를 못 읽음, 리뷰 요약 실패
+    PRODUCT_UNKNOWN = "PRODUCT_UNKNOWN"
+    INFO_FAILED = "INFO_FAILED"
+    REVIEW_SUMMARY_FAILED = "REVIEW_SUMMARY_FAILED"
 
 
 class RefError(Exception):

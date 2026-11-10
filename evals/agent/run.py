@@ -34,6 +34,7 @@ from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
 from app.gateway.book_finder import FakeBookFinder, FoundBook
+from app.gateway.book_info import FakeBookInfo
 from app.gateway.commerce import CommerceError
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.commerce_provider import get_commerce
@@ -42,6 +43,8 @@ from evals.agent import grade
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 DEFAULT_CONCURRENCY = 4
+# 책 정보·리뷰 도구를 켤지(--book-info, #650). main 이 정한다
+BOOK_INFO = False
 
 
 async def build_commerce(data: dict, case: dict) -> tuple[FakeCommerce, int]:
@@ -223,6 +226,10 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                     finder=finder_for(data, case),
                     checkout=bool(case.get("checkout")),
                     turn_seconds=timeout,
+                    # --book-info(#650): 책 정보·리뷰 도구와 규칙을 켠 채로 장바구니 사례가 그대로인지 본다.
+                    # 사례에 상품 번호가 없어 책 정보는 PRODUCT_UNKNOWN 이다(정보 답은 이 묶음이 재지 않는다)
+                    info=FakeBookInfo() if BOOK_INFO else None,
+                    book_info=BOOK_INFO,
                 )
             finished = finish(run)
             data = finished.data.model_dump(mode="json")
@@ -513,6 +520,11 @@ def main(argv: list[str] | None = None) -> None:
         default="",
         help="dev 는 고치는 데 쓴 사례, heldout 은 재는 데만 쓴 사례(#387)",
     )
+    parser.add_argument(
+        "--book-info",
+        action="store_true",
+        help="책 정보·리뷰 도구(#650, AGENT_BOOK_INFO)를 켠 채로 돈다",
+    )
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument("--label", default="run", help="결과 파일 이름에 붙이는 말")
     parser.add_argument("--out", default="", help="결과 원본 JSON 위치")
@@ -522,6 +534,8 @@ def main(argv: list[str] | None = None) -> None:
         help="저장한 결과 JSON 을 모델을 부르지 않고 지금 채점 기준으로 다시 채점해 보고서를 낸다",
     )
     args = parser.parse_args(argv)
+    global BOOK_INFO
+    BOOK_INFO = args.book_info
 
     if args.regrade:
         _regrade(Path(args.regrade), args)

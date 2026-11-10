@@ -162,6 +162,22 @@ def _facts(run: AgentRun) -> _Facts:
                 titles[offer["isbn"]] = offer["title"]
                 allowed.add(offer["price"])
                 prices.append(offer["price"])
+        if call.name == ToolName.BOOK_DETAIL and "books" in call.result:
+            # 책 정보(#650): 판매가와 정가, 그 차이(할인 금액), 쿠폰의 정액 할인과 최소 주문 금액
+            for book in call.result["books"]:
+                titles[book["isbn"]] = book["title"]
+                allowed.add(book["price"])
+                prices.append(book["price"])
+                if book["list_price"] is not None:
+                    allowed.update(
+                        {book["list_price"], book["list_price"] - book["price"]}
+                    )
+                for coupon in book.get("coupons") or []:
+                    allowed.add(coupon["min_order_amount"])
+                    if "discount_won" in coupon:
+                        allowed.add(coupon["discount_won"])
+        if call.name == ToolName.BOOK_REVIEWS and call.result.get("ok") is True:
+            titles[call.result["isbn"]] = call.result["title"]
         if call.name == ToolName.SELECTION_PICK and call.result.get("ok") is True:
             total_index = index
             # 조합은 아직 담기 전이라 쓰기가 있어도 낡은 값이 되지 않는다

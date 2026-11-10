@@ -51,6 +51,13 @@
 (11/10 평가 checkout-h03 3번 다). 권수 없이 "구매", "사고 싶"만 보면 고르는 말까지 판정 없이 ⑦로 가므로
 권수를 붙인 꼴만 센다.
 
+**v6(#650).** ⑦이 책 정보·리뷰(book.detail·book.reviews)를 답하게 되면서, 리뷰·평점·쿠폰·남은 수량·출판사·출간일을
+묻는 말("2번 리뷰 어때?", "이 책 쿠폰 있어?", "몇 권 남았어요?", "언제 나온 책이야?")을 장바구니 낱말로 본다. 이 말은 장바구니 낱말이 없어
+카드가 있으면 애매(판정 호출), 없으면 아무 신호 없음(판정 호출)으로 갔고, 판정이 ③으로 보내면 ③이 리뷰를 모른다.
+**이 낱말은 ``AGENT_BOOK_INFO`` 를 켠 서버에서만 본다**(``info_requests``). 꺼진 ⑦은 리뷰를 모른다.
+"리뷰 좋은 소설 추천해 줘"처럼 추천 낱말이 같이 있으면 v1 처럼 ``both`` 로 ⑦에 가고, ⑦이 쇼핑이 아니라고
+돌려보내면 ③이 받는다.
+
 **확실한 가름과 애매한 가름(#530).** ``decide`` 는 갈래와 함께 그 갈래가 낱말 근거로 정해졌는지(sure)를 준다.
 낱말 근거 없이 기본값으로 정한 경우 — 아무 신호도 없는 말, 카드 번호만 있고 행동·추천 낱말이 없는 말 — 는
 애매하다. 문지기는 애매한 말만 작은 판정 호출(app/gate/judge.py)에 맡긴다. 머지 전 점검 45턴에서 갈래가 틀린 7턴이
@@ -65,7 +72,7 @@ from typing import Literal, Protocol
 
 from app.core import voice
 
-RULES_VERSION = 5
+RULES_VERSION = 6
 
 Lane = Literal["recommend", "shop"]
 # 문지기가 말을 보내는 곳. ``card`` 는 ③ 대답 턴(새로 찾지 않고 보인 책 소개로 답한다)
@@ -86,6 +93,12 @@ _CART_WORDS = re.compile(
 _BUY_REQUEST = re.compile(
     r"(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)"
     r"|(?:하나|한\s*권|\d+\s*권|[두세네]\s*권)\s*(?:구매|구입|사고\s*싶)"
+)
+# v6(#650): 책 정보·리뷰를 묻는 말. 책 정보를 답하는 ⑦(AGENT_BOOK_INFO)이 켜졌을 때만 쓴다
+# 출판사·출간일을 묻는 말도 넣는다. 제목에 "소설"이 들면("추리소설가의 살인사건 출판사 어디예요") 추천 낱말로 ③에 갔다
+_INFO_REQUEST = re.compile(
+    r"리뷰|후기|평점|별점|쿠폰|몇\s*권\s*남|(?:재고가?|책이?)\s*남(?:았|아\s*있)"
+    r"|출판사|출간일|언제\s*나(?:왔|온)"
 )
 # 카드나 위치를 가리키는 말. 카드가 화면에 있을 때만 장바구니 신호로 본다
 _POINTER = re.compile(r"\d+\s*번|[첫두세네]\s?번째|이거|그거|이 책|그 책")
@@ -184,11 +197,13 @@ def decide(
     after_action: bool = False,
     after_fork: bool = False,
     buy_requests: bool = False,
+    info_requests: bool = False,
 ) -> Decision:
     """말 하나를 네 갈래 중 하나로 가르고, 그 갈래가 확실한지 함께 준다.
 
     ``buy_requests`` 는 "사 줘"를 장바구니 낱말로 볼지(v4)다. ⑦이 카드 밖 책을 찾아 담는 서버
-    (``AGENT_CHECKOUT``)에서만 true 로 준다. 기본은 v3이다.
+    (``AGENT_CHECKOUT``)에서만 true 로 준다. 기본은 v3이다. ``info_requests`` 는 리뷰·평점·쿠폰·남은 수량을
+    묻는 말을 장바구니 낱말로 볼지(v6)다. 책 정보를 답하는 ⑦(``AGENT_BOOK_INFO``)에서만 true 로 준다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
     2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2). 가격·출간연도만 말했어도 추천(v3)
@@ -203,8 +218,10 @@ def decide(
        확실하다
     """
     text = message.strip()
-    cart_words = bool(_CART_WORDS.search(text)) or (
-        buy_requests and bool(_BUY_REQUEST.search(text))
+    cart_words = (
+        bool(_CART_WORDS.search(text))
+        or (buy_requests and bool(_BUY_REQUEST.search(text)))
+        or (info_requests and bool(_INFO_REQUEST.search(text)))
     )
     pointer = cards_shown and bool(_POINTER.search(text))
     recommend = bool(_REC_WORDS.search(text))
@@ -243,10 +260,17 @@ def classify(
     after_action: bool = False,
     after_fork: bool = False,
     buy_requests: bool = False,
+    info_requests: bool = False,
 ) -> Kind:
     """말 하나를 네 갈래 중 하나로 가른다(``decide`` 의 갈래만)."""
     return decide(
-        message, cards_shown, after_ask, after_action, after_fork, buy_requests
+        message,
+        cards_shown,
+        after_ask,
+        after_action,
+        after_fork,
+        buy_requests,
+        info_requests,
     ).kind
 
 
@@ -257,9 +281,16 @@ def route(
     after_action: bool = False,
     after_fork: bool = False,
     buy_requests: bool = False,
+    info_requests: bool = False,
 ) -> Lane:
     """③으로 바로 보낼지(``recommend``), ⑦로 보낼지(``shop``)."""
     kind = classify(
-        message, cards_shown, after_ask, after_action, after_fork, buy_requests
+        message,
+        cards_shown,
+        after_ask,
+        after_action,
+        after_fork,
+        buy_requests,
+        info_requests,
     )
     return "recommend" if kind == "recommend" else "shop"

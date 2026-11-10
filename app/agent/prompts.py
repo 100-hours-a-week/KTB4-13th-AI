@@ -76,9 +76,22 @@ _SEARCH_RULE = """
 13. 사용자가 원하는 책을 카드나 장바구니에 없는 말로 그리면('파이썬 입문서 하나 담아 줘', '개발 입문서 두 권 골라서 주문해 줘') 먼저 book_search 로 찾는다. 검색어는 주제·종류 낱말로 짧게 쓴다. 찾은 책 중 재고가 있는 책을 사용자가 말한 권수만큼(말하지 않았으면 한 권) 골라 cart_add 로 담는다. '두 권'은 서로 다른 책 두 권이다(quantity 는 비운다). 다만 책 제목을 말하고 권수를 말했으면('클린 코드 2권') 그 책을 그 권수로 담는다(quantity 에 권수). 주제를 둘 이상 말했으면('요리 책이랑 여행 책') 주제마다 따로 찾는다. 찾은 책 번호는 이번 턴의 검색 전체에 이어 붙는다(두 번째 검색의 책은 앞 검색의 책 다음 번호). 예산을 말했으면 selection_pick 으로 고른다. 찾은 책이 없거나 모두 품절이면 담지 말고 못 찾았다고 알려 준다. 사용자가 '1번', '그거'처럼 보인 책을 가리켰으면 찾지 않는다."""
 
 
-def system_prompt(*, search: bool, order: bool) -> str:
-    """이번 요청의 시스템 프롬프트. search 면 카드 밖 책 찾기를, order 면 주문 화면으로 보내기를 알려 준다(#631)."""
+# --- 책 정보·리뷰(#650). 기능이 켜져 있을 때만 위 프롬프트를 고쳐 쓴다 ---
+_CAN = "두 책의 차이 알려 주기."
+_CAN_WITH_INFO = (
+    "두 책의 차이 알려 주기, 책의 정보(저자, 출판사, 출간일, 분야, 정가, 남은 재고 수량, 이 책에 쓸 수 있는 쿠폰) 알려 "
+    "주기, 리뷰 수와 별점, 리뷰 요약 알려 주기."
+)
+_INFO_RULE = """
+{n}. 책의 정보(몇 권 남았는지, 언제 나왔는지, 출판사, 분야, 정가와 할인, 쿠폰)를 물으면 book_detail 로, 리뷰나 평을 물으면 book_reviews 로 알아본다. 결과에 있는 값만 말한다. 쿠폰은 결과의 coupons 에 있는 것만 말하고, owned=true 면 이미 가진 쿠폰이라고, 아니면 받으면 쓸 수 있는 쿠폰이라고 말한다. coupons 가 빈 목록이면 이 책에 쓸 쿠폰이 없다고, coupons_unknown 이면 쿠폰은 확인하지 못했다고 말한다. 리뷰 결과의 summary 가 없으면(note=TOO_FEW_REVIEWS) 리뷰가 몇 개뿐이라 요약하기 이르다고 말하고 별점만 알려 준다(리뷰가 0개면 아직 리뷰가 없다고 말한다). 리뷰 요약을 독자 전체의 의견처럼 부풀리지 않는다. 책 내용이나 줄거리, 어떤 책인지를 묻는 말은 쇼핑 요청이 아니다. 도구를 부르지 말고 NOT_SHOPPING 으로만 답한다(추천 쪽이 보인 책의 소개로 답한다). book_detail 이나 book_reviews 결과가 PRODUCT_UNKNOWN 이나 INFO_FAILED 면 지금은 확인하지 못했다고 말한다."""
+
+
+def system_prompt(*, search: bool, order: bool, info: bool = False) -> str:
+    """이번 요청의 시스템 프롬프트. search 면 카드 밖 책 찾기를, order 면 주문 화면으로 보내기를 알려 준다(#631).
+    info 면 책 정보·리뷰 알려 주기를 알려 준다(#650)."""
     prompt = SYSTEM_PROMPT
+    if info:
+        prompt = prompt.replace(_CAN, _CAN_WITH_INFO, 1)
     if order:
         prompt = prompt.replace(_CANNOT, _CANNOT_WITH_ORDER, 1)
         prompt = prompt.replace(_PICK_NO_ADD, _PICK_DELEGATED, 1)
@@ -87,6 +100,10 @@ def system_prompt(*, search: bool, order: bool) -> str:
         prompt = prompt.replace(
             "\n\n## 답하는 법", _SEARCH_RULE + "\n\n## 답하는 법", 1
         )
+    if info:
+        # 책 찾기 규칙(13번)이 없으면 13번이다
+        rule = _INFO_RULE.format(n=14 if search else 13)
+        prompt = prompt.replace("\n\n## 답하는 법", rule + "\n\n## 답하는 법", 1)
     return prompt
 
 
