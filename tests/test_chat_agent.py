@@ -1211,3 +1211,30 @@ def test_짚은_기준_책의_목록이_없고_검색어도_없으면_사용자_
         "어디에도 없는 책 읽은 사람들은 또 뭐 읽어?"
     ]
     assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+
+
+def test_이웃_책_DB_조회가_실패하면_그_갈래만_빼고_검색_책으로_고른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_search(monkeypatch, SEARCHED)
+
+    async def _down(isbns) -> list[dict]:
+        raise TimeoutError
+
+    # 기준 책 이웃(neighbor_books)과 이웃 줄(attach_neighbor_lines) 둘 다 이 조회를 쓴다
+    monkeypatch.setattr(lanes, "_rows_by_isbns", _down)
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "AI 교양서"},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 301, "reason_short": "반도체 산업 입문서예요."}],
+            "reply": "입문서예요.",
+        },
+    )
+
+    data = _post("이런 책 더 없어?")
+
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert "AI 2041" not in listing
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문"]

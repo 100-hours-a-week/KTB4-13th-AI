@@ -1851,6 +1851,19 @@ async def _recalled_books(
     return await lanes.titled_books(await _recalled_within_grace(recalling))
 
 
+async def _neighbor_books(
+    graph: reading_graph.ReadingGraph, anchor: lanes.Anchor, plan: lanes.Plan
+) -> list[dict]:
+    """C — 기준 책 이웃. DB 조회가 실패하면 이 갈래만 빼고 검색·떠올린 제목으로 고른다(턴을 500 으로 끝내지 않는다)."""
+    try:
+        return await lanes.neighbor_books(
+            graph, anchor, lanes.relation_kinds(plan.relation)
+        )
+    except Exception:
+        logger.exception("기준 책 이웃 찾기 실패 — 이 갈래 없이 찾는다")
+        return []
+
+
 async def _settle_pool(
     turn: _LaneTurn,
     searched: list[dict],
@@ -1888,9 +1901,13 @@ async def _settle_pool(
                 book_to_book=turn.anchor is not None and turn.plan.relation is not None,
             )
     if graph is not None:
-        await lanes.attach_neighbor_lines(
-            graph, [b for b in pool if "neighbors" not in b], turn.skip
-        )
+        try:
+            await lanes.attach_neighbor_lines(
+                graph, [b for b in pool if "neighbors" not in b], turn.skip
+            )
+        except Exception:
+            # 이웃 줄은 말풍선 제안에만 쓴다. 못 붙여도 카드는 낼 수 있으니 줄 없이 간다(판단 프롬프트·제안은 빈 줄을 받는다)
+            logger.exception("이웃 줄 붙이기 실패 — 이웃 줄 없이 고른다")
     return pool
 
 
@@ -1970,7 +1987,7 @@ async def _gather_lanes(
         if _query_text(search_spec) and not relation_only
         else _no_books(),
         _recalled_books(recalling) if recalling is not None else _no_books(),
-        lanes.neighbor_books(graph, anchor, lanes.relation_kinds(plan.relation))
+        _neighbor_books(graph, anchor, plan)
         if graph is not None and anchor is not None
         else _no_books(),
     )
