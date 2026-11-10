@@ -41,7 +41,7 @@ from app.chat import (
 )
 from app.chat import options as option_lines
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
-from app.chat.schemas import ChatRequest, Spec, Turn
+from app.chat.schemas import ChatRequest, Spec, SpecExact, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, editions, isbn, popularity, responses, voice
@@ -1864,6 +1864,35 @@ async def _no_books() -> list[dict]:
     return []
 
 
+async def _near_lane(
+    req: ChatRequest,
+    spec: Spec,
+    anchor: lanes.Anchor,
+    shown_ids: list[int],
+    owned: list[int] | None,
+) -> list[dict]:
+    """마니아 목록 없는 기준 책의 "비슷한 책 더"(#654). 기준 책과 소개가 가까운 책을 모은다.
+
+    기준 책 벡터가 없으면(소개글 없는 책) 기준 책 제목으로 찾는다 — spec 에 남은 앞 턴 주제로는 찾지 않는다. 사용자 조건
+    (가격·연도·분야)은 그대로 둔다. 가까운 책 조회가 실패해도 제목으로 찾는다(턴을 500 으로 끝내지 않는다).
+    """
+    try:
+        books = await lanes.near_books(anchor)
+    except Exception:
+        logger.exception("기준 책과 가까운 책 찾기 실패 — 기준 책 제목으로 찾는다")
+        books = None
+    if books is not None:
+        return books
+    by_title = spec.model_copy(
+        update={
+            "intent": "semantic",
+            "semantic": lanes.display_title(anchor.title)[:MAX_QUERY_CHARS],
+            "exact": SpecExact(),
+        }
+    )
+    return await get_candidates(by_title, shown_ids, req.user_id, owned_book_ids=owned)
+
+
 async def _recalled_books(
     recalling: "asyncio.Task[tuple[lanes.Title, ...]]",
 ) -> list[dict]:
@@ -1963,6 +1992,8 @@ async def _gather_lanes(
 
     사용자가 기준 책을 읽은 사람들이 함께 읽은 책을 물으면(relation co) 그 목록에서만 고른다. 검색어로 찾은 책이
     섞이면 "함께 읽은 책"이라는 답이 틀린다. 기준 책의 목록이 없으면 지금처럼 찾는다.
+    비슷한 책을 더 원하는데(relation similar) 기준 책에 마니아 목록이 없으면 검색 대신 기준 책과 소개가 가까운 책을
+    모은다(#654).
 
     recalling 은 1단계와 나란히 보낸 떠올린 제목 호출이다. 기준 책이 있는 턴에는 쓰지 않는다(기준 책 목록을 쓴다).
     """
@@ -1991,6 +2022,13 @@ async def _gather_lanes(
         and graph.has_lists(anchor.work)
     )
     relation_only = plan.relation == "co" and has_lists
+    # "비슷한 책 더"인데 기준 책에 마니아 목록이 없다(#654). spec 에 남은 앞 턴 주제로 찾으면 다른 주제의 책이 나와서
+    # 검색(A) 대신 기준 책과 소개가 가까운 책을 찾는다(_near_lane)
+    near_anchor = (
+        plan.relation == "similar"
+        and anchor is not None
+        and not lanes.has_mania(graph, anchor)
+    )
     search_spec = spec
     if not _query_text(spec) and plan.anchor is not None and not has_lists:
         # 기준 책을 짚었는데 못 찾았거나 그 책의 목록이 없다. 검색어도 없으면 카드가 0장이라 사용자 말로 찾는다.
@@ -2002,13 +2040,16 @@ async def _gather_lanes(
         _drop(recalling)
         recalling = None
     started = asyncio.get_running_loop().time()
-    searched, titled, related = await asyncio.gather(
+    searched, titled, related, near = await asyncio.gather(
         get_candidates(search_spec, shown_ids, req.user_id, owned_book_ids=owned)
-        if _query_text(search_spec) and not relation_only
+        if _query_text(search_spec) and not relation_only and not near_anchor
         else _no_books(),
         _recalled_books(recalling) if recalling is not None else _no_books(),
         _neighbor_books(graph, anchor, plan)
         if graph is not None and anchor is not None
+        else _no_books(),
+        _near_lane(req, spec, anchor, shown_ids, owned)
+        if near_anchor and anchor is not None
         else _no_books(),
     )
     turn = _LaneTurn(req, spec, plan, anchor, shown_ids, owned, graph, skip, [])
@@ -2019,7 +2060,12 @@ async def _gather_lanes(
             turn, searched, related, titled, others_first=True
         )
     else:
-        turn.pool = await _settle_pool(turn, searched, titled, related)
+        turn.pool = await _settle_pool(turn, searched, near, titled, related)
+    note = ""
+    if relation_only:
+        note = " — 함께 읽은 책만"
+    elif near_anchor:
+        note = f" — 검색 대신 기준 책과 가까운 책 {len(near)}권"
     logger.info(
         "세 갈래: 검색 %d · 떠올린 제목 %d · 기준 책 이웃 %d → 후보 %d권(%.2f초)%s",
         len(searched),
@@ -2027,7 +2073,7 @@ async def _gather_lanes(
         len(related),
         len(turn.pool),
         asyncio.get_running_loop().time() - started,
-        " — 함께 읽은 책만" if relation_only else "",
+        note,
     )
     return turn
 
