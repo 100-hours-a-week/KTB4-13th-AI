@@ -1,9 +1,9 @@
 """⑦ LLM 이 도구를 고르고 코드가 검사·실행하는 반복(#356). LangGraph 로 만든다(9/21 팀 결정).
 
 순서: 도구 고르기(LLM) → 부른 도구를 순서대로 검사하고 실행(코드, tools.execute) → 결과를 LLM 에게 돌려주고
-다시 고르기. 최대 MAX_TOOL_STEPS 번 반복하고, 다 썼으면 마지막 호출은 도구를 못 쓰게 해서 항상 글로 된
-답으로 끝낸다. 결과는 /agent/act 응답이 아니라 "그래프 실행 결과"(AgentRun)다. 응답 조립과 숫자·행동
-검사는 마무리 단계(7단계)가 한다.
+다시 고르기. 최대 MAX_TOOL_STEPS 번 반복하고, 다 썼거나 턴 시간이 ANSWER_MARGIN_SECONDS 만큼만 남았으면 마지막
+호출은 도구를 못 쓰게 해서 항상 글로 된 답으로 끝낸다. 결과는 /agent/act 응답이 아니라 "그래프 실행 결과"(AgentRun)다.
+응답 조립과 숫자·행동 검사는 마무리 단계(7단계)가 한다.
 
 LLM 호출은 invoke_chain 을 거친다. /health 의 LLM 상태와 provider 예외 변환을 ③⑤와 같은 길로 묶기 위해서다.
 """
@@ -23,14 +23,17 @@ from langchain_core.messages import (
 )
 from langgraph.graph import END, START, StateGraph
 
-from app.agent import descriptors, guard, prompts
+from app.agent import checkout as checkout_plan
+from app.agent import descriptors, evidence, guard, prompts
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
 from app.agent.schemas import AgentActRequest, ToolCall, ToolName
-from app.agent.tools import execute, view_result
+from app.agent.tools import ARG_MODELS, delegated, execute, picked_ref, view_result
 from app.agent.view import llm_view
+from app.gateway.book_finder import BookFinder
 from app.gateway.commerce import (
+    CartLine,
     CommerceError,
     CommerceErrorCode,
     CommerceGateway,
@@ -39,10 +42,24 @@ from app.gateway.commerce import (
 from app.gateway.commerce_snapshot import CartAction, diff_cart
 from app.gateway.llm import invoke_chain
 
-# 명세 ⑦: tool 반복은 최대 3번
-MAX_TOOL_STEPS = 3
+# 도구 반복 상한. 처음 명세는 3번이었다. 카드 밖 책 찾기(#631)가 들어오며 한 턴이 "장바구니 보기 → 주제마다 검색
+# → 담기 → 품절이면 다시 찾아 담기"처럼 길어질 수 있어 넉넉히 6번으로 둔다. 반복이 길어져 느려지는 것은 횟수가
+# 아니라 아래 시간 예산이 막는다. 모델이 도구를 더 부르려 할 때만 반복이 늘어나므로 짧은 턴은 그대로다.
+MAX_TOOL_STEPS = 6
 # 반복 상한은 횟수만 막는다. LLM 이 한 번에 수십 개를 부르는 것도 막는다.
 MAX_CALLS_PER_STEP = 5
+# 한 턴의 시간 제한(agent_turn_timeout_seconds)이 이만큼 남으면 도구를 더 쓰지 않고 답을 쓰게 한다. 제한을 넘기면
+# 504 로 턴 전체가 실패해 그때까지 한 일도 버려지므로, 마지막 답 쓰기 호출이 끝날 시간을 남기고 멈춘다. 제한이
+# 짧으면(평가·테스트) 제한의 1/3 만 남긴다. 운영의 30초에서는 10초다.
+ANSWER_MARGIN_SECONDS = 10.0
+
+
+def _deadline(turn_seconds: float | None) -> float | None:
+    """도구를 그만 쓸 때(perf_counter 값). 제한이 없으면 None."""
+    if turn_seconds is None:
+        return None
+    margin = min(ANSWER_MARGIN_SECONDS, turn_seconds / 3)
+    return perf_counter() + max(0.0, turn_seconds - margin)
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,10 @@ class AgentRun:
     ctx: TurnContext  # 끝난 뒤의 상태(마지막으로 조회한 장바구니 등)
     # BE 가 반영할 장바구니 변경(#489). 처음과 끝 장바구니의 차이다
     actions: list[CartAction] = field(default_factory=list)
+    # "주문해 줘"로 책을 담았을 때 주문 화면에 채울 쿠폰과 포인트(#631). 그 밖에는 None
+    checkout: checkout_plan.Plan | None = None
+    # 턴 시간이 다 되어 가서 도구를 그만 쓰고 답하게 했다(반복 상한 전에)
+    out_of_time: bool = False
 
 
 class _State(TypedDict):
@@ -75,6 +96,8 @@ class _State(TypedDict):
     timings: Annotated[list[StepTiming], operator.add]
     iterations: int
     llm_calls: int
+    # 마지막 도구 고르기 호출이 시간 예산을 넘겨 도구를 못 쓰게 한 호출이었다
+    out_of_time: bool
 
 
 def _error_message(
@@ -109,6 +132,13 @@ def _reply(ctx: TurnContext, call: ToolCall, call_id: str, name: str) -> ToolMes
 # 장바구니 규칙(재고, 30권, 수량, 판매 중지, 없는 항목)에 걸린 쓰기. 책을 가리키는 근거가 없어 막힌 것
 # (REFERENCE_NOT_STATED 등)은 그 책만 되묻으면 되므로 넣지 않는다
 _RULE_FAILURES = frozenset(code.value for code in CommerceErrorCode)
+
+
+def _added(result: dict[str, Any]) -> dict[str, Any]:
+    """코드가 담은 결과를 모델에게 보여 줄 모양으로. 성공이면 ok, 아니면 그 이유만."""
+    if result.get("ok") is True:
+        return {"ok": True}
+    return {"ok": False, "error": result.get("error")}
 
 
 def _roll_back(calls: list[ToolCall]) -> bool:
@@ -147,21 +177,41 @@ async def _rolled_back(
     return out
 
 
+def _offered(ctx: TurnContext, finder: BookFinder | None) -> list[ToolName] | None:
+    """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만 준다(#631). None 이면 전부다."""
+    if finder is not None:
+        return ctx.allow_tools
+    names = ctx.allow_tools if ctx.allow_tools is not None else list(ARG_MODELS)
+    return [name for name in names if name != ToolName.BOOK_SEARCH]
+
+
 def build_graph(
     model: Any,
     gateway: CommerceGateway,
     ctx: TurnContext,
     comparer: Comparer | None = None,
+    finder: BookFinder | None = None,
+    deadline: float | None = None,
 ):
-    """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다."""
-    tools = descriptors.tool_definitions(ctx.allow_tools)
+    """model 은 bind_tools 가 되는 LLM(ChatOpenAI 나 ScriptedModel)이다.
+
+    deadline(perf_counter 값)이 지나면 도구를 더 쓰지 않고 답하게 한다. None 이면 반복 상한만 본다.
+    """
+    tools = descriptors.tool_definitions(
+        _offered(ctx, finder), checkout=ctx.checkout_enabled
+    )
     # 허용한 도구가 하나도 없으면 도구 없이 부른다(빈 도구 목록은 공급자가 거절한다)
     can_choose = model.bind_tools(tools) if tools else model
-    # 반복을 다 썼을 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
+    # 반복을 다 썼거나 시간이 다 되어 갈 때의 마지막 호출. 도구는 그대로 두고 부르지만 못 쓰게 한다
     must_answer = model.bind_tools(tools, tool_choice="none") if tools else model
+    # 도구를 그만 쓸 마감까지 남은 초. 마감은 LLM 을 부르기 전에만 보므로, 한 반복 안에서 느린 검색이 차례로 돌아
+    # 마감을 넘기지 않게 book.search 가 이것을 본다(#637 리뷰)
+    time_left = None if deadline is None else (lambda: deadline - perf_counter())
 
     async def choose(state: _State) -> dict[str, Any]:
-        runnable = can_choose if state["iterations"] < MAX_TOOL_STEPS else must_answer
+        out_of_time = deadline is not None and perf_counter() >= deadline
+        may_use_tools = state["iterations"] < MAX_TOOL_STEPS and not out_of_time
+        runnable = can_choose if may_use_tools else must_answer
         started = perf_counter()
         ai: AIMessage = await invoke_chain(runnable, state["messages"])
         usage = getattr(ai, "usage_metadata", None) or {}
@@ -175,6 +225,7 @@ def build_graph(
             "messages": [ai],
             "timings": [timing],
             "llm_calls": state["llm_calls"] + 1,
+            "out_of_time": out_of_time and state["iterations"] < MAX_TOOL_STEPS,
         }
 
     def route(state: _State) -> Literal["act", "end"]:
@@ -184,7 +235,11 @@ def build_graph(
             or getattr(last, "invalid_tool_calls", None)
         )
         # 도구를 못 쓰게 한 마지막 호출이 그래도 도구를 부르면 실행하지 않고 끝낸다
-        if wants_tools and state["iterations"] < MAX_TOOL_STEPS:
+        if (
+            wants_tools
+            and state["iterations"] < MAX_TOOL_STEPS
+            and not state["out_of_time"]
+        ):
             return "act"
         return "end"
 
@@ -225,7 +280,13 @@ def build_graph(
                 )
                 continue
             call = await execute(
-                ctx, gateway, name, requested["args"], comparer=comparer
+                ctx,
+                gateway,
+                name,
+                requested["args"],
+                comparer=comparer,
+                finder=finder,
+                time_left=time_left,
             )
             slots.append((len(replies), requested["id"], requested["name"]))
             recorded.append(call)
@@ -240,6 +301,67 @@ def build_graph(
                 c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
                 for c in state["tool_calls"]
             )
+        # 골라서 담으라고 맡긴 말이면 고른 책을 코드가 담는다(#631). 모델에게 맡기면 고르기만 하고 끝냈다
+        # (평가 checkout-05). 담은 결과는 고르기 결과에 붙여 모델에게 돌려준다
+        # 뒤에서부터 본다. 담은 기록을 고르기 기록 바로 뒤에 끼워 넣어도 앞의 자리가 밀리지 않는다
+        for position in reversed(range(len(recorded))):
+            call = recorded[position]
+            if not (
+                call.name == ToolName.SELECTION_PICK
+                and call.result.get("ok") is True
+                and delegated(ctx)
+            ):
+                continue
+            adds = []
+            # 고른 책은 한 묶음이다. 하나라도 장바구니 규칙에 걸리면 모두 되돌린다. 모델이 cart.add 를 한 번에 여럿
+            # 시켰을 때와 같다(#488, #489). 코드가 담는 것은 위의 되돌리기 검사 뒤에 돌아서 여기서 따로 한다
+            added_from = (
+                gateway.checkpoint() if isinstance(gateway, Restorable) else None
+            )
+            # 한 번에 담는 수는 모델이 도구를 한 번에 부를 때와 같은 상한이다. 넘는 책은 담지 않고 이유를 알린다
+            skipped: list[str] = []
+            for book in call.result["chosen"]:
+                ref = picked_ref(ctx, book["isbn"])
+                if ref is None:
+                    continue
+                if len(adds) >= MAX_CALLS_PER_STEP:
+                    skipped.append(book["isbn"])
+                    continue
+                adds.append(
+                    await execute(ctx, gateway, ToolName.CART_ADD, {"book": ref})
+                )
+            if added_from is not None and _roll_back(adds):
+                gateway.restore(added_from)
+                adds = await _rolled_back(ctx, gateway, adds)
+                # 되돌린 쓰기는 바꾼 것이 아니다. 남은 쓰기(앞 묶음과 이 묶음의 다른 호출)로 다시 정한다
+                ctx.changed_cart = any(
+                    c.name in guard.WRITE_TOOLS and c.result.get("ok") is True
+                    for c in [*state["tool_calls"], *recorded, *adds]
+                )
+            recorded[position + 1 : position + 1] = adds
+            at, call_id, call_name = slots[position]
+            updated = call.model_copy(
+                update={
+                    "result": {
+                        **call.result,
+                        "added": [
+                            {"isbn": a.arguments.get("isbn"), **_added(a.result)}
+                            for a in adds
+                        ]
+                        + [
+                            {
+                                "isbn": isbn,
+                                "ok": False,
+                                "error": ToolErrorCode.TOO_MANY_CALLS.value,
+                            }
+                            for isbn in skipped
+                        ],
+                    }
+                }
+            )
+            recorded[position] = updated
+            replies[at] = _reply(ctx, updated, call_id, call_name)
+
         # JSON 이 깨진 호출. 실행하지 않고 이유만 돌려준다
         for index, broken in enumerate(getattr(ai, "invalid_tool_calls", None) or []):
             replies.append(
@@ -300,20 +422,35 @@ async def run_agent(
     model: Any,
     gateway: CommerceGateway,
     comparer: Comparer | None = None,
+    finder: BookFinder | None = None,
+    checkout: bool = False,
+    turn_seconds: float | None = None,
 ) -> AgentRun:
     """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
 
     comparer 가 없으면 book.compare 는 쓸 수 없다. 소개글을 읽는 호출은 도구를 고르는 model 과 따로
     한다(소개글 속 지시문이 도구 선택에 섞이지 않게).
+
+    checkout 이 켜져 있으면(#631) 골라서 담으라고 맡긴 말에 확인 없이 담고, "주문해 줘"로 담았으면 주문 화면에
+    채울 쿠폰과 포인트를 고른다. finder 가 있으면 카드 밖의 책을 찾는 book.search 를 준다.
+
+    turn_seconds 는 부르는 쪽이 이 턴에 거는 시간 제한이다. 남은 시간이 ANSWER_MARGIN_SECONDS(짧은 제한이면 그
+    1/3)보다 적으면 도구를 그만 쓰고 답하게 한다. None 이면 반복 상한만 본다.
     """
+    deadline = _deadline(turn_seconds)
     ctx = TurnContext.from_request(req)
+    ctx.checkout_enabled = checkout
+    if not checkout:
+        finder = None  # 기능이 꺼져 있으면 찾을 곳이 있어도 책 찾기를 주지 않는다
     await prefetch_cart(ctx, gateway)
     start = list(ctx.cart_snapshot or [])
-    graph = build_graph(model, gateway, ctx, comparer)
+    graph = build_graph(model, gateway, ctx, comparer, finder, deadline)
     out: _State = await graph.ainvoke(
         {
             "messages": [
-                SystemMessage(prompts.SYSTEM_PROMPT),
+                SystemMessage(
+                    prompts.system_prompt(search=finder is not None, order=checkout)
+                ),
                 SystemMessage(prompts.state_message(ctx)),
                 HumanMessage(req.message),
             ],
@@ -321,15 +458,20 @@ async def run_agent(
             "timings": [],
             "iterations": 0,
             "llm_calls": 0,
+            "out_of_time": False,
         }
     )
     final_text = _text(out["messages"][-1])
     actions: list[CartAction] = []
+    plan: checkout_plan.Plan | None = None
     if any(
         call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
         for call in out["tool_calls"]
     ):
-        actions = diff_cart(start, await gateway.get_cart(ctx.user_id))
+        end = await gateway.get_cart(ctx.user_id)
+        actions = diff_cart(start, end)
+        if checkout and ctx.logged_in and evidence.wants_order(ctx):
+            plan = _plan(ctx, actions, end)
     return AgentRun(
         final_text=final_text,
         not_shopping=not out["tool_calls"]
@@ -341,4 +483,29 @@ async def run_agent(
         timings=out["timings"],
         ctx=ctx,
         actions=actions,
+        checkout=plan,
+        out_of_time=out["out_of_time"],
     )
+
+
+def _plan(
+    ctx: TurnContext, actions: list[CartAction], end: list[CartLine]
+) -> checkout_plan.Plan | None:
+    """이번 턴에 담은 책(set)으로 주문 화면에 채울 쿠폰과 포인트를 고른다. 담은 책이 없으면 None.
+
+    가격은 끝 장바구니의 값이다(찾은 책은 BE 상품 상세, 카드 책은 요청에 실린 BE 값). 쿠폰 대상은 찾은 책만 안다.
+    """
+    prices = {line.isbn: line.price for line in end}
+    lines = []
+    for action in actions:
+        price = prices.get(action.isbn)
+        if action.op != "set" or action.quantity is None or price is None:
+            continue
+        found = ctx.found.get(action.isbn)
+        coupon_ids = found.coupon_ids if found is not None else frozenset()
+        lines.append(
+            checkout_plan.OrderLine(action.isbn, price, action.quantity, coupon_ids)
+        )
+    if not lines:
+        return None
+    return checkout_plan.plan(lines, ctx.owned_coupons, ctx.point_balance)

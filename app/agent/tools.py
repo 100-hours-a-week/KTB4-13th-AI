@@ -15,6 +15,7 @@ LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 
 채운다. 기록하는 arguments 도 코드가 채운 값이다.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any, Literal
@@ -26,7 +27,24 @@ from app.agent.compare import CompareError, Comparer
 from app.agent.errors import RefError, ToolErrorCode
 from app.agent.reference import BookRef, TurnContext, resolve
 from app.agent.schemas import MAX_CONTEXT_CARDS, ToolCall, ToolName
-from app.gateway.commerce import CartLine, CommerceError, CommerceGateway
+from app.gateway.book_finder import BookFinder, FinderUnavailable
+from app.gateway.commerce import (
+    BookOffer,
+    CartLine,
+    CommerceError,
+    CommerceGateway,
+    OfferMemory,
+)
+
+# book.search 가 한 번에 보여 주는 책 수. 많으면 LLM 이 읽을 것이 늘고 BE 상품 상세 호출도 는다
+SEARCH_SIZE = 5
+# 도구를 그만 쓸 마감(graph 의 시간 예산)이 코앞이거나 지난 뒤에 시작한 검색에 주는 시간. 마감은 마지막 답 쓰기
+# 호출을 위해 남겨 둔 시간(30초 제한에서 10초) 앞에 있다. 검색 하나의 한도는 BE 검색 5초 + 상세 5초라, 마감 직전에
+# 시작한 검색이 끝까지 기다리면 그 시간을 먹고 턴이 504 로 끝난다(#637 리뷰). 마감까지 남은 시간에 이만큼만 더 준다.
+SEARCH_GRACE_SECONDS = 2.0
+# 찾은 책으로 조합을 고를 때의 취향 점수 대신. 검색 순서가 앞인 책을 높게 친다
+_SEARCH_SCORE_TOP = 100
+_SEARCH_SCORE_STEP = 5
 
 
 class _Args(BaseModel):
@@ -75,6 +93,17 @@ class PickArgs(_Args):
     )
 
 
+class SearchArgs(_Args):
+    query: str = Field(
+        min_length=1,
+        max_length=50,
+        description=(
+            "찾을 책을 나타내는 짧은 검색어. 사용자가 말한 주제·종류 낱말만 쓴다"
+            "(예: '파이썬 입문서', '개발 입문서'). 권수, 담기, 주문 같은 말은 넣지 않는다"
+        ),
+    )
+
+
 class CompareArgs(_Args):
     books: list[BookRef] = Field(
         min_length=2, max_length=3, description="소개글로 견줄 책들(2~3권)"
@@ -104,6 +133,7 @@ ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.CART_UPDATE: UpdateArgs,
     ToolName.CART_REMOVE: RemoveArgs,
     ToolName.BOOK_OFFER: OfferArgs,
+    ToolName.BOOK_SEARCH: SearchArgs,
     ToolName.SELECTION_PICK: PickArgs,
     ToolName.BOOK_COMPARE: CompareArgs,
     ToolName.UI_GUIDE: UiGuideArgs,
@@ -139,13 +169,35 @@ async def _write(
     return arguments, {"ok": True}
 
 
+def delegated(ctx: TurnContext) -> bool:
+    """골라서 담거나 주문하라고 맡긴 말인가(#631). graph 가 고른 책을 코드로 담을지 정할 때 쓴다."""
+    return _delegated(ctx)
+
+
+def picked_ref(ctx: TurnContext, isbn: str) -> dict[str, Any] | None:
+    """코드가 고른 책을 cart.add 인자의 book 으로. 찾은 책이면 search n, 카드면 card rank 다."""
+    for n, book in enumerate(ctx.search_results, start=1):
+        if book.isbn == isbn:
+            return {"source": "search", "n": n}
+    for card in ctx.cards:
+        if card.isbn == isbn:
+            return {"source": "card", "n": card.rank}
+    return None
+
+
+def _delegated(ctx: TurnContext) -> bool:
+    """골라서 담거나 주문하라고 맡긴 말인가(#631). 그러면 코드가 고른 책을 확인 버튼 없이 담는다."""
+    return ctx.checkout_enabled and evidence.delegates_pick(ctx)
+
+
 def _separate(ctx: TurnContext) -> dict[str, Any] | None:
     """이번 턴에 조합을 골랐으면 장바구니를 바꾸지 않는 결과, 아니면 None.
 
     고른 조합(selection)은 확인 버튼으로 담고, 장바구니 변경(actions)은 이미 했다고 말한 것이라 BE 가 한 응답에
     같이 받지 않는다(#489). 고른 책 자체를 담으려 하면 그 전에 CONFIRMATION_REQUIRED 로 막힌다.
+    골라서 담으라고 맡긴 말이면 확인 버튼 없이 담으므로 막지 않는다(#631). 응답에는 조합 대신 변경이 실린다(reply).
     """
-    if ctx.picked:
+    if ctx.picked and not _delegated(ctx):
         return _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
     return None
 
@@ -251,6 +303,9 @@ def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
     elif ref.source == "focused":
         where = "지금 보고 계신 책"
         title = ctx.titles.get(isbn)
+    elif ref.source == "search":
+        where = f"찾은 책 {ref.n}번"
+        title = ctx.titles.get(isbn)
     else:
         where = f"카드 {ref.n}번"
         title = ctx.titles.get(isbn)
@@ -260,16 +315,29 @@ def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
     quantity = 1 if args.quantity is None else args.quantity
+    # 찾은 책이나 코드가 고른 책에서 "두 권 골라서"의 두 권은 서로 다른 책의 수다. 모델이 그 수를 한 책의 수량으로
+    # 채워도 "두 권씩"처럼 말하지 않았으면 한 권만 담는다(#631). 다만 찾은 책의 제목을 말하고 권수를 말했으면
+    # ("AI 모델 서빙 실전 3권") 그 권수는 그 책의 수량이다
+    if (
+        (args.book.source == "search" or isbn in ctx.picked)
+        and not evidence.states_each(ctx)
+        and not evidence.states_copies(ctx, isbn)
+    ):
+        quantity = 1
     arguments = {"isbn": isbn, "quantity": quantity}
     # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
-    # 프롬프트로 부탁하는 것으로는 못 막아서 장바구니를 바꾸기 전에 코드가 막는다
-    if isbn in ctx.picked:
+    # 프롬프트로 부탁하는 것으로는 못 막아서 장바구니를 바꾸기 전에 코드가 막는다. 골라서 담으라고 맡긴 말은
+    # 그 말이 확인이다(#631)
+    if isbn in ctx.picked and not _delegated(ctx):
         return arguments, _fail(ToolErrorCode.CONFIRMATION_REQUIRED.value)
     if (separate := _separate(ctx)) is not None:
         return arguments, separate
     verb = "담을까요?"
-    if (blocked := await _unstated(ctx, gateway, args.book, isbn, verb)) is not None:
-        return arguments, blocked
+    # 골라서 담으라고 맡겨 코드가 고른 책은 고른 것 자체가 그 책의 근거다(#631)
+    if not (isbn in ctx.picked and _delegated(ctx)):
+        blocked = await _unstated(ctx, gateway, args.book, isbn, verb)
+        if blocked is not None:
+            return arguments, blocked
     if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return arguments, blocked
     # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
@@ -348,6 +416,8 @@ async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) ->
 async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _Done:
     """직전 카드 안에서 예산과 권수에 맞는 조합을 코드가 고른다. 장바구니는 건드리지 않는다.
 
+    이번 턴에 book.search 로 책을 찾았으면 카드가 아니라 찾은 책 안에서 고른다(#631). 사용자가 새 책을 원한 것이다.
+
     가격과 재고는 LLM 이 읽어 오게 하지 않고 여기서 BE 에서 직접 읽는다(LLM 이 틀린 값을 넘길 수 없다).
     이미 장바구니에 있는 책은 고르지 않는다. 확인 버튼으로 담을 때 BE 의 담기가 "요청 수량으로 바꾸기"라서
     2권 담긴 책이 1권이 될 수 있기 때문이다.
@@ -358,10 +428,22 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
     arguments = {"budget_total": args.budget_total, "count": args.count}
     if ctx.changed_cart:
         return arguments, _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
-    ordered = sorted(ctx.cards, key=lambda card: card.rank)
     in_cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
-    offers = {o.isbn: o for o in await gateway.get_offers([c.isbn for c in ordered])}
     candidates: dict[str, selection.Candidate] = {}
+    if ctx.search_results:
+        for n, book in enumerate(ctx.search_results, start=1):
+            if (
+                book.in_stock
+                and book.isbn not in in_cart
+                and book.isbn not in candidates
+            ):
+                score = max(0, _SEARCH_SCORE_TOP - _SEARCH_SCORE_STEP * (n - 1))
+                candidates[book.isbn] = selection.Candidate(
+                    book.isbn, book.title, book.price, score, n
+                )
+        return _picked_result(ctx, arguments, candidates, args)
+    ordered = sorted(ctx.cards, key=lambda card: card.rank)
+    offers = {o.isbn: o for o in await gateway.get_offers([c.isbn for c in ordered])}
     for card in ordered:
         offer = offers.get(card.isbn)
         # 품절이거나 BE 가 모르는 책, 이미 담긴 책은 고르지 않는다. 같은 책이 카드에 두 번 있어도 한 번만 센다
@@ -374,7 +456,16 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
             candidates[card.isbn] = selection.Candidate(
                 card.isbn, offer.title, offer.price, card.match_score, card.rank
             )
+    return _picked_result(ctx, arguments, candidates, args)
 
+
+def _picked_result(
+    ctx: TurnContext,
+    arguments: dict[str, Any],
+    candidates: dict[str, selection.Candidate],
+    args: PickArgs,
+) -> _Done:
+    """후보 안에서 조합을 골라 결과로 만든다."""
     considered = selection.alternatives(len(candidates), args.count)
     chosen = selection.choose(list(candidates.values()), args.budget_total, args.count)
     if chosen is None:
@@ -415,6 +506,64 @@ async def _compare(
     return arguments, {"ok": True, "basis": "description", "summary": summary}
 
 
+async def _search(
+    finder: BookFinder,
+    time_left: Callable[[], float] | None,
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    args: SearchArgs,
+) -> _Done:
+    """카드 밖의 책을 BE 공개 검색으로 찾는다(#631). 장바구니는 건드리지 않는다.
+
+    찾은 책은 "search n"으로 가리킨다. 번호는 이번 턴의 검색 전체에 이어 붙는다. 마지막 검색 기준으로 매겼더니
+    "알고리즘 책이랑 리눅스 책 하나씩"에서 두 검색의 책이 둘 다 1번이 되어 같은 책을 두 번 담았다(평가 checkout-h04).
+    앞에서 찾은 책이 다시 나오면 처음 번호를 그대로 쓴다. 가격·재고는 BE 상품 상세의 값이라, 장바구니 복사본에
+    받아 두면 cart.add 가 카드 책처럼 담는다. 담은 결과는 actions 로 BE 에 가고 BE 가 다시 검사한다(BE#533).
+
+    time_left 는 도구를 그만 쓸 마감까지 남은 초다. 마감이 지났으면 검색하지 않고, 아니면 남은 시간(+여유)
+    안에 못 끝낸 검색을 끊는다. 둘 다 BE 를 읽지 못했을 때와 같이 SEARCH_FAILED 다. 한 반복에서 검색이 차례로 돌며
+    마감을 넘겨 턴이 504 로 끝나는 것을 막는다.
+    """
+    arguments = {"query": args.query}
+    budget: float | None = None
+    if time_left is not None:
+        left = time_left()
+        if left <= 0:
+            return arguments, _fail(ToolErrorCode.SEARCH_FAILED.value)
+        budget = left + SEARCH_GRACE_SECONDS
+    try:
+        async with asyncio.timeout(budget):
+            books = await finder.find(args.query, SEARCH_SIZE)
+    except (FinderUnavailable, TimeoutError):
+        return arguments, _fail(ToolErrorCode.SEARCH_FAILED.value)
+    known = {book.isbn for book in ctx.search_results}
+    ctx.search_results = [
+        *ctx.search_results,
+        *(book for book in books if book.isbn not in known),
+    ]
+    round_no = max(ctx.search_round.values(), default=0) + 1
+    for book in books:
+        ctx.search_round.setdefault(book.isbn, round_no)
+    ctx.found.update({book.isbn: book for book in books})
+    ctx.titles.update({book.isbn: book.title for book in books})
+    if isinstance(gateway, OfferMemory):
+        gateway.remember_offers(
+            [BookOffer(b.isbn, b.title, b.price, b.in_stock) for b in books]
+        )
+    return arguments, {
+        "books": [
+            {
+                "isbn": book.isbn,
+                "title": book.title,
+                "author": book.author,
+                "price": book.price,
+                "in_stock": book.in_stock,
+            }
+            for book in books
+        ]
+    }
+
+
 async def _ui_guide(
     ctx: TurnContext, gateway: CommerceGateway, args: UiGuideArgs
 ) -> _Done:
@@ -448,10 +597,14 @@ async def execute(
     raw_args: Any,
     *,
     comparer: Comparer | None = None,
+    finder: BookFinder | None = None,
+    time_left: Callable[[], float] | None = None,
 ) -> ToolCall:
     """도구 하나를 실행하고 기록을 돌려준다. 막히거나 BE 가 거절해도 예외를 던지지 않는다.
 
     comparer 는 book.compare 만 쓴다. 없으면 그 도구는 TOOL_NOT_IMPLEMENTED 로 막힌다.
+    finder 는 book.search 만 쓴다(#631). 없으면(기능이 꺼져 있으면) 같은 이유로 막힌다.
+    time_left 는 book.search 만 본다. 도구를 그만 쓸 마감까지 남은 초를 돌려주는 함수이고, 없으면 시간을 보지 않는다.
 
     grounded 는 이 결과가 실제로 실행해서 얻은 값이라는 뜻으로 true 로 둔다. 답변이 이 결과를
     뒷받침하는지는 마무리 단계(7단계)가 판단해서 바꾼다.
@@ -465,6 +618,8 @@ async def execute(
     handler = _HANDLERS.get(name)
     if name == ToolName.BOOK_COMPARE and comparer is not None:
         handler = partial(_compare, comparer)
+    if name == ToolName.BOOK_SEARCH and finder is not None:
+        handler = partial(_search, finder, time_left)
     if handler is None:
         return _failed(name, given, ToolErrorCode.TOOL_NOT_IMPLEMENTED)
 

@@ -24,6 +24,9 @@ SHOP_KEYS = (
     "idempotency_key",
     "cart",
     "offers",
+    # 보유 쿠폰과 포인트 잔액(#631, BE#533). 추천 턴에도 같이 오지만 ⑦ 에서만 쓴다
+    "owned_coupons",
+    "point_balance",
 )
 
 

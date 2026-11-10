@@ -33,6 +33,7 @@ from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core.config import get_settings
+from app.gateway.book_finder import FakeBookFinder, FoundBook
 from app.gateway.commerce import CommerceError
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.commerce_provider import get_commerce
@@ -70,6 +71,28 @@ async def build_commerce(data: dict, case: dict) -> tuple[FakeCommerce, int]:
         if not book["active"]:
             fake.discontinue(book["isbn"])
     return fake, uid
+
+
+def finder_for(data: dict, case: dict) -> FakeBookFinder | None:
+    """카드 밖 책 찾기를 켠 사례(#631, checkout: true)가 찾을 가공의 서가. 판매 중인 책만 찾힌다(BE 검색과 같다).
+
+    상품 번호는 서가 순서이고, 책마다 쓸 수 있는 쿠폰 번호는 서가의 coupon_ids 다.
+    """
+    if not case.get("checkout"):
+        return None
+    return FakeBookFinder(
+        FoundBook(
+            b["isbn"],
+            number,
+            b["title"],
+            None,
+            b["price"],
+            b["stock"] > 0,
+            frozenset(b.get("coupon_ids", [])),
+        )
+        for number, b in enumerate(data["catalog"], start=1)
+        if b["active"]
+    )
 
 
 def _error_status(exc: BaseException) -> int:
@@ -173,6 +196,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
         "llm_calls": 0,
         "iterations": 0,
         "hit_cap": False,
+        "out_of_time": False,
         "tokens_in": 0,
         "tokens_out": 0,
         # BE 가 actions 를 반영하다 거절한 오류 이름(#489). 이때 사용자는 reply 대신 BE 안내 문구를 본다
@@ -192,7 +216,13 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
             async with asyncio.timeout(timeout):
                 # 서버와 같이 요청에 실린 값으로 만든 복사본 위에서 돈다. 가짜 BE 는 actions 를 반영할 때만 쓴다
                 run = await run_agent(
-                    req, model=model, gateway=get_commerce(req), comparer=comparer
+                    req,
+                    model=model,
+                    gateway=get_commerce(req),
+                    comparer=comparer,
+                    finder=finder_for(data, case),
+                    checkout=bool(case.get("checkout")),
+                    turn_seconds=timeout,
                 )
             finished = finish(run)
             data = finished.data.model_dump(mode="json")
@@ -205,6 +235,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                 llm_calls=run.llm_calls,
                 iterations=run.iterations,
                 hit_cap=run.hit_cap,
+                out_of_time=run.out_of_time,
                 tokens_in=sum(t.input_tokens for t in run.timings),
                 tokens_out=sum(t.output_tokens for t in run.timings),
             )
@@ -328,6 +359,12 @@ def summarize(data: dict, results: list[dict], *, model: str, repeat: int) -> di
             if okay
             else 0,
             "hit_cap": sum(1 for r in okay if r["hit_cap"]),
+            # 시간 예산이 다 되어 도구를 그만 쓰게 한 턴과, 도구 반복 수의 분포(상한을 정하는 근거)
+            "out_of_time": sum(1 for r in okay if r.get("out_of_time")),
+            "iterations": {
+                str(k): v
+                for k, v in sorted(Counter(r["iterations"] for r in okay).items())
+            },
             "status_counts": dict(Counter(str(r["status"]) for r in records)),
             "removed_reasons": dict(Counter(x for r in records for x in r["removed"])),
             "executed_without_confirm": unconfirmed,
@@ -379,6 +416,8 @@ def format_report(summary: dict) -> str:
         f"| 지연(ms) 중앙 / p95 / 최대 | {m['ms_median']:,.0f} / {m['ms_p95']:,.0f} / {m['ms_max']:,.0f} |",
         f"| 토큰(평균) 입력 / 출력 | {m['tokens_in_avg']:,.0f} / {m['tokens_out_avg']:,.0f} |",
         f"| 반복 상한에 걸림 | {m['hit_cap']}회 |",
+        f"| 시간이 다 되어 도구를 멈춤 | {m.get('out_of_time', 0)}회 |",
+        f"| 도구 반복 수 분포 | {m.get('iterations') or '-'} |",
         f"| 확인 없이 실행된 조합 | {m['executed_without_confirm']}회 |",
         f"| 코드가 막은 쓰기 시도(모델이 짐작) | {m.get('blocked_writes', 0)}회 |",
         f"| BE 가 actions 반영을 거절 | {m.get('be_rejected') or '없음'} |",
@@ -420,7 +459,7 @@ def _select(data: dict, args: argparse.Namespace) -> list[dict]:
 def _regrade(path: Path, args: argparse.Namespace) -> None:
     """저장한 결과의 실행 기록은 그대로 두고 채점만 다시 한다. 채점 기준을 바꿨을 때 이전 결과를 견주려고 쓴다."""
     saved = json.loads(path.read_text(encoding="utf-8"))
-    data = grade.load_cases()
+    data = grade.load_cases(_cases_path(args))
     cases = {c["id"]: c for c in data["cases"]}
     results = saved["results"]
     for r in results:
@@ -442,12 +481,25 @@ def _regrade(path: Path, args: argparse.Namespace) -> None:
     print(format_report(summary))
 
 
+def _cases_path(args: argparse.Namespace) -> Path:
+    if not args.cases:
+        return grade.CASES_PATH
+    if args.cases == "checkout":
+        return grade.CHECKOUT_CASES_PATH
+    return Path(args.cases)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "--model",
         default="",
         help="모델 ID. 없으면 AGENT_LLM_MODEL_ID, LLM_MODEL_ID 순",
+    )
+    parser.add_argument(
+        "--cases",
+        default="",
+        help="사례 파일. 없으면 cases.json. checkout 이면 checkout_cases.json(#631)",
     )
     parser.add_argument("--repeat", type=int, default=1, help="사례마다 돌릴 횟수")
     parser.add_argument(
@@ -480,7 +532,7 @@ def main(argv: list[str] | None = None) -> None:
     if settings.llm_mock:
         raise SystemExit("LLM_MOCK 이 켜져 있어 실제 모델을 부를 수 없다")
     model_id = args.model or settings.agent_llm_model_id or settings.llm_model_id
-    data = grade.load_cases()
+    data = grade.load_cases(_cases_path(args))
     cases = _select(data, args)
     if not cases:
         raise SystemExit("고른 사례가 없다")

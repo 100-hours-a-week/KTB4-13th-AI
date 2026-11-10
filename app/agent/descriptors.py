@@ -8,6 +8,7 @@
 from copy import deepcopy
 from typing import Any
 
+from app.agent.reference import SEARCH_SOURCE, SEARCH_SOURCE_NOTE
 from app.agent.schemas import ToolName
 from app.agent.tools import ARG_MODELS
 
@@ -42,6 +43,11 @@ _DESCRIPTIONS: dict[ToolName, str] = {
         "책의 제목, 가격, 재고를 조회한다. 사용자가 제목으로 말했을 때 어느 카드인지 알아내는 "
         "데에도 쓴다."
     ),
+    ToolName.BOOK_SEARCH: (
+        "카드나 장바구니에 없는 책을 찾는다. 사용자가 원하는 책을 말로 그렸을 때('파이썬 입문서 하나 담아 줘', "
+        "'개발 입문서 두 권 골라서 주문해 줘') 쓴다. 사용자가 '1번', '그거'처럼 보인 책을 가리켰으면 쓰지 않는다. "
+        '찾은 책은 {"source": "search", "n": 번호}로 가리켜 cart_add 로 담는다. 가격과 재고는 결과에 있다.'
+    ),
 }
 
 
@@ -71,20 +77,68 @@ def _flatten(node: Any, defs: dict[str, Any]) -> Any:
     return node
 
 
-def tool_definitions(allowed: list[ToolName] | None = None) -> list[dict[str, Any]]:
-    """LLM 에게 줄 도구 목록(OpenAI 도구 형식). allowed 가 있으면 그 안의 것만 준다."""
+# 책 찾기를 줄 때만 설명에 들어가는 말. 주지 않으면 tool_definitions 가 뺀다(_without_search 는 인자의 설명만 다룬다)
+_PICK_SEARCH_NOTE = "(이번에 book_search 로 찾았으면 찾은 책)"
+
+# 카드 밖 책 찾기·주문 화면이 켜져 있을 때(#631) 바뀌는 설명. 꺼져 있으면 위의 설명 그대로다(평가 기준선)
+_CHECKOUT_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.SELECTION_PICK: (
+        "'3만원 안에서 2권 골라줘'처럼 예산(금액)과 권수를 둘 다 말했을 때만 쓴다. 사용자가 1번, 2번, 제목처럼 "
+        f"책을 직접 말했거나 금액을 말하지 않았으면 쓰지 않는다. 직전에 보여 준 추천 카드{_PICK_SEARCH_NOTE} "
+        "안에서 예산 이하이면서 취향 점수 합이 가장 큰 조합을 코드가 고른다. 책은 직접 지정하지 "
+        "않는다. 가격과 재고는 이 도구가 확인한다. 고르기만 맡겼으면('골라줘') 장바구니를 바꾸지 않고, 고른 책은 "
+        "사용자가 확인하기 전에 cart_add 로 담지 않는다(담기 버튼은 응답에 자동으로 붙는다). 사용자가 '골라서 담아 "
+        "줘', '골라서 주문해 줘'처럼 고르기와 담기를 함께 맡겼으면 도구가 고른 책을 바로 담고 결과의 added 에 알려 "
+        "준다(다시 cart_add 하지 않는다). 조합이 없으면 NO_COMBINATION 이다."
+    ),
+}
+
+
+def _without_search(node: Any) -> Any:
+    """책을 가리키는 인자에서 찾은 책(search)을 뺀다. 책 찾기를 주지 않을 때 없는 도구를 말하지 않게 한다.
+
+    빼지 않았더니 기능을 끈 평가에서 모델이 카드 소개글을 견주지 않고 "없다"며 멈췄다(describe-01, #631).
+    """
+    if isinstance(node, dict):
+        out = {k: _without_search(v) for k, v in node.items()}
+        if isinstance(out.get("enum"), list) and SEARCH_SOURCE in out["enum"]:
+            out["enum"] = [v for v in out["enum"] if v != SEARCH_SOURCE]
+        if isinstance(out.get("description"), str):
+            out["description"] = out["description"].replace(SEARCH_SOURCE_NOTE, "")
+        return out
+    if isinstance(node, list):
+        return [_without_search(v) for v in node]
+    return node
+
+
+def tool_definitions(
+    allowed: list[ToolName] | None = None, *, checkout: bool = False
+) -> list[dict[str, Any]]:
+    """LLM 에게 줄 도구 목록(OpenAI 도구 형식). allowed 가 있으면 그 안의 것만 준다.
+
+    checkout 이면(#631) 카드 밖 책 찾기·골라서 담기에 맞춘 설명을 준다. 책 찾기를 주지 않으면 책을 가리키는
+    인자에서도 찾은 책을 뺀다.
+    """
+    descriptions = {**_DESCRIPTIONS, **(_CHECKOUT_DESCRIPTIONS if checkout else {})}
+    search = allowed is None or ToolName.BOOK_SEARCH in allowed
     definitions = []
     for name, args_model in ARG_MODELS.items():
         if allowed is not None and name not in allowed:
             continue
         schema = args_model.model_json_schema()
+        description = descriptions[name]
+        if not search:
+            # 책 찾기를 주지 않는데 설명이 book_search 를 말하면 모델이 없는 도구를 찾으려다 멈춘다(#637 리뷰)
+            description = description.replace(_PICK_SEARCH_NOTE, "")
         definitions.append(
             {
                 "type": "function",
                 "function": {
                     "name": llm_name(name),
-                    "description": _DESCRIPTIONS[name],
-                    "parameters": _flatten(schema, schema.get("$defs", {})),
+                    "description": description,
+                    "parameters": _flatten(schema, schema.get("$defs", {}))
+                    if search
+                    else _without_search(_flatten(schema, schema.get("$defs", {}))),
                 },
             }
         )

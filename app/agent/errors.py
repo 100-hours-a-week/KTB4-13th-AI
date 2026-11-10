@@ -26,6 +26,9 @@ class ToolErrorCode(StrEnum):
     BOOK_NOT_IN_CART = "BOOK_NOT_IN_CART"
     CART_NOT_LOADED = "CART_NOT_LOADED"  # 장바구니를 조회하기 전에 장바구니 번호를 썼다
     NO_FOCUSED_BOOK = "NO_FOCUSED_BOOK"
+    BOOK_NOT_IN_SEARCH = (
+        "BOOK_NOT_IN_SEARCH"  # 이번 턴에 찾은 책 목록에 없는 번호(#631)
+    )
     AMBIGUOUS_BOOK = "AMBIGUOUS_BOOK"
     # 사용자의 말에 그 책을 가리키는 번호·제목·"전부" 같은 근거가 없는데 LLM 이 골랐다(짐작해서 실행하지 않는다)
     REFERENCE_NOT_STATED = "REFERENCE_NOT_STATED"
@@ -49,6 +52,7 @@ class ToolErrorCode(StrEnum):
     NO_DESCRIPTION = "NO_DESCRIPTION"
     # 소개글을 읽어 차이를 요약하는 호출이 실패했다
     COMPARE_FAILED = "COMPARE_FAILED"
+    SEARCH_FAILED = "SEARCH_FAILED"  # BE 검색을 읽지 못했다(#631)
 
 
 class RefError(Exception):

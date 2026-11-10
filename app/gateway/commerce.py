@@ -96,6 +96,19 @@ class CommerceGateway(Protocol):
 
 
 @runtime_checkable
+class OfferMemory(Protocol):
+    """이번 턴에 새로 알게 된 책의 가격·재고를 받아 두는 장바구니(#631). 요청으로 받은 복사본이 따른다.
+
+    카드 밖에서 찾은 책(book.search)을 담으려면 복사본이 그 책의 가격과 재고를 알아야 한다. 가짜 BE 는 서가 전체를
+    이미 알아서 따르지 않는다.
+    """
+
+    def remember_offers(self, offers: Sequence[BookOffer]) -> None:
+        """모르는 책만 받아 둔다. 이미 아는 책(요청에 실려 온 값)은 바꾸지 않는다."""
+        ...
+
+
+@runtime_checkable
 class Restorable(Protocol):
     """한 번에 시킨 쓰기를 되돌릴 수 있는 장바구니(#489). 요청으로 받은 복사본과 가짜 BE 가 따른다."""
 

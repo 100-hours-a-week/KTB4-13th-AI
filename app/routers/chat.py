@@ -2012,6 +2012,8 @@ async def _respond(
             asking.asked(req.recent_turns),
             gate_rules.asked_action(req.recent_turns),
             gate_rules.asked_fork(req.recent_turns),
+            # "사 줘"를 장바구니 말로 보는 것(v4)은 카드 밖 책을 찾는 ⑦ 이 켜진 서버에서만이다
+            buy_requests=get_settings().agent_checkout,
         )
         target = decision.lane
         if not decision.sure:

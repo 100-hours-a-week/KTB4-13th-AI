@@ -91,6 +91,12 @@ class SnapshotCommerce:
                 found.append(offer)
         return found
 
+    # --- OfferMemory ---
+
+    def remember_offers(self, offers: Sequence[BookOffer]) -> None:
+        for offer in offers:
+            self._offers.setdefault(offer.isbn, offer)
+
     # --- 이번 턴의 변경 ---
 
     def actions(self) -> list[CartAction]:

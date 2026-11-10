@@ -158,6 +158,8 @@ def _list_titles(ctx: TurnContext, ref: BookRef) -> dict[str, str]:
     """가리킨 목록에서 제목을 아는 책들(ISBN → 제목)."""
     if ref.source == "cart":
         return {line.isbn: line.title for line in ctx.cart_snapshot or []}
+    if ref.source == "search":
+        return {book.isbn: book.title for book in ctx.search_results}
     return {
         card.isbn: ctx.titles[card.isbn]
         for card in ctx.cards
@@ -168,6 +170,8 @@ def _list_titles(ctx: TurnContext, ref: BookRef) -> dict[str, str]:
 def _list_size(ctx: TurnContext, ref: BookRef) -> int:
     if ref.source == "cart":
         return len(ctx.cart_snapshot or [])
+    if ref.source == "search":
+        return len({book.isbn for book in ctx.search_results})
     return len({card.isbn for card in ctx.cards})
 
 
@@ -175,6 +179,8 @@ def _ends(ctx: TurnContext, ref: BookRef) -> tuple[int, int]:
     """목록의 첫 번호와 마지막 번호. 카드는 rank 가 이어지지 않을 수 있어 가장 작은·큰 rank 를 쓴다."""
     if ref.source == "cart":
         return 1, len(ctx.cart_snapshot or [])
+    if ref.source == "search":
+        return 1, len(ctx.search_results)
     ranks = [card.rank for card in ctx.cards]
     return min(ranks), max(ranks)
 
@@ -269,6 +275,8 @@ def has_evidence(ctx: TurnContext, ref: BookRef, isbn: str) -> bool:
     # 가리킬 수 있는 책이 하나뿐이면 짐작이 아니다
     if _list_size(ctx, ref) <= 1:
         return True
+    if ref.source == "search":
+        return _search_evidence(ctx, isbn, message)
 
     return (
         _explicit(ctx, ref, isbn, message)
@@ -468,6 +476,9 @@ def states_quantity(ctx: TurnContext) -> bool:
 # 어느 행동인지(담기인지 빼기인지)는 맞춰 보지 않는다. 시킨 적이 없는 행동을 막는 것만 한다.
 # "1번으로 할게요"처럼 행동이 애매한 말은 받지 않는다. 막히면 그 책을 짚어 "담을까요?"라고 한 번 묻는다.
 _BUY = re.compile(r"살게|살래|사\s*갈게|사고\s*싶|(?:구매|구입|주문)\s*(?:할|하고|해)")
+# "사 줘"(#631). 카드 밖 책을 찾아 담는 ⑦(AGENT_CHECKOUT)이 켜졌을 때만 장바구니를 바꾸라는 말로 본다.
+# 꺼져 있으면 _BUY 만 본다(main 과 같다)
+_BUY_REQUEST = re.compile(r"(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)")
 _GIVE = re.compile(
     r"(?:하나|한\s*(?:권|개)|거|걸로|것|번|책)\s*(?:주세요|줘|주실래요|줄래|주시겠어요)"
 )
@@ -487,9 +498,10 @@ def states_action(ctx: TurnContext) -> bool:
     if ctx.message is None:
         return True
     message = normalize(ctx.message)
-    if any(
-        pattern.search(message) for pattern in (_CART_ACTION, _BUY, _GIVE, _QUANTITY)
-    ):
+    patterns = [_CART_ACTION, _BUY, _GIVE, _QUANTITY]
+    if ctx.checkout_enabled:
+        patterns.append(_BUY_REQUEST)
+    if any(pattern.search(message) for pattern in patterns):
         return True
     return (
         "?" not in message
@@ -527,3 +539,93 @@ def require(ctx: TurnContext, ref: BookRef, isbn: str) -> None:
     """근거가 없으면 RefError. 쓰기 도구가 BE 를 부르기 전에 쓴다."""
     if not has_evidence(ctx, ref, isbn):
         raise RefError(ToolErrorCode.REFERENCE_NOT_STATED)
+
+
+# --- 고르기를 맡긴 말과 주문하겠다는 말 (#631) ---
+# 찾은 책(search n)은 사용자가 아직 본 적이 없는 책이다. 사용자가 보인 책을 "그거", "1번"으로 가리키지 않고 원하는
+# 책을 말로 그렸다면("파이썬 입문서 하나 담아 줘") 어느 책을 고를지 맡긴 것이라, 모델이 찾은 책 중에서 고른 것은
+# 짐작이 아니다. 보인 책을 가리키는 말이면 찾은 책은 그 책이 아니라서 근거가 없다(카드나 장바구니로 풀어야 한다).
+_CHOOSE = re.compile(
+    r"골라|고르|골라서|알아서|아무거나|아무\s*책|아무\s*거|추천해서|추천해\s*서"
+)
+# 담기를 시키는 꼴. _CART_ACTION 에서 빼기·바꾸기를 뺀 것이다
+_ADD = re.compile(
+    r"담(?:아(?!\s*내|낸)|어|을|으|자|기|겠)|담고(?!\s*있)|넣|추가(?!로|적)"
+)
+# 주문하겠다는 말. 주문 화면을 연다(주문서를 만들거나 결제하지는 않는다). "주문 내역", "주문한 책", "주문했어?"는
+# 이미 한 주문을 묻는 말이라 들지 않는다
+_ORDER = re.compile(
+    r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
+    r"|바로\s*(?:주문|구매|결제)|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)|살게|살래|사고\s*싶"
+)
+_COUPON = re.compile(r"쿠폰|포인트|할인")
+
+
+def _search_evidence(ctx: TurnContext, isbn: str, message: str) -> bool:
+    """찾은 책의 근거. 사용자가 찾은 책 중 어느 책의 제목을 말했으면("테스트 주도 개발 책") 그 책만 근거가 있다.
+    그 책이 품절이라고 제목이 다른 책을 대신 담지 않는다(평가 checkout-04). 제목을 말하지 않고 주제·종류로 그렸으면
+    ("파이썬 입문서 하나") 찾은 책 어느 것이든 고르기를 맡긴 것이다.
+
+    한 턴에 여러 번 찾았으면 검색마다 따로 본다. "개발 입문서 하나랑 파이썬 입문서 담아 줘"에서 두 번째 검색의 책
+    제목을 말했다고 첫 번째 검색(주제로 그린 책)의 책까지 막지 않는다."""
+    same = ctx.search_round.get(isbn)
+    named = {
+        book.isbn
+        for n, book in enumerate(ctx.search_results, start=1)
+        if ctx.search_round.get(book.isbn) == same
+        and _says_title(ctx, BookRef(source="search", n=n), book.isbn, message)
+    }
+    if named:
+        return isbn in named
+    return _describes(message)
+
+
+def _describes(message: str) -> bool:
+    """보인 책을 가리키지 않고 원하는 책을 말로 그렸는가. 지시어나 번호가 있으면 보인 책을 가리킨 것이다."""
+    in_cart, bare = numbers(message)
+    return not _DEICTIC.search(message) and not in_cart and not bare
+
+
+def delegates_pick(ctx: TurnContext) -> bool:
+    """골라 달라면서 담거나 주문하라고 했는가("3만원 안으로 두 권 골라서 담아 줘"). 그러면 코드가 고른 책을 확인
+    버튼 없이 담는다. "골라줘"만 하면 고르기만 맡긴 것이라 지금처럼 확인 버튼으로 담는다."""
+    if ctx.message is None:
+        return False
+    message = normalize(ctx.message)
+    return bool(_CHOOSE.search(message)) and bool(
+        _ADD.search(message) or _BUY.search(message) or _ORDER.search(message)
+    )
+
+
+def wants_order(ctx: TurnContext) -> bool:
+    """주문하겠다고 했는가. 그러면 담은 뒤 주문 화면으로 보낸다."""
+    return ctx.message is not None and bool(_ORDER.search(normalize(ctx.message)))
+
+
+_EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
+
+
+def states_each(ctx: TurnContext) -> bool:
+    """책마다의 수량을 말했는가("두 권씩", "각각 2권"). 없으면 "두 권"은 서로 다른 책의 수다."""
+    return ctx.message is not None and bool(_EACH.search(normalize(ctx.message)))
+
+
+def states_copies(ctx: TurnContext, isbn: str) -> bool:
+    """찾은 책 하나의 제목을 말하고 권수를 말했는가("AI 모델 서빙 실전 3권 주문해 줘"). 그러면 "3권"은 서로 다른
+    책의 수가 아니라 그 책의 수량이다(평가 checkout-h05). 고르기를 맡긴 말("두 권 골라서")의 권수는 그대로 서로
+    다른 책의 수다."""
+    if ctx.message is None or not states_quantity(ctx):
+        return False
+    message = normalize(ctx.message)
+    if _CHOOSE.search(message):
+        return False
+    return any(
+        book.isbn == isbn
+        and _says_title(ctx, BookRef(source="search", n=n), isbn, message)
+        for n, book in enumerate(ctx.search_results, start=1)
+    )
+
+
+def mentions_coupon(ctx: TurnContext) -> bool:
+    """쿠폰이나 포인트, 할인을 말했는가. 주문하지 않는 말이면 쿠폰은 주문 화면에서 쓴다고 알려 준다."""
+    return ctx.message is not None and bool(_COUPON.search(normalize(ctx.message)))

@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # ⑦ 한 턴(LLM 호출 최대 4번과 도구 실행)의 시간 제한. 명세 ⑦ 의 504 "생성 30초 초과". llm_timeout_seconds 는
     # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
     agent_turn_timeout_seconds: float = 30
+    # ⑦ 카드 밖 책 찾기·주문 화면·쿠폰과 포인트(#631). 켜면 BE 공개 검색으로 카드에 없는 책을 찾아 담고, "주문해
+    # 줘"면 주문 화면 버튼과 쓸 쿠폰·포인트(checkout)를 돌려준다. BE#533 이 배포되기 전에는 BE 가 목록 밖 ISBN 과
+    # 주문 화면 목적지를 거절해 턴이 실패하므로 기본은 끈다. 문지기의 "사 줘" 규칙(v4)과 근거 검사의 "사 줘"도 이
+    # 스위치를 따른다. 꺼져 있으면 챗봇 입구의 길은 main 과 같다.
+    agent_checkout: bool = False
+    # BE 공개 API 주소. 로그인 없이 읽는 검색과 상품 상세만 부른다(사용자 권한은 쓰지 않는다). 비어 있으면 책
+    # 찾기를 하지 않는다. COMMERCE_MOCK 이면 비워도 가공의 서가로 찾는다
+    be_public_api_base_url: str = ""
+    # BE 공개 API 호출 하나의 시간 제한(초). BE 검색은 안에서 AI 검색을 다시 부른다(새 검색어 약 2초)
+    be_public_api_timeout_seconds: float = 5
 
     # --- 사진으로 책 찾기(#615) ---
     # 사진 속 글자를 읽는 호출만 쓰는 모델. 비어 있으면 llm_model_id 를 쓴다. 사진을 받는 모델이어야 한다.
