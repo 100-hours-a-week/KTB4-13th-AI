@@ -1,7 +1,6 @@
 """구매·나의 도서관·리뷰 이력의 가중치 — 이력을 읽는 모든 곳이 같은 표를 쓰게 한 곳에 둔다.
 
-⑥ 취향 프로필이 이력 전체로 계산하고, ③④ 는 프로필이 반영한 뒤(computed_at 이후)에 생긴 이력을
-채점 때 "같은 가중치 표"로 더한다(명세 ⑥). 표가 갈라지면 프로필과 가산이 서로 다른 기준이 된다.
+⑥ 취향 프로필이 BE 가 요청에 실어 보낸 이력 전체로 계산한다(#327).
 
 | 이력 | 가중치 |
 | 구매 | 3 |
@@ -10,11 +9,11 @@
 | 리뷰 2.5점 이상 3.5점 이하 | 0 (쓰지 않음) |
 | 리뷰 2.0점 이하 | −2 (취향 벡터에는 넣지 않고 카테고리 점수만 깎음) |
 
-이력은 두 곳에서 온다. 복제한 사용자 표(read)와, BE 가 요청에 실어 보낸 목록(from_request, #327)이다.
-어디서 오든 같은 행 모양으로 만들어 summarize 하나에 넣는다.
+복제한 사용자 표에서 읽던 길(read)은 복제를 멈추며 없앴다(#307). 요청의 목록을 행 모양으로 바꿔
+summarize 에 넣는다.
 
 별점 경계는 우리 해석이다. 명세는 "4–5점 / 3점 / 1–2점" 으로 정수만 적었지만 실제 별점은 0.5 단위라
-3.5점·2.5점이 비어 있어, 001 마이그레이션 v_user_reviews 주석대로 둘 다 중립으로 본다(이슈 #91).
+3.5점·2.5점이 비어 있어, 001 마이그레이션의 리뷰 표 주석대로 둘 다 중립으로 본다(이슈 #91).
 """
 
 from collections.abc import Mapping, Sequence
@@ -36,18 +35,6 @@ LIKED_MIN_RATING = Decimal("4.0")
 DISLIKED_MAX_RATING = Decimal("2.0")
 
 
-# 복제 표에서 이력으로 치는 줄(#296). 복제는 BE 에서 취소·삭제된 줄을 지우지 않고 표시만 남긴다.
-# 구매는 결제가 끝난 주문만 친다(BE 인기 집계와 같은 기준). order_status 는 주문 전체의 상태라서
-# 일부만 취소된 주문(PARTIAL_CANCELED)은 남긴 책까지 빠진다. 품목 상태는 복제되지 않아 가를 수 없다.
-# 이 조건을 쓰는 곳은 여기와 ④ 의 제외 조건(app/feed/exclusion.py) 둘이다.
-def paid_purchase(alias: str) -> str:
-    return f"{alias}.order_status = 'PAID' AND {alias}.deleted_at IS NULL"
-
-
-def live_review(alias: str) -> str:
-    return f"{alias}.active_flag AND {alias}.deleted_at IS NULL"
-
-
 def review_weight(rating: Decimal) -> int:
     if rating >= LIKED_MIN_RATING:
         return LIKED_REVIEW
@@ -66,10 +53,7 @@ class History:
     # 추천에서도 제외하라는데, weights 는 큰 값 하나만 남겨 사고(3) 1점을 준 책이 3 으로 남는다.
     # 이 경우에도 싫다는 신호가 이긴다고 보고, 취향 벡터를 만드는 쪽(#92)이 이 목록으로 뺀다.
     disliked_book_ids: set[int] = field(default_factory=set)
-    # 이번에 읽은 이력 행들의 시각 중 최댓값. 이력이 없으면 None.
-    # 계산 시각이 아니다 — 계산 시각으로 두면 복제가 늦게 도착한 이력이 프로필에도 ③④ 의 가산에도
-    # 빠져 영구히 누락된다(명세 ⑥). 가중치 0 인 행도 넣는다. 빼면 ③④ 가 그 행을 "나중 이력"으로
-    # 보고 다시 읽는데, 같은 책의 다른 행이 이미 반영돼 있으면 같은 몫을 두 번 더하게 된다.
+    # 프로필이 반영한 이력의 시각. 요청으로 받으면 받은 시각이다(from_request). 이력이 없으면 None.
     computed_at: datetime | None = None
 
     def any(self) -> bool:
@@ -104,65 +88,6 @@ def summarize(rows: list[dict[str, Any]]) -> History:
                 history.category_scores.get(category, 0) + weight
             )
     return history
-
-
-_SQL = f"""
-SELECT h.book_id, h.kind, h.rating, h.at, b.category
-FROM (
-    SELECT book_id, 'purchase' AS kind, NULL::numeric AS rating, purchased_at AS at
-    FROM v_user_purchases p WHERE p.user_id = $1 AND {paid_purchase("p")}
-    UNION ALL
-    SELECT book_id, 'library', NULL, added_at FROM v_user_library WHERE user_id = $1
-    UNION ALL
-    SELECT book_id, 'review', rating, created_at
-    FROM v_user_reviews r WHERE r.user_id = $1 AND {live_review("r")}
-) h
-LEFT JOIN v_books b USING (book_id)
-WHERE $2::timestamptz IS NULL OR h.at <= $2
-"""
-
-
-async def _rows(
-    conn: asyncpg.Connection, user_id: int, until: datetime | None
-) -> list[dict[str, Any]]:
-    return [dict(r) for r in await conn.fetch(_SQL, user_id, until)]
-
-
-async def read(
-    conn: asyncpg.Connection, user_id: int, until: datetime | None = None
-) -> History:
-    """user_id 의 복제된 이력 3종을 읽어 모은다. until 을 주면 그 시각까지의 이력만 본다.
-
-    ④ 는 커서를 받은 시각까지만 봐야 스크롤 중에 새 구매로 목록이 밀리지 않는다(#246).
-    """
-    return summarize(await _rows(conn, user_id, until))
-
-
-async def category_scores_since(
-    conn: asyncpg.Connection,
-    user_id: int,
-    reflected_at: datetime | None,
-    until: datetime | None = None,
-) -> dict[str, int]:
-    """프로필이 반영한 뒤(reflected_at 이후) 생긴 이력이 카테고리 점수를 얼마나 바꾸는지.
-
-    ③④ 가 채점할 때 프로필의 태그 가중치에 더한다(명세 ⑥). 뒤에 생긴 행만 따로 모아 더하지 않고
-    "until 까지 전체로 낸 점수 − reflected_at 까지로 낸 점수"로 낸다. 이미 산 책(3)에 나중에 좋은
-    리뷰(2)가 달리면 따로 모은 쪽은 2 를 더 더하지만, 책마다 큰 값 하나(명세)로는 그대로 3 이다.
-    이렇게 하면 ⑥ 을 다시 부른 것과 같은 값이 된다. reflected_at 이 비면 반영한 이력이 없다는 뜻이라
-    전부 더한다.
-    """
-    rows = await _rows(conn, user_id, until)
-    now = summarize(rows).category_scores
-    if reflected_at is None:
-        return now
-    before = summarize([r for r in rows if r["at"] <= reflected_at]).category_scores
-    changed = {}
-    for category in now.keys() | before.keys():
-        diff = now.get(category, 0) - before.get(category, 0)
-        if diff:
-            changed[category] = diff
-    return changed
 
 
 def reported_rows(
@@ -207,11 +132,10 @@ async def from_request(
     reviews: Sequence[tuple[str, float]],
     at: datetime,
 ) -> History:
-    """BE 가 요청에 실어 보낸 이력을 모은다(#327). read 와 같은 가중치 표를 쓴다.
+    """BE 가 요청에 실어 보낸 이력을 모은다(#327).
 
     at 은 요청을 받은 시각이다. 요청에는 이력마다의 시각이 없고 BE 가 그때까지의 전체를 보내므로,
-    이력이 비어 있어도 computed_at 을 at 으로 둔다. 비워 두면 ③④ 가 복제 표에 남아 있는 이력을
-    전부 "프로필 이후 이력"으로 보고 한 번 더 더한다.
+    이력이 비어 있어도 computed_at 을 at 으로 둔다.
     """
     isbns = [*purchased_isbns, *library_isbns, *(i for i, _ in reviews)]
     book_ids = await isbn.book_id_map(conn, isbns)

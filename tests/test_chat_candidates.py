@@ -12,20 +12,9 @@ import contextlib
 import pytest
 
 from app.chat.schemas import Spec, SpecExact
-from app.core import history
 from app.routers import chat
 from app.search.schemas import SearchFilters, SearchRequest
 from app.search.service import SearchOutcome
-
-
-@pytest.fixture(autouse=True)
-def empty_history(monkeypatch: pytest.MonkeyPatch) -> None:
-    """기본값: 구매·저평점 이력 없음. 그 이력을 보는 테스트는 개별적으로 override한다."""
-
-    async def _fake(user_id: int) -> history.History:
-        return history.History()
-
-    monkeypatch.setattr(chat, "_fetch_history", _fake)
 
 
 @pytest.fixture(autouse=True)
@@ -434,70 +423,6 @@ def test_exclude_book_ids와_spec_exclude를_합쳐서_거른다(
     assert [c["book_id"] for c in result] == [1, 4]
 
 
-def test_이미_구매한_책은_후보에서_빠진다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
-        return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
-
-    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
-        return {book_id: "설명" for book_id in book_ids}
-
-    async def _fetch_history(user_id: int) -> history.History:
-        return history.History(weights={1: history.PURCHASE})
-
-    monkeypatch.setattr(chat.service, "search", _search)
-    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
-    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
-
-    spec = _spec(intent="semantic", semantic="아무거나")
-    result = asyncio.run(chat.get_candidates(spec, [], 1))
-
-    assert [c["book_id"] for c in result] == [2]
-
-
-def test_저평점_준_책은_후보에서_빠진다(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _search(req: SearchRequest) -> SearchOutcome:
-        return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
-
-    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
-        return {book_id: "설명" for book_id in book_ids}
-
-    async def _fetch_history(user_id: int) -> history.History:
-        return history.History(disliked_book_ids={1})
-
-    monkeypatch.setattr(chat.service, "search", _search)
-    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
-    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
-
-    spec = _spec(intent="semantic", semantic="아무거나")
-    result = asyncio.run(chat.get_candidates(spec, [], 1))
-
-    assert [c["book_id"] for c in result] == [2]
-
-
-def test_라이브러리에_담았거나_긍정_리뷰만_준_책은_안_빠진다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """구매(PURCHASE)만 제외 대상이다 — 담기·긍정 리뷰는 추천에서 뺄 이유가 아니다."""
-
-    async def _search(req: SearchRequest) -> SearchOutcome:
-        return SearchOutcome(results=[_book(1), _book(2)], degraded=None)
-
-    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
-        return {book_id: "설명" for book_id in book_ids}
-
-    async def _fetch_history(user_id: int) -> history.History:
-        return history.History(weights={1: history.LIBRARY, 2: history.LIKED_REVIEW})
-
-    monkeypatch.setattr(chat.service, "search", _search)
-    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
-    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
-
-    spec = _spec(intent="semantic", semantic="아무거나")
-    result = asyncio.run(chat.get_candidates(spec, [], 1))
-
-    assert [c["book_id"] for c in result] == [1, 2]
-
-
 def test_구매한_책_제외도_CANDIDATE_LIMIT_자리를_안_먹는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,15 +434,12 @@ def test_구매한_책_제외도_CANDIDATE_LIMIT_자리를_안_먹는다(
     async def _descriptions(book_ids: list[int]) -> dict[int, str]:
         return {book_id: "설명" for book_id in book_ids}
 
-    async def _fetch_history(user_id: int) -> history.History:
-        return history.History(weights={1: history.PURCHASE})  # 1만 이미 구매함
-
     monkeypatch.setattr(chat.service, "search", _search)
     monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
-    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
 
     spec = _spec(intent="semantic", semantic="아무거나")
-    result = asyncio.run(chat.get_candidates(spec, [], 1))
+    # 1만 이미 산 책이다
+    result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[1]))
 
     assert len(result) == chat.CANDIDATE_LIMIT
     book_ids = [c["book_id"] for c in result]
@@ -713,19 +635,11 @@ def test_판본_키는_역할_말을_이름_속_글자와_헷갈리지_않는다
 # ---------------------------------------------------------------------------
 
 
-def _history_must_not_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _boom(user_id: int) -> history.History:
-        raise AssertionError("가진 책이 요청으로 왔으면 복제 표의 이력을 읽으면 안 됨")
-
-    monkeypatch.setattr(chat, "_fetch_history", _boom)
-
-
-def test_요청으로_온_가진_책은_후보에서_빠지고_복제_표는_읽지_않는다(
+def test_요청으로_온_가진_책은_후보에서_빠진다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fake_search(monkeypatch, [_book(1), _book(2), _book(3)])
     _fake_descriptions(monkeypatch)
-    _history_must_not_be_read(monkeypatch)
 
     spec = _spec(intent="semantic", semantic="아무거나")
     result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[1, 3]))
@@ -733,13 +647,11 @@ def test_요청으로_온_가진_책은_후보에서_빠지고_복제_표는_읽
     assert [c["book_id"] for c in result] == [2]
 
 
-def test_가진_책이_빈_목록이면_아무것도_빼지_않고_복제_표도_읽지_않는다(
+def test_가진_책이_빈_목록이면_아무것도_빼지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 빈 목록은 "가진 책이 없다"는 뜻이다. 안 온 것(None)과 달라서 복제 표로 돌아가지 않는다.
     _fake_search(monkeypatch, [_book(1), _book(2)])
     _fake_descriptions(monkeypatch)
-    _history_must_not_be_read(monkeypatch)
 
     spec = _spec(intent="semantic", semantic="아무거나")
     result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[]))
@@ -747,18 +659,14 @@ def test_가진_책이_빈_목록이면_아무것도_빼지_않고_복제_표도
     assert [c["book_id"] for c in result] == [1, 2]
 
 
-def test_가진_책이_안_왔으면_지금처럼_복제_표의_이력으로_뺀다(
+def test_가진_책이_안_왔으면_아무것도_빼지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 복제한 사용자 표로 빼던 길은 없앴다(#307). BE 는 V3 부터 가진 책을 늘 실어 보낸다.
     _fake_search(monkeypatch, [_book(1), _book(2)])
     _fake_descriptions(monkeypatch)
-
-    async def _fetch_history(user_id: int) -> history.History:
-        return history.History(weights={1: history.PURCHASE})
-
-    monkeypatch.setattr(chat, "_fetch_history", _fetch_history)
 
     spec = _spec(intent="semantic", semantic="아무거나")
     result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=None))
 
-    assert [c["book_id"] for c in result] == [2]
+    assert [c["book_id"] for c in result] == [1, 2]

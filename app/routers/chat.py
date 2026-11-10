@@ -31,7 +31,7 @@ from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, history, isbn, popularity, responses, voice
+from app.core import body, categories, db, isbn, popularity, responses, voice
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -870,42 +870,11 @@ def _topic_before_book_word(words: list[str]) -> str:
     return ""
 
 
-async def _fetch_history(user_id: int) -> history.History:
-    """user_id의 구매·라이브러리·리뷰 이력을 읽는다.
-
-    ⑥이 취향 벡터를 계산할 때 쓰는 것과 같은 공용 함수(app/core/history.py)를
-    그대로 쓴다 — 이력을 읽는 규칙(가중치, 어느 테이블을 보는지)이 갈라지면
-    안 되기 때문이다.
-    """
-    pool = db.get_pool()
-    async with pool.acquire() as conn:
-        return await history.read(conn, user_id)
-
-
-def _exclude_owned_or_disliked(pool: list[dict], hist: history.History) -> list[dict]:
-    """이미 구매했거나 별점 1–2점을 준 책은 후보에서 뺀다(명세 2단계).
-
-    history.weights는 책마다 가장 큰 가중치 하나만 남긴다 — PURCHASE(3)는
-    구매 행에만 매겨지는 값이라, weights가 이 값이면 구매한 책이라고 안전하게
-    가를 수 있다(라이브러리 담기·긍정 리뷰만 있는 책은 안 걸린다). 저평점
-    (2.0점 이하)은 hist.disliked_book_ids로 이미 따로 온다.
-
-    BE가 가진 책을 요청으로 보내기 전까지만 쓰는 길이다(#319, _owned_book_ids 참고).
-    """
-    return [
-        c
-        for c in pool
-        if hist.weights.get(c["book_id"]) != history.PURCHASE
-        and c["book_id"] not in hist.disliked_book_ids
-    ]
-
-
 async def _owned_book_ids(req: ChatRequest) -> list[int] | None:
     """요청에 실려 온 산 책·나의 도서관 책을 book_id로 바꾼다(#319). 안 왔으면 None.
 
-    BE가 두 칸을 보내기 시작하면 복제 표 대신 이 목록으로 후보에서 뺀다. 두 칸이 다
-    없으면(null 포함) BE가 아직 보내지 않는 것이라 None을 돌려주고, get_candidates가
-    지금처럼 복제 표의 이력을 읽는다. 빈 목록은 "가진 책이 없다"는 뜻이라 None과 다르다.
+    get_candidates가 이 목록으로 후보에서 뺀다. 두 칸이 다 없으면(null 포함) 빼는 책이 없다.
+    복제한 사용자 표로 빼던 길은 없앴다(#307).
 
     책 표에 없는 ISBN은 건너뛴다(app.core.isbn). 가진 책이 없으면 책 표를 조회하지 않는다.
     """
@@ -1132,10 +1101,9 @@ async def get_candidates(
 ) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
 
-    match_score는 _attach_match_scores가 채운다(#129). 이미 구매했거나
-    저평점 준 책 제외는 점수와 무관하게 바로 되므로 여기서 한다(#144).
-    owned_book_ids(요청에 실려 온 산 책·나의 도서관 책, #319)가 오면 그 책들을 빼고
-    복제 표의 이력은 읽지 않는다. None이면 지금처럼 복제 표의 이력으로 뺀다.
+    match_score는 _attach_match_scores가 채운다(#129). 가진 책 제외는 점수와 무관하게
+    바로 되므로 여기서 한다(#144). owned_book_ids(요청에 실려 온 산 책·나의 도서관 책,
+    #319)를 뺀다. None이면 빼는 책이 없다(#307).
     exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
     뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
     (후속 판단).
@@ -1187,11 +1155,7 @@ async def get_candidates(
     if not pool:
         return []
 
-    if owned_book_ids is None:
-        # BE가 가진 책을 아직 보내지 않는다. 지금처럼 복제 표의 이력으로 뺀다.
-        hist = await _fetch_history(user_id)
-        pool = _exclude_owned_or_disliked(pool, hist)
-    else:
+    if owned_book_ids:
         # 저평점을 준 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어 산 책에 들어 있다.
         owned = set(owned_book_ids)
         pool = [c for c in pool if c["book_id"] not in owned]
