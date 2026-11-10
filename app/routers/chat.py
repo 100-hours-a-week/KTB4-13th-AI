@@ -39,7 +39,7 @@ from app.feed import personalized, scoring
 from app.gate import judge as gate_judge
 from app.gate import rules as gate_rules
 from app.gate import shopping
-from app.gateway import embedding
+from app.gateway import decision, embedding
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -382,7 +382,24 @@ async def _asks_new_request(message: str, previous: str) -> bool:
     """모델이 이전 요청과 이번 메시지만 보고 새 책 찾기라고 판정했는지. 호출이 실패하면 아니라고 본다.
 
     spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
+    CHAT_JUDGE=jev 면 Jev 에 같은 글로 묻는다(app/gateway/decision.py). 4o 는 1단계가 끝난 뒤 0.5초 안에 못 와 버려지는
+    일이 많았다.
     """
+    if decision.enabled():
+        try:
+            picked = await decision.choose(
+                state=topic_switch.RELATION_STATE.format(
+                    previous=previous, message=message
+                ),
+                instructions=topic_switch.RELATION_INSTRUCTIONS,
+                criteria=topic_switch.RELATION_CRITERIA,
+                timeout=get_settings().llm_timeout_seconds,
+            )
+        except LLMUnavailableError:
+            logger.warning("새 요청 판정(Jev) 실패 — 이어가는 말로 본다", exc_info=True)
+            return False
+        logger.info("새 요청 판정(Jev): %s, 확신 %s", picked.choice, picked.confidence)
+        return picked.choice == "new"
     model_id = get_settings().relation_llm_model_id
     model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
     chain = RELATION_PROMPT | model | message_text | parse_json_response
@@ -1829,24 +1846,37 @@ async def _judge_lane(
     """규칙이 애매하다고 본 말을 판정 호출로 가른다. 실패·시간 초과·모르는 답이면 None 이다(규칙의 기본값으로 간다).
 
     직전 챗봇 말은 최근 대화의 마지막 줄이 챗봇 말일 때만 쓴다. 사용자 말만 싣는 호출자도 있다.
+    CHAT_JUDGE=jev 면 Jev 에 같은 글로 묻는다(app/gateway/decision.py). 시간 제한과 실패 때 가는 곳은 같다.
     """
     last = req.recent_turns[-1] if req.recent_turns else None
     last_bot = last.text if last is not None and last.role == "assistant" else ""
-    chain = (
-        gate_judge.LANE_PROMPT | get_chat_model() | message_text | parse_json_response
-    )
+    inputs = {
+        "last_bot": last_bot[-gate_judge.LAST_BOT_CHARS :] or "(없음)",
+        "cards": gate_judge.card_lines(books, [rank for rank, _ in cards]),
+        "message": req.message or "",
+    }
     try:
-        answer = await asyncio.wait_for(
-            invoke_chain(
-                chain,
-                {
-                    "last_bot": last_bot[-gate_judge.LAST_BOT_CHARS :] or "(없음)",
-                    "cards": gate_judge.card_lines(books, [rank for rank, _ in cards]),
-                    "message": req.message or "",
-                },
-            ),
-            timeout=GATE_JUDGE_TIMEOUT_SECONDS,
-        )
+        if decision.enabled():
+            picked = await decision.choose(
+                state=gate_judge.STATE.format(**inputs),
+                instructions=gate_judge.INSTRUCTIONS,
+                criteria=gate_judge.CRITERIA,
+                timeout=GATE_JUDGE_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "문지기 판정(Jev): %s, 확신 %s", picked.choice, picked.confidence
+            )
+            answer = {"lane": picked.choice}
+        else:
+            chain = (
+                gate_judge.LANE_PROMPT
+                | get_chat_model()
+                | message_text
+                | parse_json_response
+            )
+            answer = await asyncio.wait_for(
+                invoke_chain(chain, inputs), timeout=GATE_JUDGE_TIMEOUT_SECONDS
+            )
     except (LLMUnavailableError, TimeoutError):
         logger.warning("문지기 판정 실패 — 규칙의 기본값으로 간다", exc_info=True)
         return None
