@@ -1558,6 +1558,24 @@ def test_주문하겠다는_말이_아니면_쇼핑이_아님은_그대로다(me
     assert data.not_shopping is True
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "선물로 책 한 권 사고 싶은데 뭐가 좋을까요",
+        "책 하나 구매하고 싶은데 뭘 사야 할지 모르겠어요",
+    ],
+)
+def test_주문_낱말이_든_추천_요청은_쇼핑이_아니라면_추천으로_돌아간다(
+    message: str,
+) -> None:
+    # 주문 기능을 켜면 문지기가 이런 말을 쇼핑으로 보낸다. 에이전트가 쇼핑이 아니라고 하면 장바구니 안내로 끝내지
+    # 않고 추천으로 돌려보낸다(#649 리뷰)
+    _, data, _ = _card_turn(message, [ai_text("NOT_SHOPPING")])
+
+    assert data.not_shopping is True
+    assert data.reply != reply_module.ORDER_FROM_CART
+
+
 def test_기능이_꺼져_있으면_주문_한_마디도_예전처럼_쇼핑이_아니다() -> None:
     _, data, _ = _card_turn("주문", [ai_text("NOT_SHOPPING")], checkout=False)
 

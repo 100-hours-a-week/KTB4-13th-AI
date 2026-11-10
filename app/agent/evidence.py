@@ -822,6 +822,12 @@ def wants_order(ctx: TurnContext) -> bool:
     return bool(_ORDER.search(message) or _ORDER_ALONE.match(message))
 
 
+def orders_alone(ctx: TurnContext) -> bool:
+    """주문·결제 낱말만으로 된 말인가("주문", "결제할게요"). "선물로 한 권 사고 싶은데 뭐가 좋을까요"처럼 주문 낱말이
+    든 추천 요청은 들지 않는다."""
+    return ctx.message is not None and bool(_ORDER_ALONE.match(normalize(ctx.message)))
+
+
 _EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
 
 

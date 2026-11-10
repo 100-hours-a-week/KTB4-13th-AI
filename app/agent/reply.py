@@ -563,13 +563,14 @@ def _checkout_line(plan: Plan) -> str:
     return f"{skip}주문 화면에 {applied} 적용해 둘게요. 확인하고 주문해 주세요."
 
 
-def _cannot_order(run: AgentRun) -> bool:
-    """주문해 달라고 했는데 주문 화면으로 보낼 것이 없다(주문 기능이 켜져 있을 때만)."""
-    return (
-        run.ctx.checkout_enabled
-        and run.checkout is None
-        and evidence.wants_order(run.ctx)
-    )
+def _cannot_order(run: AgentRun, *, words_only: bool = False) -> bool:
+    """주문해 달라고 했는데 주문 화면으로 보낼 것이 없다(주문 기능이 켜져 있을 때만). words_only 면 주문·결제
+    낱말만으로 된 말("주문", "결제할게요")만 본다."""
+    if not run.ctx.checkout_enabled or run.checkout is not None:
+        return False
+    if words_only:
+        return evidence.orders_alone(run.ctx)
+    return evidence.wants_order(run.ctx)
 
 
 def _order_from_cart_reply() -> AgentActData:
@@ -597,7 +598,9 @@ def _checkout(plan: Plan | None) -> Checkout | None:
 def finish(run: AgentRun) -> Finished:
     """그래프 결과를 검사해 응답으로 만든다. 남는 답이 없으면 GroundingFailed."""
     if run.not_shopping:
-        if _cannot_order(run):
+        # 쇼핑이 아니라는 답을 뒤집는 것은 주문 낱말 한 마디뿐이다. 주문 기능을 켜면 문지기가 "한 권 사고 싶은데
+        # 뭐가 좋을까요" 같은 추천 요청도 쇼핑으로 보내는데, 이런 말은 그대로 추천으로 돌려보낸다(#649 리뷰)
+        if _cannot_order(run, words_only=True):
             return Finished(_order_from_cart_reply(), [])
         return Finished(AgentActData.not_shopping_reply(), [])
 
