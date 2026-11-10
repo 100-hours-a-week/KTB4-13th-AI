@@ -531,4 +531,10 @@ def _plan(
         )
     if not lines:
         return None
-    return checkout_plan.plan(lines, ctx.owned_coupons, ctx.point_balance)
+    return checkout_plan.plan(
+        lines,
+        ctx.owned_coupons,
+        ctx.point_balance,
+        use_coupon=not evidence.declines_discount(ctx, "쿠폰"),
+        use_points=not evidence.declines_discount(ctx, "포인트"),
+    )
