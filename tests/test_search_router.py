@@ -10,8 +10,10 @@ from app.search.service import SearchOutcome
 
 client = TestClient(app)
 
-_BOOK = {
+# 검색 서비스가 돌려주는 줄이다. book_id 는 AI 안에서만 쓰고 응답에 싣지 않는다(#308)
+_ROW = {
     "book_id": 2077,
+    "isbn": "9788954651134",
     "title": "여행의 이유",
     "author": "김영하",
     "publisher": "문학동네",
@@ -19,6 +21,7 @@ _BOOK = {
     "in_stock": True,
     "cover_url": None,
 }
+_BOOK = {key: value for key, value in _ROW.items() if key != "book_id"}
 
 
 def _fake_search(
@@ -191,7 +194,7 @@ def test_본문이_상한을_넘으면_413이다() -> None:
 def test_결과가_있으면_책을_싣고_안내_문구는_null이다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(search_router.service, "search", _fake_search([_BOOK]))
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_ROW]))
 
     res = client.post("/search", json={"query": "김영하"})
 
@@ -203,9 +206,18 @@ def test_결과가_있으면_책을_싣고_안내_문구는_null이다(
     }
 
 
+def test_응답의_책은_ISBN으로만_가리킨다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_ROW]))
+
+    book = client.post("/search", json={"query": "김영하"}).json()["data"]["results"][0]
+
+    assert "book_id" not in book
+    assert book["isbn"] == "9788954651134"
+
+
 def test_기능을_줄여_응답했으면_헤더로_알린다(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        search_router.service, "search", _fake_search([_BOOK], "keyword-only")
+        search_router.service, "search", _fake_search([_ROW], "keyword-only")
     )
 
     res = client.post("/search", json={"query": "김영하"})
@@ -214,7 +226,7 @@ def test_기능을_줄여_응답했으면_헤더로_알린다(monkeypatch: pytes
 
 
 def test_온전한_응답에는_헤더가_없다(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(search_router.service, "search", _fake_search([_BOOK], None))
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_ROW], None))
 
     res = client.post("/search", json={"query": "김영하"})
 
@@ -226,9 +238,7 @@ def test_목록이라_캐시하지_않게_한다(
     monkeypatch: pytest.MonkeyPatch, degraded: str | None
 ) -> None:
     # 명세 공통 규약: 목록 응답은 private, no-store(#234). 축소 응답이어도 같다.
-    monkeypatch.setattr(
-        search_router.service, "search", _fake_search([_BOOK], degraded)
-    )
+    monkeypatch.setattr(search_router.service, "search", _fake_search([_ROW], degraded))
 
     res = client.post("/search", json={"query": "김영하"})
 
@@ -251,7 +261,7 @@ def test_검색이_실패하면_500_internal_server_error다(
 
 def test_다음_페이지_커서를_응답에_싣는다(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        search_router.service, "search", _fake_search([_BOOK], next_cursor="커서글자")
+        search_router.service, "search", _fake_search([_ROW], next_cursor="커서글자")
     )
 
     res = client.post("/search", json={"query": "김영하"})

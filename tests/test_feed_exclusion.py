@@ -1,17 +1,15 @@
 """④ 목록에서 뺄 책의 조건(#330) — 조건을 바꿔 끼워도 조회의 자리 번호가 맞는가. DB 없이 돈다.
 
 CI 는 DB 테스트를 건너뛴다. 자리 번호가 어긋나면 조회가 통째로 실패하므로, 조회문과 넘기는 값의
-개수가 맞는지는 여기서 DB 없이 본다. 끝의 테스트 하나만 실제 PostgreSQL 이 필요하다.
+개수가 맞는지는 여기서 DB 없이 본다.
 """
 
 import asyncio
 import json
-import os
 import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-import asyncpg
 import pytest
 
 from app.feed import cold_start, exclusion, personalized, rule_only
@@ -20,16 +18,6 @@ from app.feed.schemas import parse_query
 from app.search.schemas import SearchFilters
 
 _NOW = datetime(2026, 10, 12, tzinfo=UTC)
-
-
-def test_복제_표로_빼는_조건은_값을_셋_쓴다() -> None:
-    excluded = exclusion.replicated(7, _NOW)
-
-    assert excluded.params[0] == 7
-    assert excluded.params[2] == _NOW
-    assert set(re.findall(r"\$\d+", excluded.sql(1))) == {"$1", "$2", "$3"}
-    # 앞에 다른 값이 있으면 그만큼 밀린다.
-    assert set(re.findall(r"\$\d+", excluded.sql(3))) == {"$3", "$4", "$5"}
 
 
 def test_받은_책으로_빼는_조건은_값을_하나_쓴다() -> None:
@@ -56,7 +44,6 @@ def test_가진_책이_없으면_빼는_조건도_값도_없다() -> None:
 # ---------------------------------------------------------------------------
 
 _EXCLUSIONS = {
-    "복제 표": exclusion.replicated(1, _NOW),
     "받은 책": exclusion.owned([10, 20]),
     "가진 책 없음": exclusion.owned([]),
 }
@@ -156,58 +143,3 @@ def test_개인화_목록의_자리_번호가_맞는다(filters: dict, name: str
     )
 
     _assert_numbered(conn)
-
-
-# ---------------------------------------------------------------------------
-# 복제 표로 뺄 때 취소·삭제 표시를 본다(#296). 실제 PostgreSQL 이 필요하다
-# ---------------------------------------------------------------------------
-
-_DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
-
-
-@pytest.mark.skipif(
-    not _DB_URL,
-    reason="실제 PostgreSQL 이 필요하다. SEARCH_TEST_DATABASE_URL 에 주소를 준다",
-)
-def test_결제하지_않은_주문의_책과_지운_리뷰의_책은_빼지_않는다() -> None:
-    user = 9_100_901
-    paid, expired, deleted_review, live_review = 9100911, 9100912, 9100913, 9100914
-
-    async def _go() -> set[int]:
-        conn = await asyncpg.connect(_DB_URL)
-        tx = conn.transaction()
-        await tx.start()
-        try:
-            await conn.executemany(
-                "INSERT INTO v_books (book_id, title, price, in_stock)"
-                " VALUES ($1, '책', 10000, true)",
-                [(b,) for b in (paid, expired, deleted_review, live_review)],
-            )
-            await conn.executemany(
-                "INSERT INTO v_user_purchases"
-                " (user_id, book_id, purchased_at, order_status)"
-                " VALUES ($1, $2, $3, $4)",
-                [(user, paid, _NOW, "PAID"), (user, expired, _NOW, "EXPIRED")],
-            )
-            await conn.executemany(
-                "INSERT INTO v_user_reviews"
-                " (user_id, book_id, rating, created_at, active_flag, deleted_at)"
-                " VALUES ($1, $2, 1.0, $3, $4, $5)",
-                [
-                    (user, deleted_review, _NOW, False, _NOW),
-                    (user, live_review, _NOW, True, None),
-                ],
-            )
-            excluded = exclusion.replicated(user, _NOW)
-            rows = await conn.fetch(
-                "SELECT b.book_id FROM v_books b WHERE b.book_id = ANY($4::int[])"
-                f" AND {excluded.sql(1)}",
-                *excluded.params,
-                [paid, expired, deleted_review, live_review],
-            )
-            return {r["book_id"] for r in rows}
-        finally:
-            await tx.rollback()
-            await conn.close()
-
-    assert asyncio.run(_go()) == {expired, deleted_review}

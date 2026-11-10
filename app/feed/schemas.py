@@ -1,10 +1,10 @@
-"""④ /recommendations/feed 의 요청 모양과 검사 규칙.
+"""④ /recommendations/feed 의 요청·응답 모양과 검사 규칙.
 
 요청 본문 없이 쿼리 파라미터로 받는다(명세 ④). 쿼리 값은 모두 글자로 오므로, ①⑥과 달리
 "15" 같은 숫자 글자는 숫자로 읽는다. 대신 모르는 키와 같은 키 두 번은 막는다.
 """
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -20,6 +20,18 @@ from app.core.validation import INT32_MAX, INT32_MIN, sanitize_string
 
 DEFAULT_SIZE = 15
 MAX_SIZE = 50
+
+# 응답에 나가는 책 칸(명세 ④). 모든 목록이 같은 칸을 내보낸다. BE 와는 ISBN 으로만 책을 가리키고,
+# book_id 는 AI 안에서 목록을 만들고 저장할 때만 쓴다(#308)
+RESPONSE_FIELDS = (
+    "isbn",
+    "title",
+    "author",
+    "price",
+    "cover_url",
+    "in_stock",
+    "match_score",
+)
 
 Surface = Literal["home", "recommend_more"]
 Sort = Literal["match", "newest", "price_asc"]
@@ -103,3 +115,8 @@ def parse_query(items: list[tuple[str, str]]) -> FeedRequest | None:
         return FeedRequest.model_validate(dict(items))
     except ValidationError:
         return None
+
+
+def response_item(row: Any) -> dict[str, Any]:
+    """응답에 나가는 칸만 남긴다. 채점에 쓴 유사도·분류·책 번호는 내보내지 않는다."""
+    return {key: row[key] for key in RESPONSE_FIELDS}

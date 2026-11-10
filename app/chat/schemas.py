@@ -65,11 +65,7 @@ class ChatRequest(_Strict):
     # 먼저 거치는데, 쇼핑 답은 200자를 넘을 수 있어서 400 으로 거절하면 그 다음 턴 전체가 실패한다(#490).
     # 항목 형식이 틀리면 400 이다.
     recent_turns: list[Turn] = Field(default_factory=list)
-    exclude_book_ids: list[Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]] = Field(
-        default_factory=list
-    )
-    # 같은 것을 ISBN 으로 받는 칸(#308). BE 가 ISBN 으로 옮기는 동안은 둘 다 받고, 다 옮기면
-    # exclude_book_ids 를 뺀다.
+    # 이 대화에서 이미 보여 준 책. 옛 칸 exclude_book_ids 는 BE 가 ISBN 으로 옮겨 뺐다(#308)
     exclude_isbns: list[Isbn13] = Field(default_factory=list)
     image_ref: str | None = None
     # 추천에서 뺄 책(#319): 산 책(결제 완료)과 나의 도서관에 담은 책. BE가 요청마다 실어 보낸다.

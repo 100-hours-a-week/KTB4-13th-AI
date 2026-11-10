@@ -104,7 +104,7 @@ def test_질문은_API가_받는_요청이_된다(case: dict) -> None:
                 "spec": INITIAL_SPEC,
                 "message": message,
                 "recent_turns": [],
-                "exclude_book_ids": [],
+                "exclude_isbns": [],
             }
         )
         assert not isinstance(request, tuple)

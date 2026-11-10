@@ -56,14 +56,26 @@ async def collect(requests: list[dict]) -> list[dict]:
                 {
                     "status": response.status_code,
                     "degraded": response.headers.get("X-Degraded"),
-                    # V1 응답에는 isbn 이 없다. 책 번호로 받아 같은 DB 에서 책 정보를 읽는다
-                    "book_ids": [item["book_id"] for item in items],
+                    "book_ids": await _book_ids(items),
                     "seconds": seconds,
                 }
             )
             if done % PROGRESS_EVERY == 0:
                 print(f"검색 {done}/{len(requests)}", file=sys.stderr, flush=True)
     return results
+
+
+async def _book_ids(items: list[dict]) -> list[int]:
+    """책 번호로 받아 같은 DB 에서 책 정보를 읽는다. 시간을 잰 뒤에 바꾸므로 잰 시간에 섞이지 않는다.
+
+    V1 응답에는 isbn 이 없고 book_id 만 있다. #308 뒤 응답에는 isbn 만 있어 그 코드의 책 표로 바꾼다.
+    """
+    if all("book_id" in item for item in items):
+        return [item["book_id"] for item in items]
+    from app.core import db, isbn
+
+    async with db.get_pool().acquire() as conn:
+        return await isbn.to_book_ids(conn, [item["isbn"] for item in items])
 
 
 def collect_with(code: Path, requests: list[dict]) -> list[dict]:

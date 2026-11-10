@@ -52,3 +52,45 @@ def test_준_폴더의_코드로_요청_순서대로_검색한다(tmp_path: Path
         (500, None, []),
     ]
     assert all(r["seconds"] >= 0 for r in results)
+
+
+# #308 뒤 응답은 book_id 없이 isbn 만 싣는다. 책 번호는 그 코드의 책 표로 바꾼다(끝 자리를 번호로 쓰는 가짜)
+_MAIN_ISBN = """
+from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.post("/search")
+async def search():
+    return {"data": {"results": [{"isbn": "9780000000003"}, {"isbn": "9780000000007"}]}}
+"""
+_DB = """
+from contextlib import asynccontextmanager
+
+
+class _Pool:
+    @asynccontextmanager
+    async def acquire(self):
+        yield "conn"
+
+
+def get_pool():
+    return _Pool()
+"""
+_ISBN = """
+async def to_book_ids(conn, isbns):
+    assert conn == "conn"
+    return [int(isbn[-1]) for isbn in isbns]
+"""
+
+
+def test_ISBN만_실린_응답은_그_코드의_책_표로_책_번호를_찾는다(tmp_path: Path) -> None:
+    root = _fake_code(tmp_path)
+    (root / "app" / "main.py").write_text(_MAIN_ISBN, encoding="utf-8")
+    (root / "app" / "core" / "db.py").write_text(_DB, encoding="utf-8")
+    (root / "app" / "core" / "isbn.py").write_text(_ISBN, encoding="utf-8")
+
+    results = collect_with(root, [{"query": "abc"}])
+
+    assert [r["book_ids"] for r in results] == [[3, 7]]

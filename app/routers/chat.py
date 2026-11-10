@@ -31,7 +31,7 @@ from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, history, isbn, popularity, responses, voice
+from app.core import body, categories, db, isbn, popularity, responses, voice
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -39,7 +39,7 @@ from app.feed import personalized, scoring
 from app.gate import judge as gate_judge
 from app.gate import rules as gate_rules
 from app.gate import shopping
-from app.gateway import embedding, reranker
+from app.gateway import decision, embedding, reranker
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -68,7 +68,7 @@ SCOPE_GRACE_SECONDS = 2.0
 SEARCH_SIZE = 30
 
 # 명세 에러표의 413은 (V2) 이미지 10MB 상한이라 V1(텍스트 턴)엔 숫자가 없다(#99).
-# message(200자)·recent_turns(20턴)는 작지만, exclude_book_ids처럼 길이 상한이
+# message(200자)·recent_turns(20턴)는 작지만, exclude_isbns처럼 길이 상한이
 # 없는 배열도 있어 상한 없이 통째로 메모리에 올리면 거절 자체가 공격 수단이 될
 # 수 있다. 정상 요청이면 절대 안 닿을 만큼 넉넉하게 잡는다.
 MAX_BODY_BYTES = 64 * 1024
@@ -382,7 +382,24 @@ async def _asks_new_request(message: str, previous: str) -> bool:
     """모델이 이전 요청과 이번 메시지만 보고 새 책 찾기라고 판정했는지. 호출이 실패하면 아니라고 본다.
 
     spec 도 앞 대화도 보여 주지 않는다. 판정만 시킨다. 실패하면 앞 조건을 남기는 쪽, 곧 고치기 전과 같은 동작이다.
+    CHAT_JUDGE=jev 면 Jev 에 같은 글로 묻는다(app/gateway/decision.py). 4o 는 1단계가 끝난 뒤 0.5초 안에 못 와 버려지는
+    일이 많았다.
     """
+    if decision.enabled():
+        try:
+            picked = await decision.choose(
+                state=topic_switch.RELATION_STATE.format(
+                    previous=previous, message=message
+                ),
+                instructions=topic_switch.RELATION_INSTRUCTIONS,
+                criteria=topic_switch.RELATION_CRITERIA,
+                timeout=get_settings().llm_timeout_seconds,
+            )
+        except LLMUnavailableError:
+            logger.warning("새 요청 판정(Jev) 실패 — 이어가는 말로 본다", exc_info=True)
+            return False
+        logger.info("새 요청 판정(Jev): %s, 확신 %s", picked.choice, picked.confidence)
+        return picked.choice == "new"
     model_id = get_settings().relation_llm_model_id
     model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
     chain = RELATION_PROMPT | model | message_text | parse_json_response
@@ -870,42 +887,11 @@ def _topic_before_book_word(words: list[str]) -> str:
     return ""
 
 
-async def _fetch_history(user_id: int) -> history.History:
-    """user_id의 구매·라이브러리·리뷰 이력을 읽는다.
-
-    ⑥이 취향 벡터를 계산할 때 쓰는 것과 같은 공용 함수(app/core/history.py)를
-    그대로 쓴다 — 이력을 읽는 규칙(가중치, 어느 테이블을 보는지)이 갈라지면
-    안 되기 때문이다.
-    """
-    pool = db.get_pool()
-    async with pool.acquire() as conn:
-        return await history.read(conn, user_id)
-
-
-def _exclude_owned_or_disliked(pool: list[dict], hist: history.History) -> list[dict]:
-    """이미 구매했거나 별점 1–2점을 준 책은 후보에서 뺀다(명세 2단계).
-
-    history.weights는 책마다 가장 큰 가중치 하나만 남긴다 — PURCHASE(3)는
-    구매 행에만 매겨지는 값이라, weights가 이 값이면 구매한 책이라고 안전하게
-    가를 수 있다(라이브러리 담기·긍정 리뷰만 있는 책은 안 걸린다). 저평점
-    (2.0점 이하)은 hist.disliked_book_ids로 이미 따로 온다.
-
-    BE가 가진 책을 요청으로 보내기 전까지만 쓰는 길이다(#319, _owned_book_ids 참고).
-    """
-    return [
-        c
-        for c in pool
-        if hist.weights.get(c["book_id"]) != history.PURCHASE
-        and c["book_id"] not in hist.disliked_book_ids
-    ]
-
-
 async def _owned_book_ids(req: ChatRequest) -> list[int] | None:
     """요청에 실려 온 산 책·나의 도서관 책을 book_id로 바꾼다(#319). 안 왔으면 None.
 
-    BE가 두 칸을 보내기 시작하면 복제 표 대신 이 목록으로 후보에서 뺀다. 두 칸이 다
-    없으면(null 포함) BE가 아직 보내지 않는 것이라 None을 돌려주고, get_candidates가
-    지금처럼 복제 표의 이력을 읽는다. 빈 목록은 "가진 책이 없다"는 뜻이라 None과 다르다.
+    get_candidates가 이 목록으로 후보에서 뺀다. 두 칸이 다 없으면(null 포함) 빼는 책이 없다.
+    복제한 사용자 표로 빼던 길은 없앴다(#307).
 
     책 표에 없는 ISBN은 건너뛴다(app.core.isbn). 가진 책이 없으면 책 표를 조회하지 않는다.
     """
@@ -1092,7 +1078,6 @@ def _rule_based_cards(candidates: list[dict]) -> list[dict]:
     )
     return [
         {
-            "book_id": c["book_id"],
             "isbn": c.get("isbn"),
             "rank": rank,
             "match_score": c["match_score"],
@@ -1115,13 +1100,10 @@ async def _book_ids_for_isbns(isbns: list[str]) -> list[int]:
 
 
 async def _shown_book_ids(req: ChatRequest) -> list[int]:
-    """이 대화에서 이미 보여 준 책. ISBN 으로 온 것을 book_id 로 바꿔 book_id 로 온 것 뒤에 붙인다.
-
-    BE 가 ISBN 으로 옮기는 동안은 두 칸을 다 받는다(#317). ISBN 이 안 왔으면 책 표를 조회하지 않는다.
-    """
+    """이 대화에서 이미 보여 준 책. ISBN 으로 온 것을 book_id 로 바꾼다. 안 왔으면 책 표를 조회하지 않는다."""
     if not req.exclude_isbns:
-        return req.exclude_book_ids
-    return [*req.exclude_book_ids, *await _book_ids_for_isbns(req.exclude_isbns)]
+        return []
+    return await _book_ids_for_isbns(req.exclude_isbns)
 
 
 async def get_candidates(
@@ -1132,10 +1114,9 @@ async def get_candidates(
 ) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
 
-    match_score는 _attach_match_scores가 채운다(#129). 이미 구매했거나
-    저평점 준 책 제외는 점수와 무관하게 바로 되므로 여기서 한다(#144).
-    owned_book_ids(요청에 실려 온 산 책·나의 도서관 책, #319)가 오면 그 책들을 빼고
-    복제 표의 이력은 읽지 않는다. None이면 지금처럼 복제 표의 이력으로 뺀다.
+    match_score는 _attach_match_scores가 채운다(#129). 가진 책 제외는 점수와 무관하게
+    바로 되므로 여기서 한다(#144). owned_book_ids(요청에 실려 온 산 책·나의 도서관 책,
+    #319)를 뺀다. None이면 빼는 책이 없다(#307).
     exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
     뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
     (후속 판단).
@@ -1187,11 +1168,7 @@ async def get_candidates(
     if not pool:
         return []
 
-    if owned_book_ids is None:
-        # BE가 가진 책을 아직 보내지 않는다. 지금처럼 복제 표의 이력으로 뺀다.
-        hist = await _fetch_history(user_id)
-        pool = _exclude_owned_or_disliked(pool, hist)
-    else:
+    if owned_book_ids:
         # 저평점을 준 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어 산 책에 들어 있다.
         owned = set(owned_book_ids)
         pool = [c for c in pool if c["book_id"] not in owned]
@@ -1537,7 +1514,6 @@ async def generate_cards(
             continue
         cards.append(
             {
-                "book_id": book_id,
                 "isbn": book.get("isbn"),
                 "rank": rank,
                 "match_score": book["match_score"],
@@ -1875,24 +1851,37 @@ async def _judge_lane(
     """규칙이 애매하다고 본 말을 판정 호출로 가른다. 실패·시간 초과·모르는 답이면 None 이다(규칙의 기본값으로 간다).
 
     직전 챗봇 말은 최근 대화의 마지막 줄이 챗봇 말일 때만 쓴다. 사용자 말만 싣는 호출자도 있다.
+    CHAT_JUDGE=jev 면 Jev 에 같은 글로 묻는다(app/gateway/decision.py). 시간 제한과 실패 때 가는 곳은 같다.
     """
     last = req.recent_turns[-1] if req.recent_turns else None
     last_bot = last.text if last is not None and last.role == "assistant" else ""
-    chain = (
-        gate_judge.LANE_PROMPT | get_chat_model() | message_text | parse_json_response
-    )
+    inputs = {
+        "last_bot": last_bot[-gate_judge.LAST_BOT_CHARS :] or "(없음)",
+        "cards": gate_judge.card_lines(books, [rank for rank, _ in cards]),
+        "message": req.message or "",
+    }
     try:
-        answer = await asyncio.wait_for(
-            invoke_chain(
-                chain,
-                {
-                    "last_bot": last_bot[-gate_judge.LAST_BOT_CHARS :] or "(없음)",
-                    "cards": gate_judge.card_lines(books, [rank for rank, _ in cards]),
-                    "message": req.message or "",
-                },
-            ),
-            timeout=GATE_JUDGE_TIMEOUT_SECONDS,
-        )
+        if decision.enabled():
+            picked = await decision.choose(
+                state=gate_judge.STATE.format(**inputs),
+                instructions=gate_judge.INSTRUCTIONS,
+                criteria=gate_judge.CRITERIA,
+                timeout=GATE_JUDGE_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "문지기 판정(Jev): %s, 확신 %s", picked.choice, picked.confidence
+            )
+            answer = {"lane": picked.choice}
+        else:
+            chain = (
+                gate_judge.LANE_PROMPT
+                | get_chat_model()
+                | message_text
+                | parse_json_response
+            )
+            answer = await asyncio.wait_for(
+                invoke_chain(chain, inputs), timeout=GATE_JUDGE_TIMEOUT_SECONDS
+            )
     except (LLMUnavailableError, TimeoutError):
         logger.warning("문지기 판정 실패 — 규칙의 기본값으로 간다", exc_info=True)
         return None

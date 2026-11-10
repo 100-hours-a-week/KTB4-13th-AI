@@ -70,7 +70,7 @@ def _request(**overrides) -> dict:
         "spec": INITIAL_SPEC,
         "message": "위로되는 책 추천해줘",
         "recent_turns": [],
-        "exclude_book_ids": [],
+        "exclude_isbns": [],
         "image_ref": None,
     }
     body.update(overrides)
@@ -216,7 +216,9 @@ def test_분명한_첫_요청은_묻지_않고_찾는다(
 
     assert rec.scope_calls == 1
     assert len(fake_db) == 1
-    assert [card["book_id"] for card in data["cards"]] == [1, 2, 3]
+    assert [card["title"] for card in data["cards"]] == [
+        book["title"] for book in BOOKS
+    ]
 
 
 def test_묻기의_reply가_비면_기본_문장을_쓴다(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,7 +250,9 @@ def test_판정이_넓다고_했어도_물을_말이_없으면_묻지_않고_찾
     data = client.post("/recommendations/chat", json=_request()).json()["data"]
 
     assert len(fake_db) == 1
-    assert [card["book_id"] for card in data["cards"]] == [1, 2, 3]
+    assert [card["title"] for card in data["cards"]] == [
+        book["title"] for book in BOOKS
+    ]
 
 
 def test_판정이_1단계보다_한참_늦으면_묻지_않고_찾는다(

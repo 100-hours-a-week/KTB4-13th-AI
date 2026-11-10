@@ -124,13 +124,12 @@ def _now() -> datetime:
 
 
 async def _history(conn: asyncpg.Connection, req: ProfileRequest) -> history.History:
-    """산 책·나의 도서관 책·리뷰. 요청에 실려 왔으면 그것을, 아니면 복제 표를 읽는다(#327).
+    """산 책·나의 도서관 책·리뷰. BE 가 요청에 실어 보낸 것으로 계산한다(#327).
 
-    칸이 없으면 BE 가 아직 보내지 않는 것이라 지금처럼 복제 표에서 읽는다. 복제를 멈출 때 이 길을
-    빼고, 그때부터 칸이 없으면 이력이 없는 것이 된다(#307). 빈 이력이 오면 복제 표를 읽지 않는다.
+    칸이 없으면 이력이 없는 것이다. 복제한 사용자 표에서 읽던 길은 복제를 멈추며 없앴다(#307).
     """
     if req.history is None:
-        return await history.read(conn, req.user_id)
+        return history.History()
     return await history.from_request(
         conn,
         purchased_isbns=req.history.purchased_isbns,
@@ -162,10 +161,8 @@ async def _rebuild_on(
     예산으로 만들어 저장하고 작업은 None 이다. 두 경우 모두 같은 재료와 같은 저장(build_queue)을 쓴다.
     """
     hist = await _history(conn, req)
-    # 좋아한 책은 ISBN 으로도 온다(#308). book_id 로 바꿔 앞에 두고, book_id 로 온 것을 뒤에 붙인다.
-    # 같은 책을 두 번 적어 보내도(두 칸에 나눠 보내도) 한 번만 치고, 합쳐서 앞에서부터 상한만큼 쓴다.
-    liked_by_isbn = await isbn.to_book_ids(conn, req.used_liked_isbns())
-    liked = list(dict.fromkeys([*liked_by_isbn, *req.used_liked_book_ids()]))
+    # 좋아한 책은 ISBN 으로 온다(#308). 같은 책을 두 번 적어 보내도 한 번만 치고, 앞에서부터 상한만큼 쓴다.
+    liked = list(dict.fromkeys(await isbn.to_book_ids(conn, req.used_liked_isbns())))
     liked = liked[:USED_LIKED_BOOKS]
     weights = compute.book_weights(liked, hist.weights, hist.disliked_book_ids)
     vectors = await book_vectors(conn, list(weights))

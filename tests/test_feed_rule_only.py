@@ -42,6 +42,11 @@ def _isbn(book_id: int) -> str:
     return str(9780000000000 + book_id)
 
 
+def _book_id(item: dict) -> int | None:
+    """응답의 ISBN 으로 테스트 책 번호를 되찾는다(_isbn 의 반대). 응답에는 book_id 가 없다(#308)."""
+    return None if item["isbn"] is None else int(item["isbn"]) - 9780000000000
+
+
 def _run(check):
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
@@ -65,11 +70,6 @@ def _run(check):
                     book_id,
                     book_id,
                 )
-            await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100804, $2, 'PAID')",
-                _USER,
-                _T0,
-            )
             return await check(conn)
         finally:
             await tx.rollback()
@@ -84,10 +84,16 @@ def _request(**params):
     )
 
 
+# 산 책은 요청으로 온다(#330). 복제한 사용자 표는 읽지 않는다(#307).
+_OWNED = exclusion.owned([9100804])
+
+
 def _fetch(req, tag_weights):
     async def check(conn):
-        items, _ = await rule_only.fetch(conn, req, Page(issued_at=_NOW), tag_weights)
-        return [(item["book_id"], item["match_score"]) for item in items]
+        items, _ = await rule_only.fetch(
+            conn, req, Page(issued_at=_NOW), tag_weights, _OWNED
+        )
+        return [(_book_id(item), item["match_score"]) for item in items]
 
     return _run(check)
 
@@ -116,25 +122,28 @@ def test_산_책은_빠진다() -> None:
     assert 9100804 not in [book_id for book_id, _ in got]
 
 
-def test_책마다_ISBN을_싣는다() -> None:
+def test_책은_ISBN으로만_가리키고_book_id는_싣지_않는다() -> None:
     async def check(conn):
         items, _ = await rule_only.fetch(
-            conn, _request(), Page(issued_at=_NOW), {_LIKED: 4}
+            conn, _request(), Page(issued_at=_NOW), {_LIKED: 4}, _OWNED
         )
-        return [(item["book_id"], item["isbn"]) for item in items]
+        return items
 
-    # 로컬 DB 의 다른 책도 인기순 후보로 섞여 나온다. 여기서 넣은 책만 본다.
-    ours = {book_id for book_id, _, _ in _BOOKS}
-    got = [(book_id, isbn) for book_id, isbn in _run(check) if book_id in ours]
+    items = _run(check)
 
-    assert got
-    assert all(isbn == _isbn(book_id) for book_id, isbn in got)
+    # 로컬 DB 의 다른 책도 인기순 후보로 섞여 나온다. 여기서 넣은 책이 ISBN 으로 찾히는지도 본다.
+    assert {_book_id(item) for item in items} & {book_id for book_id, _, _ in _BOOKS}
+    assert all(
+        set(item)
+        == {"isbn", "title", "author", "price", "cover_url", "in_stock", "match_score"}
+        for item in items
+    )
 
 
 def test_가격과_재고는_상품_표에서_읽는다() -> None:
     async def check(conn):
         items, _ = await rule_only.fetch(
-            conn, _request(size="1"), Page(issued_at=_NOW), {_LIKED: 4}
+            conn, _request(size="1"), Page(issued_at=_NOW), {_LIKED: 4}, _OWNED
         )
         return [(item["price"], item["in_stock"]) for item in items]
 
@@ -179,11 +188,8 @@ def test_책_표를_통째로_훑지_않는다() -> None:
         try:
             rows = await cold_start.run_ordered(
                 conn,
-                "EXPLAIN "
-                + rule_only.candidates_sql("", exclusion.replicated(_USER, _NOW)),
-                _USER,
-                2.0,
-                _NOW,
+                "EXPLAIN " + rule_only.candidates_sql("", _OWNED),
+                *_OWNED.params,
                 500,
                 [_LIKED, "한국문학"],
                 [4.0, 2.0],
@@ -209,14 +215,14 @@ def _ids_excluding(book_ids: list[int]) -> set[int]:
             {_LIKED: 4},
             exclusion.owned(book_ids),
         )
-        return {item["book_id"] for item in items}
+        return {_book_id(item) for item in items}
 
     # 로컬 카탈로그의 책도 후보로 섞여 나온다. 이 파일이 넣은 책만 본다.
     return _run(check) & {book_id for book_id, _, _ in _BOOKS}
 
 
-def test_받은_책을_빼고_복제_표의_이력은_보지_않는다() -> None:
-    # 복제 표에는 9100804 를 산 것으로 남아 있다. 요청은 9100802 를 가졌다고 한다.
+def test_받은_책만_뺀다() -> None:
+    # 요청은 9100802 를 가졌다고 한다. 9100804 는 이번에는 가진 책이 아니라 나온다.
     assert _ids_excluding([9100802]) == {9100801, 9100803, 9100804}
 
 

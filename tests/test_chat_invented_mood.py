@@ -168,7 +168,7 @@ def test_뺀_검색_문장으로_후보를_찾고_응답_spec에_싣는다(
             "spec": INITIAL_SPEC,
             "message": "에세이 추천해줘",
             "recent_turns": [],
-            "exclude_book_ids": [],
+            "exclude_isbns": [],
             "image_ref": None,
         },
     )

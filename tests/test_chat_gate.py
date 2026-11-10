@@ -85,7 +85,7 @@ def _body(message: str, **overrides) -> dict:
         "spec": INITIAL_SPEC,
         "message": message,
         "recent_turns": [],
-        "exclude_book_ids": [],
+        "exclude_isbns": [],
         "image_ref": None,
         **SHOP_FIELDS,
     }

@@ -8,12 +8,11 @@
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 import asyncpg
 
-from app.core import db, history, isbn
+from app.core import db, isbn
 from app.core.config import get_settings
 from app.feed import (
     cold_start,
@@ -37,7 +36,7 @@ INTEREST = "interest"
 
 _PROFILE_SQL = """
 SELECT centroid::text AS centroid, tag_weights::text AS tag_weights,
-       cold_start, profile_version, computed_at
+       cold_start, profile_version
 FROM taste_profile
 WHERE user_id = $1
 """
@@ -59,8 +58,6 @@ class _Profile:
     centroid: list[float]
     tag_weights: dict[str, float]
     version: int
-    # 프로필이 반영한 이력의 가장 늦은 시각. 반영한 이력이 없으면 None(명세 ⑥).
-    computed_at: datetime | None
 
 
 async def _profile(conn: asyncpg.Connection, user_id: int) -> _Profile | None:
@@ -77,40 +74,18 @@ async def _profile(conn: asyncpg.Connection, user_id: int) -> _Profile | None:
         centroid=json.loads(row["centroid"]),
         tag_weights=json.loads(row["tag_weights"]),
         version=row["profile_version"],
-        computed_at=row["computed_at"],
     )
 
 
-async def _tag_weights(
-    conn: asyncpg.Connection, req: FeedRequest, page: cursor.Page, profile: _Profile
-) -> dict[str, float]:
-    """프로필의 태그 가중치에, 프로필이 반영한 뒤 생긴 이력의 카테고리 점수를 더한다(명세 ⑥, #175).
+async def _excluded(conn: asyncpg.Connection, req: FeedRequest) -> exclusion.Exclusion:
+    """목록에서 뺄 책의 조건. 요청에 실려 온 가진 책(산 책·나의 도서관 책)으로 뺀다(#330).
 
-    ⑥ 은 온보딩과 취향 기억이 바뀔 때만 불려서, 그 사이에 산 책·리뷰·담기는 여기서 더해야 순서에
-    들어간다. 커서를 받은 시각 뒤의 이력은 빼고 본다 — 제외 규칙과 같게 해야 스크롤 중에 점수가
-    바뀌어 목록이 밀리지 않는다.
-    """
-    recent = await history.category_scores_since(
-        conn, req.user_id, profile.computed_at, page.issued_at
-    )
-    weights = dict(profile.tag_weights)
-    for category, points in recent.items():
-        weights[category] = weights.get(category, 0) + points
-    return weights
-
-
-async def _excluded(
-    conn: asyncpg.Connection, req: FeedRequest
-) -> exclusion.Exclusion | None:
-    """목록에서 뺄 책의 조건. 요청에 가진 책이 실려 왔으면 그것으로 뺀다(#330).
-
-    안 실려 왔으면 None 이다. BE 가 아직 보내지 않는 것이라, 각 목록이 지금처럼 복제 표로 뺀다.
-    복제를 멈출 때 그 길을 빼고, 그때부터 안 실려 오면 빼는 책이 없는 것이 된다(#307).
+    안 실려 왔으면 빼는 책이 없다. 복제한 사용자 표로 빼던 길은 복제를 멈추며 없앴다(#307).
     책 표에 없는 ISBN 은 건너뛴다(app.core.isbn).
     """
     owned = req.owned_isbns()
-    if owned is None:
-        return None
+    if not owned:
+        return exclusion.owned([])
     return exclusion.owned(await isbn.to_book_ids(conn, owned))
 
 
@@ -140,7 +115,8 @@ async def feed(req: FeedRequest) -> FeedOutcome:
             items, has_more = await cold_start.fetch(conn, req, page, excluded)
             return _outcome(page, req, items, has_more, COLD_START, None)
 
-        tag_weights = await _tag_weights(conn, req, page, profile)
+        # 프로필 뒤에 생긴 이력은 더하지 않는다. BE 가 이력이 바뀐 사용자의 프로필을 밤에 다시 부른다(#307).
+        tag_weights = profile.tag_weights
 
         # 앞 페이지와 모드가 같은지는 목록을 만든 뒤에 본다(① 검색과 같은 순서). 먼저 보면
         # 벡터가 안 되는 동안 받은 커서를 "이번엔 개인화겠지"로 단정해 끊어서, 장애가 이어지는
@@ -176,20 +152,18 @@ async def _from_saved(
     conn: asyncpg.Connection,
     req: FeedRequest,
     page: cursor.Page,
-    excluded: exclusion.Exclusion | None,
+    excluded: exclusion.Exclusion,
     saved: interest_page.Stored,
 ) -> FeedOutcome | None:
     """저장된 관심사별 목록에서 읽는다(#454, #455). 요청 때 벡터를 조회하지 않는다.
 
-    가진 책이 요청에 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다. 더 보기에서 거르고 남은 책이 첫 쪽도
+    뺄 책은 다른 목록과 같은 조건이다. 더 보기에서 거르고 남은 책이 첫 쪽도
     못 채우면 None 이고, 지금 방식으로 그 자리에서 조회한다(#395 의 (안)). 지금 방식은 벡터 조회에 2초를
     두고, 넘으면 규칙 점수 목록으로 답한다. 목록이 비었으면(관심사가 하나도 없음) 첫 쪽에서 None 이다.
     """
     books, version = saved.at(page.feed_version)
     if not books and page.mode is None:
         return None
-    if excluded is None:
-        excluded = exclusion.replicated(req.user_id, page.issued_at)
     items = await interest_page.books(conn, req, books, excluded)
     if req.surface == "recommend_more" and page.mode is None and len(items) < req.size:
         return None

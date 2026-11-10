@@ -120,6 +120,11 @@ def _isbn(book_id: int) -> str:
     return str(9780000000000 + book_id)
 
 
+def _book_id(item: dict) -> int:
+    """응답의 ISBN 으로 테스트 책 번호를 되찾는다(_isbn 의 반대). 응답에는 book_id 가 없다(#308)."""
+    return int(item["isbn"]) - 9780000000000
+
+
 async def _with_books(check):
     conn = await asyncpg.connect(_DB_URL)
     tx = conn.transaction()
@@ -165,15 +170,14 @@ def test_가진_책과_그_다른_판본을_빼고_저장된_순서와_점수로
 
     (first, more), (second, more_after) = asyncio.run(_with_books(check))
 
-    assert [(i["book_id"], i["match_score"]) for i in first] == [
+    assert [(_book_id(i), i["match_score"]) for i in first] == [
         (9100501, 90),
         (9100504, 87),
     ]
     assert more is True
-    assert [i["book_id"] for i in second] == [9100505]
+    assert [_book_id(i) for i in second] == [9100505]
     assert more_after is False
     assert set(first[0]) == {
-        "book_id",
         "isbn",
         "title",
         "author",
