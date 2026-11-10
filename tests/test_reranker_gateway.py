@@ -24,9 +24,11 @@ class _FakeModel:
         self.scores = scores
         self.gate = gate
         self.batch_sizes: list[int] = []
+        self.pair_counts: list[int] = []
 
     def predict(self, pairs, batch_size: int = 32, show_progress_bar: bool = False):
         self.batch_sizes.append(batch_size)
+        self.pair_counts.append(len(pairs))
         if self.gate is not None:
             self.gate.wait(timeout=5)
         return [self.scores.get(text.split("\n")[0], 0.0) for _, text in pairs]
@@ -188,7 +190,9 @@ def test_메모리_한도가_넉넉하거나_없으면_모델을_읽고_한_번_
     assert built["name"] == settings.reranker_model
     assert built["device"] == "cpu"
     assert built["max_length"] == settings.reranker_max_length
-    assert built["model"].batch_sizes == [32]  # 예열 한 번
+    # 예열 한 쌍(기본 묶음 크기), 그다음 실제 요청과 같은 묶음 크기로 30권 속도 시험
+    assert built["model"].pair_counts == [1, 30]
+    assert built["model"].batch_sizes == [32, settings.reranker_batch_size]
     assert reranker.is_loaded() is True
 
 
@@ -275,3 +279,28 @@ def test_서버에_남은_메모리는_meminfo_의_MemAvailable_을_MiB로_읽�
 
     monkeypatch.setattr(reranker, "_MEMINFO", tmp_path / "없음")
     assert reranker._server_available_mib() is None
+
+
+def test_30권을_제한_시간_안에_못_매기는_CPU면_모델을_끈다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 운영 t3 서버는 맥보다 처리량이 16–28배 낮았다(#563). 켜 두면 분위기 요청마다 효과 없이 5초만 늦어진다
+    monkeypatch.setattr(reranker, "_model", None)
+    monkeypatch.setattr(reranker, "_memory_limit_mib", lambda: None)
+    monkeypatch.setattr(reranker, "_server_available_mib", lambda: None)
+    monkeypatch.setattr(reranker, "CrossEncoder", lambda *a, **k: _FakeModel({}))
+    monkeypatch.setattr(
+        reranker,
+        "_speed_check_seconds",
+        lambda model: get_settings().reranker_timeout_seconds + 0.1,
+    )
+
+    reranker.load_model()
+
+    assert reranker.is_loaded() is False
+
+
+def test_속도_시험_권수는_챗봇이_검색에서_받는_권수와_같다() -> None:
+    from app.routers import chat
+
+    assert reranker._SPEED_CHECK_PAIRS == chat.SEARCH_SIZE

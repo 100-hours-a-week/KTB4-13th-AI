@@ -4,11 +4,12 @@
 같이 읽고 얼마나 맞는지 매긴다. 검색이 고른 30권을 이 점수로 다시 줄 세워, 3단계(카드)에 넘길 10권을 고른다.
 #573 실험에서 10권 nDCG 0.578 → 0.685. 같은 신호(벡터 유사도)로 순서만 바꾼 #523 은 카드가 그대로였다.
 
-리랭커 때문에 답이 막히지 않는다. 모델이 없거나, 메모리 한도가 모자라 띄우지 않았거나, 다른 요청이 쓰는 중이거나,
-시간을 넘기거나, 실패하면 모두 검색 순서를 그대로 돌려준다.
+리랭커 때문에 답이 막히지 않는다. 모델이 없거나, 메모리가 모자라거나 CPU가 느려 띄우지 않았거나, 다른 요청이 쓰는
+중이거나, 시간을 넘기거나, 실패하면 모두 검색 순서를 그대로 돌려준다.
 """
 
 import asyncio
+import gc
 import json
 import logging
 import os
@@ -123,13 +124,53 @@ def load_model() -> None:
     # 첫 추론은 두 번째보다 두 배 넘게 걸린다(맥 2스레드 30권 4.9초 vs 2.0초). 첫 사용자 요청이 시간 제한에
     # 걸리지 않게 여기서 미리 한 번 돌린다.
     model.predict([("예열", "예열")], show_progress_bar=False)
+    loaded_in = time.perf_counter() - started
+
+    # 이 서버 CPU로 30권을 제한 시간 안에 매길 수 있는지 한 번 재 본다. 맥에선 2.0초지만 운영 t3 서버는 물리 코어가
+    # 하나이고 맥보다 처리량이 16–28배 낮았다(#563). 제한을 넘기는 서버에서 켜 두면 분위기 요청마다 효과 없이 제한
+    # 시간만큼 늦어지고, 뒤에서 끝까지 도는 추론이 그동안 CPU를 다 써 같은 태스크의 검색·홈도 느려진다.
+    checked_in = _speed_check_seconds(model)
+    timeout = settings.reranker_timeout_seconds
+    if checked_in > timeout:
+        del model
+        gc.collect()
+        logger.warning(
+            "리랭커가 %d권을 %.1f초에 매겨 제한 %.1f초를 넘습니다. 이 서버 CPU로는 늘 시간 제한에 걸려 "
+            "리랭커를 끄고 챗봇 후보는 검색 순서로 고릅니다",
+            _SPEED_CHECK_PAIRS,
+            checked_in,
+            timeout,
+        )
+        return
+
     _model = model
     logger.info(
-        "리랭커 모델 %s 를 %.1f초 만에 띄웠습니다 (메모리 한도 %s)",
+        "리랭커 모델 %s 를 %.1f초 만에 띄웠습니다 (%d권 시험 %.1f초, 메모리 한도 %s)",
         settings.reranker_model,
-        time.perf_counter() - started,
+        loaded_in,
+        _SPEED_CHECK_PAIRS,
+        checked_in,
         f"{limit}MiB" if limit is not None else "없음",
     )
+
+
+# 속도 시험에 쓰는 질문과 책 글. 책 글은 리랭커가 128토큰에서 자를 만큼 길게 둔다 — 실제 쌍도 절반 넘게 256토큰을
+# 넘어(#573) 거의 다 잘리므로, 잘린 길이로 재야 실제 요청과 같다.
+_SPEED_CHECK_QUERY = "비 오는 날 혼자 읽기 좋은 잔잔한 소설"
+_SPEED_CHECK_BOOK = "책 제목\n작가\n" + (
+    "비 오는 날 창가에 앉아 천천히 읽기 좋은 이야기. 주인공은 작은 마을의 서점을 지키며 하루하루를 보내고, "
+    "찾아오는 손님들의 사연을 들으며 조금씩 마음을 연다. " * 4
+)
+# 챗봇이 검색에서 받는 권수(app/routers/chat.py 의 SEARCH_SIZE)와 같게 둔다. 판본을 걷어 내면 보통 이보다 적다.
+_SPEED_CHECK_PAIRS = 30
+
+
+def _speed_check_seconds(model: CrossEncoder) -> float:
+    """실제 요청과 같은 묶음 크기로 30권을 한 번 매기는 데 걸린 시간(초)."""
+    pairs = [(_SPEED_CHECK_QUERY, _SPEED_CHECK_BOOK)] * _SPEED_CHECK_PAIRS
+    started = time.perf_counter()
+    _predict(model, pairs)
+    return time.perf_counter() - started
 
 
 def _load_quietly() -> None:
