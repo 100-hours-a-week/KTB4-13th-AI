@@ -102,6 +102,10 @@ class TurnContext:
     # 카드 책의 남은 재고 수량(요청의 offers[].stock_quantity). 책 정보가 켜져 있을 때만 book.offer 결과에 싣는다(#650)
     stock: dict[str, int] = field(default_factory=dict)
     book_info_enabled: bool = False
+    # order.open 으로 주문하겠다고 짚은 장바구니 책의 ISBN(#664). 짚은 차례대로, 같은 책은 한 번
+    order_isbns: list[str] = field(default_factory=list)
+    # order.open 이 장바구니에 없는 책을 담는 중이다. 그동안은 담으라는 말인지(ACTION_NOT_STATED) 보지 않는다
+    ordering: bool = False
 
     def commit_cart_view(self) -> None:
         """한 묶음의 도구 결과를 LLM 에게 돌려줄 때 부른다. 이 묶음에서 조회한 장바구니가 다음 번호의 기준이 된다."""

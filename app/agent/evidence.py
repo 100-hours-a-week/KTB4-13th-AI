@@ -713,9 +713,11 @@ _ADD = re.compile(
     r"담(?:아(?!\s*내|낸)|어|을|으|자|기|겠)|담고(?!\s*있)|넣|추가(?!로|적)"
 )
 # 주문하겠다는 말. 주문 화면을 연다(주문서를 만들거나 결제하지는 않는다). "주문 내역", "주문한 책", "주문했어?"는
-# 이미 한 주문을 묻는 말이라 들지 않는다
+# 이미 한 주문을 묻는 말이라 들지 않는다. "주문을 해주라고", "주문시켜줘", 말끝의 "~ 주문"도 주문이다(#664, 11/11 dev).
+# 주문 화면을 열지는 모델이 order.open 으로 정하고, 이 목록은 모델이 부르지 않았을 때의 보조다
 _ORDER = re.compile(
-    r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
+    r"(?:주문|결제|구매|구입)\s*(?:을|를|좀)?\s*(?:해|하고|할|하기|하려|하자|까지|부탁|시켜|진행)"
+    r"|(?:주문|결제|구매|구입)\s*[.!~]*$"
     r"|바로\s*(?:주문|구매|결제)|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)|살게|살래|사고\s*싶"
 )
 _COUPON = re.compile(r"쿠폰|포인트|할인")
@@ -752,8 +754,13 @@ def delegates_pick(ctx: TurnContext) -> bool:
     if ctx.message is None:
         return False
     message = normalize(ctx.message)
+    ordered = bool(_ORDER.search(message))
+    if ordered and _MONEY.search(message):
+        # "3만원내로 개발도서 주문": 금액을 말하고 주문하라면 고르기와 주문을 함께 맡긴 것이다(#664). 확인받을 조합으로
+        # 돌려보내면 찾은 책이 든 조합을 BE 가 받지 않아 턴이 실패했다(11/11 dev E502)
+        return True
     return bool(_CHOOSE.search(message)) and bool(
-        _ADD.search(message) or _BUY.search(message) or _ORDER.search(message)
+        _ADD.search(message) or _BUY.search(message) or ordered
     )
 
 

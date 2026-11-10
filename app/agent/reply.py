@@ -23,6 +23,7 @@ from app.agent.checkout import Plan
 from app.agent.errors import ToolErrorCode
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
+from app.agent.reference import TurnContext
 from app.agent.schemas import (
     Action,
     AgentActData,
@@ -414,6 +415,26 @@ def _picked(calls: list[ToolCall]) -> ToolCall | None:
     return None
 
 
+# 찾은 책으로 고른 조합을 확인 버튼으로 받지 못할 때 붙이는 안내(#664)
+PICK_SAY_TITLE = "담으시려면 담고 싶은 책 제목을 말씀해 주세요."
+
+
+def _known_to_be(ctx: TurnContext, isbn: str) -> bool:
+    """BE 가 이 턴의 요청으로 아는 책인가(카드, 장바구니, 지금 보는 책). BE 는 고른 조합(selection)의 책을 이 안에서만
+    찾고, 없으면 턴 전체를 E502 로 거절한다(BE CallAgentChatUseCase.validate, 11/11 dev). 찾은 책(book.search)은
+    BE 가 모른다."""
+    return (
+        any(card.isbn == isbn for card in ctx.cards)
+        or any(line.isbn == isbn for line in ctx.cart_snapshot or [])
+        or ctx.focused_isbn == isbn
+    )
+
+
+def _confirmable(ctx: TurnContext, picked: ToolCall) -> bool:
+    """고른 조합을 확인 버튼(selection)으로 보낼 수 있는가. 찾은 책이 섞여 있으면 BE 가 거절하므로 보내지 않는다."""
+    return all(_known_to_be(ctx, book["isbn"]) for book in picked.result["chosen"])
+
+
 # 사용자의 말로 책이 하나로 정해지지 않아 막힌 쓰기. 그 호출의 책은 모델이 고른 것이다
 _UNDECIDED = frozenset(
     {ToolErrorCode.REFERENCE_NOT_STATED.value, ToolErrorCode.AMBIGUOUS_BOOK.value}
@@ -468,14 +489,14 @@ def _wrote(calls: list[ToolCall]) -> bool:
     )
 
 
-def _selection(calls: list[ToolCall]) -> Selection | None:
+def _selection(calls: list[ToolCall], ctx: TurnContext) -> Selection | None:
     """코드가 고른 조합. 골라 담기를 하지 않았거나 고르지 못했으면 None.
 
     골라서 담으라고 맡겨 고른 책을 이미 담았으면(#631) 확인받을 조합이 아니다. BE 는 selection 이 있으면 actions 를
     보지 않고 담기 제안만 저장하므로 싣지 않는다.
     """
     picked = _picked(calls)
-    if picked is None or _wrote(calls):
+    if picked is None or _wrote(calls) or not _confirmable(ctx, picked):
         return None
     return Selection(
         goal="budget_pick",
@@ -509,14 +530,20 @@ def _touched_cart(call: ToolCall) -> bool:
     )
 
 
-def _buttons(calls: list[ToolCall], logged_in: bool, order: bool) -> list[Button]:
+def _buttons(calls: list[ToolCall], ctx: TurnContext, order: bool) -> list[Button]:
+    logged_in = ctx.logged_in
     buttons: list[Button] = []
     seen: set[str] = set()
 
     # AI 가 고른 조합은 담지 않고 이 버튼으로 확인받는다. 로그인하지 않았으면 담을 수 없으니 만들지 않는다.
     # 골라서 담으라고 맡겨 이미 담았으면 확인받지 않는다(#631)
     picked = _picked(calls)
-    if picked is not None and logged_in and not _wrote(calls):
+    if (
+        picked is not None
+        and logged_in
+        and not _wrote(calls)
+        and _confirmable(ctx, picked)
+    ):
         isbns = [book["isbn"] for book in picked.result["chosen"]]
         buttons.append(Button(label="담기", action="confirm_selection", isbns=isbns))
 
@@ -579,9 +606,20 @@ def finish(run: AgentRun) -> Finished:
     removed: list[str] = []
     flagged: set[int] = set()
     kept_lines: list[str] = []
+    picked = _picked(run.tool_calls)
+    # 찾은 책으로 고른 조합은 확인 버튼을 못 붙인다(#664). 모델이 "담기 버튼을 누르면"이라고 해도 버튼이 없다
+    no_button = (
+        picked is not None
+        and run.ctx.logged_in
+        and not _wrote(run.tool_calls)
+        and not _confirmable(run.ctx, picked)
+    )
     for line in _units(text):
         kept: list[str] = []
         for sentence in line:
+            if no_button and "버튼" in sentence:
+                removed.append("NO_PICK_BUTTON")
+                continue
             problem = _check(sentence, facts)
             if problem is None:
                 kept.append(sentence)
@@ -608,6 +646,8 @@ def finish(run: AgentRun) -> Finished:
     elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):
         # "쿠폰 적용해서 장바구니에 넣어 줘": 장바구니에는 쿠폰이 없다(#631)
         outcome_lines.append(COUPON_LATER)
+    if no_button:
+        kept_lines.append(PICK_SAY_TITLE)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
     if not reply:
         if removed:
@@ -626,8 +666,8 @@ def finish(run: AgentRun) -> Finished:
         ],
         tool_calls=calls,
         resolved_reference=_resolved(run),
-        selection=_selection(calls),
-        buttons=_buttons(calls, run.ctx.logged_in, order=run.checkout is not None),
+        selection=_selection(calls, run.ctx),
+        buttons=_buttons(calls, run.ctx, order=run.checkout is not None),
         checkout=_checkout(run.checkout),
     )
     return Finished(data, removed)
