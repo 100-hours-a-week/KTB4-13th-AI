@@ -41,6 +41,8 @@ RUN addgroup --system app && adduser --system --ingroup app app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/hf /app/hf
 COPY app ./app
+# ③ 함께 대출·마니아 그래프(READING_GRAPH_PATH 기본값). 없으면 그 갈래 없이 돈다
+COPY data/reading_graph.json.gz ./data/reading_graph.json.gz
 COPY main.py ./main.py
 
 USER app
