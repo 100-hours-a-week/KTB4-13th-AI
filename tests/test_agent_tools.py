@@ -665,6 +665,82 @@ def _pick_setup(offers, *, logged_in=True, allow_tools=None):
 THREE = [(20000, 92, 5), (15000, 87, 5), (10000, 81, 5)]
 
 
+def test_금액을_말하지_않았으면_예산_고르기를_막는다() -> None:
+    # 실제 모델이 "1번 하나 주세요"에 예산 1원으로 고르기를 불러 "조합이 없다"고 답했다(11/10 평가 add-11)
+    spy, _fake, ctx = _pick_setup(THREE)
+    ctx.message = "1번 하나 주세요"
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 1, "count": 1})
+
+    assert call.result["ok"] is False
+    assert call.result["error"] == "BUDGET_NOT_STATED"
+    assert "지어내" in call.result["next"]
+    assert spy.calls == []  # BE 를 읽지도 않는다
+    assert ctx.picked == set()
+
+
+def test_막힌_뒤의_안내는_AI가_고른_책을_담으라고_하지_않는다() -> None:
+    # "1번이랑 2번 중에 나은 거 담아줘"는 담으면 안 된다(compare-03). 안내가 담기로 몰면 안 된다
+    spy, _fake, ctx = _pick_setup(THREE)
+    ctx.message = "1번이랑 2번 중에 나은 거 담아줘"
+
+    call = _run(
+        ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 999999999, "count": 1}
+    )
+
+    assert call.result["error"] == "BUDGET_NOT_STATED"
+    assert "담지 말고" in call.result["next"]
+
+
+def test_금액이_앞선_사용자_말에_있으면_고른다() -> None:
+    # "4만원 안에서 골라 줘" → "몇 권 고를까요?" → "두 권이요"
+    spy, _fake, ctx = _pick_setup(THREE)
+    ctx.message = "두 권이요"
+    ctx.turns = [
+        Turn(role="user", text="3만원 안에서 골라 줘"),
+        Turn(role="assistant", text="몇 권 고를까요?"),
+    ]
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert call.result["ok"] is True
+
+
+def test_에이전트가_말한_금액은_사용자의_예산이_아니다() -> None:
+    # 앞 차례의 가격 안내("15,000원이에요")를 예산으로 보면 다시 지어낸 예산으로 고르게 된다
+    spy, _fake, ctx = _pick_setup(THREE)
+    ctx.message = "그럼 두 권 골라 줘"
+    ctx.turns = [
+        Turn(role="user", text="1번 얼마야?"),
+        Turn(role="assistant", text="《책1》은 15,000원이에요."),
+    ]
+
+    call = _run(ctx, spy, ToolName.SELECTION_PICK, {"budget_total": 30000, "count": 2})
+
+    assert call.result["error"] == "BUDGET_NOT_STATED"
+
+
+@pytest.mark.parametrize(
+    ("message", "stated"),
+    [
+        ("4만원 안에서 2권 골라 담아줘", True),
+        ("3만 5천원 안에서 두 권", True),
+        ("만원 안에서 2권 골라 담아줘", True),
+        ("37,000원 이하로", True),
+        ("삼만원으로 골라 줘", True),
+        ("예산 안에서 두 권 골라 줘", False),
+        ("1번 하나 주세요", False),
+        ("한 권만 남겨 줘", False),
+        ("만화책 두 권 골라 줘", False),
+    ],
+)
+def test_금액을_말한_꼴을_알아본다(message: str, stated: bool) -> None:
+    _spy, _fake, ctx = _pick_setup(THREE)
+    ctx.message = message
+
+    assert evidence.states_budget(ctx) is stated
+
+
 def test_예산_안에서_점수_합이_가장_큰_조합을_코드가_고른다() -> None:
     spy, fake, ctx = _pick_setup(THREE)
 
@@ -1262,6 +1338,125 @@ def test_카드가_보일_때_2번_빼줘를_장바구니_2번째로_읽으면_�
     assert call.result["books"][1].startswith("장바구니 2번째 《")
     assert "remove_item" not in spy.calls
     assert fake.cart_state(UID) == before
+
+
+def test_수량을_말하지_않았으면_모델이_채운_2권을_1권으로_담는다() -> None:
+    # 11/10 평가 checkout-h09: "2번 주문해 줘"의 "2번"을 2권으로 읽었다
+    spy, fake, ctx = _setup()
+
+    call = _run(
+        _words(ctx, "2번 주문해 줘"),
+        spy,
+        ToolName.CART_ADD,
+        {"book": card(2), "quantity": 2},
+    )
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {B: 1}
+
+
+def test_앞선_자기_말에서_수량을_말했으면_그_수량으로_담는다() -> None:
+    spy, fake, ctx = _setup()
+    ctx.turns = [
+        Turn(role="user", text="두 권 담아줘"),
+        Turn(role="assistant", text="어느 책을 담을까요?"),
+    ]
+
+    call = _run(
+        _words(ctx, "2번이요"), spy, ToolName.CART_ADD, {"book": card(2), "quantity": 2}
+    )
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {B: 2}
+
+
+def test_카드_2번_책이_장바구니에_있으면_장바구니_2번째로_읽은_2번_빼줘도_카드_2번_책을_뺀다() -> (
+    None
+):
+    # 11/10 평가 remove-13. 카드는 A, B, C 이고 장바구니는 D, E, B(최근에 담은 D 가 1번, B 가 3번째)다.
+    # 숫자만 말한 번호는 카드 번호이고 카드 2번 B 가 장바구니에 있으니 B 를 뺀다
+    spy, fake, ctx = _setup(seed=[(B, 1), (E, 1), (D, 1)])
+    _see_cart(ctx, spy)
+
+    call = _run(
+        _words(ctx, "2번 빼 주세요"), spy, ToolName.CART_REMOVE, {"book": cart(2)}
+    )
+
+    assert call.result == {"ok": True}
+    assert call.arguments["isbn"] == B
+    assert set(fake.cart_state(UID)) == {D, E}
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        "장바구니에는 1번째 《책D》, 2번째 《책E》, 3번째 《책B》가 있어요.",
+        "장바구니에는 1번 《책D》, 2번 《책E》, 3번 《책B》가 있어요.",
+        "장바구니에 담긴 책이에요.\n1. 《책D》\n2. 《책E》\n3. 《책B》",
+    ],
+)
+def test_장바구니를_번호로_보여_준_뒤의_2번_빼줘는_카드로_바꾸지_않고_두_책을_짚어_묻는다(
+    listing: str,
+) -> None:
+    spy, fake, ctx = _setup(
+        seed=[(B, 1), (E, 1), (D, 1)],
+        cards=[ContextCard(isbn=B, rank=2, match_score=87)],
+    )
+    _see_cart(ctx, spy)
+    before = fake.cart_state(UID)
+    ctx.turns = [
+        Turn(role="user", text="장바구니 보여줘"),
+        Turn(role="assistant", text=listing),
+    ]
+
+    by_cart = _run(
+        _words(ctx, "2번 빼 주세요"), spy, ToolName.CART_REMOVE, {"book": cart(2)}
+    )
+    by_card = _run(
+        _words(ctx, "2번 빼 주세요"), spy, ToolName.CART_REMOVE, {"book": card(2)}
+    )
+
+    assert by_cart.result["error"] == "AMBIGUOUS_BOOK"
+    assert by_card.result["error"] == "AMBIGUOUS_BOOK"
+    assert by_card.result["books"][0].startswith("카드 2번")
+    assert by_card.result["books"][1].startswith("장바구니 2번째")
+    assert fake.cart_state(UID) == before
+
+
+@pytest.mark.parametrize("model_book", [card(2), cart(2)])
+def test_장바구니를_번호로_보여_줘도_카드_2번이라고_지정하면_그_책을_뺀다(
+    model_book: dict,
+) -> None:
+    spy, fake, ctx = _setup(seed=[(B, 1), (E, 1), (D, 1)])
+    _see_cart(ctx, spy)
+    ctx.turns = [
+        Turn(role="assistant", text="장바구니에는 1번 《책D》, 2번 《책E》가 있어요."),
+    ]
+
+    call = _run(
+        _words(ctx, "카드 2번을 빼 주세요"),
+        spy,
+        ToolName.CART_REMOVE,
+        {"book": model_book},
+    )
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {D: 1, E: 1}
+
+
+def test_카드_번호와_함께_장바구니_맨_아래를_지정하면_맨_아래_책을_뺀다() -> None:
+    spy, fake, ctx = _setup(seed=[(E, 1), (B, 1)])
+    _see_cart(ctx, spy)
+
+    call = _run(
+        _words(ctx, "2번은 두고 장바구니 맨 아래 책을 빼 줘"),
+        spy,
+        ToolName.CART_REMOVE,
+        {"book": cart(2)},
+    )
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {B: 1}
 
 
 def test_카드가_보일_때_2번_빼줘를_카드_2번으로_읽으면_그_책이_장바구니에_없다고_알린다() -> (

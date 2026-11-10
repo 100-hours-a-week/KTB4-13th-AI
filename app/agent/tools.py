@@ -256,6 +256,15 @@ async def _unstated(
             ToolErrorCode.AMBIGUOUS_BOOK.value,
             books=[_named(ctx, card_ref, card.isbn), _named(ctx, ref, isbn)],
         )
+    position = evidence.cart_for_bare_number(ctx, ref, isbn)
+    if position is not None:
+        # 방금 장바구니를 번호로 보여 준 뒤의 "2번"을 모델이 카드 2번으로 읽었다. 장바구니 2번째일 수도 있어 묻는다
+        cart_ref = BookRef(source="cart", n=position)
+        line = (ctx.cart_snapshot or [])[position - 1]
+        return _fail(
+            ToolErrorCode.AMBIGUOUS_BOOK.value,
+            books=[_named(ctx, ref, isbn), _named(ctx, cart_ref, line.isbn)],
+        )
     return _held(ToolErrorCode.REFERENCE_NOT_STATED, ctx, ref, isbn, verb)
 
 
@@ -315,6 +324,11 @@ def _named(ctx: TurnContext, ref: BookRef, isbn: str) -> str:
 async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Done:
     isbn = resolve(ctx, args.book)
     quantity = 1 if args.quantity is None else args.quantity
+    # 찾은 책의 제목과 권수를 말했으면("리눅스 명령어 사전 두 권") 수량은 사용자가 말한 수다. 모델이 1로 채워도
+    # 코드가 고친다(11/10 평가 checkout-m08)
+    copies = evidence.copies_of(ctx, isbn) if args.book.source == "search" else None
+    if copies is not None:
+        quantity = copies
     # 찾은 책이나 코드가 고른 책에서 "두 권 골라서"의 두 권은 서로 다른 책의 수다. 모델이 그 수를 한 책의 수량으로
     # 채워도 "두 권씩"처럼 말하지 않았으면 한 권만 담는다(#631). 다만 찾은 책의 제목을 말하고 권수를 말했으면
     # ("AI 모델 서빙 실전 3권") 그 권수는 그 책의 수량이다
@@ -323,6 +337,10 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
         and not evidence.states_each(ctx)
         and not evidence.states_copies(ctx, isbn)
     ):
+        quantity = 1
+    # 사용자가 수량을 말하지 않았는데 모델이 2권 이상을 채우면 1권이다. 카드 제목을 상태에 보여 준 뒤로 모델이
+    # "2번 주문해 줘"의 "2번"을 2권으로 읽었다(11/10 평가 checkout-h09 5번 중 4번). 말한 권수보다 많이 담지 않는다
+    if quantity > 1 and copies is None and not evidence.said_quantity_lately(ctx):
         quantity = 1
     arguments = {"isbn": isbn, "quantity": quantity}
     # 이번 턴에 AI 가 고른 책은 사용자가 확인하기 전에 담지 않는다. 확인은 응답의 버튼으로 받는다.
@@ -345,7 +363,9 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
     # LLM 이 수량을 채웠어도 사용자의 말에 수량이 없으면 말하지 않은 것으로 본다
     cart = await gateway.get_cart(ctx.user_id)
     existing = next((line for line in cart if line.isbn == isbn), None)
-    stated = args.quantity is not None and evidence.states_quantity(ctx)
+    stated = (args.quantity is not None or copies is not None) and (
+        evidence.states_quantity(ctx)
+    )
     if existing is not None and (not stated or quantity == existing.quantity):
         failure = _fail(
             ToolErrorCode.ALREADY_IN_CART.value,
@@ -382,13 +402,15 @@ async def _update(
 async def _remove(
     ctx: TurnContext, gateway: CommerceGateway, args: RemoveArgs
 ) -> _Done:
-    isbn = resolve(ctx, args.book)
+    # 카드가 보일 때 숫자만 말한 "2번 빼줘"를 장바구니 2번째로 읽었으면 카드 2번 책을 뺀다(evidence.removal_card)
+    book = evidence.removal_card(ctx, args.book) or args.book
+    isbn = resolve(ctx, book)
     if (separate := _separate(ctx)) is not None:
         return {"isbn": isbn}, separate
     verb = "뺄까요?"
-    if (blocked := await _unstated(ctx, gateway, args.book, isbn, verb)) is not None:
+    if (blocked := await _unstated(ctx, gateway, book, isbn, verb)) is not None:
         return {"isbn": isbn}, blocked
-    if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
+    if (blocked := _unrequested(ctx, book, isbn, verb)) is not None:
         return {"isbn": isbn}, blocked
     return await _write(ctx, {"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
 
@@ -426,6 +448,11 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
     응답에 같이 받지 않는다(#489).
     """
     arguments = {"budget_total": args.budget_total, "count": args.count}
+    if not evidence.states_budget(ctx):
+        # 예산은 사용자 말에서만 온다. 다음에 할 일을 결과에 적어 모델이 짐작한 예산으로 다시 부르지 않게 한다
+        return arguments, _fail(
+            ToolErrorCode.BUDGET_NOT_STATED.value, next=_budget_hint(ctx)
+        )
     if ctx.changed_cart:
         return arguments, _fail(ToolErrorCode.SEPARATE_TURN_REQUIRED.value)
     in_cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
@@ -457,6 +484,24 @@ async def _pick(ctx: TurnContext, gateway: CommerceGateway, args: PickArgs) -> _
                 card.isbn, offer.title, offer.price, card.match_score, card.rank
             )
     return _picked_result(ctx, arguments, candidates, args)
+
+
+def _budget_hint(ctx: TurnContext) -> str:
+    """금액 없이 예산 고르기를 부른 모델에게 줄 다음 할 일.
+
+    담으라고 몰지 않는다. "1번이랑 2번 중에 나은 거 담아줘"(평가 compare-03)는 어느 책인지 AI 가 고르는 말이라
+    담으면 안 되는데, 예전엔 모델이 이 말에 예산 고르기를 불러 확인 버튼으로 우연히 안전하게 끝났다(#400).
+    """
+    if ctx.search_results:
+        return (
+            "사용자가 금액을 말하지 않았다. 예산을 지어내 다시 부르지 않는다. 찾은 책에서 담는다: 책 제목과 "
+            "권수를 말했으면 그 책을 그 권수(quantity)로, 주제로 그렸으면 재고가 있는 서로 다른 책을 말한 "
+            "권수만큼"
+        )
+    return (
+        "사용자가 금액을 말하지 않았다. 예산을 지어내 다시 부르지 않는다. 사용자가 한 권을 정해 담으라고 "
+        "했으면 그 책만 cart_add 로 담는다. 어느 책인지 네가 골라야 하는 말이면 담지 말고 사용자에게 고르게 한다"
+    )
 
 
 def _picked_result(

@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 13,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -6069,6 +6069,2006 @@
         "cart": {
           "9788900001001": 1,
           "9788900001025": 2
+        }
+      }
+    },
+    {
+      "id": "add-11",
+      "kind": "add",
+      "split": "heldout",
+      "about": "카드 번호에 '주세요'만 붙인 말로 담는다",
+      "request": {
+        "user_id": 9800001,
+        "conversation_id": "eval_add-11",
+        "message": "1번 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_add-11_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "add-12",
+      "kind": "add",
+      "split": "heldout",
+      "about": "'살게요'로 카드 책을 고른다",
+      "request": {
+        "user_id": 9800002,
+        "conversation_id": "eval_add-12",
+        "message": "2번으로 살게요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_add-12_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "add-13",
+      "kind": "add",
+      "split": "heldout",
+      "about": "추천 낱말과 담기 낱말이 같이 있는 말(문지기 both)",
+      "request": {
+        "user_id": 9800003,
+        "conversation_id": "eval_add-13",
+        "message": "추천해 준 것 중에 3번 장바구니에 넣어줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_add-13_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "add-14",
+      "kind": "add",
+      "split": "heldout",
+      "about": "카드 없이 지금 보는 책을 담는다",
+      "request": {
+        "user_id": 9800004,
+        "conversation_id": "eval_add-14",
+        "message": "지금 보고 있는 이 책 한 권 넣어 줄래?",
+        "context_cards": [],
+        "focused_isbn": "9788900001063",
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_add-14_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001063": 1
+        }
+      }
+    },
+    {
+      "id": "update-11",
+      "kind": "update",
+      "split": "heldout",
+      "about": "제목과 '권으로 바꿔'로 수량을 바꾼다",
+      "request": {
+        "user_id": 9800005,
+        "conversation_id": "eval_update-11",
+        "message": "처음 만나는 파이썬 세 권으로 바꿔줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-11_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 3
+        }
+      }
+    },
+    {
+      "id": "update-12",
+      "kind": "update",
+      "split": "heldout",
+      "about": "장바구니 낱말 없이 '한 권만 남겨'로 수량을 줄인다(문지기 판정)",
+      "request": {
+        "user_id": 9800006,
+        "conversation_id": "eval_update-12",
+        "message": "네트워크 한 걸음씩은 한 권만 남겨 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_update-12_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001063",
+            "qty": 2
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001063": 1,
+          "9788900001056": 1
+        }
+      }
+    },
+    {
+      "id": "remove-11",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "카드가 보이는데 제목으로 장바구니 책을 뺀다",
+      "request": {
+        "user_id": 9800007,
+        "conversation_id": "eval_remove-11",
+        "message": "장바구니에서 리눅스 명령어 사전은 빼 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-11_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1,
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "remove-12",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "'지워 주세요'로 뺀다(장바구니 낱말 없음, 문지기 판정)",
+      "request": {
+        "user_id": 9800008,
+        "conversation_id": "eval_remove-12",
+        "message": "데이터베이스 설계 노트는 필요 없어졌어요. 지워 주세요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-12_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001117",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001117": 1
+        }
+      }
+    },
+    {
+      "id": "view-05",
+      "kind": "view",
+      "split": "heldout",
+      "about": "합계를 묻는다",
+      "request": {
+        "user_id": 9800009,
+        "conversation_id": "eval_view-05",
+        "message": "지금 장바구니 총 얼마야?",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_view-05_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 2
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001001": 2,
+          "9788900001056": 1
+        },
+        "required_numbers": [
+          42000
+        ],
+        "cart_total": 42000
+      }
+    },
+    {
+      "id": "view-06",
+      "kind": "view",
+      "split": "heldout",
+      "about": "담아 둔 책을 묻는다",
+      "request": {
+        "user_id": 9800010,
+        "conversation_id": "eval_view-06",
+        "message": "내가 뭐 담아 놨더라?",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_view-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001070",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001100",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001070": 1,
+          "9788900001100": 1
+        },
+        "required_text": [
+          "객체지향 사고법",
+          "개발자의 글쓰기"
+        ]
+      }
+    },
+    {
+      "id": "offer-04",
+      "kind": "offer",
+      "split": "heldout",
+      "about": "카드 책 값을 묻는다",
+      "request": {
+        "user_id": 9800011,
+        "conversation_id": "eval_offer-04",
+        "message": "1번 얼마예요?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_offer-04_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "required_numbers": [
+          15000
+        ]
+      }
+    },
+    {
+      "id": "offer-05",
+      "kind": "offer",
+      "split": "heldout",
+      "about": "품절 카드 책을 지금 살 수 있는지 묻는다",
+      "request": {
+        "user_id": 9800012,
+        "conversation_id": "eval_offer-05",
+        "message": "3번 지금 바로 살 수 있어요?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001032",
+            "rank": 2,
+            "match_score": 85
+          },
+          {
+            "isbn": "9788900001094",
+            "rank": 3,
+            "match_score": 80
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_offer-05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {}
+      }
+    },
+    {
+      "id": "compare-04",
+      "kind": "compare",
+      "split": "heldout",
+      "about": "두 카드 중 싼 쪽을 묻는다(장바구니 낱말 없음)",
+      "request": {
+        "user_id": 9800013,
+        "conversation_id": "eval_compare-04",
+        "message": "1번이랑 2번 중에 뭐가 더 저렴해요?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 90
+          },
+          {
+            "isbn": "9788900001032",
+            "rank": 2,
+            "match_score": 85
+          },
+          {
+            "isbn": "9788900001094",
+            "rank": 3,
+            "match_score": 80
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_compare-04_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "required_text": [
+          "파이썬"
+        ]
+      }
+    },
+    {
+      "id": "already-04",
+      "kind": "already",
+      "split": "heldout",
+      "about": "이미 한 권 담긴 카드 책을 '넣어줘'",
+      "request": {
+        "user_id": 9800014,
+        "conversation_id": "eval_already-04",
+        "message": "1번 장바구니에 넣어줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_already-04_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "loggedout-04",
+      "kind": "loggedout",
+      "split": "heldout",
+      "about": "로그인하지 않고 담아 달라고 한다",
+      "request": {
+        "user_id": 9800015,
+        "conversation_id": "eval_loggedout-04",
+        "message": "2번 담아 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": false
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_loggedout-04_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {}
+      }
+    },
+    {
+      "id": "mixed-09",
+      "kind": "mixed",
+      "split": "heldout",
+      "about": "빼기와 수량 있는 담기가 한 말에",
+      "request": {
+        "user_id": 9800016,
+        "conversation_id": "eval_mixed-09",
+        "message": "리눅스 책은 빼 주고 1번은 두 권 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_mixed-09_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 2
+        }
+      }
+    },
+    {
+      "id": "notshop-06",
+      "kind": "notshop",
+      "split": "heldout",
+      "about": "책과 상관없는 이야기",
+      "request": {
+        "user_id": 9800017,
+        "conversation_id": "eval_notshop-06",
+        "message": "개발자 커리어 고민이 있는데 얘기 좀 들어줄래?",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_notshop-06_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "not_shopping",
+        "cart": {}
+      }
+    },
+    {
+      "id": "followup-13",
+      "kind": "followup",
+      "split": "heldout",
+      "about": "⑦이 담기를 물은 뒤 동의한다",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번 어때요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《데이터베이스 설계 노트》는 테이블 설계와 정규화를 다뤄요. 장바구니에 담아 드릴까요?"
+        }
+      ],
+      "request": {
+        "user_id": 9800018,
+        "conversation_id": "eval_followup-13",
+        "message": "네 그렇게 해 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_followup-13_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "tone-07",
+      "kind": "tone",
+      "split": "heldout",
+      "about": "한글 숫자·'꺼'·'주라' 말투로 담는다",
+      "request": {
+        "user_id": 9800019,
+        "conversation_id": "eval_tone-07",
+        "message": "삼번 꺼 하나 담아 주라",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_tone-07_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "short-06",
+      "kind": "short",
+      "split": "heldout",
+      "about": "방금 담은 책을 '그거 취소'로 되돌린다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800020,
+        "conversation_id": "eval_short-06",
+        "message": "아 그거 취소",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_short-06_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {}
+      }
+    },
+    {
+      "id": "multiturn-07",
+      "kind": "multiturn",
+      "about": "한 책의 값과 난이도를 물은 뒤 '그걸로 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "3번 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《쿠버네티스 입문 가이드》는 28,000원이에요."
+        },
+        {
+          "role": "user",
+          "text": "입문자도 읽을 수 있어요?"
+        },
+        {
+          "role": "assistant",
+          "text": "처음 쿠버네티스를 배우는 사람을 위해 기본 개념부터 설명하는 책이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800101,
+        "conversation_id": "eval_multiturn-07",
+        "message": "좋아요 그걸로 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-07_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-08",
+      "kind": "multiturn",
+      "about": "한 책의 재고를 물은 뒤 '그럼 살게요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 재고 있나요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《알고리즘 문제 해결 전략》은 재고가 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800102,
+        "conversation_id": "eval_multiturn-08",
+        "message": "그럼 살게요",
+        "context_cards": [
+          {
+            "isbn": "9788900001032",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-08_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001032": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-09",
+      "kind": "multiturn",
+      "about": "한 책을 두 번 물은 뒤 '그 책 두 권 담아 주세요'(지시어와 담기 낱말이 있다)",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번은 어떤 책이에요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《객체지향 사고법》은 객체지향 설계를 예제로 익히는 책이에요."
+        },
+        {
+          "role": "user",
+          "text": "가격은요?"
+        },
+        {
+          "role": "assistant",
+          "text": "16,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800103,
+        "conversation_id": "eval_multiturn-09",
+        "message": "그럼 그 책 두 권 담아 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001063",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001070",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001100",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-09_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001070": 2
+        }
+      }
+    },
+    {
+      "id": "multiturn-10",
+      "kind": "multiturn",
+      "about": "사용자가 제목으로 물었고 에이전트는 제목을 다시 말하지 않았다. '하나 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "면접 대비 CS 요약 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "11,000원이에요."
+        },
+        {
+          "role": "user",
+          "text": "배송은 언제 와요?"
+        },
+        {
+          "role": "assistant",
+          "text": "배송 일정은 주문 화면에서 확인할 수 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800104,
+        "conversation_id": "eval_multiturn-10",
+        "message": "알겠어요 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001117",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-10_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001117": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-11",
+      "kind": "multiturn",
+      "about": "두 책을 함께 물은 뒤 '하나 주세요'. 어느 책인지 모른다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번이랑 2번 가격 알려 줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》은 15,000원, 《데이터베이스 설계 노트》는 22,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800105,
+        "conversation_id": "eval_multiturn-11",
+        "message": "괜찮네요 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-11_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "multiturn-12",
+      "kind": "multiturn",
+      "about": "한 책을 물은 뒤 감탄만 했다. 담으라고 하지 않았다",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번 어떤 책이에요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《데이터베이스 설계 노트》는 테이블 설계와 정규화를 다루는 실무 노트예요."
+        }
+      ],
+      "request": {
+        "user_id": 9800106,
+        "conversation_id": "eval_multiturn-12",
+        "message": "오 괜찮네요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-12_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": [
+          "informed",
+          "ask_back",
+          "not_shopping"
+        ],
+        "cart": {}
+      }
+    },
+    {
+      "id": "multiturn-21",
+      "kind": "multiturn",
+      "about": "한 책의 값과 재고를 물은 뒤 '그럼 두 권 담아줘'(같은 책 두 권)",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번 얼마야?"
+        },
+        {
+          "role": "assistant",
+          "text": "《소프트웨어 설계의 기본기》는 18,000원이에요."
+        },
+        {
+          "role": "user",
+          "text": "재고는?"
+        },
+        {
+          "role": "assistant",
+          "text": "재고 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800107,
+        "conversation_id": "eval_multiturn-21",
+        "message": "그럼 두 권 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001032",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-21_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 2
+        }
+      }
+    },
+    {
+      "id": "multiturn-13",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "한 책의 난이도를 물은 뒤 '이거 하나 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "3번 난이도 어때요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《객체지향 사고법》은 입문자도 따라갈 수 있게 예제로 설명해요."
+        }
+      ],
+      "request": {
+        "user_id": 9800108,
+        "conversation_id": "eval_multiturn-13",
+        "message": "괜찮네요 이거 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001049",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001070",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-13_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001070": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-14",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "제목으로 재고를 물은 뒤 '그럼 하나 살게요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "AI 모델 서빙 실전 재고 있어요?"
+        },
+        {
+          "role": "assistant",
+          "text": "네, 3권 남아 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800109,
+        "conversation_id": "eval_multiturn-14",
+        "message": "그럼 하나 살게요",
+        "context_cards": [
+          {
+            "isbn": "9788900001025",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001087",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001100",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-14_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001087": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-15",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "한 책을 세 번 물은 뒤 '그럼 두 권 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》은 15,000원이에요."
+        },
+        {
+          "role": "user",
+          "text": "초보한테 괜찮아요?"
+        },
+        {
+          "role": "assistant",
+          "text": "프로그래밍이 처음인 사람을 위한 입문서예요."
+        },
+        {
+          "role": "user",
+          "text": "연습 문제도 있어요?"
+        },
+        {
+          "role": "assistant",
+          "text": "장마다 연습 문제가 있어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800110,
+        "conversation_id": "eval_multiturn-15",
+        "message": "그럼 두 권 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001032",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001117",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-15_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 2
+        }
+      }
+    },
+    {
+      "id": "multiturn-16",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "제목으로 값을 물은 뒤 '장바구니에 넣어 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "리눅스 명령어 사전은 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "12,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800111,
+        "conversation_id": "eval_multiturn-16",
+        "message": "오 싸네요 장바구니에 넣어 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001018",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001056",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-16_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-17",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "책 소개를 들은 뒤 '좋아요 담아 주세요'",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번 책 소개 좀 해 주세요"
+        },
+        {
+          "role": "assistant",
+          "text": "《소프트웨어 설계의 기본기》는 좋은 설계의 원칙을 사례로 정리한 책이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800112,
+        "conversation_id": "eval_multiturn-17",
+        "message": "좋아요 담아 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001032",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001100",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-17_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-18",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "한 책을 물은 뒤 '다른 걸로 하나 주세요'. 이야기한 책이 아니다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》은 15,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800113,
+        "conversation_id": "eval_multiturn-18",
+        "message": "음 다른 걸로 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-18_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "multiturn-19",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "두 책을 차례로 물은 뒤 '그럼 하나 살게요'. 어느 책인지 모른다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《네트워크 한 걸음씩》은 20,000원이에요."
+        },
+        {
+          "role": "user",
+          "text": "3번은요?"
+        },
+        {
+          "role": "assistant",
+          "text": "《개발자의 글쓰기》는 13,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800114,
+        "conversation_id": "eval_multiturn-19",
+        "message": "그럼 하나 살게요",
+        "context_cards": [
+          {
+            "isbn": "9788900001063",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001070",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001100",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-19_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
+      }
+    },
+    {
+      "id": "multiturn-20",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "카드 번호로 내용을 물은 뒤 '좋네요 하나 주세요'(카드 대답 다음 흔한 말)",
+      "history": [
+        {
+          "role": "user",
+          "text": "2번은 어떤 내용이에요?"
+        },
+        {
+          "role": "assistant",
+          "text": "2번 《데이터베이스 설계 노트》는 테이블을 나누고 인덱스를 거는 법을 실무 사례로 설명해요."
+        }
+      ],
+      "request": {
+        "user_id": 9800115,
+        "conversation_id": "eval_multiturn-20",
+        "message": "좋네요 하나 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-20_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-22",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "카드 번호로 물었고 에이전트는 제목을 말하지 않았다. '그럼 담아줘'",
+      "history": [
+        {
+          "role": "user",
+          "text": "3번 책 어때요?"
+        },
+        {
+          "role": "assistant",
+          "text": "면접 전에 CS 개념을 빠르게 훑을 수 있게 정리한 책이에요."
+        },
+        {
+          "role": "user",
+          "text": "얼마예요?"
+        },
+        {
+          "role": "assistant",
+          "text": "11,000원이에요."
+        }
+      ],
+      "request": {
+        "user_id": 9800116,
+        "conversation_id": "eval_multiturn-22",
+        "message": "그럼 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001063",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001070",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001117",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-22_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001117": 1
+        }
+      }
+    },
+    {
+      "id": "remove-13",
+      "kind": "remove",
+      "about": "카드 2번 책이 장바구니 3번째에 있다. '2번 빼 주세요'는 카드 2번 책을 뺀다",
+      "request": {
+        "user_id": 9800117,
+        "conversation_id": "eval_remove-13",
+        "message": "2번 빼 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-13_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001100",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1,
+          "9788900001100": 1
+        }
+      }
+    },
+    {
+      "id": "remove-14",
+      "kind": "remove",
+      "split": "heldout",
+      "about": "카드 3번 책이 장바구니 2번째에 있다. '3번 빼줘'는 카드 3번 책을 뺀다",
+      "request": {
+        "user_id": 9800118,
+        "conversation_id": "eval_remove-14",
+        "message": "3번 빼줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001032",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001049",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001063",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_remove-14_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1,
+          "9788900001001": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-23",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "카드 1번과 2번을 차례로 담은 뒤 '1번은 빼 줘'. 장바구니 1번째는 방금 담은 2번 책이다",
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        },
+        {
+          "role": "user",
+          "text": "2번도 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《데이터베이스 설계 노트》를 장바구니에 담았어요."
+        }
+      ],
+      "request": {
+        "user_id": 9800119,
+        "conversation_id": "eval_multiturn-23",
+        "message": "1번은 빼 줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-23_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001100",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001100": 1,
+          "9788900001018": 1
+        }
+      }
+    },
+    {
+      "id": "multiturn-24",
+      "kind": "multiturn",
+      "split": "heldout",
+      "about": "장바구니를 번호로 보여 준 뒤 '2번은 빼 주세요'는 장바구니 2번째일 수 있다. 카드 2번 책을 빼지 않고 두 책을 짚어 되묻는다",
+      "history": [
+        {
+          "role": "user",
+          "text": "장바구니 보여줘"
+        },
+        {
+          "role": "assistant",
+          "text": "장바구니에는 3권 종류가 있습니다.\n1번째는 《개발자의 글쓰기》 1권 13,000원, 2번째는 《리눅스 명령어 사전》 1권 12,000원, 3번째는 《데이터베이스 설계 노트》 1권 22,000원이며 합계는 47,000원입니다."
+        }
+      ],
+      "request": {
+        "user_id": 9800120,
+        "conversation_id": "eval_multiturn-24",
+        "message": "2번은 빼 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_multiturn-24_1"
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001100",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {
+          "9788900001018": 1,
+          "9788900001056": 1,
+          "9788900001100": 1
         }
       }
     }

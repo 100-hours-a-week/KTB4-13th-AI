@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 5,
   "about": "#631 카드 밖 책 찾기·주문 화면·쿠폰과 포인트. AGENT_CHECKOUT 을 켠 채로 돈다(사례의 checkout: true). cases.json(기능을 끈 기준선)과 따로 잰다",
   "catalog": [
     {
@@ -1359,6 +1359,674 @@
             "target": "CART-001"
           }
         ]
+      }
+    },
+    {
+      "id": "checkout-m01",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "정률 쿠폰이 정액보다 많이 깎이면 정률을 고른다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106401,
+        "conversation_id": "eval_checkout-m01",
+        "message": "데이터베이스 책 한 권 쿠폰 적용해서 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m01_1",
+        "owned_coupons": [
+          {
+            "owned_coupon_id": 21,
+            "coupon_id": 5,
+            "name": "DB 1천원",
+            "type": "FIXED_AMOUNT",
+            "discount": 1000,
+            "min_order_amount": 10000,
+            "expired_at": "2026-12-31T23:59:59"
+          },
+          {
+            "owned_coupon_id": 22,
+            "coupon_id": 5,
+            "name": "DB 10%",
+            "type": "PERCENT_RATE",
+            "discount": 0.1,
+            "min_order_amount": 20000,
+            "expired_at": "2026-12-31T23:59:59"
+          }
+        ],
+        "point_balance": 500
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        },
+        "checkout": {
+          "owned_coupon_id": 22,
+          "use_point": 500
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m02",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "최소 주문 금액이 모자라면 쿠폰을 비우고 포인트만 쓴다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106402,
+        "conversation_id": "eval_checkout-m02",
+        "message": "파이썬 책 하나 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m02_1",
+        "owned_coupons": [
+          {
+            "owned_coupon_id": 23,
+            "coupon_id": 3,
+            "name": "IT 3천원",
+            "type": "FIXED_AMOUNT",
+            "discount": 3000,
+            "min_order_amount": 20000,
+            "expired_at": "2026-12-31T23:59:59"
+          }
+        ],
+        "point_balance": 1000
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 1000
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m03",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "포인트가 주문 금액보다 많으면 주문 금액까지만 쓴다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106403,
+        "conversation_id": "eval_checkout-m03",
+        "message": "면접 대비 CS 요약 하나 주문할게요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m03_1",
+        "owned_coupons": [],
+        "point_balance": 50000
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001117": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 11000
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m04",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "가진 쿠폰이 이 책 대상이 아니면 비운다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106404,
+        "conversation_id": "eval_checkout-m04",
+        "message": "알고리즘 책 하나 주문할게요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m04_1",
+        "owned_coupons": [
+          {
+            "owned_coupon_id": 24,
+            "coupon_id": 5,
+            "name": "DB 2천원",
+            "type": "FIXED_AMOUNT",
+            "discount": 2000,
+            "min_order_amount": 10000,
+            "expired_at": "2026-12-31T23:59:59"
+          }
+        ],
+        "point_balance": 0
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001032": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m05",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "장바구니에 있던 책은 주문 금액에 넣지 않는다(이번에 담은 책만)",
+      "checkout": true,
+      "request": {
+        "user_id": 9106405,
+        "conversation_id": "eval_checkout-m05",
+        "message": "네트워크 책 하나 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m05_1",
+        "owned_coupons": [],
+        "point_balance": 25000
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1,
+          "9788900001063": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 20000
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m06",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "찾는 책이 없으면 담지 않고 알린다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106406,
+        "conversation_id": "eval_checkout-m06",
+        "message": "양자 컴퓨팅 책 하나 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m06_1",
+        "owned_coupons": [],
+        "point_balance": 1000
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "checkout": null
+      }
+    },
+    {
+      "id": "checkout-m07",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "장바구니 책 빼기와 찾아서 주문하기가 한 말에",
+      "checkout": true,
+      "request": {
+        "user_id": 9106407,
+        "conversation_id": "eval_checkout-m07",
+        "message": "객체지향 사고법은 빼 주고 쿠버네티스 책 하나 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m07_1",
+        "owned_coupons": [],
+        "point_balance": 1000
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001070",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 1000
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m08",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "제목과 권수에 '사 주세요'",
+      "checkout": true,
+      "request": {
+        "user_id": 9106408,
+        "conversation_id": "eval_checkout-m08",
+        "message": "리눅스 명령어 사전 두 권 사 주세요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m08_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 2
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m09",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "'결제해 줘'도 주문 화면으로 보낸다",
+      "checkout": true,
+      "request": {
+        "user_id": 9106409,
+        "conversation_id": "eval_checkout-m09",
+        "message": "파이썬 책 결제해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m09_1",
+        "owned_coupons": [
+          {
+            "owned_coupon_id": 25,
+            "coupon_id": 3,
+            "name": "IT 3천원",
+            "type": "FIXED_AMOUNT",
+            "discount": 3000,
+            "min_order_amount": 10000,
+            "expired_at": "2026-12-31T23:59:59"
+          }
+        ],
+        "point_balance": 0
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": 25,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-m10",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "카드 밖 책 값을 묻는다(담지 않음)",
+      "checkout": true,
+      "request": {
+        "user_id": 9106410,
+        "conversation_id": "eval_checkout-m10",
+        "message": "쿠버네티스 입문 가이드 얼마예요?",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m10_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "required_numbers": [
+          28000
+        ],
+        "checkout": null
+      }
+    },
+    {
+      "id": "checkout-m11",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "두 제목을 하나씩 쿠폰 적용해 주문(최소 금액을 넘는 정액 쿠폰)",
+      "checkout": true,
+      "request": {
+        "user_id": 9106411,
+        "conversation_id": "eval_checkout-m11",
+        "message": "웹 개발 입문서랑 앱 개발 입문서 하나씩 쿠폰 적용해서 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-m11_1",
+        "owned_coupons": [
+          {
+            "owned_coupon_id": 26,
+            "coupon_id": 3,
+            "name": "IT 3천원",
+            "type": "FIXED_AMOUNT",
+            "discount": 3000,
+            "min_order_amount": 30000,
+            "expired_at": "2026-12-31T23:59:59"
+          },
+          {
+            "owned_coupon_id": 27,
+            "coupon_id": 3,
+            "name": "IT 10%",
+            "type": "PERCENT_RATE",
+            "discount": 0.1,
+            "min_order_amount": 50000,
+            "expired_at": "2026-12-31T23:59:59"
+          }
+        ],
+        "point_balance": 2000
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001131": 1,
+          "9788900001148": 1
+        },
+        "checkout": {
+          "owned_coupon_id": 26,
+          "use_point": 2000
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-p01",
+      "kind": "checkout",
+      "about": "'제목 하나 구매하고 싶어요'는 주문이다",
+      "checkout": true,
+      "request": {
+        "user_id": 9800121,
+        "conversation_id": "eval_checkout-p01",
+        "message": "리눅스 명령어 사전 하나 구매하고 싶어요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-p01_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-p02",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "'제목 한 권 사고 싶어요'는 주문이다",
+      "checkout": true,
+      "request": {
+        "user_id": 9800122,
+        "conversation_id": "eval_checkout-p02",
+        "message": "알고리즘 문제 해결 전략 한 권 사고 싶어요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-p02_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001032": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-p03",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "'객체지향 책 하나 구입하려고 해요'는 주문이다",
+      "checkout": true,
+      "request": {
+        "user_id": 9800123,
+        "conversation_id": "eval_checkout-p03",
+        "message": "객체지향 책 하나 구입하려고 해요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-p03_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001070": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "checkout-p04",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "선물로 살 책을 고르는 말은 쇼핑 요청이 아니다(추천)",
+      "checkout": true,
+      "request": {
+        "user_id": 9800124,
+        "conversation_id": "eval_checkout-p04",
+        "message": "선물로 책을 사고 싶은데 뭐가 좋을까요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-p04_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "not_shopping",
+        "cart": {},
+        "checkout": null
+      }
+    },
+    {
+      "id": "checkout-p05",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "구매할 책을 추천해 달라는 말은 쇼핑 요청이 아니다",
+      "checkout": true,
+      "request": {
+        "user_id": 9800125,
+        "conversation_id": "eval_checkout-p05",
+        "message": "구매할 만한 파이썬 입문서 추천해 주세요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_checkout-p05_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "not_shopping",
+        "cart": {},
+        "checkout": null
       }
     }
   ]

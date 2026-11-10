@@ -825,7 +825,10 @@ def test_쓰기가_거절된_턴은_저장하지_않는다(monkeypatch, idempote
         ],
     )
 
-    res = client.post(URL, json=_request(idempotency_key="idem_rejected"))
+    # 말하지 않은 수량은 코드가 1권으로 줄이므로(tools._add) 사용자가 수량을 말한 턴으로 BE 거절을 만든다
+    res = client.post(
+        URL, json=_request(message="1번 9999권 담아줘", idempotency_key="idem_rejected")
+    )
 
     assert res.status_code == 200
     assert res.json()["data"]["tool_calls"][0]["result"]["ok"] is False
@@ -994,8 +997,9 @@ def test_같은_네라도_최근_대화가_없으면_담지_않는다(monkeypatc
     assert data["tool_calls"][0]["result"] == {
         "ok": False,
         "error": "REFERENCE_NOT_STATED",
-        "book": "카드 1번",
-        "ask": "카드 1번을 담을까요?",
+        # 카드 제목은 턴 시작에 코드가 미리 읽어 둔다(graph.prefetch_card_titles)
+        "book": "카드 1번 《책1》",
+        "ask": "카드 1번 《책1》을 담을까요?",
     }
     assert data["resolved_reference"] is None
     assert fake.cart_state(UID) == {}
