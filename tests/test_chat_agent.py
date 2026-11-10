@@ -19,6 +19,7 @@ from langchain_core.runnables import RunnableLambda
 
 from app.chat import lanes, picking, reading_graph, recall
 from app.chat.shown import ShownBook
+from app.chat.streaming import closed_reply
 from app.main import app
 from app.routers import chat
 from app.search.schemas import SearchFilters
@@ -1285,3 +1286,33 @@ def test_SSE면_판단_호출의_말풍선을_먼저_보내고_done_에_카드�
     done = events[1][1]["data"]
     assert events[0][1]["text"] == done["reply"]
     assert [c["title"] for c in done["cards"]] == ["반도체 입문"]
+
+
+def test_판단_답은_고른_책_말풍선_카드_이유_순서로_받는다() -> None:
+    template = picking.JUDGE_PROMPT.messages[0].prompt.template
+    form = template[template.index("이 칸 순서대로") :]
+    assert (
+        form.index('"action"')
+        < form.index('"picks"')
+        < form.index('"reply"')
+        < form.index('"cards": [{{"book_id"')
+    )
+
+
+def test_카드_차례는_picks_를_따르고_picks_가_틀리면_cards_차례다() -> None:
+    cards = [{"book_id": 1}, {"book_id": 2}, {"book_id": 3}]
+    answer = {"action": "cards", "picks": [3, 1], "cards": cards, "reply": "가"}
+    picked = picking.parse(answer, may_ask=True, may_search=True).cards
+    assert [c["book_id"] for c in picked] == [3, 1, 2]
+    answer["picks"] = "3, 1"
+    picked = picking.parse(answer, may_ask=True, may_search=True).cards
+    assert [c["book_id"] for c in picked] == [1, 2, 3]
+
+
+def test_말풍선은_카드_이유를_다_쓰기_전에_나간다() -> None:
+    written = (
+        '{"action": "cards", "picks": [301], "reply": "입문서예요.", '
+        '"cards": [{"book_id": 301, "reason_short": "반도'
+    )
+    assert picking.streams_reply(written) is True
+    assert closed_reply(written) == "입문서예요."

@@ -298,6 +298,9 @@ _PROPOSE = (
 )
 _PROPOSE_NO_QUESTION = "마지막 문장은 묻는 말이 아니라 권하는 말로 끝내라. "
 
+# JSON 은 action → 고른 책(picks) → 말풍선(reply) → 카드 이유(cards) 순서다. 카드 생성 호출(#645)과 같은 까닭이다 — 책을
+# 먼저 골라야 말풍선이 고른 책과 어긋나지 않고, 말풍선을 카드 이유 앞에 두어야 SSE 가 말풍선을 이유보다 먼저 보낸다.
+# cards 가 reply 앞이면 에이전트를 켰을 때 카드 턴 말풍선이 이유를 다 쓴 뒤에야 나왔다. 화면 차례는 picks 를 따른다.
 JUDGE_PROMPT = ChatPromptTemplate.from_template(
     "너는 책 추천 챗봇이다. 사용자와 대화하며 원하는 책을 함께 좁혀 간다.\n\n"
     "최근 대화:\n{recent_turns}\n\n"
@@ -317,21 +320,23 @@ JUDGE_PROMPT = ChatPromptTemplate.from_template(
     '2. "ask": {ask_rule}\n'
     '3. "search_again": {search_rule}\n\n'
     "cards 를 고르면:\n"
-    "반드시 한국어로만 답하라. book_id 는 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. cards 에 적은 차례가 "
-    "화면의 1번, 2번, 3번이다.\n"
+    "반드시 한국어로만 답하라. book_id 는 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. picks 에 적은 차례가 "
+    "화면의 1번, 2번, 3번이다. cards 에는 picks 의 책을 같은 차례로 적어라.\n"
     "reason_short 는 80자 이내 한 줄 이유, reason_long 은 사용자가 찾은 것과 이 책 소개의 어떤 점이 맞는지 잇는 "
     "2-4문장(최대 300자)이다. 책 소개 문장을 옮기거나 줄여 쓰지 마라. 근거는 그 책의 소개에 있는 것만 쓴다. "
     "match_basis 는 reason_short·reason_long 과 같은 근거를 label(예: 분위기, 장르, 가격)과 detail(그 근거의 구체적 "
     "내용) 짝으로 1~3개 적어라 — 새로운 근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     "reply 는 말풍선에 보일 1-2문장이다(최대 120자). 먼저 이번 메시지에 반응하라. 요청을 되풀이하며 시작하지 "
-    "마라. 카드 제목을 늘어놓지 말고 고른 책들이 어떤 결인지 한마디로 말하라. {propose}\n"
+    "마라. 카드 제목을 늘어놓지 말고 고른 책들이 어떤 결인지 한마디로 말하라. 책마다의 내용 설명은 뒤의 cards 이유에 "
+    "쓰니 말풍선에 늘어놓지 마라. {propose}\n"
     '"비슷한 책"(함께 읽은 책), "더 깊은 책"(마니아 추천 책), "많이 읽은", "다음에 읽은" 같은 말은 쓰지 마라.\n'
     + voice.RULES
-    + "다음 JSON 형식으로만 답하라. action 을 맨 앞에 쓴다. 고른 action 에 쓰지 않는 칸은 넣지 마라: "
+    + "다음 JSON 형식으로만, 이 칸 순서대로 답하라. action 을 맨 앞에 쓴다. 고른 action 에 쓰지 않는 칸은 넣지 마라: "
     '{{"action": "cards 또는 ask 또는 search_again", '
+    '"picks": [고른 책의 book_id 정수], "reply": "말풍선", '
     '"cards": [{{"book_id": 정수, "reason_short": "한 줄 이유", "reason_long": "긴 이유", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
-    '"reply": "말풍선", "question": "ask 일 때 묻는 말", '
+    '"question": "ask 일 때 묻는 말", '
     '"missed": "search_again 일 때 놓친 조건", "query": "search_again 일 때 새 검색어"}}\n\n'
     "책 목록:\n{listing}"
 )
@@ -389,7 +394,11 @@ def _text(value: Any) -> str | None:
 def parse(answer: dict, *, may_ask: bool, may_search: bool) -> Decision:
     """판단 호출의 답을 읽는다. 쓸 수 없는 action 이면 cards 로 본다(카드가 없으면 호출부가 못 찾음 안내를 낸다)."""
     raw_cards = answer.get("cards")
-    cards = raw_cards if isinstance(raw_cards, list) else []
+    cards = (
+        order_by_picks(raw_cards, answer.get("picks"))
+        if isinstance(raw_cards, list)
+        else []
+    )
     reply = _text(answer.get("reply"))
     action = answer.get("action")
     if action == "search_again" and may_search:
@@ -407,6 +416,30 @@ def parse(answer: dict, *, may_ask: bool, may_search: bool) -> Decision:
         if question:
             return Decision("ask", [], reply, question=question)
     return Decision("cards", cards, reply)
+
+
+def order_by_picks(raw_cards: list, picks: object) -> list:
+    """카드를 picks 차례로 세운다. 화면 차례는 말풍선을 쓰기 전에 고른 picks 다(카드 생성 호출 #645·판단 호출 같음).
+
+    picks 가 정수 목록이 아니면 cards 차례를 그대로 쓴다. picks 에 없는 카드는 picks 의 카드 뒤에 둔다 —
+    모델이 picks 를 빠뜨렸다고 카드를 버리면 카드가 0장이 될 수 있다. 카드가 없는 pick 은 건너뛴다.
+    """
+    if not isinstance(picks, list):
+        return raw_cards
+    order = {}
+    for book_id in picks:
+        if isinstance(book_id, int) and not isinstance(book_id, bool):
+            order.setdefault(book_id, len(order))
+    if not order:
+        return raw_cards
+
+    def rank(item: object) -> int:
+        book_id = item.get("book_id") if isinstance(item, dict) else None
+        return (
+            order.get(book_id, len(order)) if isinstance(book_id, int) else len(order)
+        )
+
+    return sorted(raw_cards, key=rank)
 
 
 _ACTION = re.compile(r'"action"\s*:\s*"(\w+)"')

@@ -1619,30 +1619,6 @@ def _parse_match_basis(raw: Any) -> list[dict]:
     ]
 
 
-def _order_by_picks(raw_cards: list, picks: object) -> list:
-    """카드를 picks 차례로 세운다. 화면 차례는 말풍선을 쓰기 전에 고른 picks 다.
-
-    picks 가 정수 목록이 아니면 cards 차례를 그대로 쓴다. picks 에 없는 카드는 picks 의 카드 뒤에 둔다 —
-    모델이 picks 를 빠뜨렸다고 카드를 버리면 카드가 0장이 될 수 있다. 카드가 없는 pick 은 건너뛴다.
-    """
-    if not isinstance(picks, list):
-        return raw_cards
-    order = {}
-    for book_id in picks:
-        if isinstance(book_id, int) and not isinstance(book_id, bool):
-            order.setdefault(book_id, len(order))
-    if not order:
-        return raw_cards
-
-    def rank(item: object) -> int:
-        book_id = item.get("book_id") if isinstance(item, dict) else None
-        return (
-            order.get(book_id, len(order)) if isinstance(book_id, int) else len(order)
-        )
-
-    return sorted(raw_cards, key=rank)
-
-
 @dataclass(frozen=True)
 class CardResult:
     cards: list[dict]
@@ -1724,7 +1700,7 @@ async def generate_cards(
     else:
         reply = voice.without_echo(reply.strip())
 
-    raw_cards = _order_by_picks(raw_cards, parsed.get("picks"))
+    raw_cards = picking.order_by_picks(raw_cards, parsed.get("picks"))
     cards = []
     for rank, item in enumerate(raw_cards[:CARD_LIMIT], start=1):
         if not isinstance(item, dict):
