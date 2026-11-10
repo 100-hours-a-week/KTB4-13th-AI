@@ -253,6 +253,13 @@ def test_사_달라는_말은_행동을_말한_것이다() -> None:
     assert evidence.states_action(_ctx("파이썬 입문서 하나 사 줘"))
 
 
+def test_기능을_끄면_사_달라는_말은_행동을_말한_것이_아니다() -> None:
+    # 꺼져 있으면 이 말에 장바구니를 바꾸지 않는다. main 과 같다
+    assert not evidence.states_action(
+        _ctx("파이썬 입문서 하나 사 줘", checkout_enabled=False)
+    )
+
+
 # --- 도구 ---
 
 
@@ -673,12 +680,36 @@ def test_챗봇_요청의_쿠폰과_포인트가_쇼핑_요청으로_넘어간�
 
 
 @pytest.mark.parametrize("message", ["파이썬 입문서 하나 사 줘", "파이썬 책 사 주세요"])
-def test_카드가_없어도_사_달라는_말은_쇼핑이다(message: str) -> None:
-    assert rules.route(message, False, False, False, False) == "shop"
+def test_기능을_켜면_카드가_없어도_사_달라는_말은_쇼핑이다(message: str) -> None:
+    assert rules.route(message, False, False, False, False, buy_requests=True) == "shop"
+
+
+@pytest.mark.parametrize(
+    ("message", "kind", "sure"),
+    [
+        # 추천 낱말("입문서")이 있어 ③
+        ("파이썬 입문서 하나 사 줘", "recommend", True),
+        # 낱말 근거가 없어 작은 판정 호출이 가른다
+        ("파이썬 책 사 주세요", "neither", False),
+    ],
+)
+def test_기능을_끄면_사_달라는_말을_v3처럼_가른다(
+    message: str, kind: str, sure: bool
+) -> None:
+    # 꺼진 ⑦ 에는 book.search 가 없고 프롬프트는 "주문은 할 수 없다"다. 스위치를 끈 채 머지해도 ③의 길이 바뀌면 안 된다
+    for decision in (
+        rules.decide(message, False, False, False, False),
+        rules.decide(message, False, False, False, False, buy_requests=False),
+    ):
+        assert (decision.kind, decision.sure) == (kind, sure)
 
 
 def test_검사_주세요는_사_달라는_말이_아니다() -> None:
-    assert rules.decide("검사 주세요", False, False, False, False).kind == "neither"
+    decision = rules.decide(
+        "검사 주세요", False, False, False, False, buy_requests=True
+    )
+
+    assert decision.kind == "neither"
 
 
 # --- 평가 묶음(evals/agent/checkout_cases.json) ---

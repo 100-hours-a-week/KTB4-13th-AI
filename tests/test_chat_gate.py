@@ -171,6 +171,50 @@ def test_추천_말이면_쇼핑을_부르지_않고_추천으로_처리하며_r
     assert body["data"]["cards"]
 
 
+def _checkout(monkeypatch, on: bool) -> None:
+    """AGENT_CHECKOUT 스위치를 켜거나 끈다. 문지기는 챗봇 입구에서 이 값을 읽는다."""
+    settings = chat.get_settings().model_copy(update={"agent_checkout": on})
+    monkeypatch.setattr(chat, "get_settings", lambda: settings)
+
+
+# v3 은 추천 낱말("입문서")로 ③에 보냈고, v4 는 "사 줘"를 장바구니 낱말로 보아 ⑦로 보낸다
+BUY_MESSAGE = "파이썬 입문서 하나 사 줘"
+
+
+def test_기능을_끄면_카드_없이_사_달라는_말도_추천으로_처리한다(monkeypatch) -> None:
+    # 꺼진 ⑦ 은 책을 찾을 수 없다. 스위치를 끈 채 배포해도 ③의 길이 바뀌지 않아야 한다(#637 리뷰)
+    _checkout(monkeypatch, False)
+    _forbid(monkeypatch, agent, "shop_turn")
+    _wire_recommend(monkeypatch)
+
+    res = client.post(URL, json=_body(BUY_MESSAGE, context_cards=[]))
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["message"] == "recommend_success"
+    assert body["data"]["route"] == "recommend"
+
+
+def test_기능을_켜면_카드_없이_사_달라는_말은_쇼핑으로_보낸다(monkeypatch) -> None:
+    _checkout(monkeypatch, True)
+    heard: list[str] = []
+
+    async def _shop(request, _payload):
+        heard.append(request.message)
+        return agent.ShopTurn(
+            message="agent_success",
+            data={"reply": "찾아볼게요.", "not_shopping": False, "actions": []},
+        )
+
+    monkeypatch.setattr(agent, "shop_turn", _shop)
+
+    res = client.post(URL, json=_body(BUY_MESSAGE, context_cards=[]))
+
+    assert res.status_code == 200
+    assert res.json()["data"]["route"] == "shop"
+    assert heard == [BUY_MESSAGE]
+
+
 def test_묻기에_답하면_쇼핑을_거치지_않고_추천으로_간다(monkeypatch) -> None:
     # ③이 넓은 첫 요청에 원하는 것을 물은 뒤의 답("요즘 너무 지쳐서")에는 추천 낱말이 없다.
     # v1 은 ⑦에 들렀다가 되돌아왔다(#530)

@@ -475,10 +475,10 @@ def states_quantity(ctx: TurnContext) -> bool:
 #   되묻는 말("마음에 든다! 더 궁금한 내용 있어?")은 답이 아니다
 # 어느 행동인지(담기인지 빼기인지)는 맞춰 보지 않는다. 시킨 적이 없는 행동을 막는 것만 한다.
 # "1번으로 할게요"처럼 행동이 애매한 말은 받지 않는다. 막히면 그 책을 짚어 "담을까요?"라고 한 번 묻는다.
-_BUY = re.compile(
-    r"살게|살래|사\s*갈게|사고\s*싶|(?:구매|구입|주문)\s*(?:할|하고|해)"
-    r"|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)"
-)
+_BUY = re.compile(r"살게|살래|사\s*갈게|사고\s*싶|(?:구매|구입|주문)\s*(?:할|하고|해)")
+# "사 줘"(#631). 카드 밖 책을 찾아 담는 ⑦(AGENT_CHECKOUT)이 켜졌을 때만 장바구니를 바꾸라는 말로 본다.
+# 꺼져 있으면 _BUY 만 본다(main 과 같다)
+_BUY_REQUEST = re.compile(r"(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)")
 _GIVE = re.compile(
     r"(?:하나|한\s*(?:권|개)|거|걸로|것|번|책)\s*(?:주세요|줘|주실래요|줄래|주시겠어요)"
 )
@@ -498,9 +498,10 @@ def states_action(ctx: TurnContext) -> bool:
     if ctx.message is None:
         return True
     message = normalize(ctx.message)
-    if any(
-        pattern.search(message) for pattern in (_CART_ACTION, _BUY, _GIVE, _QUANTITY)
-    ):
+    patterns = [_CART_ACTION, _BUY, _GIVE, _QUANTITY]
+    if ctx.checkout_enabled:
+        patterns.append(_BUY_REQUEST)
+    if any(pattern.search(message) for pattern in patterns):
         return True
     return (
         "?" not in message

@@ -42,7 +42,9 @@
 
 **v4(#631).** 카드가 없을 때 "파이썬 입문서 하나 사 줘"는 장바구니 낱말이 없어 추천 낱말("입문서")로 ③에 갔다.
 ⑦이 카드 밖 책을 찾아 담게 되면서 "사 줘", "사 주세요"를 장바구니 낱말로 본다. "사"는 앞에 한글이 붙지 않은
-꼴만 센다("검사 주세요"는 아니다).
+꼴만 센다("검사 주세요"는 아니다). **이 낱말은 ``AGENT_CHECKOUT`` 을 켠 서버에서만 본다**(``buy_requests``).
+꺼진 ⑦에는 book.search 가 없고 프롬프트도 "주문은 할 수 없다"라서, 꺼진 채로 ⑦에 보내면 추천 카드가 안 나온다.
+꺼져 있으면 v3과 같다.
 
 **확실한 가름과 애매한 가름(#530).** ``decide`` 는 갈래와 함께 그 갈래가 낱말 근거로 정해졌는지(sure)를 준다.
 낱말 근거 없이 기본값으로 정한 경우 — 아무 신호도 없는 말, 카드 번호만 있고 행동·추천 낱말이 없는 말 — 는
@@ -70,9 +72,10 @@ Kind = Literal["recommend", "cart", "both", "neither"]
 _CART_WORDS = re.compile(
     r"담아|담고|담기|담을|넣어|넣고|빼줘|빼 줘|빼 주|빼고|장바구니|수량|권으로"
     r"|재고|품절|가격|얼마|합계|합치|배송|주문|결제|환불|취소|비교"
-    # v4(#631): "파이썬 입문서 하나 사 줘". 카드가 없어도 사 달라는 말은 장바구니 말이다
-    r"|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)"
 )
+# v4(#631): "파이썬 입문서 하나 사 줘". 카드가 없어도 사 달라는 말은 장바구니 말이다. 카드 밖 책을 찾아 담는
+# ⑦(AGENT_CHECKOUT)이 켜졌을 때만 쓴다. 꺼져 있으면 _CART_WORDS 만 본다(v3)
+_BUY_REQUEST = re.compile(r"(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)")
 # 카드나 위치를 가리키는 말. 카드가 화면에 있을 때만 장바구니 신호로 본다
 _POINTER = re.compile(r"\d+\s*번|[첫두세네]\s?번째|이거|그거|이 책|그 책")
 # 새 책을 찾는 말. "보여줘"처럼 장바구니 말에도 쓰이는 낱말은 넣지 않았다
@@ -169,8 +172,12 @@ def decide(
     after_ask: bool = False,
     after_action: bool = False,
     after_fork: bool = False,
+    buy_requests: bool = False,
 ) -> Decision:
     """말 하나를 네 갈래 중 하나로 가르고, 그 갈래가 확실한지 함께 준다.
+
+    ``buy_requests`` 는 "사 줘"를 장바구니 낱말로 볼지(v4)다. ⑦이 카드 밖 책을 찾아 담는 서버
+    (``AGENT_CHECKOUT``)에서만 true 로 준다. 기본은 v3이다.
 
     1. 장바구니 낱말이 있으면 장바구니 신호. 추천 낱말도 있으면 ``both``
     2. 직전 챗봇 말이 ③의 묻기면(after_ask) 나머지는 추천(v2). 가격·출간연도만 말했어도 추천(v3)
@@ -185,7 +192,9 @@ def decide(
        확실하다
     """
     text = message.strip()
-    cart_words = bool(_CART_WORDS.search(text))
+    cart_words = bool(_CART_WORDS.search(text)) or (
+        buy_requests and bool(_BUY_REQUEST.search(text))
+    )
     pointer = cards_shown and bool(_POINTER.search(text))
     recommend = bool(_REC_WORDS.search(text))
     if cart_words:
@@ -222,9 +231,12 @@ def classify(
     after_ask: bool = False,
     after_action: bool = False,
     after_fork: bool = False,
+    buy_requests: bool = False,
 ) -> Kind:
     """말 하나를 네 갈래 중 하나로 가른다(``decide`` 의 갈래만)."""
-    return decide(message, cards_shown, after_ask, after_action, after_fork).kind
+    return decide(
+        message, cards_shown, after_ask, after_action, after_fork, buy_requests
+    ).kind
 
 
 def route(
@@ -233,7 +245,10 @@ def route(
     after_ask: bool = False,
     after_action: bool = False,
     after_fork: bool = False,
+    buy_requests: bool = False,
 ) -> Lane:
     """③으로 바로 보낼지(``recommend``), ⑦로 보낼지(``shop``)."""
-    kind = classify(message, cards_shown, after_ask, after_action, after_fork)
+    kind = classify(
+        message, cards_shown, after_ask, after_action, after_fork, buy_requests
+    )
     return "recommend" if kind == "recommend" else "shop"
