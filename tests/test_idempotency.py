@@ -7,8 +7,14 @@ from app.core import idempotency
 
 
 def test_키_순서와_공백이_달라도_같은_본문으로_본다() -> None:
-    a = {"user_id": 1, "onboarding": {"tags": ["힐링"], "liked_book_ids": [1]}}
-    b = {"onboarding": {"liked_book_ids": [1], "tags": ["힐링"]}, "user_id": 1}
+    a = {
+        "user_id": 1,
+        "onboarding": {"tags": ["힐링"], "liked_isbns": ["9788936434120"]},
+    }
+    b = {
+        "onboarding": {"liked_isbns": ["9788936434120"], "tags": ["힐링"]},
+        "user_id": 1,
+    }
 
     assert idempotency.body_hash(a) == idempotency.body_hash(b)
 

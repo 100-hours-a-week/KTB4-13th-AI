@@ -61,7 +61,7 @@ def _request(**overrides) -> dict:
             "criteria": ["베스트셀러"],
             "categories": ["에세이", "한국소설"],
             "tags": ["힐링", "성장"],
-            "liked_book_ids": [1088, 3310],
+            "liked_isbns": ["9788936434120", "9788954651134"],
         },
         "memories": [_memory()],
     }
@@ -166,7 +166,6 @@ def test_온보딩을_건너뛴_빈_객체와_기억_없음도_통과한다() ->
         "criteria",
         "categories",
         "tags",
-        "liked_book_ids",
         "liked_isbns",
     ],
 )
@@ -339,14 +338,14 @@ def test_온보딩_배열이_상한을_넘으면_400이고_상한_정확히는_�
 
 def test_좋아한_책과_기억은_상한을_넘어도_400이_아니라_잘라_쓴다() -> None:
     body = _request(
-        onboarding={"liked_book_ids": list(range(1, 81))},
+        onboarding={"liked_isbns": [str(9780000000000 + n) for n in range(1, 81)]},
         memories=[_memory(value=f"기억{i}") for i in range(600)],
     )
 
     assert client.post("/preferences/profile", json=body).status_code == 200
 
     req = parse_request(body)
-    assert req.used_liked_book_ids() == list(range(1, USED_LIKED_BOOKS + 1))
+    assert len(req.used_liked_isbns()) == USED_LIKED_BOOKS
     # 기억은 배열 뒤쪽을 최근으로 본다.
     used = req.used_memories()
     assert len(used) == USED_MEMORIES
@@ -402,7 +401,6 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
     [
         {"user_id": "123"},  # 문자열을 숫자로 바꿔 받지 않는다
         {"idempotency_key": ""},  # 키를 확인하지는 않지만 칸의 계약은 그대로다(#303)
-        {"onboarding": {"liked_book_ids": ["1088"]}},
         # ISBN 은 13자리 숫자로 된 문자열이다(#315).
         {"onboarding": {"liked_isbns": ["978-89-364-3412-0"]}},
         {"onboarding": {"liked_isbns": ["897364341X"]}},
@@ -411,7 +409,6 @@ def test_기억_벡터에_NaN이나_무한대가_섞이면_400이다(bad: str) -
         {"memories": {"type": "mood"}},
         # #201 — int32 범위·NUL·짝 없는 서로게이트.
         {"user_id": 2_147_483_648},
-        {"onboarding": {"liked_book_ids": [2_147_483_648]}},
         {"onboarding": {"tags": ["힐링\x00"]}},
     ],
 )

@@ -59,7 +59,7 @@ def _request(**overrides) -> ProfileRequest:
     body = {
         "user_id": _USER,
         "idempotency_key": "prof_test",
-        "onboarding": {"tags": ["재테크"], "liked_book_ids": [9100201]},
+        "onboarding": {"tags": ["재테크"], "liked_isbns": [_isbn(9100201)]},
     }
     body.update(overrides)
     return ProfileRequest.model_validate(body)
@@ -128,35 +128,26 @@ def _centroid_of(onboarding: dict) -> list[float]:
     return _run(check)
 
 
-def test_좋아한_책을_ISBN으로_보내도_book_id로_보낸_것과_같은_취향_벡터가_된다() -> (
-    None
-):
-    by_id = _centroid_of({"liked_book_ids": [9100201, 9100202]})
-    by_isbn = _centroid_of({"liked_isbns": [_isbn(9100201), _isbn(9100202)]})
+def test_옛_칸_liked_book_ids로_보낸_책은_쓰지_않는다() -> None:
+    # BE 는 ISBN 으로 옮겨 이 칸을 뺐다(#308). 보내도 400 없이 무시해, 다른 재료가 없으면 취향 벡터가 없다.
+    async def check(conn):
+        onboarding = {"liked_book_ids": [9100201, 9100202]}
+        result = await service.rebuild_on(conn, _request(onboarding=onboarding))
+        return result, (await _row(conn))["centroid"]
 
-    assert by_isbn == pytest.approx(by_id)
+    (cold_start, _), centroid = _run(check)
 
-
-def test_같은_책을_ISBN과_book_id로_함께_보내도_한_번만_친다() -> None:
-    # BE 가 ISBN 으로 옮기는 동안 둘 다 실어 보낼 수 있다(#315).
-    once = _centroid_of({"liked_book_ids": [9100201, 9100202]})
-    both = _centroid_of(
-        {"liked_book_ids": [9100201, 9100202], "liked_isbns": [_isbn(9100201)]}
-    )
-
-    assert both == pytest.approx(once)
+    assert (cold_start, centroid) == (True, None)
 
 
-def test_두_칸을_합쳐_상한만큼만_쓰고_ISBN으로_온_책이_앞이다(
+def test_좋아한_책은_앞에서부터_상한만큼만_쓴다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(service, "USED_LIKED_BOOKS", 1)
 
-    centroid = _centroid_of(
-        {"liked_book_ids": [9100202], "liked_isbns": [_isbn(9100201)]}
-    )
+    centroid = _centroid_of({"liked_isbns": [_isbn(9100201), _isbn(9100202)]})
 
-    # 한 권만 쓰면 ISBN 으로 온 9100201 이다. 그 책의 벡터는 0번 축이다.
+    # 한 권만 쓰면 앞의 9100201 이다. 그 책의 벡터는 0번 축이다.
     assert centroid == pytest.approx(_unit(0))
 
 
@@ -169,7 +160,7 @@ def test_책_표에_없는_ISBN은_건너뛰고_나머지로_만든다() -> None
 
 def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
     async def check(conn):
-        onboarding = {"categories": ["소설"], "liked_book_ids": [9100201]}
+        onboarding = {"categories": ["소설"], "liked_isbns": [_isbn(9100201)]}
         history = {"purchased_isbns": [_isbn(9100202)]}
         await service.rebuild_on(conn, _request(onboarding=onboarding, history=history))
         return await _row(conn)
@@ -211,7 +202,7 @@ def test_라벨은_모두_합쳐_기억_한_문장만큼_끌어당긴다(
         onboarding = {
             "categories": ["소설", "에세이"],
             "tags": ["재테크"],
-            "liked_book_ids": [9100201],
+            "liked_isbns": [_isbn(9100201)],
         }
         await service.rebuild_on(conn, _request(onboarding=onboarding))
         return await _row(conn)
@@ -260,7 +251,8 @@ def test_같은_요청을_다시_보내면_판_번호가_그대로고_바뀌면_
         first = await service.rebuild_on(conn, _request())
         again = await service.rebuild_on(conn, _request())
         changed = await service.rebuild_on(
-            conn, _request(onboarding={"tags": ["습관"], "liked_book_ids": [9100201]})
+            conn,
+            _request(onboarding={"tags": ["습관"], "liked_isbns": [_isbn(9100201)]}),
         )
         return first, again, changed
 
@@ -275,7 +267,7 @@ def test_재료가_없으면_cold_start로_저장한다() -> None:
     async def check(conn):
         # 벡터가 없는 책만 좋아한다고 보냈다
         result = await service.rebuild_on(
-            conn, _request(onboarding={"liked_book_ids": [123456789]})
+            conn, _request(onboarding={"liked_isbns": [_isbn(123456789)]})
         )
         return result, await _row(conn)
 
@@ -546,7 +538,7 @@ def test_기능_플래그가_켜지면_관심사_점수와_조건과_처음_본_
             onboarding={
                 "categories": ["역사"],
                 "tags": ["재테크"],
-                "liked_book_ids": [9100201],
+                "liked_isbns": [_isbn(9100201)],
             },
             memories=_memories(),
             history={},
@@ -578,10 +570,10 @@ def test_처음_본_날은_다시_불려도_지키고_이력에서_빠진_책은
 ) -> None:
     async def check(conn):
         monkeypatch.setattr(service, "_now", lambda: _NOW)
-        both = {"liked_book_ids": [9100201, 9100202]}
+        both = {"liked_isbns": [_isbn(9100201), _isbn(9100202)]}
         await service.rebuild_on(conn, _request(onboarding=both, history={}))
         monkeypatch.setattr(service, "_now", lambda: _NOW + timedelta(days=8))
-        one = {"liked_book_ids": [9100201]}
+        one = {"liked_isbns": [_isbn(9100201)]}
         await service.rebuild_on(conn, _request(onboarding=one, history={}))
         return await _interest_row(conn)
 
@@ -639,7 +631,7 @@ def test_목록_뽑기에_관심사_점수와_핵심어_벡터와_조건과_가�
 ) -> None:
     async def check(conn):
         req = _request(
-            onboarding={"categories": ["역사"], "liked_book_ids": [9100201]},
+            onboarding={"categories": ["역사"], "liked_isbns": [_isbn(9100201)]},
             memories=_memories(),
             history={"purchased_isbns": [_isbn(9100202)]},
         )
@@ -681,7 +673,7 @@ def test_목록을_뽑을_때_뺀_가진_책과_싫어한_책을_목록과_함�
 def test_목록_뽑기에_관심사마다_매칭_점수에_쓸_내_책을_넘긴다(interest_feed) -> None:
     async def check(conn):
         req = _request(
-            onboarding={"liked_book_ids": [9100201]},
+            onboarding={"liked_isbns": [_isbn(9100201)]},
             history={"purchased_isbns": [_isbn(9100202)]},
         )
         await service.rebuild_on(conn, req)
@@ -722,7 +714,7 @@ def test_기능_플래그가_꺼져_있으면_새_칸을_쓰지_않는다() -> N
 
 def _async_request() -> ProfileRequest:
     return _request(
-        onboarding={"categories": ["역사"], "liked_book_ids": [9100201]},
+        onboarding={"categories": ["역사"], "liked_isbns": [_isbn(9100201)]},
         memories=_memories(),
         history={
             "purchased_isbns": [_isbn(9100202)],

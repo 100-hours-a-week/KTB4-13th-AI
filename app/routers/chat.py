@@ -68,7 +68,7 @@ SCOPE_GRACE_SECONDS = 2.0
 SEARCH_SIZE = 30
 
 # 명세 에러표의 413은 (V2) 이미지 10MB 상한이라 V1(텍스트 턴)엔 숫자가 없다(#99).
-# message(200자)·recent_turns(20턴)는 작지만, exclude_book_ids처럼 길이 상한이
+# message(200자)·recent_turns(20턴)는 작지만, exclude_isbns처럼 길이 상한이
 # 없는 배열도 있어 상한 없이 통째로 메모리에 올리면 거절 자체가 공격 수단이 될
 # 수 있다. 정상 요청이면 절대 안 닿을 만큼 넉넉하게 잡는다.
 MAX_BODY_BYTES = 64 * 1024
@@ -1061,7 +1061,6 @@ def _rule_based_cards(candidates: list[dict]) -> list[dict]:
     )
     return [
         {
-            "book_id": c["book_id"],
             "isbn": c.get("isbn"),
             "rank": rank,
             "match_score": c["match_score"],
@@ -1084,13 +1083,10 @@ async def _book_ids_for_isbns(isbns: list[str]) -> list[int]:
 
 
 async def _shown_book_ids(req: ChatRequest) -> list[int]:
-    """이 대화에서 이미 보여 준 책. ISBN 으로 온 것을 book_id 로 바꿔 book_id 로 온 것 뒤에 붙인다.
-
-    BE 가 ISBN 으로 옮기는 동안은 두 칸을 다 받는다(#317). ISBN 이 안 왔으면 책 표를 조회하지 않는다.
-    """
+    """이 대화에서 이미 보여 준 책. ISBN 으로 온 것을 book_id 로 바꾼다. 안 왔으면 책 표를 조회하지 않는다."""
     if not req.exclude_isbns:
-        return req.exclude_book_ids
-    return [*req.exclude_book_ids, *await _book_ids_for_isbns(req.exclude_isbns)]
+        return []
+    return await _book_ids_for_isbns(req.exclude_isbns)
 
 
 async def get_candidates(
@@ -1496,7 +1492,6 @@ async def generate_cards(
             continue
         cards.append(
             {
-                "book_id": book_id,
                 "isbn": book.get("isbn"),
                 "rank": rank,
                 "match_score": book["match_score"],

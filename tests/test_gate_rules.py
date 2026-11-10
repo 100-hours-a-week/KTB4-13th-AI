@@ -332,7 +332,7 @@ def test_챗봇_요청에서_쇼핑_에이전트의_칸만_뽑는다() -> None:
         "message": "1번 담아줘",
         "idempotency_key": "k",
         "user_context": {"logged_in": True},
-        "exclude_book_ids": [3],
+        "exclude_isbns": ["9788954651134"],
     }
 
     assert shopping.agent_payload(payload) == {
