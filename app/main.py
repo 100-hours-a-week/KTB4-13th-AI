@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.chat import reading_graph
 from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
@@ -54,6 +55,13 @@ async def lifespan(app: FastAPI):
     else:
         # ⑥ 요청 중에는 모델을 부르지 않으므로 라벨 벡터를 여기서 미리 만든다.
         await labels.load()
+    # ③ 책 추천 에이전트의 함께 대출·마니아 그래프. 켰을 때만 읽는다(약 45MB). 파일이 없으면 그래프 갈래 없이 돈다
+    if get_settings().chat_agent:
+        reading_graph.install(
+            await asyncio.to_thread(
+                reading_graph.load, get_settings().reading_graph_path
+            )
+        )
     # 프로필 계산 뒤 홈 목록을 뒤에서 만드는 일꾼(#580)
     build_queue.start()
     yield
