@@ -102,8 +102,12 @@ class Settings(BaseSettings):
     # 주문 화면 목적지를 거절해 턴이 실패하므로 기본은 끈다. 문지기의 "사 줘" 규칙(v4)과 근거 검사의 "사 줘"도 이
     # 스위치를 따른다. 꺼져 있으면 챗봇 입구의 길은 main 과 같다.
     agent_checkout: bool = False
-    # BE 공개 API 주소. 로그인 없이 읽는 검색과 상품 상세만 부른다(사용자 권한은 쓰지 않는다). 비어 있으면 책
-    # 찾기를 하지 않는다. COMMERCE_MOCK 이면 비워도 가공의 서가로 찾는다
+    # ⑦ 책 정보·리뷰(#650). 켜면 BE 공개 상품 상세·리뷰·쿠폰으로 "몇 권 남았어?", "리뷰 어때?", "쿠폰 있어?"에
+    # 답하는 book.detail·book.reviews 를 주고, 문지기가 리뷰·평점·쿠폰·남은 수량 말을 ⑦로 보낸다(rules v6). BE 공개 API
+    # 주소(아래)가 있어야 한다. 꺼져 있으면 프롬프트·도구가 이 기능 전과 같다
+    agent_book_info: bool = False
+    # BE 공개 API 주소. 로그인 없이 읽는 검색·상품 상세·리뷰·쿠폰만 부른다(사용자 권한은 쓰지 않는다). 비어 있으면
+    # 책 찾기와 책 정보를 하지 않는다. COMMERCE_MOCK 이면 비워도 가공의 서가로 찾는다
     be_public_api_base_url: str = ""
     # BE 공개 API 호출 하나의 시간 제한(초). BE 검색은 안에서 AI 검색을 다시 부른다(새 검색어 약 2초)
     be_public_api_timeout_seconds: float = 5

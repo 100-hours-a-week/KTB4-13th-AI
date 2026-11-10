@@ -59,6 +59,11 @@ def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
                     "title": offer["title"],
                     "price": offer["price"],
                     "in_stock": offer["in_stock"],
+                    **(
+                        {"stock_quantity": offer["stock_quantity"]}
+                        if "stock_quantity" in offer
+                        else {}
+                    ),
                 }
                 for offer in result["offers"]
             ]
@@ -78,6 +83,27 @@ def llm_view(ctx: TurnContext, call: ToolCall) -> dict[str, Any]:
                 }
                 for book in result["books"]
             ]
+        }
+
+    if call.name == ToolName.BOOK_DETAIL and "books" in result:
+        # 책 정보(#650). ISBN 대신 다시 가리킬 수 있는 말을 준다. 상품 번호를 몰라 못 읽은 책도 그렇게 알린다
+        view: dict[str, Any] = {
+            "books": [
+                {
+                    "book": label(ctx, book["isbn"]),
+                    **{k: v for k, v in book.items() if k != "isbn"},
+                }
+                for book in result["books"]
+            ]
+        }
+        if "missing" in result:
+            view["missing"] = [label(ctx, isbn) for isbn in result["missing"]]
+        return view
+
+    if call.name == ToolName.BOOK_REVIEWS and result.get("ok") is True:
+        return {
+            "book": label(ctx, result["isbn"]),
+            **{k: v for k, v in result.items() if k != "isbn"},
         }
 
     if call.name == ToolName.SELECTION_PICK and result.get("ok") is True:

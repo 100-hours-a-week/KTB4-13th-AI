@@ -15,6 +15,7 @@ from app.gateway.book_finder import (
     FoundBook,
     HttpBookFinder,
 )
+from app.gateway.book_info import BookInfo, FakeBookInfo, HttpBookInfo, ProductDetail
 from app.gateway.catalog import CatalogGateway
 from app.gateway.catalog_db import DbCatalog
 from app.gateway.commerce import BookOffer, CartLine
@@ -54,6 +55,40 @@ def get_commerce(req: AgentActRequest) -> SnapshotCommerce:
         for offer in req.offers
     ]
     return SnapshotCommerce(cart, offers)
+
+
+def get_book_info() -> BookInfo | None:
+    """책 정보·리뷰·쿠폰을 읽을 곳(#650). 책 정보나 주문 화면(쿠폰 대상)이 켜져 있을 때만 준다.
+
+    BE 공개 API 주소가 있으면 BE 를 읽는다. 없고 COMMERCE_MOCK 이 켜진 로컬이면 가공의 서가를 쓴다(상품 번호는
+    서가 순서 1~5, 리뷰는 없음).
+    """
+    settings = get_settings()
+    if not (settings.agent_book_info or settings.agent_checkout):
+        return None
+    if settings.be_public_api_base_url:
+        return HttpBookInfo(
+            settings.be_public_api_base_url, settings.be_public_api_timeout_seconds
+        )
+    if settings.commerce_mock:
+        return FakeBookInfo(
+            ProductDetail(
+                product_id=number,
+                title=book.title,
+                author=None,
+                publisher=None,
+                published_at=None,
+                category=None,
+                price=book.price,
+                list_price=book.price,
+                stock_quantity=book.stock,
+                review_count=0,
+                review_rate=None,
+                coupon_ids=frozenset(),
+            )
+            for number, book in enumerate(_DEV_BOOKS, start=1)
+        )
+    return None
 
 
 def get_finder() -> BookFinder | None:

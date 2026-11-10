@@ -96,6 +96,12 @@ class TurnContext:
     # 사용자의 보유 쿠폰과 포인트 잔액(요청에서 온 값). 주문 화면에 채울 쿠폰·포인트를 고를 때 쓴다
     owned_coupons: list[OwnedCouponIn] = field(default_factory=list)
     point_balance: int | None = None
+    # 카드·장바구니 책의 BE 판매 상품 번호(요청의 product_id, BE#536). 책 정보·리뷰·쿠폰을 읽을 때 쓴다(#650).
+    # 찾은 책의 번호는 found 에 있다
+    product_ids: dict[str, int] = field(default_factory=dict)
+    # 카드 책의 남은 재고 수량(요청의 offers[].stock_quantity). 책 정보가 켜져 있을 때만 book.offer 결과에 싣는다(#650)
+    stock: dict[str, int] = field(default_factory=dict)
+    book_info_enabled: bool = False
 
     def commit_cart_view(self) -> None:
         """한 묶음의 도구 결과를 LLM 에게 돌려줄 때 부른다. 이 묶음에서 조회한 장바구니가 다음 번호의 기준이 된다."""
@@ -115,7 +121,24 @@ class TurnContext:
             turns=list(req.recent_turns),
             owned_coupons=list(req.owned_coupons),
             point_balance=req.point_balance,
+            product_ids={
+                line.isbn: line.product_id
+                for line in [*req.cart, *req.offers]
+                if line.product_id is not None
+            },
+            stock={
+                offer.isbn: offer.stock_quantity
+                for offer in req.offers
+                if offer.stock_quantity is not None
+            },
         )
+
+    def product_id(self, isbn: str) -> int | None:
+        """이 책의 BE 판매 상품 번호. 요청에 없고 이번 턴에 찾은 책도 아니면 None."""
+        if isbn in self.product_ids:
+            return self.product_ids[isbn]
+        found = self.found.get(isbn)
+        return found.product_id if found is not None else None
 
 
 def resolve(ctx: TurnContext, ref: BookRef) -> str:

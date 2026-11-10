@@ -22,7 +22,7 @@ from app.core.isbn import ISBN13_PATTERN
 
 _SEARCH_PATH = "/api/v1/search"
 _PRODUCT_PATH = "/api/v1/products/{product_id}"
-_USER_AGENT = "bookjeok-ai"
+USER_AGENT = "bookjeok-ai"
 _ISBN13 = re.compile(ISBN13_PATTERN)
 
 
@@ -54,7 +54,7 @@ class BookFinder(Protocol):
         ...
 
 
-def _whole_won(value: object) -> int | None:
+def whole_won(value: object) -> int | None:
     """BE 금액(BigDecimal, JSON 으로 13500 이나 13500.00)을 원 단위 정수로. 원 아래가 있으면 None."""
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return None
@@ -67,7 +67,7 @@ def _whole_won(value: object) -> int | None:
     return int(amount)
 
 
-def _data(response: httpx.Response) -> Any:
+def response_data(response: httpx.Response) -> Any:
     """BE 공통 응답 {"success": true, "data": ...} 의 data. 모양이 다르면 None."""
     if response.status_code != 200:
         return None
@@ -98,7 +98,7 @@ class HttpBookFinder:
             base_url=self._base_url,
             timeout=self._timeout,
             transport=self._transport,
-            headers={"User-Agent": _USER_AGENT},
+            headers={"User-Agent": USER_AGENT},
         ) as client:
             try:
                 response = await client.get(
@@ -106,7 +106,7 @@ class HttpBookFinder:
                 )
             except httpx.HTTPError as e:
                 raise FinderUnavailable(type(e).__name__) from None
-            data = _data(response)
+            data = response_data(response)
             if not isinstance(data, dict) or not isinstance(data.get("items"), list):
                 raise FinderUnavailable(f"search status {response.status_code}")
 
@@ -161,10 +161,10 @@ class HttpBookFinder:
             response = await client.get(_PRODUCT_PATH.format(product_id=product_id))
         except httpx.HTTPError:
             return None
-        data = _data(response)
+        data = response_data(response)
         if not isinstance(data, dict):
             return None
-        price = _whole_won(data.get("discountedPrice"))
+        price = whole_won(data.get("discountedPrice"))
         stock = data.get("stockQuantity")
         coupons = data.get("couponIds")
         if price is None or not isinstance(stock, int) or isinstance(stock, bool):

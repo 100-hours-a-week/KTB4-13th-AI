@@ -49,6 +49,9 @@ class ToolName(StrEnum):
     BOOK_OFFER = "book.offer"
     # 카드 밖 책 찾기(BE 공개 검색, #631)
     BOOK_SEARCH = "book.search"
+    # 책 한 권의 정보·쿠폰과 리뷰(BE 공개 상품 상세·리뷰, #650)
+    BOOK_DETAIL = "book.detail"
+    BOOK_REVIEWS = "book.reviews"
     # AI 서버 안에서 처리하는 것
     SELECTION_PICK = "selection.pick"
     BOOK_COMPARE = "book.compare"
@@ -117,6 +120,8 @@ class CartItemIn(_Strict):
     quantity: int = Field(ge=1, le=MAX_QUANTITY)
     # 구매할 수 있나(재고가 담은 수량 이상이고 판매 중)
     available: bool
+    # 이 줄의 BE 판매 상품 번호(BE#536). 책 정보·쿠폰을 BE 공개 상품 상세에서 읽을 때 쓴다. 예전 BE 는 보내지 않는다
+    product_id: int | None = Field(default=None, ge=1)
 
 
 class OfferIn(_Strict):
@@ -126,6 +131,10 @@ class OfferIn(_Strict):
     title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
     price: Won = Field(ge=0)
     in_stock: bool
+    # BE 판매 상품 번호(BE#536). CartItemIn.product_id 와 같다
+    product_id: int | None = Field(default=None, ge=1)
+    # 남은 재고 수량(BE 가 보낸 값). 책 정보(#650)가 켜져 있을 때만 "몇 권 남았어?"에 쓴다
+    stock_quantity: int | None = Field(default=None, ge=0)
 
 
 class OwnedCouponIn(_Strict):

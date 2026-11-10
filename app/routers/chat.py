@@ -2691,6 +2691,8 @@ async def _respond(
             gate_rules.asked_fork(req.recent_turns),
             # "사 줘"를 장바구니 말로 보는 것(v4)은 카드 밖 책을 찾는 ⑦ 이 켜진 서버에서만이다
             buy_requests=get_settings().agent_checkout,
+            # 리뷰·평점·쿠폰·남은 수량을 묻는 말(v6)은 책 정보를 답하는 ⑦ 이 켜진 서버에서만 ⑦ 말로 본다(#650)
+            info_requests=get_settings().agent_book_info,
         )
         target = decision.lane
         if not decision.sure:

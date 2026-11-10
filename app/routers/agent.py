@@ -19,10 +19,16 @@ from app.agent import guard, replay
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
+from app.agent.reviews import LlmReviewSummarizer
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
 from app.core.config import get_settings
-from app.gateway.commerce_provider import get_catalog, get_commerce, get_finder
+from app.gateway.commerce_provider import (
+    get_book_info,
+    get_catalog,
+    get_commerce,
+    get_finder,
+)
 from app.gateway.llm import LLMUnavailableError, get_chat_model
 
 logger = logging.getLogger(__name__)
@@ -137,6 +143,10 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
                 finder=get_finder(),
                 checkout=settings.agent_checkout,
                 turn_seconds=settings.agent_turn_timeout_seconds,
+                # 책 정보·리뷰(#650). 리뷰 요약은 비교처럼 도구 없는 별도 호출이다(리뷰 속 지시문이 섞이지 않게)
+                info=get_book_info(),
+                book_info=settings.agent_book_info,
+                summarizer=LlmReviewSummarizer(model),
             )
         finished = finish(run)
     except TimeoutError:
