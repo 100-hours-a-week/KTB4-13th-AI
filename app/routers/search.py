@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core import body, categories, responses
-from app.search import service
+from app.search import books, service
 from app.search.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ async def search(request: Request) -> JSONResponse:
     return responses.success(
         "search_success",
         {
-            "results": outcome.results,
+            "results": [books.response_item(row) for row in outcome.results],
             "next_cursor": outcome.next_cursor,
             "fallback": fallback,
         },

@@ -39,7 +39,8 @@ def _page(offset: int, size: int, **params) -> tuple[list[int], bool]:
     items, has_more = personalized.rank(
         _ROWS, req, Page(offset=offset), lambda row: row["score"]
     )
-    return [item["book_id"] for item in items], has_more
+    # 응답에는 book_id 가 없다(#308). _row 의 ISBN 으로 책 번호를 되찾는다
+    return [int(item["isbn"]) - 9780000000000 for item in items], has_more
 
 
 @pytest.mark.parametrize(

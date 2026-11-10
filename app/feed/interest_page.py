@@ -15,7 +15,7 @@ import asyncpg
 from app.core import categories, editions, products
 from app.feed import exclusion
 from app.feed.cursor import Page
-from app.feed.schemas import FeedRequest
+from app.feed.schemas import FeedRequest, response_item
 
 _STORED_SQL = """
 SELECT feed::text AS feed, feed_version, feed_prev::text AS feed_prev, profile_version
@@ -31,17 +31,6 @@ SELECT b.book_id, b.isbn13 AS isbn, b.title, b.author,
 FROM v_books b
 WHERE b.book_id = ANY($1::int[]) AND {{excluded}}
 """
-# 응답에 나가는 칸(명세 ④)
-_RESPONSE = (
-    "book_id",
-    "isbn",
-    "title",
-    "author",
-    "price",
-    "cover_url",
-    "in_stock",
-    "match_score",
-)
 # 더 보기의 정렬. 같으면 저장된 순서다. 가격이 없는 책은 가격순에서 맨 뒤다(지금 목록과 같음)
 _ORDER = {
     "match": lambda item: -item["match_score"],
@@ -149,7 +138,7 @@ def page_of(
 ) -> tuple[list[dict[str, Any]], bool]:
     """(이번 쪽, 다음 쪽이 있는지). 응답에 나가는 칸만 남긴다."""
     window = items[page.offset : page.offset + req.size]
-    shown = [{key: item[key] for key in _RESPONSE} for item in window]
+    shown = [response_item(item) for item in window]
     return shown, len(items) > page.offset + req.size
 
 
