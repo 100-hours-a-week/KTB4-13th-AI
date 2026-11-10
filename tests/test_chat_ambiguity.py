@@ -207,33 +207,32 @@ def test_여러_개가_걸려도_하나만_묻는다() -> None:
     assert question.startswith("받는 분이 어떤 분인가요?")
 
 
-def test_질문은_reply_뒤에_빈_줄을_두고_붙인다() -> None:
-    combined = chat._append_question("선물하기 좋은 책이에요.", "받는 분이 누구세요?")
+def test_카드_턴_말풍선_끝_질문은_떼어_카드_아래로_보낸다() -> None:
+    # 카드보다 먼저 "어느 쪽이 좋으세요?"를 읽지 않게 질문은 followup 으로 간다(#652)
+    reply, question = chat._split_turn_question(
+        "입문서 위주로 골랐어요. 입문 쪽이 좋으세요, 실전 쪽이 좋으세요?"
+    )
 
-    assert combined == "선물하기 좋은 책이에요.\n\n받는 분이 누구세요?"
-
-
-def test_200자를_넘으면_넘치는_뒷_문장을_덜어_낸다() -> None:
-    first = "첫 문장이에요."
-    long_second = "둘째 문장은 " + "아주 " * 60 + "길어요."  # 한 문장이 200자를 넘는다
-    question = "예산은 어느 정도로 생각하세요?"
-
-    combined = chat._append_question(f"{first} {long_second}", question)
-
-    assert len(combined) <= 200
-    assert combined == f"{first}\n\n{question}"
+    assert reply == "입문서 위주로 골랐어요."
+    assert question == "입문 쪽이 좋으세요, 실전 쪽이 좋으세요?"
 
 
-def test_들어가는_만큼의_앞_문장은_남긴다() -> None:
-    sentences = ["하나예요.", "둘이에요.", "셋이에요."]
-    question = "예산은 어느 정도로 생각하세요?"
-
-    combined = chat._append_question(" ".join(sentences), question)
-
-    assert combined == "하나예요. 둘이에요. 셋이에요.\n\n" + question
+def test_묻는_문장뿐이거나_질문으로_안_끝나면_떼지_않는다() -> None:
+    only = "입문 쪽이 좋으세요, 실전 쪽이 좋으세요?"
+    assert chat._split_turn_question(only) == (only, None)
+    plain = "궁금하셨던 걸 담은 책이에요. 『코스모스』가 가장 가까워요."
+    assert chat._split_turn_question(plain) == (plain, None)
 
 
-def test_질문을_붙일_자리가_없으면_reply를_그대로_둔다() -> None:
-    reply = "아주 긴 한 문장" + "가" * 220
+def test_제목_안의_물음표에서는_자르지_않는다() -> None:
+    reply = "『누가 내 치즈를 옮겼을까?』가 가장 가까워요."
+    assert chat._split_turn_question(reply) == (reply, None)
 
-    assert chat._append_question(reply, "예산은 어느 정도로 생각하세요?") == reply
+
+def test_먼저_보내는_말풍선에도_끝_질문을_넣지_않는다() -> None:
+    # 카드 턴의 끝 질문은 카드 아래로 간다. SSE 로 먼저 보낸 말풍선에 있으면 done 에서 글이 줄어든다(#652)
+    preview = chat._preview_reply(
+        "입문서 위주로 골랐어요. 입문 쪽이 좋으세요, 실전 쪽이 좋으세요?"
+    )
+
+    assert preview == "입문서 위주로 골랐어요."

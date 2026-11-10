@@ -242,8 +242,9 @@ def test_보여_준_책에서_이어_새_조건을_말하면_그_책의_함께_�
     assert card["reason_short"] == "반도체 패권 경쟁을 다뤄요."
     assert card["match_basis"][0]["label"] == "함께 읽은 책"
     assert "도서관 정보나루" in card["match_basis"][0]["detail"]
-    # 고른 책의 이웃 줄에 있는 책을 제안한 문장은 남는다
-    assert "『반도체 제국의 미래』" in data["reply"]
+    # 두 갈래 제안은 답 보기로 나가고(#652), 같은 이웃 책을 짚은 모델 문장은 말풍선에서 빠진다
+    assert data["reply"] == "반도체 산업을 넓게 보는 책이에요."
+    assert "• 『칩 워』 함께 읽은 책 보여줘" in data["followup"]
 
 
 def test_소개글_없는_그래프_책은_관계_사실을_이유로_쓰고_많이_빌렸다는_말은_뺀다(
@@ -276,10 +277,10 @@ def test_소개글_없는_그래프_책은_관계_사실을_이유로_쓰고_많
     )
     assert card["reason_long"] is None
     assert [b["label"] for b in card["match_basis"]] == ["함께 읽은 책"]
-    # 목록으로 알 수 없는 말("많이 읽은")은 빠지고, 두 갈래 제안은 코드가 붙인다
-    assert data["reply"] == (
-        "반도체를 넓게 볼 수 있어요. 『칩 워』를 읽은 분들은 『반도체 제국의 미래』도 함께 읽었고, "
-        "같은 분야를 더 보려면 『수레바퀴 아래서』도 있어요."
+    # 목록으로 알 수 없는 말("많이 읽은")은 빠지고, 두 갈래 제안은 코드가 카드 아래 답 보기로 단다(#652)
+    assert data["reply"] == "반도체를 넓게 볼 수 있어요."
+    assert data["followup"] == (
+        "• 『칩 워』 함께 읽은 책 보여줘\n• 『칩 워』와 비슷한 책 더 보여줘"
     )
 
 
@@ -400,6 +401,72 @@ def test_후보가_두_갈래로_갈리면_카드_없이_묻는다(
     assert data["cards"] == []
     assert data["reply"] == "AI 책이 두 쪽으로 나뉘어요."
     assert data["followup"] == "기술 입문 쪽인가요, 사회 영향 쪽인가요?"
+
+
+def test_두_갈래로_물을_때_답_보기를_질문_아래_줄로_단다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_search(monkeypatch, SEARCHED)
+    _use_model(
+        monkeypatch,
+        {"semantic": "AI"},
+        {
+            "action": "ask",
+            "reply": "AI 책이 두 쪽으로 나뉘어요.",
+            "question": "기술 입문 쪽인가요, 사회 영향 쪽인가요?",
+            "options": ["AI 기술 입문서 보여줘", "AI 사회 영향 책 보여줘"],
+        },
+    )
+
+    data = _post("AI 책 읽고 싶은데 뭘 읽을지 모르겠어", shown=False)
+
+    # FE 가 "• " 줄을 버튼으로 그린다(#652)
+    assert data["followup"] == (
+        "기술 입문 쪽인가요, 사회 영향 쪽인가요?\n\n"
+        "• AI 기술 입문서 보여줘\n• AI 사회 영향 책 보여줘"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "kept"),
+    [
+        (["입문서 보여줘", "실전서 보여줘"], ("입문서 보여줘", "실전서 보여줘")),
+        # 세 개 넘게 오면 두 방향 몫만
+        (["가", "나", "다"], ("가", "나")),
+        # 하나뿐이거나, 길어서(잘린 말은 보낼 수 없다) 버리고 하나 남으면 보기 없이 묻는다
+        (["입문서 보여줘"], ()),
+        (["입문서 보여줘", "가" * 21], ()),
+        (["같은 말", "같은 말"], ()),
+        ("입문서", ()),
+        (None, ()),
+    ],
+)
+def test_물을_때_답_보기는_두_개만_받는다(raw, kept) -> None:
+    answer = {"action": "ask", "question": "어느 쪽?", "options": raw}
+    assert picking.parse(answer, may_ask=True, may_search=True).options == kept
+
+
+def test_카드_턴_말풍선_끝_질문과_두_갈래_제안은_카드_아래로_간다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_search(monkeypatch, SEARCHED)
+    _use_model(
+        monkeypatch,
+        {"semantic": "반도체 산업", "anchor_card": 1},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 201, "reason_short": "반도체 패권 경쟁을 다뤄요."}],
+            "reply": "반도체 산업을 넓게 보는 책이에요. 역사 쪽이 좋으세요, 기술 쪽이 좋으세요?",
+        },
+    )
+
+    data = _post("반도체 산업이 궁금해")
+
+    assert data["reply"] == "반도체 산업을 넓게 보는 책이에요."
+    assert data["followup"] == (
+        "역사 쪽이 좋으세요, 기술 쪽이 좋으세요?\n\n"
+        "• 『칩 워』 함께 읽은 책 보여줘\n• 『칩 워』와 비슷한 책 더 보여줘"
+    )
 
 
 def test_같은_저자_책은_한_장까지다(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -914,7 +981,11 @@ def test_카드가_여럿인데_어느_책인지_말하지_않고_함께_읽은_
     assert searches == []
     assert data["cards"] == []
     assert data["reply"] == chat._WHICH_CARD_REPLY
-    assert "번호" in data["followup"]
+    # 보여 준 책마다 답 보기를 단다. 누르면 제목과 "함께 읽"으로 그 카드의 함께 읽은 책 갈래로 간다(#652)
+    assert data["followup"] == (
+        f"{chat._WHICH_CARD_QUESTION}\n\n"
+        "• 『AI 지도책』 함께 읽은 책 보여줘\n• 『아몬드』 함께 읽은 책 보여줘"
+    )
 
 
 def test_이_작가_말고면_기준_책_저자의_책은_빼고_찾는다(
@@ -1110,61 +1181,65 @@ def _picked(title: str, co: list[str], mania: list[str]) -> dict:
     return {"title": title, "neighbors": {"co": co, "mania": mania}}
 
 
+CO = "함께 읽은 책 보여줘"
+
+
 @pytest.mark.parametrize(
-    ("picked", "sentence"),
+    ("picked", "proposed"),
     [
         (
             [_picked("칩 워", ["반도체 제국의 미래"], ["수레바퀴 아래서"])],
-            "『칩 워』를 읽은 분들은 『반도체 제국의 미래』도 함께 읽었고, 같은 분야를 더 보려면 『수레바퀴 아래서』도 있어요.",
+            [f"『칩 워』 {CO}", "『칩 워』와 비슷한 책 더 보여줘"],
         ),
-        (
-            [_picked("데미안", ["싯다르타"], [])],
-            "『데미안』을 읽은 분들은 『싯다르타』도 함께 읽었어요.",
-        ),
-        (
-            [_picked("데미안", [], ["인간 실격"])],
-            "같은 분야를 더 보려면 『인간 실격』도 있어요.",
-        ),
-        ([_picked("데미안", [], [])], None),
-        # 카드에 이미 나온 책은 짚지 않고, 다음 카드의 줄로 간다
+        ([_picked("데미안", ["싯다르타"], [])], [f"『데미안』 {CO}"]),
+        # 받침이 있으면 "과"
+        ([_picked("데미안", [], ["인간 실격"])], ["『데미안』과 비슷한 책 더 보여줘"]),
+        ([_picked("데미안", [], [])], []),
+        # 이웃이 모두 카드에 나온 책이면 다음 카드를 기준 책으로 짚는다
         (
             [
                 _picked("데미안", ["싯다르타"], []),
                 _picked("싯다르타", ["유리알 유희"], []),
             ],
-            "『싯다르타』를 읽은 분들은 『유리알 유희』도 함께 읽었어요.",
+            [f"『싯다르타』 {CO}"],
         ),
-        # 두 목록에 다 든 책은 함께 읽은 책으로만 짚고, 같은 분야는 다음 책으로 간다(11/10 실험 2·3)
+        # 숫자는 읽는 소리로 받침을 본다(2041 → 이천사십일)
         (
             [_picked("AI 2041", ["더 커밍 웨이브"], ["더 커밍 웨이브", "넥서스"])],
-            "『AI 2041』을 읽은 분들은 『더 커밍 웨이브』도 함께 읽었고, 같은 분야를 더 보려면 『넥서스』도 있어요.",
+            [f"『AI 2041』 {CO}", "『AI 2041』과 비슷한 책 더 보여줘"],
         ),
+        # 마니아 목록이 함께 읽은 책뿐이면 같은 책을 낼 보기를 두 번 달지 않는다(11/10 실험 2·3)
         (
             [_picked("AI 2041", ["더 커밍 웨이브"], ["더 커밍 웨이브"])],
-            "『AI 2041』을 읽은 분들은 『더 커밍 웨이브』도 함께 읽었어요.",
+            [f"『AI 2041』 {CO}"],
         ),
-        # 카드 제목에 부제가 붙어도 이웃 줄(부제를 뗀 제목)과 같은 책이면 짚지 않는다
+        # 카드 제목에 부제가 붙어도 이웃 줄(부제를 뗀 제목)과 같은 책이면 카드에 나온 책으로 본다. 보기는 부제를 뗀 제목이다
         (
             [
                 _picked("데미안", ["싯다르타"], []),
                 _picked("싯다르타 : 인도의 시", ["유리알 유희"], []),
             ],
-            "『싯다르타』를 읽은 분들은 『유리알 유희』도 함께 읽었어요.",
+            [f"『싯다르타』 {CO}"],
         ),
     ],
 )
-def test_두_갈래_제안은_코드가_고른_책의_이웃_줄로_쓴다(picked, sentence) -> None:
-    assert picking.proposal(picked) == sentence
+def test_두_갈래_제안은_고른_책의_이웃_줄로_답_보기를_만든다(picked, proposed) -> None:
+    assert picking.proposal_options(picked) == proposed
 
 
-def test_제안을_붙이다_길면_모델_문장부터_덜어_낸다() -> None:
-    reply = "가" * 120 + ". " + "나" * 60 + "."
-    out = picking.with_proposal(
-        reply, "같은 분야를 더 보려면 『인간 실격』도 있어요.", 200
-    )
-    assert out == "가" * 120 + ". 같은 분야를 더 보려면 『인간 실격』도 있어요."
-    assert picking.with_proposal(None, "제안이에요.", 200) == "제안이에요."
-    assert picking.with_proposal("그대로예요.", None, 200) == "그대로예요."
+@pytest.mark.parametrize(
+    ("message", "relation"),
+    [
+        (f"『데미안』 {CO}", "co"),
+        ("『데미안』과 비슷한 책 더 보여줘", "similar"),
+    ],
+)
+def test_제안_보기를_누르면_그_카드의_그_갈래로_간다(
+    message: str, relation: str
+) -> None:
+    plan = lanes.fill_plan(lanes.EMPTY_PLAN, message, [1, 2], {1: "칩 워", 2: "데미안"})
+    assert plan.anchor == 2
+    assert plan.relation == relation
 
 
 @pytest.mark.parametrize(

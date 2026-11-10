@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,7 @@ from app.chat import (
     streaming,
     topic_switch,
 )
+from app.chat import options as option_lines
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, Turn
 from app.chat.streaming import ReplySink
@@ -1648,6 +1649,8 @@ class CardResult:
     cards: list[dict]
     reply: str | None
     degraded: bool
+    # 카드 아래에 보일 답 보기(#652). 지금은 책 추천 에이전트의 함께 읽은 책·비슷한 책 제안만 쓴다
+    options: tuple[str, ...] = ()
 
 
 def _card_prompt_conditions(spec: Spec) -> str:
@@ -1774,7 +1777,11 @@ def _preview_reply(reply: str) -> str:
 
     카드에 없는 책을 짚은 문장은 카드를 다 읽어야 알 수 있어 여기서 못 뺀다. 최종 reply 는 응답 본문의 것이다.
     """
-    return _fit_reply(voice.without_vague_question(voice.without_echo(reply.strip())))
+    cleaned = _fit_reply(
+        voice.without_vague_question(voice.without_echo(reply.strip()))
+    )
+    # 카드 턴이면 끝 질문은 카드 아래로 간다(#652). 먼저 보낸 말풍선에도 넣지 않아야 done 에서 글이 줄지 않는다
+    return _split_turn_question(cleaned)[0]
 
 
 # 말풍선이 한 권을 『제목』으로 짚게 한 뒤(#545) 카드에 없는 책을 짚은 일이 있었다. 대화 평가에서 고른 카드에 없는
@@ -1814,10 +1821,23 @@ def _without_unshown_titles(
 _LANE_ASK_REPLY = "찾으시는 것에 따라 두 갈래로 나뉘어요."
 # 보여 준 카드가 여럿인데 "이거 읽은 사람들은 또 뭐 봐?"처럼 어느 책인지 말하지 않았을 때(lanes.fill_plan 의 ask_card)
 _WHICH_CARD_REPLY = "보여 드린 책 중 어느 책을 말씀하시는 건가요?"
-_WHICH_CARD_FOLLOWUP = (
-    "번호로 알려 주시면 그 책을 읽은 분들이 함께 읽은 책을 찾아 드릴게요. "
-    '예) "2번 읽은 사람들은 또 뭐 읽었어?"'
-)
+_WHICH_CARD_QUESTION = "골라 주시면 그 책을 읽은 분들이 함께 읽은 책을 찾아 드릴게요."
+
+
+def _which_card_followup(shown_books: Sequence[Any]) -> str:
+    """어느 카드인지 묻는 followup. 보여 준 책마다 "『제목』 함께 읽은 책 보여줘" 보기를 단다(#652) — 제목과 "함께 읽"
+    낱말이 있어야 다음 턴이 그 카드를 짚어 함께 읽은 책 갈래로 간다(lanes.fill_plan)."""
+    return (
+        option_lines.with_options(
+            _WHICH_CARD_QUESTION,
+            [
+                f"『{lanes.display_title(book.title)}』 함께 읽은 책 보여줘"
+                for book in shown_books
+            ],
+            asking.FOLLOWUP_MAX_CHARS,
+        )
+        or _WHICH_CARD_QUESTION
+    )
 
 
 @dataclass
@@ -2121,16 +2141,17 @@ def _lane_reasons(
     return reason_short.strip(), reason_long, basis
 
 
-def _lane_reply(reply: str | None, picked: list[dict]) -> str | None:
-    """말풍선 후처리. 카드에 없는 책을 짚은 문장, 목록으로 알 수 없는 것을 말한 문장을 빼고, 끝에 코드가 쓴 두 갈래
-    제안 문장(picking.proposal)을 붙인다. 제안 문장이 있으면 모델이 이웃 줄의 책을 짚은 문장은 뺀다 — 같은 제안이
+def _lane_reply(
+    reply: str | None, picked: list[dict], proposed: Sequence[str]
+) -> str | None:
+    """말풍선 후처리. 카드에 없는 책을 짚은 문장, 목록으로 알 수 없는 것을 말한 문장을 뺀다. 두 갈래 제안을 답
+    보기(proposed, picking.proposal_options)로 내면 모델이 이웃 줄의 책을 짚은 문장도 뺀다 — 같은 제안이 말풍선과 보기에
     두 번 나가지 않게."""
-    proposal = picking.proposal(picked)
     if reply is None:
-        return proposal
+        return None
     neighbors = [b.get("neighbors") or {} for b in picked]
     allowed = [b["title"] for b in picked]
-    if proposal is None:
+    if not proposed:
         allowed += [
             t
             for n in neighbors
@@ -2148,12 +2169,12 @@ def _lane_reply(reply: str | None, picked: list[dict]) -> str | None:
         cleaned = picking.without_overclaims(cleaned, co_titles)
     if cleaned is not None:
         cleaned = voice.without_vague_question(cleaned)
-    return picking.with_proposal(cleaned, proposal, _REPLY_MAX_CHARS)
+    return cleaned
 
 
 def _lane_cards(
     decision: picking.Decision, turn: _LaneTurn
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], str | None, list[str]]:
     """판단 호출이 고른 책으로 카드를 만든다. 같은 저자 책은 한 장까지다(마니아 목록은 같은 저자 쏠림이 25%).
 
     저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다.
@@ -2199,7 +2220,8 @@ def _lane_cards(
                 "match_basis": basis,
             }
         )
-    return cards, _lane_reply(decision.reply, picked)
+    proposed = picking.proposal_options(picked)
+    return cards, _lane_reply(decision.reply, picked, proposed), proposed
 
 
 def _fallback_pool(pool: list[dict]) -> list[dict]:
@@ -2234,15 +2256,21 @@ async def _pick_from_lanes(
     if decision.action == "ask":
         return CardResult([], None, False), (
             _fit_reply(decision.reply or _LANE_ASK_REPLY),
-            _fit_followup(decision.question or ""),
+            option_lines.with_options(
+                _fit_followup(decision.question or ""),
+                decision.options,
+                asking.FOLLOWUP_MAX_CHARS,
+            )
+            or "",
         )
-    cards, reply = _lane_cards(decision, turn)
-    return CardResult(cards, reply, False), None
+    cards, reply, proposed = _lane_cards(decision, turn)
+    return CardResult(cards, reply, False, tuple(proposed)), None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
-_CLARIFY_CATEGORIES = "소설, 에세이, 인문, 경제경영, 자기계발, 과학"
-_CLARIFY_EXAMPLE = '"경제경영 책 추천해줘"'
+_CLARIFY_CATEGORIES = ("소설", "에세이", "인문", "경제경영", "자기계발", "과학")
+# 분야 답 보기(#652). 누르면 이 말이 그대로 다음 메시지가 된다 — 한 낱말보다 문장으로 답하게 한다(아래 _no_card_response)
+_CLARIFY_OPTIONS = tuple(f"{category} 책 추천해줘" for category in _CLARIFY_CATEGORIES)
 _CLARIFY_ECHO_MAX_CHARS = 20
 
 
@@ -2299,18 +2327,19 @@ def _no_card_response(
         held = f" (지금 걸린 조건: {names})" if conditions else ""
         return (
             "추천해 드리려면 조금 더 알아야 해요.",
-            (
-                f"어떤 분야가 좋으세요? {_CLARIFY_CATEGORIES} 중에서 골라 "
-                f"{_CLARIFY_EXAMPLE}처럼 말씀해 주시거나, 알고 있는 제목·저자를 알려 주세요.{held}"
+            _with_clarify_options(
+                f"어떤 분야가 좋으세요? 골라 주시거나 알고 있는 제목·저자를 알려 주세요.{held}"
             ),
         )
     if conditions:
-        examples = " / ".join(
-            f'"{example}"' for example in dict.fromkeys(e for _, e in conditions)
-        )
         return (
             "조건에 맞는 책을 아직 못 찾았어요.",
-            f"{names} 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요? 예) {examples}",
+            option_lines.with_options(
+                f"{names} 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요?",
+                [example for _, example in conditions],
+                asking.FOLLOWUP_MAX_CHARS,
+            )
+            or f"{names} 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요?",
         )
     said = message.strip()
     head = (
@@ -2320,7 +2349,17 @@ def _no_card_response(
     )
     return (
         "조건에 맞는 책을 아직 못 찾았어요.",
-        f"{head} 제목이나 저자를 알려 주시거나, 분야({_CLARIFY_CATEGORIES}) 중 하나를 골라 주세요.",
+        _with_clarify_options(
+            f"{head} 제목이나 저자를 알려 주시거나, 분야를 골라 주세요."
+        ),
+    )
+
+
+def _with_clarify_options(question: str) -> str:
+    """분야를 묻는 followup 에 분야 답 보기를 단다(#652)."""
+    return (
+        option_lines.with_options(question, _CLARIFY_OPTIONS, asking.FOLLOWUP_MAX_CHARS)
+        or question
     )
 
 
@@ -2428,15 +2467,13 @@ def _slot_question(message: str) -> str | None:
     return None
 
 
-def _append_question(reply: str, question: str) -> str:
-    """reply 끝에 질문을 붙인다. 200자를 넘으면 reply의 뒷 문장부터 덜어 내고, 그래도 안 되면 안 붙인다."""
-    sentences = re.split(r"(?<=[.!?])\s+", reply.strip())
-    while sentences:
-        combined = " ".join(sentences) + "\n\n" + question
-        if len(combined) <= _REPLY_MAX_CHARS:
-            return combined
-        sentences = sentences[:-1]
-    return reply
+def _split_turn_question(reply: str) -> tuple[str, str | None]:
+    """카드 턴 말풍선 끝의 묻는 문장을 떼어 낸다(#652). 그 질문은 카드 아래(followup)에 보인다 — 카드를 보기 전에
+    "어느 쪽이 좋으세요?"를 먼저 읽지 않게. 말풍선이 그 한 문장뿐이면 떼지 않는다(말풍선은 비면 안 된다)."""
+    parts = picking.sentences(reply)
+    if len(parts) < 2 or not parts[-1].endswith("?"):
+        return reply, None
+    return " ".join(parts[:-1]), parts[-1]
 
 
 def _fit_reply(reply: str) -> str:
@@ -2853,7 +2890,7 @@ async def _recommend(
                         "spec": spec.model_dump(),
                         "recognition": None,
                         "cards": [],
-                        "followup": _WHICH_CARD_FOLLOWUP,
+                        "followup": _which_card_followup(shown_books),
                         "buttons": [],
                         "degraded": False,
                     },
@@ -2933,9 +2970,14 @@ async def _recommend(
     else:
         reply = no_card_reply
 
-    if cards and slot_question and not degraded:
-        reply = _append_question(_fit_reply(reply), slot_question)
     reply = _fit_reply(reply)
+    if cards and not degraded:
+        # 카드 턴의 질문과 답 보기는 카드 아래(followup)에 둔다(#652). 빠진 정보를 묻는 질문(slot_question)이 있으면
+        # 그것을 묻는다 — 카드 프롬프트는 이때 묻지 말라고 한다
+        reply, turn_question = _split_turn_question(reply)
+        followup = option_lines.with_options(
+            slot_question or turn_question, result.options, asking.FOLLOWUP_MAX_CHARS
+        )
 
     return responses.success(
         "recommend_success",
