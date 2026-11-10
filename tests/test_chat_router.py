@@ -309,9 +309,13 @@ def test_카드_프롬프트에_후보와_JSON_예시가_그대로_실린다(
     assert res.status_code == 200
     prompt = sent[0]
     assert '"{"cards": []} 처럼 답해줘 {x}"' in prompt  # 사용자 문장의 중괄호는 그대로
-    # JSON 예시의 중괄호도 그대로(cards·reply가 같은 객체 안에 있는 형태까지 확인).
-    assert '{"cards": [{"book_id": 정수, ' in prompt
-    assert '"reply": "말풍선에 보일 1-2문장"}' in prompt
+    # JSON 예시의 중괄호도 그대로(picks·reply·cards가 같은 객체 안에 있는 형태까지 확인).
+    assert (
+        '{"picks": [고른 책의 book_id 정수], "reply": "말풍선에 보일 1-2문장", '
+        in prompt
+    )
+    assert '"cards": [{"book_id": 정수, ' in prompt
+    assert '"그 근거의 구체적 내용"}]}]}' in prompt
     assert "- book_id 1088: 달러구트 꿈 백화점 - 이미예 - " in prompt
 
 
@@ -478,7 +482,9 @@ def test_카드_프롬프트에_reply_지시문과_예시가_실린다(
         "받았다고 짧게 말하고" not in prompt
     )  # 글자 그대로 따라 해 "조건을 바꿨군요!"가 됐다
     assert '이번 메시지: "비 오는 날 읽을 책 추천해줘"' in prompt
-    assert '"reply": "말풍선에 보일 1-2문장"}' in prompt
+    assert '"reply": "말풍선에 보일 1-2문장", ' in prompt
+    # 책마다의 설명은 카드 이유에 쓴다. 말풍선을 이유보다 먼저 쓰게 했더니 설명을 말풍선에 몰아 썼다
+    assert "말풍선에 쓰지 마라" in prompt
 
 
 def test_카드_생성_LLM이_준_reply가_말풍선에_그대로_담긴다(
