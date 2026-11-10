@@ -102,12 +102,11 @@ async def _row(conn: asyncpg.Connection) -> asyncpg.Record:
     )
 
 
-def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다() -> None:
+def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다(at_now: datetime) -> None:
     async def check(conn):
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
+        result = await service.rebuild_on(
+            conn, _request(history={"purchased_isbns": [_isbn(9100202)]})
         )
-        result = await service.rebuild_on(conn, _request())
         return result, await _row(conn)
 
     (cold_start, version), row = _run(check)
@@ -118,7 +117,7 @@ def test_좋아한_책과_이력으로_취향_벡터를_만들어_저장한다()
     assert centroid[1] / centroid[0] == pytest.approx(1.5, rel=1e-5)
     assert json.loads(row["tag_weights"]) == {"경제학": 1, "한국소설": 3}
     assert row["cold_start"] is False
-    assert row["computed_at"] == _T0
+    assert row["computed_at"] == at_now
 
 
 def _centroid_of(onboarding: dict) -> list[float]:
@@ -170,11 +169,9 @@ def test_책_표에_없는_ISBN은_건너뛰고_나머지로_만든다() -> None
 
 def test_온보딩_카테고리를_카탈로그_분류_점수로_풀어_이력과_합쳐_저장한다() -> None:
     async def check(conn):
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
-        )
         onboarding = {"categories": ["소설"], "liked_book_ids": [9100201]}
-        await service.rebuild_on(conn, _request(onboarding=onboarding))
+        history = {"purchased_isbns": [_isbn(9100202)]}
+        await service.rebuild_on(conn, _request(onboarding=onboarding, history=history))
         return await _row(conn)
 
     row = _run(check)
@@ -290,7 +287,7 @@ def test_재료가_없으면_cold_start로_저장한다() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 요청의 history 로 계산한다(#327). 칸이 없으면 지금처럼 복제 표에서 읽는다.
+# 요청의 history 로 계산한다(#327). 칸이 없으면 이력이 없는 것이다(#307).
 # ---------------------------------------------------------------------------
 
 _NOW = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
@@ -308,14 +305,10 @@ async def _rebuilt(conn, **overrides) -> asyncpg.Record:
     return await _row(conn)
 
 
-def test_history가_오면_복제_표가_아니라_요청의_이력으로_계산한다(
+def test_history가_오면_요청의_이력으로_계산한다(
     at_now: datetime,
 ) -> None:
     async def check(conn):
-        # 복제 표에는 한국소설(9100202)을 산 것으로 남아 있지만, 요청은 에세이(9100201)를 샀다고 한다.
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
-        )
         return await _rebuilt(
             conn,
             onboarding={},
@@ -329,27 +322,19 @@ def test_history가_오면_복제_표가_아니라_요청의_이력으로_계산
     assert (centroid[0], centroid[1]) == (pytest.approx(1.0), pytest.approx(0.0))
 
 
-def test_history가_없으면_지금처럼_복제_표의_이력으로_계산한다() -> None:
-    async def check(conn):
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
-        )
-        return await _rebuilt(conn, onboarding={})
-
-    row = _run(check)
-
-    assert json.loads(row["tag_weights"]) == {"한국소설": 3}
-    assert row["computed_at"] == _T0
-
-
-def test_빈_history는_이력이_없다는_뜻이라_복제_표를_읽지_않는다(
-    at_now: datetime,
+@pytest.mark.parametrize("history", [None, {}], ids=["history 없음", "빈 history"])
+def test_history가_없거나_비면_이력이_없는_것으로_계산한다(
+    monkeypatch: pytest.MonkeyPatch, at_now: datetime, history
 ) -> None:
+    # 복제한 사용자 표는 읽지 않는다. 복제를 멈추고 지운다(#307).
+    async def _no_replica(conn, user_id, until=None):
+        raise AssertionError("복제 표를 읽었다")
+
+    monkeypatch.setattr(service.history, "read", _no_replica)
+
     async def check(conn):
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100202, $2, 'PAID')", _USER, _T0
-        )
-        return await _rebuilt(conn, history={})
+        overrides = {} if history is None else {"history": history}
+        return await _rebuilt(conn, **overrides)
 
     row = _run(check)
 
@@ -362,54 +347,13 @@ def test_빈_history는_이력이_없다는_뜻이라_복제_표를_읽지_않�
 def test_요청으로_받은_이력은_받은_시각까지_반영한_것으로_저장한다(
     at_now: datetime,
 ) -> None:
-    # 이력이 비어 있어도 받은 시각을 적는다. 비워 두면 ③④ 가 복제 표에 남은 이력을 전부
-    # "프로필 이후 이력"으로 보고 한 번 더 더한다.
+    # 이력이 비어 있어도 받은 시각을 적는다.
     async def check(conn):
         filled = await _rebuilt(conn, history={"library_isbns": [_isbn(9100202)]})
         empty = await _rebuilt(conn, history={})
         return filled["computed_at"], empty["computed_at"]
 
     assert _run(check) == (at_now, at_now)
-
-
-def test_같은_이력이면_요청으로_받아도_복제_표에서_읽어도_같은_프로필이다(
-    at_now: datetime,
-) -> None:
-    # 9100201 은 사고 1점을 줬고, 9100202 는 담고 4.5점을 줬다.
-    async def check(conn):
-        await conn.execute(
-            "INSERT INTO v_user_purchases VALUES ($1, 9100201, $2, 'PAID')", _USER, _T0
-        )
-        await conn.execute(
-            "INSERT INTO v_user_library VALUES ($1, 9100202, $2)", _USER, _T0
-        )
-        await conn.executemany(
-            "INSERT INTO v_user_reviews VALUES ($1, $2, $3, $4)",
-            [(_USER, 9100201, 1.0, _T0), (_USER, 9100202, 4.5, _T0)],
-        )
-        replicated = await _rebuilt(conn, onboarding={"tags": ["재테크"]})
-        reported = await _rebuilt(
-            conn,
-            onboarding={"tags": ["재테크"]},
-            history={
-                "purchased_isbns": [_isbn(9100201)],
-                "library_isbns": [_isbn(9100202)],
-                "reviews": [
-                    {"isbn": _isbn(9100201), "rating": 1.0},
-                    {"isbn": _isbn(9100202), "rating": 4.5, "content": "좋았어요"},
-                ],
-            },
-        )
-        return replicated, reported
-
-    replicated, reported = _run(check)
-
-    assert json.loads(reported["centroid"]) == pytest.approx(
-        json.loads(replicated["centroid"])
-    )
-    assert json.loads(reported["tag_weights"]) == json.loads(replicated["tag_weights"])
-    # 결과가 같아서 판 번호도 오르지 않는다.
-    assert reported["profile_version"] == replicated["profile_version"] == 1
 
 
 def test_요청의_이력에_책_표에_없는_ISBN이_있어도_나머지로_계산한다(
@@ -473,15 +417,15 @@ def test_같은_사용자의_요청이_동시에_오면_하나씩_처리해_판_
 ) -> None:
     # 두 연결이 서로의 기록을 봐야 해서 트랜잭션을 되돌리는 방식을 못 쓴다. 넣고 끝나면 지운다.
     user = 9_100_301
-    real_read = service.history.read
+    real_history = service._history
 
-    async def slow_read(conn, user_id):
-        # 둘이 확실히 겹치게, 이력을 읽은 뒤 잠깐 멈춘다. 잠금이 없으면 둘 다 판 번호 0을 보고 1을 쓴다.
-        result = await real_read(conn, user_id)
+    async def slow_history(conn, req):
+        # 둘이 확실히 겹치게, 이력을 모은 뒤 잠깐 멈춘다. 잠금이 없으면 둘 다 판 번호 0을 보고 1을 쓴다.
+        result = await real_history(conn, req)
         await asyncio.sleep(0.3)
         return result
 
-    monkeypatch.setattr(service.history, "read", slow_read)
+    monkeypatch.setattr(service, "_history", slow_history)
 
     async def go():
         conns = [await asyncpg.connect(_DB_URL) for _ in range(2)]

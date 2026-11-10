@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.feed import personalized
+from app.feed import exclusion, personalized
 from app.feed.cursor import Page
 from app.feed.schemas import parse_query
 
@@ -56,7 +56,11 @@ def _nearest(conn: _FakeConn, **params) -> list:
         pub_year_from=req.pub_year_from,
         pub_year_to=req.pub_year_to,
     )
-    return asyncio.run(personalized._nearest(conn, req, page, [0.1], filters))
+    return asyncio.run(
+        personalized._nearest(
+            conn, req, page, [0.1], filters, exclusion.owned([9_100_001])
+        )
+    )
 
 
 def test_필터가_없으면_세지_않고_벡터_색인으로_뽑는다() -> None:

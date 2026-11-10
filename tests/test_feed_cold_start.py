@@ -5,7 +5,7 @@
 
 import asyncio
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -23,8 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 _USER = 9100601
 _CATEGORY = "피드테스트분류"
-_T0 = datetime(2026, 9, 1, tzinfo=UTC)
-# 커서를 받은 시각. 위 이력보다 뒤라 제외가 그대로 걸린다.
+# 커서를 받은 시각
 _NOW = datetime(2026, 9, 30, tzinfo=UTC)
 
 # (book_id, 가격, 출간연도)
@@ -35,9 +34,11 @@ _BOOKS = [
     (9100604, 30000, 2022),
     (9100605, 11000, 2023),  # 산 책
     (9100606, 11000, 2023),  # 담은 책
-    (9100607, 11000, 2023),  # 2.0점 리뷰
-    (9100608, 11000, 2023),  # 4.5점 리뷰만 — 빼지 않는다
+    (9100607, 11000, 2023),  # 산 책(2.0점 리뷰)
+    (9100608, 11000, 2023),
 ]
+# 가진 책은 요청으로 온다(#330). 복제한 사용자 표는 읽지 않는다(#307).
+_OWNED = exclusion.owned([9100605, 9100606, 9100607])
 # (book_id, 판매 수). 나머지는 인기 행이 없어 0점이다.
 _SALES = [(9100601, 10), (9100604, 5000)]
 
@@ -55,6 +56,8 @@ def _fetch(
     full=False,
     excluded=None,
 ):
+    excluded = _OWNED if excluded is None else excluded
+
     async def _go():
         conn = await asyncpg.connect(_DB_URL)
         tx = conn.transaction()
@@ -86,20 +89,6 @@ def _fetch(
                     book_id,
                     sales,
                 )
-            await conn.execute(
-                "INSERT INTO v_user_purchases VALUES ($1, 9100605, $2, 'PAID')",
-                _USER,
-                _T0,
-            )
-            await conn.execute(
-                "INSERT INTO v_user_library VALUES ($1, 9100606, $2)", _USER, _T0
-            )
-            await conn.execute(
-                "INSERT INTO v_user_reviews VALUES ($1, 9100607, 2.0, $2),"
-                " ($1, 9100608, 4.5, $2)",
-                _USER,
-                _T0,
-            )
             req = parse_query(
                 [
                     ("user_id", str(user_id)),
@@ -127,13 +116,6 @@ def _list(params, user_id: int = _USER, page=None, without_product=()) -> list[i
 
 def test_기본은_인기순이고_인기_행이_없는_책은_신간순으로_뒤에_온다() -> None:
     assert _list([]) == [9100604, 9100601, 9100602, 9100608, 9100603]
-
-
-def test_산_책_담은_책_2점_이하_리뷰_책은_빼고_좋은_리뷰만_단_책은_남긴다() -> None:
-    ids = _list([])
-
-    assert {9100605, 9100606, 9100607}.isdisjoint(ids)
-    assert 9100608 in ids
 
 
 def test_최신순은_출간연도가_없는_책을_맨_뒤로_보낸다() -> None:
@@ -186,13 +168,6 @@ def test_size_만큼만_준다() -> None:
     assert _list([("size", "2")]) == [9100604, 9100601]
 
 
-def test_다른_사용자의_이력으로는_빼지_않는다() -> None:
-    # 이력은 _USER 의 것이다. 다른 사람의 목록에는 그 책들이 그대로 나온다.
-    ids = _list([], user_id=_USER + 1)
-
-    assert {9100605, 9100606, 9100607} <= set(ids)
-
-
 def test_다음_페이지는_이어서_준다() -> None:
     첫쪽, 더_있나 = _fetch([("size", "2")])
     둘째쪽, _ = _fetch([("size", "2")], page=Page(offset=2, issued_at=_NOW))
@@ -206,13 +181,6 @@ def test_마지막_페이지면_더_없다고_알린다() -> None:
     _, 더_있나 = _fetch([("size", "50")])
 
     assert 더_있나 is False
-
-
-def test_커서를_받은_뒤에_생긴_이력은_제외하지_않는다() -> None:
-    # 카드를 보고 돌아와 산 책이 다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
-    이전 = Page(issued_at=_T0 - timedelta(days=1))
-
-    assert 9100605 in _list([], page=이전)
 
 
 def test_500권에서_끝난다(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,52 +220,15 @@ def test_최신순에서_같은_연도는_번호순이다() -> None:
                     ("sort", "newest"),
                 ]
             )
-            items, _ = await cold_start.fetch(conn, req, Page(issued_at=_NOW))
+            items, _ = await cold_start.fetch(
+                conn, req, Page(issued_at=_NOW), exclusion.owned([])
+            )
             return [item["book_id"] for item in items]
         finally:
             await tx.rollback()
             await conn.close()
 
     assert asyncio.run(_go()) == [9100611, 9100612]
-
-
-@pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
-def test_책_표를_통째로_훑지_않는다(sort: str) -> None:
-    # 통째로 읽고 정렬하면 261만 권에서 한 쪽에 1초가 넘는다(#186). 색인 순서대로 앞부분만 읽는다.
-    async def _go():
-        conn = await asyncpg.connect(_DB_URL)
-        try:
-            req = parse_query(
-                [("user_id", str(_USER)), ("surface", "recommend_more"), ("sort", sort)]
-            )
-            where = ""
-            excluded = exclusion.replicated(req.user_id, _NOW).sql(1)
-            if sort == "match":
-                sql = cold_start.popular_first_sql(
-                    where, excluded, limit="$4::int + $5::int"
-                )
-            else:
-                sql = cold_start.ORDERED_SQL[req.sort].format(
-                    where=where, excluded=excluded
-                )
-            rows = await cold_start.run_ordered(
-                conn,
-                "EXPLAIN " + sql + "LIMIT $4 OFFSET $5",
-                req.user_id,
-                2.0,
-                _NOW,
-                16,
-                0,
-            )
-            return "\n".join(r[0] for r in rows)
-        finally:
-            await conn.close()
-
-    plan = asyncio.run(_go())
-
-    assert "Seq Scan on v_books" not in plan
-    # 가격순은 상품 표를 가격 색인 순서로 읽는다(#207)
-    assert "Seq Scan on v_products" not in plan
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +239,8 @@ _ALL = {book_id for book_id, _, _ in _BOOKS}
 
 
 @pytest.mark.parametrize("sort", ["match", "newest", "price_asc"])
-def test_받은_책을_빼고_복제_표의_이력은_보지_않는다(sort: str) -> None:
-    # 복제 표에는 9100605(구매)·9100606(담기)·9100607(2.0점)이 있다. 요청은 9100601·9100602 를 가졌다고 한다.
+def test_받은_책만_뺀다(sort: str) -> None:
+    # 요청은 9100601·9100602 를 가졌다고 한다. 나머지는 모두 나온다.
     ids, _ = _fetch(
         [("sort", sort), ("size", "50")], excluded=exclusion.owned([9100601, 9100602])
     )

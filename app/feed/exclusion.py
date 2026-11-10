@@ -5,10 +5,7 @@
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
-
-from app.core import history
 
 
 @dataclass(frozen=True)
@@ -25,39 +22,11 @@ class Exclusion:
         )
 
 
-# 이미 산 책, 나의 도서관에 담은 책, 2.0점 이하 리뷰를 단 책은 뺀다(명세 ④).
-# 좋은 리뷰만 단 책(사지도 담지도 않음)은 명세의 제외 대상이 아니라 남긴다.
-# 산 책은 결제가 끝난 주문만, 리뷰는 지우지 않은 것만 본다(#296). 이력을 읽는 곳과 같은 기준이다.
-# {{0}} 같은 겹 중괄호는 이 f-string 을 지나 Exclusion.sql 의 자리 표시로 남는다.
-_REPLICATED = f"""
-NOT EXISTS (
-        SELECT 1 FROM v_user_purchases x
-        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.purchased_at <= {{2}}
-          AND {history.paid_purchase("x")})
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_library x
-        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.added_at <= {{2}})
-  AND NOT EXISTS (
-        SELECT 1 FROM v_user_reviews x
-        WHERE x.user_id = {{0}} AND x.book_id = b.book_id AND x.rating <= {{1}}
-          AND x.created_at <= {{2}} AND {history.live_review("x")})
-"""
-
-
-def replicated(user_id: int, issued_at: datetime | None) -> Exclusion:
-    """복제한 사용자 표의 이력으로 뺀다. 커서를 받은 시각 뒤에 생긴 이력은 빼고 본다.
-
-    카드를 보고 돌아와 산 책이 다음 페이지에서 사라지면 목록이 한 칸씩 밀린다(명세 ④).
-    """
-    return Exclusion(_REPLICATED, (user_id, history.DISLIKED_MAX_RATING, issued_at))
-
-
 def owned(book_ids: list[int]) -> Exclusion:
-    """요청에 실려 온 가진 책(산 책·나의 도서관 책)으로 뺀다(#330). 복제 표는 읽지 않는다.
+    """요청에 실려 온 가진 책(산 책·나의 도서관 책)으로 뺀다(#330). 안 실려 오면 빈 목록이다.
 
-    별점이 낮은 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어서 산 책에 들어 있다.
+    별점이 낮은 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어서 산 책에 들어 있다(#307).
     요청에는 이력마다의 시각이 없어서, 스크롤 중에 산 책은 다음 페이지에서 바로 빠진다.
-    복제 표로 뺄 때처럼 커서를 받은 시각으로 가를 수 없다.
     """
     if not book_ids:
         # 가진 책이 없는 사용자가 대부분이다. 조건을 아예 붙이지 않는다.

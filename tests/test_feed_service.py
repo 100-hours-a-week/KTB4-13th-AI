@@ -7,39 +7,42 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.config import get_settings
-from app.feed import cursor, exclusion, interest_page, service
+from app.feed import cursor, interest_page, service
 from app.feed.schemas import parse_query
 
 
 class _FakePool:
     def __init__(self, profile_row):
         self._row = profile_row
+        # 이 목록을 만드는 동안 DB 에 보낸 조회문
+        self.queries: list[str] = []
 
     @asynccontextmanager
     async def acquire(self):
-        yield _FakeConn(self._row)
+        yield _FakeConn(self._row, self.queries)
 
 
 class _FakeConn:
-    def __init__(self, row):
+    def __init__(self, row, queries):
         self._row = row
+        self._queries = queries
 
     async def fetchrow(self, sql, *args):
+        self._queries.append(sql)
         return self._row
 
-
-async def _no_recent_history(conn, user_id, reflected_at, until=None):
-    return {}
+    async def fetch(self, sql, *args):
+        self._queries.append(sql)
+        return []
 
 
 async def _has_book_vectors(conn):
     return True
 
 
-def _run(req, profile_row, monkeypatch, **fakes):
-    monkeypatch.setattr(service.db, "get_pool", lambda: _FakePool(profile_row))
-    # 프로필 뒤에 생긴 이력(#175)은 따로 보는 테스트가 아니면 없다고 둔다.
-    fakes.setdefault("history__category_scores_since", _no_recent_history)
+def _run(req, profile_row, monkeypatch, pool=None, **fakes):
+    pool = pool or _FakePool(profile_row)
+    monkeypatch.setattr(service.db, "get_pool", lambda: pool)
     # 책 벡터는 따로 보는 테스트가 아니면 있다고 둔다.
     fakes.setdefault("vector__has_any", _has_book_vectors)
     for name, fn in fakes.items():
@@ -296,63 +299,47 @@ def test_책_벡터가_있는데_0건이면_빈_목록_그대로다(
     assert (outcome.items, outcome.degraded) == ([], None)
 
 
-def test_프로필_뒤에_생긴_이력을_카테고리_점수에_더해_채점한다(
+def test_태그_가중치는_프로필에_저장된_값을_그대로_쓴다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # ⑥ 은 온보딩 때만 불려서, 그 뒤에 산 책은 여기서 더해야 순서에 들어간다(#175).
-    reflected = datetime(2026, 9, 1, tzinfo=UTC)
-    row = {**_PROFILE_ROW, "tag_weights": '{"에세이": 3}', "computed_at": reflected}
-    calls: list[tuple] = []
+    # 프로필 뒤에 생긴 이력은 복제 표에서 더하지 않는다(#307). BE 가 이력이 바뀐 사용자의 프로필을 밤에
+    # 다시 부르므로, 그날 산 책·리뷰는 다음 날부터 순서에 들어간다.
+    row = {**_PROFILE_ROW, "tag_weights": '{"에세이": 3}'}
 
-    async def _recent(conn, user_id, reflected_at, until=None):
-        calls.append((user_id, reflected_at, until))
-        return {"에세이": 2, "경제학": 3}
-
-    async def _personalized(conn, req, page, centroid, tag_weights, excluded=None):
-        assert tag_weights == {"에세이": 5, "경제학": 3}
+    async def _personalized(conn, req, page, centroid, tag_weights, excluded):
+        assert tag_weights == {"에세이": 3}
         return [{"book_id": 9, "match_score": 80}], False
+
+    _run(_req(), row, monkeypatch, personalized__fetch=_personalized)
+
+
+@pytest.mark.parametrize("profile_row", [None, _PROFILE_ROW])
+def test_복제한_사용자_표는_읽지_않는다(
+    monkeypatch: pytest.MonkeyPatch, profile_row
+) -> None:
+    # 사용자 표(구매·나의 도서관·리뷰)는 복제를 멈추고 지운다(#307). 읽으면 표가 없어 오류가 난다.
+    pool = _FakePool(profile_row)
+
+    async def _cold(conn, req, page, excluded):
+        return [], False
 
     _run(
         _req(),
-        row,
+        profile_row,
         monkeypatch,
-        history__category_scores_since=_recent,
-        personalized__fetch=_personalized,
+        pool=pool,
+        cold_start__fetch=_cold,
+        personalized__fetch=_vector_up,
     )
 
-    # 프로필이 반영한 시각 뒤부터, 이 목록을 처음 받은 시각까지만 본다.
-    ((user_id, after, until),) = calls
-    assert (user_id, after) == (1, reflected)
-    assert until is not None
+    assert pool.queries
+    assert not [sql for sql in pool.queries if "v_user_" in sql]
 
 
 def _second_page_cursor(issued_at: datetime, version: int) -> str:
     """issued_at 에 첫 페이지를 받은 개인화 목록의 다음 커서."""
     page = service.cursor.Page(issued_at=issued_at)
     return service.cursor.issue(page, _req(), service.PERSONALIZED, version)
-
-
-def test_둘째_페이지도_첫_페이지를_받은_시각까지의_이력만_더한다(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # 지금 시각까지 더하면 스크롤하는 사이에 산 책으로 점수가 바뀌어 목록이 밀린다(#176, #210).
-    monkeypatch.setenv("CURSOR_SIGNING_KEY", "test-key")
-    first_page_at = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
-    untils: list[datetime | None] = []
-
-    async def _recent(conn, user_id, reflected_at, until=None):
-        untils.append(until)
-        return {}
-
-    _run(
-        _req(cursor=_second_page_cursor(first_page_at, 1)),
-        _PROFILE_ROW,
-        monkeypatch,
-        history__category_scores_since=_recent,
-        personalized__fetch=_vector_up,
-    )
-
-    assert untils == [first_page_at]
 
 
 def test_페이지_사이에_프로필_판_번호가_바뀌어도_이어서_준다(
@@ -406,10 +393,14 @@ def _exclusion_seen(monkeypatch: pytest.MonkeyPatch, profile_row, **params):
 
 
 @pytest.mark.parametrize("profile_row", [None, _PROFILE_ROW])
-def test_가진_책이_안_왔으면_조건을_넘기지_않아_복제_표로_빼게_한다(
+def test_가진_책이_안_왔으면_아무것도_빼지_않는_조건을_넘긴다(
     monkeypatch: pytest.MonkeyPatch, profile_row
 ) -> None:
-    assert _exclusion_seen(monkeypatch, profile_row) is None
+    # 복제 표로 빼던 길은 없앴다(#307). BE 는 V3 부터 가진 책을 늘 실어 보낸다.
+    excluded = _exclusion_seen(monkeypatch, profile_row)
+
+    assert excluded is not None
+    assert excluded.params == ()
 
 
 @pytest.mark.parametrize("profile_row", [None, _PROFILE_ROW])
@@ -509,8 +500,8 @@ def _from_saved(monkeypatch, req, count: int, profile_row=None, saved=_SAVED, **
 
     async def _books(conn, req, books, excluded):
         assert books == _SAVED.books
-        # 가진 책이 안 실려 왔으면 다른 목록처럼 복제 표로 뺀다
-        assert excluded.template == exclusion.replicated(1, None).template
+        # 가진 책이 안 실려 왔으면 다른 목록처럼 아무것도 빼지 않는다(#307)
+        assert excluded.params == ()
         return [_saved_item(n) for n in range(count)]
 
     fakes.setdefault("personalized__fetch", _no_vectors)
