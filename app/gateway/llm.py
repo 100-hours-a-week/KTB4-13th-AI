@@ -13,6 +13,7 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
 from app.core.config import get_settings
+from app.gateway import reranker
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,12 @@ def report_models() -> None:
     elif reason := decision.skip_reason(settings):
         logger.warning(
             "CHAT_JUDGE 가 jev 지만 %s — ③ 판정 두 개는 LLM 으로 묻습니다", reason
+        )
+    if reranker.enabled():
+        parts.append(f"③ 후보 리랭커 {settings.reranker_model_id}")
+    elif reason := reranker.skip_reason(settings):
+        logger.warning(
+            "CHAT_RERANKER 를 켰지만 %s — ③ 후보는 검색 순서로 자릅니다", reason
         )
     for name, feature, model_id in own_models:
         parts.append(f"{feature} {model_id or '공용'}")

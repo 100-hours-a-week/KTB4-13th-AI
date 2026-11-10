@@ -10,7 +10,7 @@ from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
 from app.feed import build_queue
-from app.gateway import decision, embedding, llm
+from app.gateway import decision, embedding, llm, reranker
 from app.profile import labels
 from app.routers import (
     agent,
@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     # 앱이 내려갈 때. 연결 풀을 닫기 전에 일꾼부터 멈춘다
     await build_queue.stop()
     await decision.aclose()
+    await reranker.aclose()
     await db.disconnect()
 
 

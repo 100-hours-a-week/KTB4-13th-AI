@@ -39,7 +39,7 @@ from app.feed import personalized, scoring
 from app.gate import judge as gate_judge
 from app.gate import rules as gate_rules
 from app.gate import shopping
-from app.gateway import decision, embedding
+from app.gateway import decision, embedding, reranker
 from app.gateway.llm import (
     LLMUnavailableError,
     get_chat_model,
@@ -1191,6 +1191,11 @@ async def get_candidates(
             if _edition_key(c.get("title"), c.get("author")) not in shown_keys
         ]
     pool = _dedupe_editions(pool)
+    # 분위기로 찾는 요청이면 남은 후보(보통 25권 안팎)를 질문과 책 글을 같이 읽는 리랭커로 다시 줄 세운 뒤 자른다(#638).
+    # 제목·저자 찾기(exact)는 제목이 같은 책을 맨 앞에 둔 ①의 순서가 맞는 순서라 그대로 둔다. 리랭커를 못 쓰면 검색 순서다.
+    # DB 연결을 잡기 전에 부른다 — 외부 호출을 기다리는 동안 연결을 쥐고 있지 않게.
+    if spec.intent == "semantic" and spec.semantic:
+        pool = await reranker.rerank(spec.semantic, pool)
     pool = pool[:CANDIDATE_LIMIT]
     async with db.get_pool().acquire() as conn:
         await _attach_match_scores(conn, pool, user_id, spec)
