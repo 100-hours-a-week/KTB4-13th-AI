@@ -10,7 +10,7 @@ from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
 from app.feed import build_queue
-from app.gateway import embedding, llm
+from app.gateway import embedding, llm, reranker
 from app.profile import labels
 from app.routers import (
     agent,
@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI):
     else:
         # ⑥ 요청 중에는 모델을 부르지 않으므로 라벨 벡터를 여기서 미리 만든다.
         await labels.load()
+    # ③ 후보 리랭커(#573). 읽기를 기다리지 않는다 — 다 읽기 전 요청은 검색 순서로 후보를 고른다.
+    reranker.start_loading()
     # 프로필 계산 뒤 홈 목록을 뒤에서 만드는 일꾼(#580)
     build_queue.start()
     yield

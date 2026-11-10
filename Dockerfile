@@ -23,6 +23,11 @@ ARG EMBEDDING_MODEL=intfloat/multilingual-e5-small
 ENV HF_HOME=/app/hf
 RUN /app/.venv/bin/python -c "import sys; from sentence_transformers import SentenceTransformer; SentenceTransformer(sys.argv[1], device='cpu')" "$EMBEDDING_MODEL"
 
+# ③ 후보 리랭커 모델(#573, fp32 약 2.3GB)도 같은 이유로 이미지에 넣는다. 설정의 RERANKER_MODEL 과 같아야 한다.
+# 다르면 기동 로그에 실패가 남고 챗봇 후보는 검색 순서로 고른다. 임베딩 모델보다 뒤에 두어, 임베딩 층은 캐시를 그대로 쓴다.
+ARG RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RUN /app/.venv/bin/python -c "import sys; from sentence_transformers import CrossEncoder; CrossEncoder(sys.argv[1], device='cpu')" "$RERANKER_MODEL"
+
 
 # 실행 단계
 FROM python:3.12-slim

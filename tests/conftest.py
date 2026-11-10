@@ -21,6 +21,9 @@ os.environ.setdefault("INTEREST_FEED", "false")
 # 취향 뽑기 자체 서빙(#569)도 기본값이 켜져 있다. 주소가 없으면 API 만 쓰지만 서버가 뜰 때마다 경고를 남겨,
 # 경고 수를 세는 테스트가 깨진다. 같은 까닭으로 꺼진 경로를 기본으로 보고, 켠 동작은 그 테스트가 직접 켠다.
 os.environ.setdefault("EXTRACTION_SELF_HOSTED_MODE", "off")
+# ③ 후보 리랭커(#573)도 기본값이 켜져 있다. 앱을 띄우는 테스트가 2GB 넘는 모델을 읽거나 내려받지 않게 끈다.
+# 리랭커 동작은 tests/test_reranker_gateway.py 가 가짜 모델로 본다.
+os.environ.setdefault("CHAT_RERANKER", "false")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
 from app.core import db

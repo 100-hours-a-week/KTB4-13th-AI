@@ -112,6 +112,27 @@ class Settings(BaseSettings):
     # 비율이 main 보다 낮아(47% → 짧은 평가 10~20%) 이 방식으로 바꿨다. 켜기는 이 기본값을 바꾸는 PR로 한다.
     chat_narrowing: bool = False
 
+    # --- ③ 후보 다시 줄 세우기(#573) ---
+    # 켜면(기본) 검색이 고른 30권을 교차 인코더(app/gateway/reranker.py)로 다시 줄 세워 카드에 넘길 10권을 고른다.
+    # 분위기로 찾는 요청(semantic)만 하고, 제목·저자 찾기(exact)는 검색 순서 그대로 둔다. 모델(fp32 약 2.3GB)은 이미지에
+    # 들어 있고 앱이 뜰 때 뒤에서 읽는다. 메모리 한도가 reranker_min_memory_mib 보다 작으면 띄우지 않고 검색 순서를 쓴다.
+    # 급하게 끌 때만 CHAT_RERANKER=false 를 넣는다.
+    chat_reranker: bool = True
+    # Dockerfile 의 RERANKER_MODEL 과 같아야 한다. 다르면 이미지에 모델이 없어 기동 로그에 실패가 남고 검색 순서를 쓴다.
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # 질문과 책 글을 합친 토큰 수 상한. #573 속도 실측(맥 6스레드, 25권): 512토큰 5.0초, 128토큰 1.8초. 128토큰으로
+    # 잘라도 10권 nDCG 이득의 82%가 남는다.
+    reranker_max_length: int = 128
+    reranker_batch_size: int = 16
+    # 이 시간 안에 못 매기면 검색 순서를 쓴다. 맥 2스레드에서 30권이 2.0초라 넉넉히 잡았다. 운영 CPU에서 잰 뒤 고친다.
+    reranker_timeout_seconds: float = 5.0
+    # 메모리 한도(MiB)가 이보다 작으면 모델을 띄우지 않는다. 운영 AI 태스크가 지금 약 1.1GB를 쓰고(11/03~11/09 최대
+    # 1,108MiB), 모델 가중치가 약 2.3GB, 추론에 수백 MB가 더 든다. 지금 한도 3,072MiB 에서는 띄우지 않는다.
+    reranker_min_memory_mib: int = 4096
+    # 서버(EC2) 전체에 남은 메모리(MiB)가 이보다 작아도 띄우지 않는다. 가중치 2,165MiB + 추론 약 300MiB + 같이 오는
+    # 요청 몫 약 300MiB. AI 서버가 t3.medium(4GiB)이면 앱이 뜬 뒤 어림 2.4GB만 남아 띄우지 않는다(8GiB 서버면 띄운다).
+    reranker_min_free_mib: int = 2800
+
     # --- ② 소개가 바뀐 책의 벡터 다시 만들기(#300) ---
     # 켜면 임베딩 작업이 벡터를 만든 글의 해시를 새 표(book_embedding_docs)에 함께 적고, 지금 글과 다르면 다시
     # 만든다. 소개가 없어진 책의 벡터도 지우고, 끝에 빠진 책이 없는지 확인한다. 끄면(기본) 지금처럼 벡터가 없는 책만

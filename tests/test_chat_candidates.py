@@ -762,3 +762,82 @@ def test_가진_책이_안_왔으면_지금처럼_복제_표의_이력으로_뺀
     result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=None))
 
     assert [c["book_id"] for c in result] == [2]
+
+
+def _twelve_semantic_books(monkeypatch: pytest.MonkeyPatch) -> None:
+    """검색이 12권을 돌려주고 모두 소개글이 있다. 자르기(10권) 전에 리랭커가 순서를 바꿀 여지가 있다."""
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        return SearchOutcome(results=[_book(i) for i in range(1, 13)], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {i: f"소개{i}" for i in book_ids}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+
+def test_semantic이면_리랭커가_자르기_전에_줄을_다시_세운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 검색 11·12위 책도 모델 점수가 높으면 10권 안에 든다(#573). 리랭커는 질문과 판본을 걷어 낸 뒤의 후보 전부를 받는다.
+    _twelve_semantic_books(monkeypatch)
+    seen: dict = {}
+
+    async def _rerank(query: str, candidates: list[dict]) -> list[dict]:
+        seen["query"] = query
+        seen["ids"] = [c["book_id"] for c in candidates]
+        return list(reversed(candidates))
+
+    monkeypatch.setattr(chat.reranker, "rerank", _rerank)
+
+    spec = _spec(intent="semantic", semantic="비 오는 날 읽을 잔잔한 책")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert seen == {"query": "비 오는 날 읽을 잔잔한 책", "ids": list(range(1, 13))}
+    assert [c["book_id"] for c in result] == [12, 11, 10, 9, 8, 7, 6, 5, 4, 3]
+
+
+def test_리랭커를_못_쓰면_검색_순서로_10권을_자른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 모델을 아직 안 읽었으면(테스트 기본) rerank 는 받은 목록을 그대로 돌려준다.
+    _twelve_semantic_books(monkeypatch)
+    monkeypatch.setattr(chat.reranker, "_model", None)
+
+    spec = _spec(intent="semantic", semantic="비 오는 날 읽을 잔잔한 책")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert [c["book_id"] for c in result] == list(range(1, 11))
+
+
+@pytest.mark.parametrize(
+    "spec_overrides",
+    [
+        # 제목·저자 찾기는 제목이 같은 책을 맨 앞에 둔 ①의 순서를 그대로 쓴다
+        {
+            "intent": "exact",
+            "exact": SpecExact(title="책1", author=None, publisher=None),
+            "semantic": "잔잔한",
+        },
+        # 분위기 문장이 없으면 모델에 줄 질문이 없다
+        {
+            "intent": "semantic",
+            "semantic": None,
+            "exact": SpecExact(title="책", author=None, publisher=None),
+        },
+    ],
+)
+def test_exact이거나_분위기_문장이_없으면_리랭커를_부르지_않는다(
+    monkeypatch: pytest.MonkeyPatch, spec_overrides: dict
+) -> None:
+    _twelve_semantic_books(monkeypatch)
+
+    async def _rerank(query: str, candidates: list[dict]) -> list[dict]:
+        raise AssertionError("리랭커를 부르면 안 된다")
+
+    monkeypatch.setattr(chat.reranker, "rerank", _rerank)
+
+    result = asyncio.run(chat.get_candidates(_spec(**spec_overrides), [], 1))
+
+    assert [c["book_id"] for c in result] == list(range(1, 11))
