@@ -12,8 +12,11 @@
   가격×수량, 합계)이어야 한다. 책 제목 속의 글자나 숫자가 걸리지 않도록 검사 전에 제목을 가린다
 - 위반한 문장만 지운다. 코드가 만든 결과 문장이 있으면 답이 비지 않는다. 쓰기가 일어나지 않았는데 LLM 의 글이
   전부 지워지면 GroundingFailed(422)다. 한 문장 안에 맞는 말과 틀린 말이 섞여 있으면 문장 전체를 지운다
+- 검사 전에 말을 다듬는다(#717): 화면 코드("CART-001")는 화면 이름으로 바꾸고, 다른 나라 글자("այժմ 합계는")는
+  거른다(app/core/foreign_script.py). 틀린 말이 아니라서 이것만으로 답이 비어도 422 가 아니다
 """
 
+import json
 import re
 from dataclasses import dataclass
 from itertools import combinations
@@ -39,6 +42,7 @@ from app.agent.schemas import (
 )
 from app.agent.tools import UI_TARGETS
 from app.agent.view import label
+from app.core import foreign_script
 from app.gateway.commerce import CartLine, CommerceErrorCode
 
 # 반복을 다 쓰거나 LLM 이 빈 글로 끝났을 때, 지운 문장도 없을 때 쓰는 안내
@@ -558,6 +562,73 @@ def _plain(text: str) -> str:
     return text.replace("**", "").replace("__", "").replace("`", "")
 
 
+# 모델이 화면 코드나 도구 인자를 답에 그대로 쓴 일이 있었다(#717, 10월 평가 기록): "ORDER-LIST-001\n주문 취소와 환불은…",
+# "CART-001 화면으로 안내해 드릴게요", `{"budget_total":1,"count":2}\n예산 금액이…". 프롬프트와 도구 설명이 화면을
+# 코드로 가리킨다. 코드만 있는 줄과 JSON 줄은 빼고, 문장 속 코드는 사람이 읽는 화면 이름으로 바꾼다(조사도 맞춘다)
+_SCREEN_NAMES = {
+    "ORDER-LIST-001": "주문내역",
+    CART_SCREEN: "장바구니",
+    ORDER_SCREEN: "주문 화면",
+}
+# 조사는 낱말이 거기서 끝날 때만 고친다("CART-001이에요"의 "이"는 조사가 아니다)
+_SCREEN_CODE = re.compile(
+    r"(ORDER-LIST-001|CART-001|ORDER-001)(?:(으로|로|은|는|이|가|을|를|과|와)(?![가-힣]))?"
+)
+_CODE_LINE = re.compile(r"^\s*(?:ORDER-LIST-001|CART-001|ORDER-001)[\s.]*$")
+_PARTICLES = {
+    "으로": ("으로", "로"),
+    "로": ("으로", "로"),
+    "은": ("은", "는"),
+    "는": ("은", "는"),
+    "이": ("이", "가"),
+    "가": ("이", "가"),
+    "을": ("을", "를"),
+    "를": ("을", "를"),
+    "과": ("과", "와"),
+    "와": ("과", "와"),
+}
+INTERNAL_TEXT = "INTERNAL_TEXT"
+FOREIGN_WORD = "FOREIGN_WORD"
+# 말을 다듬은 것이지 틀린 말을 지운 것이 아니다. 이것만으로 답이 비어도 422 로 보지 않는다
+_TIDIED = frozenset({INTERNAL_TEXT, FOREIGN_WORD})
+
+
+def _json_line(line: str) -> bool:
+    text = line.strip()
+    if text[:1] not in "{[" or text[-1:] not in "}]":
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _screen_name(match: re.Match[str]) -> str:
+    name = _SCREEN_NAMES[match.group(1)]
+    if match.group(2) is None:
+        return name
+    return name + _particle(name, *_PARTICLES[match.group(2)])
+
+
+def _without_internal(text: str) -> str:
+    """화면 코드와 도구 인자를 사람이 읽는 말로 바꾼다. 코드만 있는 줄과 JSON 줄은 뺀다."""
+    lines = [
+        line
+        for line in text.split("\n")
+        if not _CODE_LINE.match(line) and not _json_line(line)
+    ]
+    return _SCREEN_CODE.sub(_screen_name, "\n".join(lines))
+
+
+def _guide_reply(calls: list[ToolCall]) -> str | None:
+    """모델 글이 남지 않았을 때 화면 안내 버튼을 붙인 턴이면 그 화면을 말한다."""
+    for call in calls:
+        if call.name == ToolName.UI_GUIDE and call.result.get("ok") is True:
+            return f"{_SCREEN_NAMES[call.arguments['target']]}에서 확인해 주세요."
+    return None
+
+
 def _picked(calls: list[ToolCall]) -> ToolCall | None:
     """마지막으로 성공한 selection.pick 기록."""
     for call in reversed(calls):
@@ -812,8 +883,15 @@ def finish(run: AgentRun) -> Finished:
     if text.strip() == NOT_SHOPPING:
         text = ""  # 도구를 부른 뒤에 나온 약속어는 사용자에게 보이지 않는다
 
-    facts = _facts(run)
     removed: list[str] = []
+    readable = _without_internal(text)
+    if readable != text:
+        removed.append(INTERNAL_TEXT)
+    text = foreign_script.without_foreign(readable)
+    if text != readable:
+        removed.append(FOREIGN_WORD)
+
+    facts = _facts(run)
     flagged: set[int] = set()
     kept_lines: list[str] = []
     claim_questions: list[str] = []
@@ -898,10 +976,11 @@ def finish(run: AgentRun) -> Finished:
         asks = _held_asks(run.tool_calls) or claim_questions[:1]
         if asks:
             reply = " ".join(asks)
-        elif removed:
+        elif any(reason not in _TIDIED for reason in removed):
             raise GroundingFailed(removed)
         else:
-            reply = FALLBACK_REPLY
+            # 모델이 화면 코드만 썼거나(#717) 아무것도 쓰지 않았다
+            reply = _guide_reply(run.tool_calls) or FALLBACK_REPLY
 
     calls = [
         c.model_copy(update={"grounded": False}) if i in flagged else c
