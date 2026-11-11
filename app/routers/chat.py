@@ -1872,12 +1872,22 @@ async def _recalled_books(
 
 
 async def _neighbor_books(
-    graph: reading_graph.ReadingGraph, anchor: lanes.Anchor, plan: lanes.Plan
+    graph: reading_graph.ReadingGraph,
+    anchor: lanes.Anchor,
+    plan: lanes.Plan,
+    skip: lanes.Skip,
 ) -> list[dict]:
-    """C — 기준 책 이웃. DB 조회가 실패하면 이 갈래만 빼고 검색·떠올린 제목으로 고른다(턴을 500 으로 끝내지 않는다)."""
+    """C — 기준 책 이웃. DB 조회가 실패하면 이 갈래만 빼고 검색·떠올린 제목으로 고른다(턴을 500 으로 끝내지 않는다).
+
+    관계를 물은 턴(함께 읽은 책·비슷한 책)은 이 갈래가 답이라 카드 장수만큼은 허브로라도 채운다. 다른 턴은 검색이 있다.
+    """
     try:
         return await lanes.neighbor_books(
-            graph, anchor, lanes.relation_kinds(plan.relation)
+            graph,
+            anchor,
+            lanes.relation_kinds(plan.relation),
+            skip=skip,
+            fill_to=CARD_LIMIT if plan.relation is not None else 0,
         )
     except Exception:
         logger.exception("기준 책 이웃 찾기 실패 — 이 갈래 없이 찾는다")
@@ -1977,6 +1987,8 @@ async def _gather_lanes(
         skip.book_ids.add(anchor.book_id)
     if anchor is not None and anchor.work is not None:
         skip.works.add(anchor.work)
+    if anchor is not None and (title := lanes.title_key(anchor.title)):
+        skip.titles.add(title)
     # "이 작가 말고": 기준 책 저자의 책은 한 권도 내지 않는다(한 장까지 허용하는 저자 제한보다 세다)
     if (
         plan.other_author
@@ -2007,7 +2019,7 @@ async def _gather_lanes(
         if _query_text(search_spec) and not relation_only
         else _no_books(),
         _recalled_books(recalling) if recalling is not None else _no_books(),
-        _neighbor_books(graph, anchor, plan)
+        _neighbor_books(graph, anchor, plan, skip)
         if graph is not None and anchor is not None
         else _no_books(),
     )
@@ -2177,10 +2189,16 @@ def _lane_cards(
 ) -> tuple[list[dict], str | None, list[str]]:
     """판단 호출이 고른 책으로 카드를 만든다. 같은 저자 책은 한 장까지다(마니아 목록은 같은 저자 쏠림이 25%).
 
-    저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다.
+    저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다. 함께 읽은 책을 물은 턴도 걸지 않는다 — 그 책
+    독자가 같은 작가의 다른 책을 같이 읽었다는 것이 답이고, 판단 호출에도 목록에서 카드 장수를 채우라고 시켰다. 줄리언
+    반스 책의 함께 읽은 책이 전부 반스 책이라 카드가 1장만 남았다(11/11 실측).
     """
     by_id = {b["book_id"]: b for b in turn.pool}
-    one_per_author = turn.spec.intent == "semantic" and not turn.spec.exact.author
+    one_per_author = (
+        turn.spec.intent == "semantic"
+        and not turn.spec.exact.author
+        and not (turn.anchor is not None and turn.plan.relation == "co")
+    )
     cards: list[dict] = []
     picked: list[dict] = []
     authors: set[str] = set()
