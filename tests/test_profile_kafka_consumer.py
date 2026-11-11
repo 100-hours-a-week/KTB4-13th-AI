@@ -323,3 +323,72 @@ def test_켜져_있으면_뒤에서_돌고_서버가_내려갈_때_멈춘다(
 
     assert asyncio.run(scenario()) is True
     assert ran == ["run"]
+
+
+# --- 서버와 함께 뜨고 내려가기 ---
+
+
+def test_서버가_뜰_때_띄우고_홈_목록_일꾼과_DB보다_먼저_멈춘다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """계산(service.rebuild)이 DB 와 홈 목록 일꾼을 쓴다. 그 둘이 준비된 뒤 띄우고, 닫히기 전에 멈춘다."""
+    import contextlib
+
+    from app import main
+    from app.feed import build_queue
+
+    events: list[str] = []
+
+    class _FakeDb:
+        async def connect(self) -> None:
+            events.append("db.connect")
+
+        async def disconnect(self) -> None:
+            events.append("db.disconnect")
+
+        def get_pool(self):
+            return self
+
+        def acquire(self):
+            return contextlib.nullcontext()
+
+        async def report_missing_indexes(self, conn) -> None:
+            pass
+
+    async def no_labels() -> None:
+        pass
+
+    async def queue_stop() -> None:
+        events.append("queue.stop")
+
+    async def kafka_stop() -> None:
+        events.append("kafka.stop")
+
+    def kafka_start(settings) -> bool:
+        events.append("kafka.start")
+        return True
+
+    monkeypatch.setattr(main.cursor, "check_key", lambda: None)
+    monkeypatch.setattr(main, "db", _FakeDb())
+    monkeypatch.setattr(main.embedding, "load_model", lambda: None)
+    monkeypatch.setattr(main.labels, "load", no_labels)
+    monkeypatch.setattr(build_queue, "start", lambda: events.append("queue.start"))
+    monkeypatch.setattr(build_queue, "stop", queue_stop)
+    monkeypatch.setattr(kafka_consumer, "start", kafka_start)
+    monkeypatch.setattr(kafka_consumer, "stop", kafka_stop)
+
+    async def run() -> None:
+        async with main.lifespan(main.app):
+            events.append("serving")
+
+    asyncio.run(run())
+
+    assert events == [
+        "db.connect",
+        "queue.start",
+        "kafka.start",
+        "serving",
+        "kafka.stop",
+        "queue.stop",
+        "db.disconnect",
+    ]
