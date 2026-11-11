@@ -613,7 +613,12 @@ async def _recall_titles(
     어떤 예외도 밖으로 내지 않는다. 이 호출은 턴과 나란히 돌다 쓰지 않으면 끊기는데, 끝난 작업의 예외를 아무도 받지
     않으면 이벤트 루프가 경고만 남기고 원인을 잃는다.
     """
-    chain = recall.RECALL_PROMPT | get_chat_model() | message_text | parse_json_response
+    chain = (
+        recall.RECALL_PROMPT
+        | get_chat_model(temperature=recall.TEMPERATURE)
+        | message_text
+        | parse_json_response
+    )
     try:
         answer = await invoke_chain(
             chain,

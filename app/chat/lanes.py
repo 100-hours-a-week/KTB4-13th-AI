@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 Lane = Literal["search", "title", "co", "mania"]
 Relation = Literal["co", "similar"]
 
-# 떠올린 제목은 이만큼만 찾는다. 10/28 실험의 6권 권고보다 하나 적다 — 제목 검색 한 번이 DB 를 한 번 읽는다
-MAX_TITLES = 5
+# 떠올린 제목은 이만큼만 찾는다. 떠올리기는 최대 10권이다(app/chat/recall.py). 제목 검색 한 번이 DB 를 한 번 읽어 다
+# 찾지는 않는다. 11/11 40문항에서 떠올린 제목은 평균 6.4개였다(#725)
+MAX_TITLES = 8
 # 후보마다 붙이는 이웃 줄. 종류마다 이만큼(허브 보정 순서)
 NEIGHBORS_PER_KIND = 3
 # 기준 책에서 데려오는 이웃(C) 상한. 정보나루가 목록마다 10권씩 주니 함께 대출·마니아를 합친 한 판본 몫이다

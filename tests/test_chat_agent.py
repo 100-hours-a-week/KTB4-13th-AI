@@ -674,6 +674,42 @@ def test_떠올린_제목은_저자_있는_칸만_겹치지_않게_받는다() -
     assert recall.parse("JSON 아님") == ()
 
 
+def test_떠올린_제목은_8개까지만_찾는다() -> None:
+    # 떠올리기는 최대 10권이지만 제목마다 DB 를 한 번 읽어 다 찾지는 않는다(#725)
+    raw = [{"title": f"책 {i}", "author": f"저자 {i}"} for i in range(10)]
+    titles = recall.parse({"titles": raw})
+    assert len(titles) == 8
+    assert titles[0] == lanes.Title("책 0", "저자 0")
+
+
+def test_떠올린_제목_호출만_온도_0으로_부른다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 기본 온도에서는 같은 질문을 두 번 물으면 찾힌 책이 11%만 겹쳤다(#725)
+    _use_search(monkeypatch, SEARCHED)
+    temperatures: dict[str, float | None] = {}
+
+    def _model(**kwargs):
+        def _dispatch(prompt_value) -> AIMessage:
+            text = prompt_value.to_messages()[0].content
+            if "조건(spec) 갱신기" in text:
+                temperatures["spec"] = kwargs.get("temperature")
+                return AIMessage(content='{"semantic": "과학적 사고"}')
+            if RECALL_MARK in text:
+                temperatures["recall"] = kwargs.get("temperature")
+                return AIMessage(content='{"titles": []}')
+            temperatures["judge"] = kwargs.get("temperature")
+            return AIMessage(
+                content='{"action": "cards", "cards": [{"book_id": 301}], "reply": "골랐어요."}'
+            )
+
+        return RunnableLambda(_dispatch)
+
+    monkeypatch.setattr(chat, "get_chat_model", _model)
+
+    _post("과학적 사고를 기르는 책", shown=False)
+
+    assert temperatures == {"spec": None, "recall": 0.0, "judge": None}
+
+
 def test_사용자_조건은_다른_갈래_책에도_건다() -> None:
     book = {
         "price": 18000,
