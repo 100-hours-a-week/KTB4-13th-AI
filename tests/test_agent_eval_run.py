@@ -110,7 +110,7 @@ def test_쓰기가_성공한_턴에서_검사가_지운_문장의_이유를_센�
     assert record["removed"] == ["ACTION_RESTATED"]
     # 사용자에게 간 답과 LLM 이 쓴 원문이 다르다. 어떤 말투가 지워졌는지 원문으로 모은다
     assert record["raw_reply"] == "추가되었습니다."
-    assert record["reply"] == "1번 책을 장바구니에 담았어요."
+    assert record["reply"] == "1번 《처음 만나는 파이썬》을 장바구니에 담았어요."
 
 
 def test_LLM_장애는_503으로_기록한다() -> None:

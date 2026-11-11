@@ -393,6 +393,27 @@ def test_쇼핑_에이전트가_쇼핑이_아니라고_하면_추천으로_되�
     assert _cart(fake) == []
 
 
+def test_쇼핑_에이전트가_되돌린_말이_카드에_대한_질문이면_새로_찾지_않고_답한다(
+    monkeypatch,
+) -> None:
+    # #701: 새로 찾으면 화면 카드가 바뀌어 다음 "2번 넣어줘"가 사용자가 보던 책이 아닌 새 카드를 담았다
+    for name in ("update_spec", "get_candidates"):
+        _forbid(monkeypatch, chat, name)
+    model, fake = _wire_shop(monkeypatch, [ai_text(NOT_SHOPPING)])
+    answer = '{"reply": "보여 드린 책 소개로는 알 수 없어요.", "followup": "다른 걸 볼까요?"}'
+    recommend_model = RunnableLambda(lambda _prompt: AIMessage(content=answer))
+    monkeypatch.setattr(chat, "get_chat_model", lambda: recommend_model)
+
+    res = client.post(URL, json=_body("이 중에 장바구니에 있는 책이랑 겹치는 거 있어?"))
+
+    data = res.json()["data"]
+    assert len(model.calls) == 1  # 장바구니 낱말이라 ⑦ 을 거쳤다
+    assert data["route"] == "recommend"
+    assert data["cards"] == []
+    assert data["reply"] == "보여 드린 책 소개로는 알 수 없어요."
+    assert _cart(fake) == []
+
+
 def test_쇼핑_에이전트가_실패하면_추천으로_덮지_않고_그_오류를_돌려준다(
     monkeypatch,
 ) -> None:

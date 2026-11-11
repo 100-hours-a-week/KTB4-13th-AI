@@ -114,6 +114,7 @@ def get_finder() -> BookFinder | None:
                 book.price,
                 book.stock > 0,
                 frozenset({1}),
+                stock_quantity=book.stock,
             )
             for number, book in enumerate(_DEV_BOOKS, start=1)
         )
