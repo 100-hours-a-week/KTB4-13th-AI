@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.chat import reading_graph
+from app.chat import popular, reading_graph
 from app.core import cursor, db, request_log, responses
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
@@ -62,6 +62,9 @@ async def lifespan(app: FastAPI):
                 reading_graph.load, get_settings().reading_graph_path
             )
         )
+    # ③ 분야만 말한 요청의 많이 읽힌 책(#514, 약 9천 권·파일 53KB). 파일이 없으면 그런 요청도 검색으로 찾는다
+    if path := get_settings().popular_books_path:
+        popular.install(await asyncio.to_thread(popular.load, path))
     # 프로필 계산 뒤 홈 목록을 뒤에서 만드는 일꾼(#580)
     build_queue.start()
     # 카프카로 오는 프로필 계산 요청(#666). 켰을 때만 뒤에서 띄운다. 계산이 DB 와 위 일꾼을 쓰므로 그 뒤에 띄운다.
