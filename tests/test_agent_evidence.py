@@ -1235,3 +1235,33 @@ def test_장바구니를_보여_주지_않았으면_숫자만_말한_번호는_�
     assert not evidence.listed_cart(ctx)
     assert evidence.has_evidence(ctx, _card(2), DB)
     assert evidence.cart_for_bare_number(ctx, _card(2), DB) is None
+
+
+def test_같은_제목_카드라도_번호로_둘_다_짚은_제안에_대한_네는_두_권_다의_근거다() -> (
+    None
+):
+    # 제목이 같아도 번호로 짚었으면 어느 책인지 안다. 여러 권 동의(#649)는 그대로다(#688)
+    ctx = _history(
+        _ctx("네", cards=[PY, DB, K8S]),
+        ("user", "한강 둘 다 볼래"),
+        ("assistant", "카드 1번 《한강》과 카드 2번 《한강》을 담을까요?"),
+    )
+    ctx.titles = {PY: "한강", DB: "한강", K8S: TITLES[K8S]}
+
+    assert evidence.has_evidence(ctx, _card(1), PY)
+    assert evidence.has_evidence(ctx, _card(2), DB)
+
+
+def test_번호로_짚은_책과_여러_권에_걸린_제목을_함께_제안하면_네는_근거가_아니다() -> (
+    None
+):
+    # "카드 3번 《쿠버네티스》와 《한강》"의 《한강》은 어느 책인지 모른다. 한 권만 확실해도 묻는 쪽이 낫다(#688)
+    ctx = _history(
+        _ctx("네", cards=[PY, DB, K8S]),
+        ("user", "한강이랑 3번 담아줘"),
+        ("assistant", f"카드 3번 《{TITLES[K8S]}》와 《한강》을 담을까요?"),
+    )
+    ctx.titles = {PY: "한강", DB: "한강", K8S: TITLES[K8S]}
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
+    assert not evidence.has_evidence(ctx, _card(3), K8S)

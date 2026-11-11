@@ -435,8 +435,8 @@ _MAX_AGREEMENT_CHARS = 30
 _CART_MENTION = re.compile(r"장바구니\s*(\d+)\s*번째")
 
 
-def _books_named(ctx: TurnContext, text: str) -> set[str]:
-    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+def _books_numbered(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 번호로 짚은 책들("장바구니 1번째", "카드 1번", "2번")."""
     text = normalize(text)
     named: set[str] = set()
     for match in _CART_MENTION.finditer(text):
@@ -447,6 +447,13 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     rest = _CART_MENTION.sub(" ", text)
     ranks = {int(m.group(1)) for m in _CARD_MENTION.finditer(rest)} | ordinals(rest)
     named |= {card.isbn for card in ctx.cards if card.rank in ranks}
+    return named
+
+
+def _books_named(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+    named = _books_numbered(ctx, text)
+    text = normalize(text)
     spoken = _flat(text)
     known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
     # 번호로 짚은 책의 제목 안에 든 제목은 그 책을 말한 것이다. 권마다 ISBN 이 다른 시리즈처럼 카드 여러 장의 제목이
@@ -487,6 +494,8 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
     last = ctx.turns[-1].text
     named = _books_named(ctx, last)
     if len(named) >= 2 and isbn in named:
+        if _one_title_for_many(ctx, named, last):
+            return False
         return _for_named_books(ctx, named, last, message)
     if named != {isbn}:
         return False
@@ -501,6 +510,18 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
         and len(message) <= _MAX_AGREEMENT_CHARS
         and bool(_PROPOSAL.search(last))
     )
+
+
+def _one_title_for_many(ctx: TurnContext, named: set[str], text: str) -> bool:
+    """에이전트의 말이 번호 없이 제목 하나로 말했는데 그 제목이 여러 권에 걸렸는가(#688).
+
+    카드 1·2번이 둘 다 『한강』일 때 "《한강》을 담을까요?"는 두 권을 짚은 제안이 아니라 어느 책인지 모르는 말이다.
+    여러 권 동의(_for_named_books)로 보면 "네" 한 마디에 판본 둘이 다 담길 수 있다. 번호로 짚은 책은 세지 않는다.
+    """
+    numbered = _books_numbered(ctx, text)
+    known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
+    titles = [_flat(known[isbn]) for isbn in named - numbered if isbn in known]
+    return len(titles) != len(set(titles))
 
 
 # 직전 에이전트의 말이 여러 권을 짚었을 때. "카드 1번 《A》과 카드 2번 《B》를 담을까요?"에 "네"라고 하면 두 권 다에 대한
