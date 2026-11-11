@@ -289,3 +289,53 @@ def test_처리하지_못한_예외도_error_이벤트로_끝난다(
     assert _events(res.text) == [
         ("error", {"message": "internal_server_error", "data": None})
     ]
+
+
+# --- 다른 나라 글자 거르기(#717) ---
+
+# 평가 기록의 실제 꼴(gpt-4o-mini): 말풍선·한 줄 이유·긴 이유에 다른 나라 낱말이 섞였다
+FOREIGN_CARD_JSON = json.dumps(
+    {
+        "reply": "비 오는 날엔 『달러구트 꿈 백화점』이 легко 어울려요.",
+        "cards": [
+            {
+                "book_id": 1088,
+                "reason_short": "잔잔한 판타지예요. 위로를 주는 पुस्तक입니다.",
+                "reason_long": "꿈을 사고파는 이야기예요. поколения의 사랑이 담겼어요.",
+            }
+        ],
+    },
+    ensure_ascii=False,
+)
+
+
+def test_SSE여도_먼저_보내는_말풍선과_done에서_다른_나라_글자를_거른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _model("{}", FOREIGN_CARD_JSON)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request(), headers=SSE)
+
+    events = _events(res.text)
+    reply = "비 오는 날엔 『달러구트 꿈 백화점』이 어울려요."
+    assert events[0] == ("delta", {"text": reply})
+    done = events[1][1]["data"]
+    assert done["reply"] == reply
+    assert done["cards"][0]["reason_short"] == "잔잔한 판타지예요."
+    assert done["cards"][0]["reason_long"] == "꿈을 사고파는 이야기예요."
+
+
+def test_JSON_경로도_다른_나라_글자를_거르고_요청_번호는_그대로다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _model("{}", FOREIGN_CARD_JSON)
+    monkeypatch.setattr(chat, "get_chat_model", lambda: model)
+
+    res = client.post("/recommendations/chat", json=_request())
+
+    assert res.status_code == 200
+    assert res.headers["X-Request-Id"]
+    assert (
+        res.json()["data"]["reply"] == "비 오는 날엔 『달러구트 꿈 백화점』이 어울려요."
+    )

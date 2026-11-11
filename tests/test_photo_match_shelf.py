@@ -248,3 +248,40 @@ def test_검색이_색인과_같은_식을_쓴다() -> None:
     # 다듬은 제목 색인(20261109 마이그레이션)과 띄어쓰기를 뺀 제목 색인(20260922)은 식이 같아야 탄다
     assert f"{match_shelf._KEY_TITLE} % $1" in key_sql
     assert "translate(b.title, E' \\t\\u3000\\u00a0', '') % $1" in nospace_sql
+
+
+@pytest.mark.parametrize(
+    ("read", "catalog_title"),
+    [
+        ("C# 프로그래밍 언어", "C 프로그래밍 언어"),
+        ("C++ 프로그래밍", "C 프로그래밍"),
+        ("C 프로그래밍", "C++ 프로그래밍"),
+        ("C# 프로그래밍", "C++ 프로그래밍"),
+    ],
+)
+def test_C샵_C플플_표시가_다르면_찾지_않는다(read: str, catalog_title: str) -> None:
+    # key() 는 # 과 + 를 지워 둘을 90% 넘게 같다고 본다(나의 도서관 QA 11/11)
+    assert match_shelf.decide(_spine(read), [_book(catalog_title, "강희훈")]) is None
+
+
+def test_C샵_표시가_다른_책이_앞에_있어도_뒤의_맞는_책을_찾는다() -> None:
+    c = _book("C 프로그래밍 언어", pub_year=2025)
+    csharp = _book("C# 프로그래밍 언어", pub_year=2010)
+
+    assert match_shelf.decide(_spine("C# 프로그래밍 언어"), [c, csharp]) == csharp
+
+
+@pytest.mark.parametrize(
+    "catalog_title", ["C♯ 프로그래밍", "Ｃ＃ 프로그래밍", "c# 프로그래밍"]
+)
+def test_C샵_표기가_달라도_같은_표시로_본다(catalog_title: str) -> None:
+    book = _book(catalog_title)
+
+    assert match_shelf.decide(_spine("C# 프로그래밍"), [book]) == book
+
+
+def test_낱말_사이의_더하기는_표시로_보지_않는다() -> None:
+    # "머신러닝+딥러닝"의 + 는 책등마다 &·띄어쓰기로 다르게 읽힌다
+    book = _book("혼자 공부하는 머신러닝+딥러닝")
+
+    assert match_shelf.decide(_spine("혼자 공부하는 머신러닝 딥러닝"), [book]) == book
