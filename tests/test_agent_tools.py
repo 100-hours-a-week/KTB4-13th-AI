@@ -1653,3 +1653,53 @@ def test_근거가_있으면_제목을_더_읽지_않는다() -> None:
 
     assert call.result == {"ok": True}
     assert "get_offers" not in spy.calls
+
+
+# --- 남은 재고(#692) ---
+# 이번 턴의 장바구니(SnapshotCommerce)는 재고를 있고 없음만 안다. 남은 수량을 아는 책은 BE 에 보내기 전에 막는다.
+# 가짜 BE 의 A 는 재고가 넉넉해, 막혔다면 코드가 막은 것이다
+
+
+def test_카드_책의_남은_재고보다_크게_바꾸면_BE에_보내지_않고_남은_수량을_싣는다() -> (
+    None
+):
+    spy, fake, ctx = _setup(seed=[(A, 3)], stock={A: 20})
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 50})
+
+    assert call.result == {
+        "ok": False,
+        "error": "INSUFFICIENT_PRODUCT_STOCK",
+        "stock": 20,
+    }
+    assert fake.cart_state(UID) == {A: 3}
+    assert ctx.changed_cart is False
+
+
+def test_카드_책의_남은_재고보다_많이_담으면_막는다() -> None:
+    spy, fake, ctx = _setup(stock={A: 2})
+    ctx.message = "1번 5권 담아줘"
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1), "quantity": 5})
+
+    assert call.result["error"] == "INSUFFICIENT_PRODUCT_STOCK"
+    assert call.result["stock"] == 2
+    assert fake.cart_state(UID) == {}
+
+
+def test_남은_재고_안이면_그대로_바꾼다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 3)], stock={A: 20})
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 20})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 20}
+
+
+def test_남은_재고를_모르는_책은_BE에_맡긴다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 3)])
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 9})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 9}

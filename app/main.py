@@ -12,7 +12,7 @@ from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
 from app.feed import build_queue
 from app.gateway import decision, embedding, llm, reranker
-from app.profile import labels
+from app.profile import kafka_consumer, labels
 from app.routers import (
     agent,
     chat,
@@ -64,8 +64,12 @@ async def lifespan(app: FastAPI):
         )
     # 프로필 계산 뒤 홈 목록을 뒤에서 만드는 일꾼(#580)
     build_queue.start()
+    # 카프카로 오는 프로필 계산 요청(#666). 켰을 때만 뒤에서 띄운다. 계산이 DB 와 위 일꾼을 쓰므로 그 뒤에 띄운다.
+    # 브로커에 못 붙어도 서버는 뜨고 소비자만 다시 붙는다
+    kafka_consumer.start(get_settings())
     yield
-    # 앱이 내려갈 때. 연결 풀을 닫기 전에 일꾼부터 멈춘다
+    # 앱이 내려갈 때. 소비자가 일꾼과 연결 풀을 쓰므로 소비자부터, 그다음 일꾼을 멈춘다
+    await kafka_consumer.stop()
     await build_queue.stop()
     await decision.aclose()
     await reranker.aclose()

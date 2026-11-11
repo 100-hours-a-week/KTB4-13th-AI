@@ -142,6 +142,20 @@ class Settings(BaseSettings):
     profile_feed_async: bool = False
     profile_feed_seconds: float = 6.0
 
+    # --- 카프카로 프로필 계산 요청 받기(#666) ---
+    # BE 가 온보딩 완료·취향 수정 때 PUT /preferences/profile 과 같은 본문을 카프카로도 보낸다(BE #551). 켜면 서버가
+    # 뜰 때 그 토픽을 받는 소비자를 띄운다. 끄면(기본) 브로커를 찾지 않고 지금처럼 HTTP 로만 받는다.
+    # 토픽·DLT 이름은 BE 계약과 같아야 한다. 소비자 그룹은 환경마다 달리 둔다(예: book-ai-profile-v1-dev).
+    profile_kafka_enabled: bool = False
+    # 쉼표로 여러 브로커를 적는다(BE 와 같은 이름)
+    kafka_bootstrap_servers: str = ""
+    profile_kafka_topic: str = "book.ai-profile.v1"
+    profile_kafka_dlt_topic: str = "book.ai-profile.v1.DLT"
+    profile_kafka_group_id: str = ""
+    # 메시지 하나의 최대 크기. HTTP PUT 한도(app/routers/profile.py MAX_BODY_BYTES)와 같게 둔다 — 같은 본문이
+    # 어느 길로 와도 받는다. 카프카 기본(1MB)보다 크니 브로커·토픽 한도도 맞춰야 한다
+    profile_kafka_max_message_bytes: int = 8 * 1024 * 1024
+
     # --- ③ 대화로 좁혀 가기(#530) ---
     # 켜면 대화의 첫 요청이 넓을 때 카드 없이 원하는 것을 한 번 묻고, 답을 듣고 찾는다(app/chat/asking.py). 끄면(기본)
     # 첫 요청에도 바로 맞는 책 세 권을 보여 준다. 처음 만든 갈래 메뉴("…(1번), …(2번) 중 어느 쪽?")는 원하는 책을 찾는
