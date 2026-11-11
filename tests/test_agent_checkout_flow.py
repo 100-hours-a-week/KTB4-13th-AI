@@ -1697,7 +1697,9 @@ def test_주문_기능이_켜져_있으면_포인트_빼고는_책을_빼라는_
 # --- 주문해 달라는데 주문 화면으로 보낼 책이 없을 때 (11/10 dev) ---
 
 
-def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구니로_보낸다() -> None:
+def test_모델이_주문_화면을_안_열고_담기만_시도하면_책을_다시_묻고_장바구니로도_보낸다() -> (
+    None
+):
     _, data, _ = _card_turn(
         "1번 주문해줘",
         [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
@@ -1713,7 +1715,9 @@ def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구
     )
 
     assert data.checkout is None
-    assert reply_module.ORDER_FROM_CART in data.reply
+    assert reply_module.ORDER_NO_BOOK in data.reply
+    # 장바구니 책도 order.open 으로 주문 화면에 오르므로(#664) 못 보낸다고 말하지 않는다(#665 리뷰)
+    assert "보내 드리지 못해요" not in data.reply
     assert [(b.action, b.target) for b in data.buttons] == [("navigate", "CART-001")]
 
 
@@ -1732,7 +1736,7 @@ def test_담기만_해_달라면_이미_담긴_책에_주문_안내를_붙이지
         ],
     )
 
-    assert reply_module.ORDER_FROM_CART not in data.reply
+    assert reply_module.ORDER_NO_BOOK not in data.reply
 
 
 @pytest.mark.parametrize("message", ["주문", "주문이요", "결제할게요", "주문!"])
@@ -1743,7 +1747,7 @@ def test_주문_한_마디에_쇼핑이_아니라고_해도_추천으로_넘기�
 
     assert run.not_shopping
     assert data.not_shopping is False
-    assert data.reply == reply_module.ORDER_FROM_CART
+    assert data.reply == reply_module.ORDER_NO_BOOK
     assert [b.target for b in data.buttons] == ["CART-001"]
 
 
@@ -1771,7 +1775,7 @@ def test_주문_낱말이_든_추천_요청은_쇼핑이_아니라면_추천으�
     _, data, _ = _card_turn(message, [ai_text("NOT_SHOPPING")])
 
     assert data.not_shopping is True
-    assert data.reply != reply_module.ORDER_FROM_CART
+    assert data.reply != reply_module.ORDER_NO_BOOK
 
 
 def test_기능이_꺼져_있으면_주문_한_마디도_예전처럼_쇼핑이_아니다() -> None:

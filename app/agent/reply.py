@@ -48,11 +48,11 @@ CART_SCREEN = "CART-001"
 ORDER_SCREEN = "ORDER-001"
 ORDER_LABEL = "주문 화면으로"
 COUPON_LATER = "쿠폰과 포인트는 주문 화면에서 적용돼요."
-# 주문해 달라는데 주문 화면으로 보낼 책이 없을 때. 주문 화면은 이번 턴에 담은 책으로만 열린다(BE#533). 이미 장바구니에
-# 있는 책은 바뀐 것이 없어 주문 화면에 올릴 책이 0권이다. 이때 쇼핑이 아니라고 ③으로 넘기면 엉뚱한 추천이 나오고("주문" →
-# 추천 카드), 그대로 두면 "이미 담겨 있어서 그대로 뒀어요"로만 끝나 주문은 어떻게 하는지 모른다(11/10 dev). 못 한다고 말하고
-# 장바구니로 보낸다
-ORDER_FROM_CART = "이미 장바구니에 있는 책은 제가 주문 화면으로 바로 보내 드리지 못해요. 장바구니에서 주문해 주세요."
+# 주문해 달라는데 이번 턴에 주문 화면으로 보낼 책을 못 정했을 때(모델이 order.open 을 부르지 않았다). 쇼핑이 아니라고
+# ③으로 넘기면 엉뚱한 추천이 나오고("주문" → 추천 카드), 그대로 두면 "이미 담겨 있어서 그대로 뒀어요"로만 끝나 주문은
+# 어떻게 하는지 모른다(11/10 dev). 책을 짚어 다시 말하게 하고 장바구니로도 보낸다. 이미 장바구니에 있는 책도 order.open 이
+# 같은 수량으로 주문 화면에 올리므로(#664) "장바구니 책은 못 보낸다"고 말하지 않는다
+ORDER_NO_BOOK = "주문 화면으로 보낼 책을 정하지 못했어요. 주문할 책을 번호나 제목으로 말씀해 주시거나, 장바구니에서 바로 주문해 주세요."
 
 # 완료 표현. 말투를 하나씩 막는 목록이라 빠진 말이 있을 수 있다. 그래서 이 목록은 "LLM 이 완료를 말했나"를
 # 넓게 잡는 데만 쓰고, 사용자에게 가는 결과 문장은 이 목록과 상관없이 코드가 만든다(_outcomes).
@@ -619,7 +619,7 @@ def _cannot_order(run: AgentRun, *, words_only: bool = False) -> bool:
 def _order_from_cart_reply() -> AgentActData:
     """쇼핑이 아니라고 답했지만 주문하겠다는 말이었을 때의 응답. 장바구니로 보낸다."""
     return AgentActData(
-        reply=ORDER_FROM_CART,
+        reply=ORDER_NO_BOOK,
         not_shopping=False,
         actions=[],
         tool_calls=[],
@@ -699,7 +699,7 @@ def finish(run: AgentRun) -> Finished:
         c.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
         for c in run.tool_calls
     ):
-        outcome_lines.append(ORDER_FROM_CART)
+        outcome_lines.append(ORDER_NO_BOOK)
     if no_button:
         kept_lines.append(PICK_SAY_TITLE)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
