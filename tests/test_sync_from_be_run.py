@@ -69,6 +69,13 @@ class _FakeBe:
         wanted = set(ids)
         return [b for b in self.books if b["id"] in wanted]
 
+    # 재고 맞추기(#711)는 test_sync_from_be_stock.py 가 본다. 여기서는 BE 에 품절이 없고 모르는 상품은 품절로 둔다
+    def sold_out(self) -> dict[int, int]:
+        return {}
+
+    def available_by_ids(self, ids: list[int]) -> dict[int, int]:
+        return {pid: 0 for pid in ids}
+
 
 # 기록이 없으면 배치가 그 "지금"에서 시작해 시험 줄(11/1)을 건너뛰므로, 기록을 먼저 넣어 둔다
 _SEEDED = datetime(2026, 10, 1, tzinfo=UTC)

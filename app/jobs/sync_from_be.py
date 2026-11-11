@@ -14,7 +14,8 @@
   CLOUD #3 에는 UTC 로 적혔다. 옛 복제도 한국 시간으로 읽어 UTC 로 바꿨다(BE 13:34 → AI 04:34+00). AI 에는 UTC 로 둔다.
 - 지운 책·상품은 줄을 남기고 deleted_at 만 채운다(옛 복제와 같다).
 - 재고는 BE 처럼 product_inventory 의 보유 − 예약(줄이 없으면 20)이다. products.stock_quantity 는 BE 가 V58 뒤로
-  더 바꾸지 않는다. 시각이 바뀌지 않은 상품의 재고 변화는 #711 이 맞춘다.
+  더 바꾸지 않는다. 재고만 바뀌면 상품의 updated_at 이 그대로라, 따로 BE 품절 상품과 AI 재고 0 상품을 견줘
+  있음·없음이 다른 것만 BE 수로 고친다(#711). AI 는 재고를 0보다 큰지로만 읽는다.
 - 값이 같은 줄은 다시 쓰지 않는다 — 겹쳐 다시 읽은 줄(10/22 적재는 125만 권이 한 시각)을 새로 쓰면 표가 부풀고
   캐시를 밀어낸다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진 ISBN 은 비운다.
 - 끝 검증: 이번에 옮긴 책 몇십 권을 BE 와 다시 맞춰 보고, 다르면 진행 기록을 남기지 않고 오류로 끝난다. 표 전체를
@@ -91,10 +92,17 @@ class Product:
 
 
 @dataclass(frozen=True)
+class StockSummary:
+    sold_out: int
+    restocked: int
+
+
+@dataclass(frozen=True)
 class Summary:
     books: int
     products: int
     isbn_dropped: int
+    stock: StockSummary
 
 
 def _from_be(value: datetime | None) -> datetime | None:
@@ -189,6 +197,15 @@ FROM products p
 LEFT JOIN product_inventory i ON i.product_id = p.id
 """
 
+# BE 에서 품절인 상품(보유 − 예약 ≤ 0). 재고 줄이 없는 상품은 BE 가 20 으로 보므로 품절이 아니다
+_BE_SOLD_OUT = """
+SELECT i.product_id AS id, i.on_hand_quantity, i.reserved_quantity
+FROM product_inventory i
+WHERE i.on_hand_quantity - i.reserved_quantity <= 0
+"""
+# 한 번에 번호로 읽는 상품 수
+_IDS_CHUNK = 1000
+
 
 class BeSource:
     """BE MySQL 을 읽기 전용으로 읽는다."""
@@ -225,6 +242,23 @@ class BeSource:
         with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(_BE_BOOKS + f" WHERE b.id IN ({marks})", ids)
             return list(cursor.fetchall())
+
+    def sold_out(self) -> dict[int, int]:
+        """BE 에서 품절인 상품 번호 → 남은 재고(0)."""
+        with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(_BE_SOLD_OUT)
+            return {r["id"]: _available(r) for r in cursor.fetchall()}
+
+    def available_by_ids(self, ids: list[int]) -> dict[int, int]:
+        """상품 번호 → 남은 재고. 재고 줄이 없으면 20(BE 와 같다)."""
+        found: dict[int, int] = {}
+        with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            for start in range(0, len(ids), _IDS_CHUNK):
+                chunk = ids[start : start + _IDS_CHUNK]
+                marks = ", ".join(["%s"] * len(chunk))
+                cursor.execute(_BE_PRODUCTS + f" WHERE p.id IN ({marks})", chunk)
+                found.update({r["id"]: _available(r) for r in cursor.fetchall()})
+        return found
 
     def close(self) -> None:
         self._conn.close()
@@ -340,6 +374,42 @@ async def _save(conn: asyncpg.Connection, cursor: str, value: datetime) -> None:
     )
 
 
+_SET_STOCK = """
+UPDATE v_products SET stock_quantity = s.n
+FROM unnest($1::bigint[], $2::int[]) AS s(id, n)
+WHERE v_products.id = s.id AND v_products.stock_quantity IS DISTINCT FROM s.n
+"""
+
+
+async def _set_stock(conn: asyncpg.Connection, stock: dict[int, int]) -> int:
+    if not stock:
+        return 0
+    status = await conn.execute(_SET_STOCK, list(stock), list(stock.values()))
+    return int(status.split()[-1])
+
+
+async def sync_stock(conn: asyncpg.Connection, source: Any) -> StockSummary:
+    """BE 품절 상품과 AI 재고 0 상품을 견줘, 있음·없음이 다른 상품만 BE 재고 수로 고친다(#711).
+
+    BE 재고는 product_inventory 에만 바뀌어 상품의 updated_at 으로는 고를 수 없다. AI 는 재고를 0보다 큰지로만
+    읽어서 숫자까지 맞추지 않는다 — 맞추면 첫 실행에 210만 개를 다시 쓴다(개발 BE 는 products.stock_quantity 와
+    실제 재고가 거의 모든 상품에서 다르다, 11/11).
+    """
+    be_out = source.sold_out()
+    ai_out = {
+        r["id"]
+        for r in await conn.fetch("SELECT id FROM v_products WHERE stock_quantity <= 0")
+    }
+    to_out = {pid: n for pid, n in be_out.items() if pid not in ai_out}
+    back_ids = sorted(ai_out - be_out.keys())
+    back = source.available_by_ids(back_ids) if back_ids else {}
+    restock = {pid: n for pid, n in back.items() if n > 0}
+    return StockSummary(
+        sold_out=await _set_stock(conn, to_out),
+        restocked=await _set_stock(conn, restock),
+    )
+
+
 async def check(conn: asyncpg.Connection, source: Any, sample: list[int]) -> None:
     """옮긴 책을 BE 와 다시 맞춰 본다. 확인하는 사이 BE 에서 다시 바뀐 책은 다음 실행이 옮기므로 넘어간다."""
     if not sample:
@@ -404,12 +474,15 @@ async def run(conn: asyncpg.Connection, source: Any) -> Summary:
             [last_product, *(p.updated_at for p in products)], key=_order
         )
 
+    stock = await sync_stock(conn, source)
     await check(conn, source, list(sample))
     if last_book is not None:
         await _save(conn, BOOKS_CURSOR, last_book)
     if last_product is not None:
         await _save(conn, PRODUCTS_CURSOR, last_product)
-    return Summary(books=n_books, products=n_products, isbn_dropped=dropped)
+    return Summary(
+        books=n_books, products=n_products, isbn_dropped=dropped, stock=stock
+    )
 
 
 def _order(value: datetime | None) -> datetime:
@@ -434,10 +507,12 @@ async def main() -> int:
         await conn.close()
         source.close()
     logger.info(
-        "끝. 책 %d권 · 상품 %d개 · 다른 책이 가진 ISBN 이라 비운 것 %d권",
+        "끝. 책 %d권 · 상품 %d개 · 다른 책이 가진 ISBN 이라 비운 것 %d권 · 품절로 고친 상품 %d개 · 다시 들어온 상품 %d개",
         summary.books,
         summary.products,
         summary.isbn_dropped,
+        summary.stock.sold_out,
+        summary.stock.restocked,
     )
     return 0
 
