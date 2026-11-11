@@ -166,6 +166,11 @@ def resolve(ctx: TurnContext, ref: BookRef) -> str:
             raise RefError(ToolErrorCode.BOOK_NOT_IN_SEARCH)
         return ctx.search_results[ref.n - 1].isbn
 
-    if ctx.focused_isbn is None:
-        raise RefError(ToolErrorCode.NO_FOCUSED_BOOK)
-    return ctx.focused_isbn
+    if ctx.focused_isbn is not None:
+        return ctx.focused_isbn
+    # 챗봇 화면에는 지금 보는 책이 없다. 카드가 한 권뿐이면 "이거", "이 책"은 그 카드다. 모델이 "이거 주문해 줘"를
+    # 지금 보는 책으로 읽어 "지금 보고 있는 책이 없어요"로 끝났다(11/10 dev, 카드 한 장)
+    shown = {card.isbn for card in ctx.cards}
+    if len(shown) == 1:
+        return next(iter(shown))
+    raise RefError(ToolErrorCode.NO_FOCUSED_BOOK)
