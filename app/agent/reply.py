@@ -47,6 +47,11 @@ CART_SCREEN = "CART-001"
 ORDER_SCREEN = "ORDER-001"
 ORDER_LABEL = "주문 화면으로"
 COUPON_LATER = "쿠폰과 포인트는 주문 화면에서 적용돼요."
+# 주문해 달라는데 주문 화면으로 보낼 책이 없을 때. 주문 화면은 이번 턴에 담은 책으로만 열린다(BE#533). 이미 장바구니에
+# 있는 책은 바뀐 것이 없어 주문 화면에 올릴 책이 0권이다. 이때 쇼핑이 아니라고 ③으로 넘기면 엉뚱한 추천이 나오고("주문" →
+# 추천 카드), 그대로 두면 "이미 담겨 있어서 그대로 뒀어요"로만 끝나 주문은 어떻게 하는지 모른다(11/10 dev). 못 한다고 말하고
+# 장바구니로 보낸다
+ORDER_FROM_CART = "이미 장바구니에 있는 책은 제가 주문 화면으로 바로 보내 드리지 못해요. 장바구니에서 주문해 주세요."
 
 # 완료 표현. 말투를 하나씩 막는 목록이라 빠진 말이 있을 수 있다. 그래서 이 목록은 "LLM 이 완료를 말했나"를
 # 넓게 잡는 데만 쓰고, 사용자에게 가는 결과 문장은 이 목록과 상관없이 코드가 만든다(_outcomes).
@@ -670,7 +675,22 @@ def _coupon_name(name: str) -> str:
 
 
 def _checkout_line(plan: Plan) -> str:
-    """주문 화면에 채울 쿠폰·포인트 안내. 금액은 코드가 계산한 값이라 답변 검사를 거치지 않는다."""
+    """주문 화면에 채울 쿠폰·포인트 안내. 금액은 코드가 계산한 값이라 답변 검사를 거치지 않는다.
+
+    사용자가 쓰지 말라고 한 것은 쓰지 않게 해 둔다고 알린다. 말없이 빼면 적용하지 말라는 말을 들었는지 모른다."""
+    declined = [
+        name
+        for name, off in (
+            ("쿠폰", plan.coupon_declined),
+            ("포인트", plan.points_declined),
+        )
+        if off
+    ]
+    skip = (
+        f"{'과 '.join(declined)}{'는' if declined[-1] == '포인트' else '은'} 쓰지 않게 해 둘게요. "
+        if declined
+        else ""
+    )
     if plan.coupon is not None and plan.use_point > 0:
         applied = f"{_coupon_name(plan.coupon.name)}({plan.discount:,}원 할인)과 포인트 {plan.use_point:,}원을"
     elif plan.coupon is not None:
@@ -678,8 +698,33 @@ def _checkout_line(plan: Plan) -> str:
     elif plan.use_point > 0:
         applied = f"포인트 {plan.use_point:,}원을"
     else:
-        return "주문 화면에서 확인하고 주문해 주세요."
-    return f"주문 화면에 {applied} 적용해 둘게요. 확인하고 주문해 주세요."
+        return f"{skip}주문 화면에서 확인하고 주문해 주세요."
+    return f"{skip}주문 화면에 {applied} 적용해 둘게요. 확인하고 주문해 주세요."
+
+
+def _cannot_order(run: AgentRun, *, words_only: bool = False) -> bool:
+    """주문해 달라고 했는데 주문 화면으로 보낼 것이 없다(주문 기능이 켜져 있을 때만). words_only 면 주문·결제
+    낱말만으로 된 말("주문", "결제할게요")만 본다."""
+    if not run.ctx.checkout_enabled or run.checkout is not None:
+        return False
+    if words_only:
+        return evidence.orders_alone(run.ctx)
+    return evidence.wants_order(run.ctx)
+
+
+def _order_from_cart_reply() -> AgentActData:
+    """쇼핑이 아니라고 답했지만 주문하겠다는 말이었을 때의 응답. 장바구니로 보낸다."""
+    return AgentActData(
+        reply=ORDER_FROM_CART,
+        not_shopping=False,
+        actions=[],
+        tool_calls=[],
+        resolved_reference=None,
+        selection=None,
+        buttons=[
+            Button(label=UI_TARGETS[CART_SCREEN], action="navigate", target=CART_SCREEN)
+        ],
+    )
 
 
 def _checkout(plan: Plan | None) -> Checkout | None:
@@ -692,6 +737,10 @@ def _checkout(plan: Plan | None) -> Checkout | None:
 def finish(run: AgentRun) -> Finished:
     """그래프 결과를 검사해 응답으로 만든다. 남는 답이 없으면 GroundingFailed."""
     if run.not_shopping:
+        # 쇼핑이 아니라는 답을 뒤집는 것은 주문 낱말 한 마디뿐이다. 주문 기능을 켜면 문지기가 "한 권 사고 싶은데
+        # 뭐가 좋을까요" 같은 추천 요청도 쇼핑으로 보내는데, 이런 말은 그대로 추천으로 돌려보낸다(#649 리뷰)
+        if _cannot_order(run, words_only=True):
+            return Finished(_order_from_cart_reply(), [])
         return Finished(AgentActData.not_shopping_reply(), [])
 
     text = _plain(run.final_text)
@@ -745,6 +794,11 @@ def finish(run: AgentRun) -> Finished:
     elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):
         # "쿠폰 적용해서 장바구니에 넣어 줘": 장바구니에는 쿠폰이 없다(#631)
         outcome_lines.append(COUPON_LATER)
+    elif _cannot_order(run) and any(
+        c.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
+        for c in run.tool_calls
+    ):
+        outcome_lines.append(ORDER_FROM_CART)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
     if not reply:
         # 모델이 막힌 쓰기를 "뺐어요"라고 써서 지웠더니 남는 말이 없다. 코드가 만든 되묻기가 있으면 그것으로 답한다.

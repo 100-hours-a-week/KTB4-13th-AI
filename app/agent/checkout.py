@@ -6,6 +6,7 @@ BE 결제(KTB4-13th-BE PaymentService.create, PaymentDiscount)와 같은 규칙�
   원 아래를 자르지 않는다(TODO BE#327). 고를 때는 그대로 견주고, 포인트는 원 단위로 내림한다
 - 주문 금액이 최소 주문 금액보다 작으면 쓸 수 없다. 할인이 주문 금액보다 크면 결제가 거절된다
 - 포인트는 잔액 안에서, 쿠폰을 뺀 금액까지 쓴다
+- 사용자가 쿠폰이나 포인트를 쓰지 말라고 했으면 그것은 채우지 않는다(evidence.declines_discount)
 
 주문은 이번 턴에 담은 책뿐이다. FE 가 이번에 담은 책만 주문 화면에 넣는다(BE#533).
 어느 책이 쿠폰 대상인지는 BE 상품 상세의 쿠폰 번호로만 안다. 이번 턴에 찾은 책(book.search)은 검색 때 읽었고,
@@ -39,6 +40,9 @@ class Plan:
     coupon: OwnedCouponIn | None
     discount: int  # 쿠폰 할인(원 아래 내림, 안내 문장용)
     use_point: int
+    # 사용자가 쓰지 말라고 해서 비워 둔 것. 안내 문장이 "쓰지 않게 해 둘게요"라고 알린다
+    coupon_declined: bool = False
+    points_declined: bool = False
 
 
 def discount_of(coupon: OwnedCouponIn, amount: int) -> Decimal:
@@ -65,8 +69,17 @@ def plan(
     lines: Sequence[OrderLine],
     coupons: Sequence[OwnedCouponIn],
     point_balance: int | None,
+    *,
+    use_coupon: bool = True,
+    use_points: bool = True,
 ) -> Plan:
-    """할인이 가장 큰 쿠폰 한 장과 쓸 수 있는 포인트 전부. 할인이 같으면 보유 쿠폰 번호가 작은 쪽이다."""
+    """할인이 가장 큰 쿠폰 한 장과 쓸 수 있는 포인트 전부. 할인이 같으면 보유 쿠폰 번호가 작은 쪽이다.
+
+    use_coupon·use_points 가 거짓이면(사용자가 쓰지 말라고 했으면) 쿠폰이나 포인트를 채우지 않는다."""
+    if not use_coupon:
+        coupons = []
+    if not use_points:
+        point_balance = 0
     amount = sum(line.price * line.quantity for line in lines)
     best: OwnedCouponIn | None = None
     best_discount = Decimal(0)
@@ -79,4 +92,11 @@ def plan(
     left = (Decimal(amount) - best_discount).to_integral_value(rounding=ROUND_FLOOR)
     use_point = max(0, min(point_balance or 0, int(left)))
     shown = int(best_discount.to_integral_value(rounding=ROUND_FLOOR))
-    return Plan(amount, best, shown, use_point)
+    return Plan(
+        amount,
+        best,
+        shown,
+        use_point,
+        coupon_declined=not use_coupon,
+        points_declined=not use_points,
+    )
