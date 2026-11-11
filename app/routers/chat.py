@@ -19,7 +19,9 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import APIRouter, Request
@@ -132,6 +134,13 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
         return (400, "invalid_request")
 
 
+def _today_text() -> str:
+    """1단계 프롬프트에 싣는 오늘 날짜(서비스 시간대). 날짜가 없으니 모델이 "최근 2~3년"을 2020년 이후로 짐작했다
+    (11/11 dev 3번 중 3번, #693). 프롬프트를 채울 때마다 다시 읽는다."""
+    today = datetime.now(ZoneInfo(get_settings().tz)).date()
+    return f"{today.year}년 {today.month}월 {today.day}일"
+
+
 # {spec_json}·{message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다
 # (CARD_PROMPT와 같은 이유 — 실제로 모델에 가는 글자는 겹치기 전과 같다).
 #
@@ -209,7 +218,11 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '{{"filters": {{"price_max": null}}}}처럼 그 키를 null로 채워라. 그냥 '
     "안 넣으면 이전 값이 그대로 남으니, 없애려면 반드시 null을 명시해야 한다.\n"
     "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
-    "그대로 유지하니 다시 적을 필요 없다.\n\n"
+    "그대로 유지하니 다시 적을 필요 없다.\n"
+    '오늘은 {today}이다. 출간 시기를 "최근 N년", "N년 안에", "올해", "작년 이후"처럼 '
+    "기간으로 말하면 오늘 연도로 셈해 filters.pub_year_from에 연도를 넣어라 — "
+    '"최근 N년"은 오늘 연도에서 N을 뺀 해이고, "2~3년"처럼 범위로 말하면 큰 수로 셈한다. '
+    "연도를 짐작하지 마라.\n\n"
     "이번 메시지가 제목·저자·가격·장르·제외처럼 구체적인 조건이 아니라 "
     '"너무 무겁지 않게", "더 재밌는 걸로", "덜 슬프게"처럼 분위기나 톤을 '
     "조정하는 말이면, 지금 semantic 문장을 바탕으로 그 톤을 반영한 "
@@ -261,7 +274,7 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '{{"intent": "exact", "exact": {{"title": "데미안"}}}}'
     # 에이전트 칸은 켰을 때만 채운다. 안 채우면 빈 문자열이라 이 기능 전 프롬프트와 같다
     "{agent_rule}"
-).partial(agent_rule="")
+).partial(agent_rule="", today=_today_text)
 
 # 책 추천 에이전트(CHAT_AGENT)가 1단계 호출에 더 받는 칸(app/chat/lanes.py). 호출을 늘리지 않으려고 같은 호출에 얹는다.
 # - anchor_card·anchor_title·relation: 사용자가 짚은 기준 책과, 그 책에 대해 물은 관계. 함께 읽은 책을 묻는 말을 보여
@@ -2521,7 +2534,9 @@ _EARLIER_TURN = re.compile(
 _ANTECEDENT_MIN_CHARS = 3
 _ONLY_JAMO = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ!?.~,;]+$")
 _DIGIT = re.compile(r"\d")
-_YEAR_WORD = re.compile(r"(\d{4}\s*년|올해|작년|재작년|금년)")
+# 출간 시기를 이미 정한 말. 연도("2024년")뿐 아니라 기간("2~3년 안", "3년 이내", "6개월")도 정한 것이다 — "최근 2~3년
+# 안에 나온 걸로"에 '"최근"은 어느 정도까지 보시나요?'라고 다시 물었다(11/11 dev, #693)
+_YEAR_WORD = re.compile(r"(\d+\s*(년|개월)|올해|작년|재작년|금년)")
 _RECIPIENT = re.compile(
     r"(엄마|아빠|어머니|아버지|부모|친구|연인|남자친구|여자친구|남편|아내|동료|상사"
     r"|선생|할머니|할아버지|형|누나|동생|언니|오빠|딸|아들)"
