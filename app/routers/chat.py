@@ -2175,12 +2175,15 @@ def _lane_reply(
 def _lane_cards(
     decision: picking.Decision, turn: _LaneTurn
 ) -> tuple[list[dict], str | None, list[str]]:
-    """판단 호출이 고른 책으로 카드를 만든다. 같은 저자 책은 한 장까지다(마니아 목록은 같은 저자 쏠림이 25%).
+    """판단 호출이 고른 책으로 카드를 만든다. 기준 책이 있는 턴에서는 같은 저자 책을 한 장까지 낸다.
 
-    저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다.
+    같은 저자 쏠림(25%)은 기준 책의 마니아 목록에서 잰 값이라, 그 목록을 데려오는 턴(기준 책이 있는 턴)에만 건다(#674).
+    일반 추천 턴은 판단 호출이 고른 대로 낸다. 이 제한은 말풍선을 쓴 뒤에 카드를 빼는 것이라, 일반 턴에도 걸면 "같은
+    작가 책 두 권을 골랐어요" 아래에 카드가 한 장만 남았다(11/11 dev 멀티턴 시험). 에이전트 이전 카드 경로에도 이 제한은
+    없었다. 저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 기준 책이 있어도 걸지 않는다.
     """
     by_id = {b["book_id"]: b for b in turn.pool}
-    one_per_author = turn.spec.intent == "semantic" and not turn.spec.exact.author
+    one_per_author = turn.anchor is not None and not turn.spec.exact.author
     cards: list[dict] = []
     picked: list[dict] = []
     authors: set[str] = set()

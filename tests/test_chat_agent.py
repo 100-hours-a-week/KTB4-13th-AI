@@ -469,27 +469,44 @@ def test_카드_턴_말풍선_끝_질문과_두_갈래_제안은_카드_아래�
     )
 
 
-def test_같은_저자_책은_한_장까지다(monkeypatch: pytest.MonkeyPatch) -> None:
-    same_author = {
-        **SEARCHED,
-        "book_id": 302,
-        "isbn": "9790000000302",
-        "title": "반도체 심화",
-    }
-    _use_search(monkeypatch, SEARCHED, same_author)
-    _use_model(
-        monkeypatch,
-        {"semantic": "반도체"},
-        {
-            "action": "cards",
-            "cards": [
-                {"book_id": 301, "reason_short": "가"},
-                {"book_id": 302, "reason_short": "나"},
-            ],
-        },
-    )
+SAME_AUTHOR = {
+    **SEARCHED,
+    "book_id": 302,
+    "isbn": "9790000000302",
+    "title": "반도체 심화",
+}
+TWO_BY_ONE_AUTHOR = {
+    "action": "cards",
+    "cards": [
+        {"book_id": 301, "reason_short": "가"},
+        {"book_id": 302, "reason_short": "나"},
+    ],
+    "reply": "김반도 작가의 반도체 책 두 권을 골랐어요.",
+}
+
+
+def test_일반_추천_턴은_같은_저자_책도_고른_대로_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 기준 책이 없는 턴에서 같은 저자 책을 빼면 말풍선은 "두 권"인데 카드는 한 장이 된다(#674)
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(monkeypatch, {"semantic": "반도체"}, TWO_BY_ONE_AUTHOR)
 
     data = _post("반도체 책", shown=False)
+
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문", "반도체 심화"]
+
+
+def test_기준_책이_있는_턴은_같은_저자_책을_한_장까지_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 기준 책의 마니아·함께 대출 목록을 데려오는 턴이다. 같은 저자 쏠림은 이 목록에서 잰 것이다
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(
+        monkeypatch, {"semantic": "반도체 산업", "anchor_card": 1}, TWO_BY_ONE_AUTHOR
+    )
+
+    data = _post("반도체 산업이 궁금해")
 
     assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
 
