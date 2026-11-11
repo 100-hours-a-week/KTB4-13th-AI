@@ -14,6 +14,7 @@
 import gzip
 import json
 import logging
+import random
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -313,12 +314,35 @@ def answers(text: str | None) -> bool:
 
 # --- 후보 -------------------------------------------------------------------------------------------------------
 
-# 파일에서 먼저 뽑는 ISBN 수. 서점에 없는 책·가격 조건·이미 보여 준 책으로 많이 빠져서 넉넉히 뽑는다
+# 파일에서 먼저 뽑는 ISBN 수. 서점에 없는 책·가격 조건·이미 보여 준 책으로 빠지는 만큼 넉넉히 뽑는다
 # (11/11 원본 6.4만 권 중 평가 DB 서점에 있는 책 6.18만 권).
 ISBN_LIMIT = 300
-# DB 에서 가져오는 후보 수. 취향으로 다시 줄 세운 뒤 CANDIDATE_LIMIT 으로 자른다
-FETCH_LIMIT = 30
+# DB 에서 가져오는 후보 수. 이 안에서 취향 순으로 세우거나(취향 벡터가 있는 사용자) 많이 읽힌 순서에 기대어 뽑는다(없는
+# 사용자). 맨 위 10권만 쓰면 취향을 모르는 사람은 모두 같은 책을 받았다(11/11 실측: 넓은 소설 요청 5번 중 5번
+# 『불편한 편의점』).
+FETCH_LIMIT = 200
 QUERY_TIMEOUT_SECONDS = 1.0
+# 뽑을 때 순위 r 의 무게는 1/√r 이다. 위쪽 책이 더 자주 나오되 200위 안 책도 나온다(1위가 10권에 들 확률 약 30%).
+_RANK_WEIGHT_POWER = 0.5
+
+
+def sample(pool: list, size: int, rng: random.Random | None = None) -> list:
+    """많이 읽힌 순의 pool 에서 size 개를 뽑는다. 위쪽일수록 잘 뽑히고, 뽑힌 것은 순서를 섞어 돌려준다.
+
+    무게를 지수 분포 열쇠로 바꿔 작은 순으로 고른다(Efraimidis–Spirakis, 무게 비례·중복 없는 뽑기). 섞는 까닭: 카드
+    LLM 은 목록 앞쪽 책을 고르는 버릇이 있어(11/10 카드 후보 실험), 많이 읽힌 순서대로 주면 뽑아도 1~2위로 쏠린다.
+    """
+    if len(pool) <= size:
+        return list(pool)
+    rng = rng or random.Random()
+    keys = [
+        rng.expovariate(1.0) * (rank**_RANK_WEIGHT_POWER)
+        for rank in range(1, len(pool) + 1)
+    ]
+    chosen = [pool[i] for i in sorted(range(len(pool)), key=keys.__getitem__)[:size]]
+    rng.shuffle(chosen)
+    return chosen
+
 
 _SQL = """
 SELECT b.book_id

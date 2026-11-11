@@ -587,6 +587,10 @@ def _may_recall(message: str) -> bool:
     """
     if not _agent_on() or lanes.points_at_book(message):
         return False
+    if popular.answers(message):
+        # 분야 이름만 말했다("소설 추천해줘"). 많이 읽힌 책이 대표작 몫을 한다. 떠올린 제목을 더하면 모델이 매번 같은
+        # 책(『종의 기원』·『불편한 편의점』)을 떠올려 카드가 그 책으로 쏠렸다(11/11 실측 6번 중 4번)
+        return False
     words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
     return any(_is_topic_word(w) for w in words)
 
@@ -718,7 +722,11 @@ async def update_spec(
         plan = _plan(patch, first)
         # 제목·저자를 콕 집은 요청과 기준 책을 짚은 요청에는 떠올린 제목을 쓰지 않는다. 묻는 턴에도 안 쓴다
         handed_over = (
-            ask is None and updated.intent == "semantic" and plan.anchor is None
+            ask is None
+            and updated.intent == "semantic"
+            and plan.anchor is None
+            # 말에는 내용이 있어 보였어도 정리된 조건이 분야 이름뿐이면 많이 읽힌 책으로 답한다(_may_recall 과 같은 까닭)
+            and not popular.answers(_genre_text(updated))
         )
         return SpecUpdate(
             updated,
@@ -1359,19 +1367,21 @@ async def _popular_books(isbns: list[str], search_filters: SearchFilters) -> lis
         return []
 
 
-async def _taste_order(
+async def _popular_order(
     conn: asyncpg.Connection, pool: list[dict], user_id: int
 ) -> list[dict]:
-    """많이 읽힌 순의 후보를 취향 가까운 순으로 다시 세운다(#514). 취향 벡터가 없는 사용자면 많이 읽힌 순 그대로다.
+    """많이 읽힌 순의 후보(최대 popular.FETCH_LIMIT 권)에서 카드 LLM 에 넘길 CANDIDATE_LIMIT 권을 고른다(#514).
 
-    취향이 같은 책끼리는 많이 읽힌 순서를 지킨다(안정 정렬). 벡터가 없는 책은 뒤로 간다.
+    취향 벡터가 있는 사용자는 취향 가까운 순으로 세운다. 취향이 같은 책끼리는 많이 읽힌 순서를 지키고(안정 정렬),
+    벡터가 없는 책은 뒤로 간다. 취향을 모르면 많이 읽힌 순서에 기대어 뽑는다(popular.sample) — 맨 위 10권을 그대로
+    주면 같은 분야를 물은 사람이 모두 같은 책을 받는다.
     """
     row = await conn.fetchrow(
         "SELECT centroid::text AS centroid, cold_start FROM taste_profile WHERE user_id = $1",
         user_id,
     )
     if not row or row["cold_start"] or not row["centroid"]:
-        return pool
+        return popular.sample(pool, CANDIDATE_LIMIT)
     similarities = await _fetch_similarities(
         conn, [c["book_id"] for c in pool], json.loads(row["centroid"])
     )
@@ -1515,8 +1525,8 @@ async def get_candidates(
         pool = await reranker.rerank(spec.semantic, pool)
     async with db.get_pool().acquire() as conn:
         if from_popular:
-            # 같은 분야를 물은 사람이 모두 같은 책을 받지 않게, 취향이 있으면 취향 가까운 순으로 다시 세운다
-            pool = await _taste_order(conn, pool, user_id)
+            # 같은 분야를 물은 사람이 모두 같은 책을 받지 않게, 취향 순으로 세우거나 많이 읽힌 순서에 기대어 뽑는다
+            pool = await _popular_order(conn, pool, user_id)
         pool = pool[:CANDIDATE_LIMIT]
         await _attach_match_scores(conn, pool, user_id, spec)
     if from_popular:

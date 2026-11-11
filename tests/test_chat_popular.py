@@ -9,6 +9,7 @@ import contextlib
 import gzip
 import json
 import os
+import random
 from pathlib import Path
 
 import asyncpg
@@ -352,7 +353,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(chat.service, "search", _search)
     monkeypatch.setattr(chat, "_popular_books", _popular)
     monkeypatch.setattr(chat.reranker, "rerank", _rerank)
-    monkeypatch.setattr(chat, "_taste_order", _taste)
+    monkeypatch.setattr(chat, "_popular_order", _taste)
     popular.install(INDEX)
     yield record
     popular.install(None)
@@ -483,7 +484,7 @@ def test_취향이_있으면_취향_가까운_순으로_다시_세운다(
     pool = [_book(1), _book(2), _book(3), _book(4)]
     profile = {"centroid": "[0.1, 0.2]", "cold_start": False}
 
-    ordered = asyncio.run(chat._taste_order(_Conn(profile), pool, 1))
+    ordered = asyncio.run(chat._popular_order(_Conn(profile), pool, 1))
     # 벡터가 없는 4번은 뒤로
     assert [c["book_id"] for c in ordered] == [2, 3, 1, 4]
 
@@ -492,7 +493,43 @@ def test_취향이_있으면_취향_가까운_순으로_다시_세운다(
         {"centroid": None, "cold_start": False},
         {**profile, "cold_start": True},
     ):
-        assert asyncio.run(chat._taste_order(_Conn(no_taste), pool, 1)) == pool
+        assert asyncio.run(chat._popular_order(_Conn(no_taste), pool, 1)) == pool
+
+
+def test_취향을_모르면_많이_읽힌_순서에_기대어_카드_수만큼_뽑는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Conn:
+        async def fetchrow(self, sql, user_id):
+            return None
+
+    pool = [_book(n) for n in range(1, 31)]
+
+    picked = asyncio.run(chat._popular_order(_Conn(), pool, 1))
+
+    ids = [c["book_id"] for c in picked]
+    assert len(set(ids)) == chat.CANDIDATE_LIMIT
+    assert set(ids) <= set(range(1, 31))
+
+
+def test_뽑기는_위쪽을_더_자주_고르되_아래쪽도_고른다() -> None:
+    pool = list(range(1, 201))
+    rng = random.Random(514)
+    counts = {rank: 0 for rank in pool}
+    draws = 2000
+    for _ in range(draws):
+        for rank in popular.sample(pool, 10, rng):
+            counts[rank] += 1
+
+    # 1위가 10권에 드는 비율(주석의 "약 30%")
+    assert 0.25 < counts[1] / draws < 0.40
+    assert counts[1] > counts[50] > counts[200] > 0
+    # 2,000번 뽑으면 200권이 거의 다 한 번은 나온다 — 맨 위 10권만 돌지 않는다
+    assert sum(1 for c in counts.values() if c) > 190
+
+
+def test_뽑을_것보다_적으면_다_준다() -> None:
+    assert popular.sample([3, 1, 2], 10) == [3, 1, 2]
 
 
 # --- 라우터: 먼저 묻지 않고 카드와 보기를 같이 ---
@@ -719,3 +756,34 @@ def test_DB에서_많이_읽힌_순서대로_가져오고_연도_조건은_걸�
 
     assert [b["book_id"] for b in books] == [9_514_003, 9_514_002]
     assert {"isbn", "title", "author", "publisher", "price"} <= set(books[0])
+
+
+def test_뽑은_책은_순서를_섞어_카드_LLM_이_앞쪽만_고르지_않게_한다() -> None:
+    rng = random.Random(7)
+    orders = [popular.sample(list(range(1, 201)), 10, rng) for _ in range(20)]
+
+    assert any(order != sorted(order) for order in orders)
+
+
+@pytest.mark.parametrize(
+    ("message", "recalls"),
+    [
+        ("소설 추천해줘", False),
+        ("그냥 에세이", False),
+        ("추리소설 아무거나", False),
+        # 내용이 있으면 지금처럼 떠올린 제목도 부른다
+        ("위로되는 소설 추천해줘", True),
+        ("고양이가 탐정으로 나오는 추리소설", True),
+    ],
+)
+def test_분야만_말한_턴에는_떠올린_제목을_부르지_않는다(
+    monkeypatch: pytest.MonkeyPatch, message: str, recalls: bool
+) -> None:
+    # 떠올린 제목 호출이 매번 『종의 기원』·『불편한 편의점』을 넣어 카드가 그 책으로 쏠렸다(11/11 실측 6번 중 4번)
+    monkeypatch.setenv("CHAT_AGENT", "true")
+    get_settings.cache_clear()
+    popular.install(INDEX)
+    try:
+        assert chat._may_recall(message) is recalls
+    finally:
+        popular.install(None)
