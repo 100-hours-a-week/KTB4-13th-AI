@@ -48,7 +48,17 @@ from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, SpecExact, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, editions, isbn, popularity, responses, voice
+from app.core import (
+    body,
+    categories,
+    db,
+    editions,
+    foreign_script,
+    isbn,
+    popularity,
+    responses,
+    voice,
+)
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -2891,6 +2901,65 @@ async def _read_request(request: Request) -> tuple[ChatRequest, dict] | JSONResp
 
 
 async def _respond(
+    req: ChatRequest, payload: dict, on_reply: ReplySink | None
+) -> JSONResponse:
+    """요청 하나에 답한다. 세 전달 방식(JSON·SSE·폴링)이 모두 여기를 지난다.
+
+    모델이 섞어 쓴 다른 나라 글자(#717)는 갈래마다 따로 거르지 않고 나가기 직전 여기서 한 번 거른다. 먼저 보내는
+    말풍선도 거른다. 거르고 나서 빈 말풍선은 보내지 않는다(done 의 reply 만 간다).
+    """
+    sink = None if on_reply is None else _cleaned_sink(on_reply)
+    return _without_foreign_words(await _handle(req, payload, sink))
+
+
+def _cleaned_sink(on_reply: ReplySink) -> ReplySink:
+    async def sink(text: str) -> None:
+        if cleaned := foreign_script.without_foreign(text):
+            await on_reply(cleaned)
+
+    return sink
+
+
+def _clean_text(holder: dict, key: str) -> bool:
+    """holder[key] 글에서 다른 나라 글자를 거른다. 바뀌었으면 True."""
+    text = holder.get(key)
+    if not isinstance(text, str):
+        return False
+    cleaned = foreign_script.without_foreign(text)
+    if cleaned == text:
+        return False
+    holder[key] = cleaned
+    return True
+
+
+def _without_foreign_words(response: JSONResponse) -> JSONResponse:
+    """성공 응답의 말풍선·답 보기·카드 이유에서 다른 나라 글자를 거른다(#717). 거를 것이 없으면 그 응답 그대로다."""
+    if response.status_code != 200:
+        return response
+    envelope = json.loads(response.body)
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return response
+    changed = [_clean_text(data, "reply"), _clean_text(data, "followup")]
+    for card in data.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        changed += [_clean_text(card, "reason_short"), _clean_text(card, "reason_long")]
+        for basis in card.get("match_basis") or []:
+            if isinstance(basis, dict):
+                changed += [_clean_text(basis, "label"), _clean_text(basis, "detail")]
+    if not any(changed):
+        return response
+    logger.info("다른 나라 글자를 걸렀다")
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() != "content-length"
+    }
+    return JSONResponse(envelope, status_code=response.status_code, headers=headers)
+
+
+async def _handle(
     req: ChatRequest, payload: dict, on_reply: ReplySink | None
 ) -> JSONResponse:
     """요청 하나에 답한다. on_reply 가 있으면 카드 생성 LLM 이 쓰는 reply 를 거기로 먼저 흘려보낸다."""

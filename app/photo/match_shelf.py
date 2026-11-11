@@ -21,6 +21,7 @@ from collections.abc import Sequence
 import asyncpg
 from rapidfuzz import fuzz
 
+from app.core import editions
 from app.photo import catalog, volume
 from app.photo.catalog import Book
 from app.photo.read import BookText
@@ -98,6 +99,22 @@ def title_score(text: BookText, book: Book) -> float:
     return max((fuzz.ratio(r, f) / 100 for r in reads for f in forms), default=0.0)
 
 
+def marks_agree(text: BookText, book: Book) -> bool:
+    """읽은 제목과 카탈로그 제목의 "C#"·"C++" 표시가 같은가. key() 는 # 과 + 를 지워 "C# 프로그래밍 언어"와
+    "C 프로그래밍 언어"를 90% 넘게 같다고 본다. 개발서 책장에서 다른 책을 확정하던 일이다(나의 도서관 QA 11/11).
+    key() 는 다듬은 제목 색인과 글자가 같아야 해서 그대로 두고 여기서 따로 본다."""
+    title, subtitle = text.title or "", text.subtitle or ""
+    head = _SUBTITLE_SPLIT.split(book.title or "")[0]
+    catalog_marks = {
+        editions.language_marks(t)
+        for t in (book.title, head, _LEADING_PAREN.sub("", head))
+    }
+    return any(
+        editions.language_marks(t) in catalog_marks
+        for t in (title, f"{title} {subtitle}")
+    )
+
+
 def _read_numbers_text(text: BookText) -> str:
     """권 번호 견주기에 쓸 읽은 글자. 판 표시는 권 번호가 아니라 넣지 않는다."""
     vol = "" if volume.is_edition_mark(text.volume) else (text.volume or "")
@@ -106,7 +123,11 @@ def _read_numbers_text(text: BookText) -> str:
 
 def decide(text: BookText, books: Sequence[Book]) -> Book | None:
     """검색 후보 중에서 책등의 책을 고른다. 확정할 수 없으면 None. DB 를 읽지 않아 규칙만 따로 시험할 수 있다."""
-    if not text.title or not books:
+    if not text.title:
+        return None
+    # C#·C++ 표시가 다른 책은 제목 점수를 보기 전에 뺀다. 1등만 보고 버리면 뒤에 있는 맞는 책까지 놓친다
+    books = [b for b in books if marks_agree(text, b)]
+    if not books:
         return None
     # 제목 점수, 그다음 새 판 순. 정렬은 순서를 지켜서 둘 다 같으면 검색 순위대로다
     ranked = sorted(
