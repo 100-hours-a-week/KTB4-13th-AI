@@ -1718,8 +1718,13 @@ def _one_card_cart(title: str, message: str):
     return spy, fake, ctx
 
 
-def test_권_번호_있는_책에_그거_말고_N권이면_바꾸지_않고_두_뜻을_묻는다() -> None:
-    spy, fake, ctx = _one_card_cart("토지 1", "아 그거 말고 2권으로")
+@pytest.mark.parametrize(
+    "message", ["아 그거 말고 2권으로", "그건 말고 2권으로", "이건 말고 2권으로"]
+)
+def test_권_번호_있는_책에_그거_말고_N권이면_바꾸지_않고_두_뜻을_묻는다(
+    message: str,
+) -> None:
+    spy, fake, ctx = _one_card_cart("토지 1", message)
 
     call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 2})
 
