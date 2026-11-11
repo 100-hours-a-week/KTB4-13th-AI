@@ -525,6 +525,7 @@ async def run_agent(
     actions: list[CartAction] = []
     plan: checkout_plan.Plan | None = None
     ordered: list[CartLine] = []
+    left_out: list[CartLine] = []
     if any(
         call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
         for call in out["tool_calls"]
@@ -538,7 +539,7 @@ async def run_agent(
         # 앞 턴에 담아 둔 책으로 주문(#678). FE 는 이 턴의 장바구니 변경에 set 으로 든 책만 주문 화면에 올리고, BE 는
         # 변경이 없는 쇼핑 턴의 쿠폰·포인트를 버린다. 그래서 주문할 줄을 같은 수량으로 다시 set 한다. BE 는 같은 수량의
         # 변경도 받아 실행 기록을 남긴다(기대 수량 = 지금 수량)
-        ordered = _cart_to_order(ctx, out["tool_calls"], start)
+        ordered, left_out = _cart_to_order(ctx, out["tool_calls"], start)
         if ordered:
             actions = [
                 CartAction("set", line.isbn, line.quantity)
@@ -562,24 +563,17 @@ async def run_agent(
         checkout=plan,
         out_of_time=out["out_of_time"],
         ordered_cart=ordered,
-        unorderable=_unorderable(start, ordered),
+        unorderable=left_out if ordered else [],
     )
-
-
-def _unorderable(cart: list[CartLine], ordered: list[CartLine]) -> list[CartLine]:
-    """장바구니 전체를 주문 화면에 올렸을 때 살 수 없어서 뺀 줄. 짚은 책만 올렸으면 알리지 않는다."""
-    if not ordered:
-        return []
-    left = [line for line in cart if line not in ordered]
-    return [line for line in left if not (line.available and line.price is not None)]
 
 
 def _cart_to_order(
     ctx: TurnContext, calls: list[ToolCall], cart: list[CartLine]
-) -> list[CartLine]:
-    """쓰기가 성공하지 않은 주문 턴에 주문 화면에 올릴 장바구니 줄(#678). 없으면 빈 목록.
+) -> tuple[list[CartLine], list[CartLine]]:
+    """쓰기가 성공하지 않은 주문 턴에 주문 화면에 올릴 장바구니 줄과, 장바구니 전체를 올릴 때 살 수 없어서 뺀 줄(#678).
 
-    - 사용자가 짚은 책이 이미 담겨 있었으면(ALREADY_IN_CART, "1번 주문해 줘") 그 책만
+    - 사용자가 짚은 책이 이미 담겨 있었으면(ALREADY_IN_CART, "1번 주문해 줘") 그 책만. 장바구니의 다른 책은 말하지
+      않았으니 그중 살 수 없는 책도 알리지 않는다(#683 리뷰)
     - 책을 짚지 않고 주문하겠다고만 했으면("이제 주문할게") 장바구니 전체. 이 턴에 장바구니 밖의 책을 말했다고 볼
       호출이 있었으면 올리지 않는다(_looked_for_books)
     살 수 없는 줄(판매 중지·재고 부족)은 올리지 않는다.
@@ -591,12 +585,12 @@ def _cart_to_order(
         if call.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
     }
     if already:
-        return [line for line in sellable if line.isbn in already]
+        return [line for line in sellable if line.isbn in already], []
     if evidence.orders_cart(ctx) and not _looked_for_books(
         calls, cart, evidence.proposed_books(ctx)
     ):
-        return sellable
-    return []
+        return sellable, [line for line in cart if line not in sellable]
+    return [], []
 
 
 def _looked_for_books(

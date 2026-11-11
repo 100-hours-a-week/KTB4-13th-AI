@@ -1532,6 +1532,41 @@ def test_이미_담긴_책을_주문해_달라면_그_책만_같은_수량으로
     assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
     assert reply_module.ORDER_FROM_CART not in data.reply
     assert "다른 장바구니 책" not in data.reply  # 짚은 책만 올린다
+    # 한 권이면 "모두 1권"이라 하지 않는다(#683 리뷰)
+    assert (
+        f"장바구니에 담긴 《{_CARD_TITLE}》 1권으로 주문 화면을 열어 둘게요."
+        in data.reply
+    )
+
+
+def test_짚은_책만_주문_화면에_올렸으면_장바구니의_다른_품절_책은_알리지_않는다() -> (
+    None
+):
+    # 장바구니 전체를 올린 턴만 "살 수 없어서 넣지 않았어요"라고 한다. "1번 주문해줘"는 1번만 말한 것이다(#683 리뷰)
+    _, data, _ = _card_turn(
+        "1번 주문해줘",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
+        cart=[
+            {
+                "isbn": CARD_A,
+                "title": _CARD_TITLE,
+                "quantity": 1,
+                "price": 28000,
+                "available": True,
+            },
+            {
+                "isbn": P1,
+                "title": "판매 중지된 책",
+                "quantity": 1,
+                "price": 10000,
+                "available": False,
+            },
+        ],
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", CARD_A, 1)]
+    assert "판매 중지된 책" not in data.reply
+    assert "살 수 없어서" not in data.reply
 
 
 def test_이미_담긴_책이_살_수_없으면_주문_화면을_열지_않고_장바구니로_보낸다() -> None:

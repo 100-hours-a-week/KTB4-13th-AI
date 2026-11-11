@@ -614,7 +614,9 @@ def _ordered_line(run: AgentRun) -> str:
     if len(lines) > _ORDERED_NAMED:
         names += f" 외 {len(lines) - _ORDERED_NAMED}종"
     copies = sum(line.quantity for line in lines)
-    sentence = f"장바구니에 담긴 {names}, 모두 {copies}권으로 주문 화면을 열어 둘게요."
+    # 한 권이면 "모두"를 붙이지 않는다("《한중록》 1권으로", #683 리뷰)
+    counted = f"{names} {copies}권" if len(lines) == 1 else f"{names}, 모두 {copies}권"
+    sentence = f"장바구니에 담긴 {counted}으로 주문 화면을 열어 둘게요."
     for line in run.unorderable:
         eun = _particle(line.title, "은", "는")
         sentence += (
