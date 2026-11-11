@@ -56,6 +56,8 @@ class ToolName(StrEnum):
     SELECTION_PICK = "selection.pick"
     BOOK_COMPARE = "book.compare"
     UI_GUIDE = "ui.guide"
+    # 주문 화면으로 보낼 책을 짚는다(#664). 장바구니를 바꾸지 않는다
+    ORDER_OPEN = "order.open"
 
 
 class _Strict(BaseModel):

@@ -42,6 +42,7 @@ def test_구현한_도구만_설명을_준다() -> None:
         "selection_pick",
         "book_compare",
         "ui_guide",
+        "order_open",
     ]
     assert set(FROM_LLM_NAME.values()) == set(ARG_MODELS)
 
