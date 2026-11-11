@@ -113,6 +113,12 @@ _INTEREST = re.compile(
 )
 # 다른 책과 견주는 말. 평가가 아니라 조건을 바꾸는 말일 수 있다("1번보다 쉬워 보이는 걸로")
 _COMPARISON = re.compile(r"보다|대신|말고")
+# 화면 카드 묶음을 가리키는 말("이 중에 더 쉬운 거 있어?"). 한 권을 짚는 _POINTER 와 따로 둔다
+_AMONG = re.compile(
+    r"이\s*중에?|이\s*중에서|이\s*가운데|여기서|이\s*책들|보여\s*준\s*(?:책|거)"
+)
+# 새 책을 찾는 말. _REC_WORDS 에 없는 "다른 거", "더 보여줘", "그거 말고" 같은 꼴이다
+_NEW_SEARCH = re.compile(r"다른|또\s|말고|대신|빼고|새로|더\s*(?:보여|없|있|찾|추천)")
 # 고른 책을 사겠다는 말. 장바구니 낱말(_CART_WORDS)에 없던 꼴이다. "알려주세요"의 "주세요"는 아니라서 앞 글자를 본다
 _BUY_WORDS = re.compile(
     r"담으면|담자|넣으면|사면|살게|살래|살까|사고\s*싶|사야|사려고|사요|구매|구입"
@@ -294,3 +300,21 @@ def route(
         info_requests,
     )
     return "recommend" if kind == "recommend" else "shop"
+
+
+def asks_about_shown(message: str, cards_shown: bool) -> bool:
+    """⑦이 쇼핑이 아니라고 되돌린 말이 화면 카드에 대해 묻는 말인지(#701).
+
+    되돌린 말을 늘 새로 찾으면 질문 한 번에 화면 카드가 바뀌어, 다음 "2번 담아줘"가 사용자가 보던 책이 아닌 새
+    카드를 담았다("이 중에 장바구니에 있는 책이랑 겹치는 거 있어?" 뒤 "2번 넣어줘"). 카드를 가리키고 새 책을 찾는
+    낱말이 없으면 ③ 대답 턴으로 답해 카드를 지킨다. "이 중에"처럼 카드 묶음을 짚은 말은 "읽을" 같은 추천 낱말이
+    있어도 보인 책 안에서 묻는 말이다. 한 권을 짚은 말("2번이랑 비슷한 책")은 추천 낱말이 있으면 새로 찾는다.
+    """
+    if not cards_shown:
+        return False
+    text = message.strip()
+    if _NEW_SEARCH.search(text):
+        return False
+    if _AMONG.search(text):
+        return True
+    return bool(_POINTER.search(text)) and not _REC_WORDS.search(text)
