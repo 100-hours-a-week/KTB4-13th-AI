@@ -151,6 +151,9 @@ class Settings(BaseSettings):
     chat_agent: bool = True
     # 함께 대출·마니아 그래프 파일(app/jobs/build_reading_graph.py 가 만든다). 없으면 C 갈래와 제안 줄 없이 돈다.
     reading_graph_path: str = "data/reading_graph.json.gz"
+    # 분야만 말한 요청("소설 추천해줘")에 쓰는 많이 읽힌 책 파일(app/jobs/build_popular_books.py 가 만든다, #514).
+    # 없거나 비우면 그런 요청도 지금처럼 검색한다.
+    popular_books_path: str = "data/popular_books.json.gz"
 
     # --- ② 소개가 바뀐 책의 벡터 다시 만들기(#300) ---
     # 켜면 임베딩 작업이 벡터를 만든 글의 해시를 새 표(book_embedding_docs)에 함께 적고, 지금 글과 다르면 다시
