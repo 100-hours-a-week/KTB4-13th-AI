@@ -34,6 +34,7 @@ from app.chat import (
     lanes,
     picking,
     reading_graph,
+    reasons,
     recall,
     shown,
     streaming,
@@ -41,7 +42,7 @@ from app.chat import (
 )
 from app.chat import options as option_lines
 from app.chat.copying import COPIED_SHARE_MIN, copied_share
-from app.chat.schemas import ChatRequest, Spec, Turn
+from app.chat.schemas import ChatRequest, Spec, SpecExact, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
 from app.core import body, categories, db, editions, isbn, popularity, responses, voice
@@ -1502,7 +1503,8 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. "
     "picks에 적은 차례가 화면의 1번, 2번, 3번이다. cards에는 picks의 책을 같은 차례로 적어라.\n"
-    "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
+    + reasons.SHORT_RULE
+    + "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     "reason_long은 도서 상세 페이지에서 책 소개와 함께 보인다. 책 소개 문장을 옮기거나 "
@@ -1518,7 +1520,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     + '다음 JSON 형식으로만, 이 칸 순서대로 답하라: {{"picks": [고른 책의 book_id 정수], '
     '"reply": "말풍선에 보일 1-2문장", '
     '"cards": [{{"book_id": 정수, '
-    '"reason_short": "한 줄 이유(80자 이내)", '
+    '"reason_short": "다른 책과 갈리는 점(30자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
@@ -1864,6 +1866,35 @@ async def _no_books() -> list[dict]:
     return []
 
 
+async def _near_lane(
+    req: ChatRequest,
+    spec: Spec,
+    anchor: lanes.Anchor,
+    shown_ids: list[int],
+    owned: list[int] | None,
+) -> list[dict]:
+    """마니아 목록 없는 기준 책의 "비슷한 책 더"(#654). 기준 책과 소개가 가까운 책을 모은다.
+
+    기준 책 벡터가 없으면(소개글 없는 책) 기준 책 제목으로 찾는다 — spec 에 남은 앞 턴 주제로는 찾지 않는다. 사용자 조건
+    (가격·연도·분야)은 그대로 둔다. 가까운 책 조회가 실패해도 제목으로 찾는다(턴을 500 으로 끝내지 않는다).
+    """
+    try:
+        books = await lanes.near_books(anchor)
+    except Exception:
+        logger.exception("기준 책과 가까운 책 찾기 실패 — 기준 책 제목으로 찾는다")
+        books = None
+    if books is not None:
+        return books
+    by_title = spec.model_copy(
+        update={
+            "intent": "semantic",
+            "semantic": lanes.display_title(anchor.title)[:MAX_QUERY_CHARS],
+            "exact": SpecExact(),
+        }
+    )
+    return await get_candidates(by_title, shown_ids, req.user_id, owned_book_ids=owned)
+
+
 async def _recalled_books(
     recalling: "asyncio.Task[tuple[lanes.Title, ...]]",
 ) -> list[dict]:
@@ -1973,6 +2004,8 @@ async def _gather_lanes(
 
     사용자가 기준 책을 읽은 사람들이 함께 읽은 책을 물으면(relation co) 그 목록에서만 고른다. 검색어로 찾은 책이
     섞이면 "함께 읽은 책"이라는 답이 틀린다. 기준 책의 목록이 없으면 지금처럼 찾는다.
+    비슷한 책을 더 원하는데(relation similar) 기준 책에 마니아 목록이 없으면 검색 대신 기준 책과 소개가 가까운 책을
+    모은다(#654).
 
     recalling 은 1단계와 나란히 보낸 떠올린 제목 호출이다. 기준 책이 있는 턴에는 쓰지 않는다(기준 책 목록을 쓴다).
     """
@@ -2003,6 +2036,13 @@ async def _gather_lanes(
         and graph.has_lists(anchor.work)
     )
     relation_only = plan.relation == "co" and has_lists
+    # "비슷한 책 더"인데 기준 책에 마니아 목록이 없다(#654). spec 에 남은 앞 턴 주제로 찾으면 다른 주제의 책이 나와서
+    # 검색(A) 대신 기준 책과 소개가 가까운 책을 찾는다(_near_lane)
+    near_anchor = (
+        plan.relation == "similar"
+        and anchor is not None
+        and not lanes.has_mania(graph, anchor)
+    )
     search_spec = spec
     if not _query_text(spec) and plan.anchor is not None and not has_lists:
         # 기준 책을 짚었는데 못 찾았거나 그 책의 목록이 없다. 검색어도 없으면 카드가 0장이라 사용자 말로 찾는다.
@@ -2014,13 +2054,16 @@ async def _gather_lanes(
         _drop(recalling)
         recalling = None
     started = asyncio.get_running_loop().time()
-    searched, titled, related = await asyncio.gather(
+    searched, titled, related, near = await asyncio.gather(
         get_candidates(search_spec, shown_ids, req.user_id, owned_book_ids=owned)
-        if _query_text(search_spec) and not relation_only
+        if _query_text(search_spec) and not relation_only and not near_anchor
         else _no_books(),
         _recalled_books(recalling) if recalling is not None else _no_books(),
         _neighbor_books(graph, anchor, plan, skip)
         if graph is not None and anchor is not None
+        else _no_books(),
+        _near_lane(req, spec, anchor, shown_ids, owned)
+        if near_anchor and anchor is not None
         else _no_books(),
     )
     turn = _LaneTurn(req, spec, plan, anchor, shown_ids, owned, graph, skip, [])
@@ -2031,7 +2074,12 @@ async def _gather_lanes(
             turn, searched, related, titled, others_first=True
         )
     else:
-        turn.pool = await _settle_pool(turn, searched, titled, related)
+        turn.pool = await _settle_pool(turn, searched, near, titled, related)
+    note = ""
+    if relation_only:
+        note = " — 함께 읽은 책만"
+    elif near_anchor:
+        note = f" — 검색 대신 기준 책과 가까운 책 {len(near)}권"
     logger.info(
         "세 갈래: 검색 %d · 떠올린 제목 %d · 기준 책 이웃 %d → 후보 %d권(%.2f초)%s",
         len(searched),
@@ -2039,7 +2087,7 @@ async def _gather_lanes(
         len(related),
         len(turn.pool),
         asyncio.get_running_loop().time() - started,
-        " — 함께 읽은 책만" if relation_only else "",
+        note,
     )
     return turn
 

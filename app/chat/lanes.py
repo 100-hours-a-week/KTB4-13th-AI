@@ -17,6 +17,7 @@ A 와 같이 건다. 소개글이 없어도 빼지 않는다.
 """
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -31,6 +32,7 @@ from app.chat.shown import ShownBook
 from app.core import categories, db, editions, products
 from app.photo import match_cover
 from app.photo.read import BookText
+from app.search import vector
 from app.search.schemas import SearchFilters
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,10 @@ MAX_TITLES = 5
 NEIGHBORS_PER_KIND = 3
 # 기준 책에서 데려오는 이웃(C) 상한. 정보나루가 목록마다 10권씩 주니 함께 대출·마니아를 합친 한 판본 몫이다
 MAX_NEIGHBOR_BOOKS = 20
+# 기준 책과 소개가 가까운 책(near_books) 상한. 이웃(C)과 같은 수다. 가까운 자리는 기준 책의 다른 판본이 먼저 차지해서
+# 그만큼 더 받아 놓고 뺀다
+MAX_NEAR_BOOKS = MAX_NEIGHBOR_BOOKS
+_NEAR_FETCH = 30
 # 모델이 준 제목·저자 칸의 길이 상한. 검색어로만 쓴다
 MAX_TITLE_CHARS = 100
 _SUBTITLE = re.compile(r"\s*[:=]\s*.*$| - .*$")
@@ -515,6 +521,62 @@ async def neighbor_books(
         len(by_work),
         len(books),
         len(hubs),
+    )
+    return books
+
+
+def has_mania(graph: ReadingGraph | None, anchor: Anchor | None) -> bool:
+    """기준 책에 마니아 목록이 있는가. "비슷한 책 더"는 이 목록에서 고른다."""
+    return (
+        graph is not None
+        and anchor is not None
+        and anchor.work is not None
+        and bool(graph.neighbors(anchor.work, "mania"))
+    )
+
+
+async def near_books(anchor: Anchor) -> list[dict] | None:
+    """기준 책과 소개가 가까운 책 — 기준 책 벡터의 가까운 이웃. 마니아 목록이 없는 기준 책의 "비슷한 책 더"에 쓴다(#654).
+
+    마니아 목록에 나오는 책의 76%는 자기 목록이 없다(11/11 그래프 실측). 그래서 한 번 넓혀 나온 카드에서 또 누르면
+    대부분 여기로 온다. 이 갈래가 없을 때는 spec 에 남은 앞 턴 주제로 찾아 다른 주제의 책이 나왔다(11/11 dev,
+    『편견 없는 유전자』). 꼬리표는 검색과 같다 — 카드 이유는 소개로 쓴다. 기준 책의 다른 판본은 뺀다.
+    기준 책이 우리 서점에 없거나 벡터가 없으면(소개글 없는 책) None.
+    """
+    if anchor.book_id is None:
+        return None
+    async with db.get_pool().acquire() as conn:
+        raw = await conn.fetchval(
+            "SELECT embedding::text FROM book_embeddings WHERE book_id = $1",
+            anchor.book_id,
+        )
+        if not raw:
+            return None
+        ids = [
+            book_id
+            for book_id in await vector.search_ids(
+                conn, json.loads(raw), SearchFilters(), limit=_NEAR_FETCH
+            )
+            if book_id != anchor.book_id
+        ]
+        rows = await conn.fetch(_BY_IDS_SQL, ids)
+    by_id = {r["book_id"]: dict(r) for r in rows}
+    own = reading_graph.work_key(anchor.title, anchor.author)
+    books = [
+        by_id[book_id]
+        for book_id in ids
+        if book_id in by_id
+        and (
+            own is None
+            or reading_graph.work_key(by_id[book_id]["title"], by_id[book_id]["author"])
+            != own
+        )
+    ][:MAX_NEAR_BOOKS]
+    for book in books:
+        book["sources"] = [("search", None)]
+    logger.info(
+        "기준 책 마니아 목록 없음 — 기준 책과 소개가 가까운 책 %d권을 데려왔다",
+        len(books),
     )
     return books
 
