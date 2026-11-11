@@ -29,6 +29,7 @@ from pydantic import ValidationError
 
 from app.chat import (
     asking,
+    authors,
     invented_mood,
     jobs,
     lanes,
@@ -1312,6 +1313,21 @@ async def _shown_book_ids(req: ChatRequest) -> list[int]:
     return await _book_ids_for_isbns(req.exclude_isbns)
 
 
+async def _books_by_author(author: str, search_filters: SearchFilters) -> list[dict]:
+    """그 저자의 책(app/chat/authors.py). 테스트가 DB 없이 바꿔 끼우는 자리다.
+
+    못 가져오면 빈 목록이다. 그러면 호출부가 지금까지의 검색 결과로 후보를 만든다 — 저자로 좁히는 것은 덤이라, 이 조회가
+    늦거나 실패했다고 엉뚱한 책이라도 나오던 요청을 500 으로 바꾸지 않는다(#658 리뷰). 예외 종류를 좁히지 않는 까닭은
+    app/search/service.py 의 벡터 검색과 같다 — TimeoutError·InterfaceError 는 PostgresError 하위가 아니다.
+    """
+    try:
+        async with db.get_pool().acquire() as conn:
+            return await authors.fetch(conn, author, search_filters)
+    except Exception:
+        logger.exception("저자 책 조회 실패. 검색 결과로 후보를 만든다")
+        return []
+
+
 async def get_candidates(
     spec: Spec,
     exclude_book_ids: list[int],
@@ -1350,11 +1366,26 @@ async def get_candidates(
         if catalog_categories is not None:
             search_filters = spec.filters.model_copy(update={"category": None})
 
-    outcome = await service.search(
-        SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
+    # 저자를 짚었으면 그 저자의 책으로 좁힌다(#655). ① 검색은 이름을 낱말로 찾아 "한강"이면 제목에 한강이 든 책이 후보를 채운다.
+    # 저자만 말했으면 그 저자의 책을 DB 에서 바로 가져온다. 분위기도 말했으면 그 분위기로 찾은 검색 결과 중 그 저자의 책을 앞에 둔다.
+    # 제목도 말했으면 검색 결과에서 그 저자의 책만 남긴다 — 『한강, 소년이 온다 깊게 읽기』 같은 남의 해설서가 빠진다.
+    author = spec.exact.author
+    by_author = (
+        await _books_by_author(author, search_filters)
+        if author and not spec.exact.title
+        else []
     )
+    if by_author and not spec.semantic:
+        results = by_author
+    else:
+        outcome = await service.search(
+            SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
+        )
+        results = outcome.results
+        if author:
+            results = authors.narrow(results, author, by_author)
     exclude = set(exclude_book_ids) | set(spec.exclude)
-    pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    pool = [r for r in results if r["book_id"] not in exclude]
     if catalog_categories is not None:
         book_categories = await _fetch_categories([c["book_id"] for c in pool])
         pool = [
