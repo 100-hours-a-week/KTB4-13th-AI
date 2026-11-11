@@ -1653,3 +1653,57 @@ def test_근거가_있으면_제목을_더_읽지_않는다() -> None:
 
     assert call.result == {"ok": True}
     assert "get_offers" not in spy.calls
+
+
+# --- 권 번호 있는 책의 "그거 말고 N권"(#695) ---
+
+
+def _one_card_cart(title: str, message: str):
+    spy, fake, ctx = _setup(
+        seed=[(A, 1)],
+        cards=[ContextCard(isbn=A, rank=1, match_score=90)],
+        message=message,
+    )
+    ctx.titles[A] = title
+    return spy, fake, ctx
+
+
+def test_권_번호_있는_책에_그거_말고_N권이면_바꾸지_않고_두_뜻을_묻는다() -> None:
+    spy, fake, ctx = _one_card_cart("토지 1", "아 그거 말고 2권으로")
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 2})
+
+    assert call.result["error"] == "ACTION_NOT_STATED"
+    assert call.result["ask"] == (
+        "《토지 2》를 원하시는 건가요, 아니면 《토지 1》을 2권으로 바꿀까요?"
+    )
+    assert fake.cart_state(UID) == {A: 1}
+
+
+def test_담기로_수량을_바꿔도_같이_묻는다() -> None:
+    spy, fake, ctx = _one_card_cart("태백산맥 상", "그거 대신 3권으로 해줘")
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1), "quantity": 3})
+
+    assert call.result["error"] == "ACTION_NOT_STATED"
+    assert call.result["ask"].startswith("《태백산맥》의 다른 권을 원하시는 건가요")
+    assert fake.cart_state(UID) == {A: 1}
+
+
+@pytest.mark.parametrize(
+    ("title", "message"),
+    [
+        ("클린 코드", "1권 말고 2권으로"),  # 권 번호가 없는 책은 수량이다
+        ("1984", "그거 말고 2권으로"),  # 번호 앞에 띄어쓰기가 없으면 권 번호가 아니다
+        ("토지 1", "2권으로 바꿔줘"),  # "말고·대신"이 없으면 수량이다
+    ],
+)
+def test_권_번호_없는_책이나_말고_없는_말은_수량을_바꾼다(
+    title: str, message: str
+) -> None:
+    spy, fake, ctx = _one_card_cart(title, message)
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 2})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 2}

@@ -684,6 +684,27 @@ def said_quantity_lately(ctx: TurnContext) -> bool:
     return any(_QUANTITY.search(normalize(text)) for text in [ctx.message, *users])
 
 
+# 권 번호가 있는 책(『토지 1』, 『삼국지 3』, 상·중·하)에 "그거 말고 2권으로"라고 하면 다른 권을 원하는 말일 수 있다.
+# ⑦은 "2권"을 수량으로만 읽어 『토지 1』을 2권으로 바꿨다(11/11 dev 3번 중 3번, #695). 이런 말이면 바꾸지 않고 묻는다
+_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
+_VOLUME_TITLE = re.compile(r"^(?P<base>.*\S)\s+(?P<volume>\d{1,2}|상|중|하)(?:\s?권)?$")
+
+
+def swaps_volume(ctx: TurnContext) -> bool:
+    """이번 말이 "말고·대신"과 권수를 같이 말했는가("아 그거 말고 2권으로"). 다른 권을 원하는 말일 수 있다."""
+    if ctx.message is None:
+        return False
+    message = normalize(ctx.message)
+    return bool(_INSTEAD.search(message) and _QUANTITY.search(message))
+
+
+def volume_title(title: str | None) -> tuple[str, str] | None:
+    """제목 끝의 권 번호. 『토지 1』 → ("토지", "1"), 『태백산맥 상』 → ("태백산맥", "상"). 없으면 None.
+    번호 앞에 띄어쓰기가 있어야 한다(『1984』는 권 번호가 아니다)."""
+    found = _VOLUME_TITLE.match((title or "").strip())
+    return (found["base"], found["volume"]) if found else None
+
+
 # --- 행동 (#531) ---
 # 위의 근거 검사는 어느 책인지만 본다. "1번이 마음에 들어"에는 "1번"이 있어서 책은 정해지지만 담으라는 말은 없다.
 # 실제 모델로 재 보니(#530 대화 평가) 모델이 이런 관심 표현을 담기로 읽어, 대화 30개 중 23개에서 시키지 않은 책을
