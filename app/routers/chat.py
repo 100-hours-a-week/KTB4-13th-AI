@@ -1653,6 +1653,8 @@ class CardResult:
     degraded: bool
     # 카드 아래에 보일 답 보기(#652). 지금은 책 추천 에이전트의 함께 읽은 책·비슷한 책 제안만 쓴다
     options: tuple[str, ...] = ()
+    # 말풍선 맨 끝에 붙일 출처 문장(picking.source_note). 끝 질문을 followup 으로 옮긴 뒤에 붙인다
+    note: str | None = None
 
 
 def _card_prompt_conditions(spec: Spec) -> str:
@@ -2149,30 +2151,20 @@ async def _search_again(turn: _LaneTurn, query: str) -> None:
     logger.info("다시 찾기: 검색 %d권 → 후보 %d권", len(searched), len(turn.pool))
 
 
-def _graph_source(book: dict) -> tuple[str, str] | None:
-    return next(
-        (
-            (lane, anchor)
-            for lane, anchor in book.get("sources") or []
-            if lane in ("co", "mania")
-        ),
-        None,
-    )
-
-
 def _lane_reasons(
-    item: dict, book: dict, spec: Spec, *, relation_asked: bool = False
+    item: dict, book: dict, spec: Spec
 ) -> tuple[str, Any, list[dict]] | None:
     """카드 한 장의 (한 줄 이유, 긴 이유, 근거). 한 줄 이유를 못 만들면 None(카드에서 뺀다).
 
-    소개글이 있으면 모델이 소개로 쓴 이유를 쓴다. 그래프에서 온 책이면 관계 사실을 근거 맨 앞에 두고, 모델 글이
-    목록으로 알 수 없는 것("많이 읽은")을 말하면 관계 사실 문장으로 바꾼다. 소개글이 없으면 모델 글을 쓰지 않는다
-    (#86): 그래프 책은 관계 사실, 떠올린 책은 확인된 칸(저자·연도·분류), 제목·저자로 찾은 책은 "찾으신 …"이다.
+    소개글이 있으면 모델이 소개로 쓴 이유를 쓴다. 소개글이 없으면 모델 글을 쓰지 않는다(#86): 제목·저자로 찾은 책은
+    "찾으신 …", 그 밖의 책은 확인된 칸(저자·연도·분류)이다.
 
-    사용자가 기준 책과의 관계("이 책 읽은 사람들은 또 뭐 읽었어?")를 물었으면(relation_asked) 그래프 책의 한 줄 이유는
-    소개글이 있어도 관계 사실이다. 그 물음의 답이 관계다.
+    그래프에서 온 책(함께 읽은 책·마니아 추천)은 관계 사실을 근거 칸 맨 앞에 둔다. 한 줄 이유에는 관계를 쓰지 않는다 —
+    기준 책 제목만 들어가는 틀 문장이라 같은 기준 책에서 온 카드 세 장이 같은 이유로 도배됐다(11/11 사용자). 출처는
+    말풍선 끝 한 문장(picking.source_note)이 말한다. 모델이 목록으로 알 수 없는 것("많이 읽은")을 말하거나 출처
+    꼬리표("마니아 추천")를 옮겨 적은 한 줄 이유는 확인된 칸으로 바꾼다.
     """
-    source = _graph_source(book)
+    source = picking.graph_source(book)
     if _has_description(book):
         reason_short = item.get("reason_short")
         reason_long = _unless_copied(item.get("reason_long"), book)
@@ -2181,16 +2173,16 @@ def _lane_reasons(
         )
         if source is not None:
             if (
-                relation_asked
-                or not isinstance(reason_short, str)
+                not isinstance(reason_short, str)
                 or picking.overclaims(reason_short)
+                or picking.names_source(reason_short)
             ):
-                reason_short = picking.relation_reason(*source)
+                reason_short = picking.confirmed_reason(book)
             if isinstance(reason_long, str) and picking.overclaims(reason_long):
                 reason_long = None
             basis = [picking.relation_basis(*source), *basis][:3]
     elif source is not None:
-        reason_short = picking.relation_reason(*source)
+        reason_short = picking.confirmed_reason(book)
         reason_long, basis = None, [picking.relation_basis(*source)]
     elif spec.intent == "exact":
         reason_short, reason_long, basis = _no_description_reason(book), None, []
@@ -2229,6 +2221,16 @@ def _lane_reply(
         cleaned = picking.without_overclaims(cleaned, co_titles)
     if cleaned is not None:
         cleaned = voice.without_vague_question(cleaned)
+    if cleaned is not None and picking.source_note(picked) is not None:
+        # 출처는 코드가 말풍선 끝에 붙인다. 모델이 따로 말한 문장은 뺀다 — 같은 말이 두 번 나가지 않게
+        cleaned = (
+            " ".join(
+                sentence
+                for sentence in picking.sentences(cleaned)
+                if not picking.names_source(sentence)
+            )
+            or None
+        )
     return cleaned
 
 
@@ -2263,12 +2265,7 @@ def _lane_cards(
         author = editions.author_key(book.get("author"))
         if one_per_author and author and author in authors:
             continue
-        reasons = _lane_reasons(
-            item,
-            book,
-            turn.spec,
-            relation_asked=turn.anchor is not None and turn.plan.relation is not None,
-        )
+        reasons = _lane_reasons(item, book, turn.spec)
         if reasons is None:
             continue
         reason_short, reason_long, basis = reasons
@@ -2290,6 +2287,12 @@ def _lane_cards(
         )
     proposed = picking.proposal_options(picked)
     return cards, _lane_reply(decision.reply, picked, proposed), proposed
+
+
+def _picked_books(cards: list[dict], pool: list[dict]) -> list[dict]:
+    """카드에 오른 책을 후보 목록에서 카드 순서대로 찾는다."""
+    by_isbn = {b.get("isbn"): b for b in pool}
+    return [by_isbn[c["isbn"]] for c in cards if c.get("isbn") in by_isbn]
 
 
 def _fallback_pool(pool: list[dict]) -> list[dict]:
@@ -2332,7 +2335,8 @@ async def _pick_from_lanes(
             or "",
         )
     cards, reply, proposed = _lane_cards(decision, turn)
-    return CardResult(cards, reply, False, tuple(proposed)), None
+    note = picking.source_note(_picked_books(cards, turn.pool))
+    return CardResult(cards, reply, False, tuple(proposed), note), None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
@@ -2579,17 +2583,17 @@ def _split_turn_question(reply: str) -> tuple[str, str | None]:
     return " ".join(parts[:-1]), parts[-1]
 
 
-def _fit_reply(reply: str) -> str:
+def _fit_reply(reply: str, max_chars: int = _REPLY_MAX_CHARS) -> str:
     """명세의 reply 최대 200자를 지킨다. 넘으면 뒷 문장부터 덜어 내고, 한 문장만으로도 넘으면 자른다."""
-    if len(reply) <= _REPLY_MAX_CHARS:
+    if len(reply) <= max_chars:
         return reply
     sentences = re.split(r"(?<=[.!?])\s+", reply.strip())
-    while len(sentences) > 1 and len(" ".join(sentences)) > _REPLY_MAX_CHARS:
+    while len(sentences) > 1 and len(" ".join(sentences)) > max_chars:
         sentences = sentences[:-1]
     fitted = " ".join(sentences)
-    if len(fitted) <= _REPLY_MAX_CHARS:
+    if len(fitted) <= max_chars:
         return fitted
-    return fitted[: _REPLY_MAX_CHARS - 1] + "…"
+    return fitted[: max_chars - 1] + "…"
 
 
 # 넓은 첫 요청에 한 번 묻기(#530, app/chat/asking.py). 대화의 첫 요청에서만 묻는다. 그 뒤로도 물으면 설문지가 된다.
@@ -3080,6 +3084,14 @@ async def _recommend(
         # 카드 턴의 질문과 답 보기는 카드 아래(followup)에 둔다(#652). 빠진 정보를 묻는 질문(slot_question)이 있으면
         # 그것을 묻는다 — 카드 프롬프트는 이때 묻지 말라고 한다
         reply, turn_question = _split_turn_question(reply)
+        if result.note:
+            # 출처 문장은 자르지 않는다. 모델 말을 그만큼 덜어 낸다. 모델 말이 없으면 "골라봤어요." 대신 그 문장만 낸다
+            room = _REPLY_MAX_CHARS - len(result.note) - 1
+            reply = (
+                f"{_fit_reply(reply, room)} {result.note}".strip()
+                if llm_reply
+                else result.note
+            )
         followup = option_lines.with_options(
             slot_question or turn_question, result.options, asking.FOLLOWUP_MAX_CHARS
         )

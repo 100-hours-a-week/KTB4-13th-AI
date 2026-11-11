@@ -243,7 +243,10 @@ def test_보여_준_책에서_이어_새_조건을_말하면_그_책의_함께_�
     assert card["match_basis"][0]["label"] == "함께 읽은 책"
     assert "도서관 정보나루" in card["match_basis"][0]["detail"]
     # 두 갈래 제안은 답 보기로 나가고(#652), 같은 이웃 책을 짚은 모델 문장은 말풍선에서 빠진다
-    assert data["reply"] == "반도체 산업을 넓게 보는 책이에요."
+    assert (
+        data["reply"]
+        == "반도체 산업을 넓게 보는 책이에요. 『AI 지도책』을 읽은 분들이 함께 읽은 책으로 골랐어요."
+    )
     assert "• 『칩 워』 함께 읽은 책 보여줘" in data["followup"]
 
 
@@ -271,14 +274,15 @@ def test_소개글_없는_그래프_책은_관계_사실을_이유로_쓰고_많
     data = _post("반도체 산업이 궁금해")
 
     [card] = data["cards"]
-    assert (
-        card["reason_short"]
-        == "『AI 지도책』을 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루)."
-    )
+    # 관계는 한 줄 이유가 아니라 말풍선 끝 한 문장과 근거 칸이 말한다(11/11 — 카드마다 같은 문장으로 도배됐다)
+    assert card["reason_short"] == "크리스 밀러의 2023년 경제학 책이에요."
     assert card["reason_long"] is None
     assert [b["label"] for b in card["match_basis"]] == ["함께 읽은 책"]
     # 목록으로 알 수 없는 말("많이 읽은")은 빠지고, 두 갈래 제안은 코드가 카드 아래 답 보기로 단다(#652)
-    assert data["reply"] == "반도체를 넓게 볼 수 있어요."
+    assert (
+        data["reply"]
+        == "반도체를 넓게 볼 수 있어요. 『AI 지도책』을 읽은 분들이 함께 읽은 책으로 골랐어요."
+    )
     assert data["followup"] == (
         "• 『칩 워』 함께 읽은 책 보여줘\n• 『칩 워』와 비슷한 책 더 보여줘"
     )
@@ -306,10 +310,8 @@ def test_함께_읽은_책을_물으면_검색하지_않고_그_목록에서만_
     assert "AI 2041" not in listing
     assert "함께 읽은 책에서 고른다" in prompts[0]
     assert [c["title"] for c in data["cards"]] == ["칩 워"]
-    # 관계를 물었으니 소개글이 있어도 한 줄 이유는 관계 사실이다
-    assert data["cards"][0]["reason_short"].startswith(
-        "『AI 지도책』을 읽은 사람들이 함께 읽은 책"
-    )
+    # 관계를 물은 답은 말풍선 끝 문장이 말한다. 모델이 쓴 "함께 읽은 책이에요."는 겹쳐서 빠진다
+    assert data["reply"] == "『AI 지도책』을 읽은 분들이 함께 읽은 책으로 골랐어요."
 
 
 def test_모델이_기준_책을_못_짚어도_카드가_한_장이면_지시어로_채운다(
@@ -462,7 +464,10 @@ def test_카드_턴_말풍선_끝_질문과_두_갈래_제안은_카드_아래�
 
     data = _post("반도체 산업이 궁금해")
 
-    assert data["reply"] == "반도체 산업을 넓게 보는 책이에요."
+    assert (
+        data["reply"]
+        == "반도체 산업을 넓게 보는 책이에요. 『AI 지도책』을 읽은 분들이 함께 읽은 책으로 골랐어요."
+    )
     assert data["followup"] == (
         "역사 쪽이 좋으세요, 기술 쪽이 좋으세요?\n\n"
         "• 『칩 워』 함께 읽은 책 보여줘\n• 『칩 워』와 비슷한 책 더 보여줘"
@@ -710,52 +715,42 @@ def test_같은_책이_여러_갈래에서_오면_꼬리표를_합친다() -> No
     assert merged[0]["sources"] == [("search", None), ("co", "AI 지도책")]
 
 
+def _from(title: str, *sources: tuple[str, str]) -> dict:
+    return {"title": title, "sources": list(sources) or [("search", None)]}
+
+
 @pytest.mark.parametrize(
-    ("kind", "anchor", "reason"),
+    ("picked", "note"),
     [
         (
-            "co",
-            "AI 지도책",
-            "『AI 지도책』을 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
+            [
+                _from("칩 워", ("co", "AI 지도책")),
+                _from("AI 2041", ("co", "AI 지도책")),
+            ],
+            "『AI 지도책』을 읽은 분들이 함께 읽은 책으로 골랐어요.",
         ),
+        # 숫자로 끝나면 읽는 소리로: 1984(천구백팔십사) → 를
         (
-            "co",
-            "데미안",
-            "『데미안』을 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
+            [_from("동물농장", ("mania", "1984"))],
+            "『1984』를 좋아하는 분께 권하는 책으로 골랐어요.",
         ),
+        # 일부만 그 목록에서 왔으면 그 책을 짚는다
         (
-            "co",
-            "파이썬",
-            "『파이썬』을 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
+            [_from("반도체 입문"), _from("이방인", ("mania", "데미안"))],
+            "『이방인』은 『데미안』을 좋아하는 분께 권하는 책이에요.",
         ),
-        (
-            "co",
-            "코스모스",
-            "『코스모스』를 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
-        ),
-        # 숫자로 끝나면 읽는 소리로: 2041(이천사십일) → 을, 1984(천구백팔십사) → 를
-        (
-            "co",
-            "AI 2041",
-            "『AI 2041』을 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
-        ),
-        (
-            "co",
-            "1984",
-            "『1984』를 읽은 사람들이 함께 읽은 책이에요(도서관 정보나루).",
-        ),
-        ("mania", "데미안", "『데미안』의 정보나루 마니아 추천 목록에 있는 책이에요."),
+        ([_from("반도체 입문")], None),
     ],
 )
-def test_관계_이유는_받침에_맞는_조사를_쓴다(
-    kind: str, anchor: str, reason: str
+def test_출처_문장은_카드가_어느_목록에서_왔는지_한_번_말한다(
+    picked: list[dict], note: str | None
 ) -> None:
-    assert picking.relation_reason(kind, anchor) == reason
+    assert picking.source_note(picked) == note
 
 
-def test_관계_이유는_기준_책_제목이_길어도_80자_안이다() -> None:
-    for kind in ("co", "mania"):
-        assert len(picking.relation_reason(kind, "아주 " * 60 + "긴 제목")) <= 80
+def test_출처_문장은_기준_책_제목이_길어도_짧다() -> None:
+    note = picking.source_note([_from("칩 워", ("co", "아주 " * 60 + "긴 제목"))])
+    assert note is not None and len(note) <= 80
 
 
 def test_판단_답은_쓸_수_없는_갈래면_카드로_본다() -> None:
@@ -879,9 +874,9 @@ def test_비슷한_책을_더_원하면_기준_책_목록을_검색보다_앞에
     assert listing.index("AI 2041") < listing.index("반도체 입문")
     # 비슷한 책은 마니아 목록에서만 데려온다
     assert "칩 워" not in listing
-    assert (
-        data["cards"][0]["reason_short"]
-        == "『AI 지도책』의 정보나루 마니아 추천 목록에 있는 책이에요."
+    assert data["cards"][0]["reason_short"] == "리카이푸의 2023년 경제학 책이에요."
+    assert data["reply"] == (
+        "같은 분야 책이에요. 『AI 지도책』을 좋아하는 분께 권하는 책으로 골랐어요."
     )
 
 
@@ -1474,6 +1469,90 @@ def test_SSE면_판단_호출의_말풍선을_먼저_보내고_done_에_카드�
     done = events[1][1]["data"]
     assert events[0][1]["text"] == done["reply"]
     assert [c["title"] for c in done["cards"]] == ["반도체 입문"]
+
+
+# --- 11/11 사용자: 마니아·함께 읽은 책 문장으로 한 줄 이유가 도배됐다 ------------------------------
+
+
+def _graph_book(book_id: int, title: str, author: str, description: str = "") -> dict:
+    book = _row(book_id, f"97900000009{book_id:02d}", title, author, description)
+    book["sources"] = [("mania", "데미안")]
+    return book
+
+
+def test_같은_기준_책에서_온_카드는_한_줄_이유가_다르다() -> None:
+    spec = chat.Spec.model_validate(SPEC)
+    books = [
+        _graph_book(1, "죄와 벌", "도스토옙스키"),
+        _graph_book(2, "이방인", "알베르 카뮈"),
+        _graph_book(3, "싯다르타", "헤르만 헤세"),
+    ]
+
+    reasons = [chat._lane_reasons({}, b, spec) for b in books]
+
+    assert [r[0] for r in reasons] == [
+        "도스토옙스키의 2023년 경제학 책이에요.",
+        "알베르 카뮈의 2023년 경제학 책이에요.",
+        "헤르만 헤세의 2023년 경제학 책이에요.",
+    ]
+    # 관계는 카드마다 근거 칸에 남는다
+    assert all(r[2][0]["label"] == "마니아 추천" for r in reasons)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "『데미안』 마니아 추천 책이에요.",
+        "『데미안』을 읽은 사람들이 함께 읽은 책이에요.",
+    ],
+)
+def test_모델이_출처_꼬리표를_한_줄_이유로_옮기면_바꾼다(written: str) -> None:
+    spec = chat.Spec.model_validate(SPEC)
+    book = _graph_book(2, "이방인", "알베르 카뮈", "부조리한 살인 사건을 다룬 소설.")
+
+    short = chat._lane_reasons({"reason_short": written}, book, spec)[0]
+
+    assert short == "알베르 카뮈의 2023년 경제학 책이에요."
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "가족이 함께 읽기 좋은 그림책이에요.",
+        "아이와 함께 읽을 수 있는 동화예요.",
+        "부모와 함께 읽으면 좋은 책이에요.",
+    ],
+)
+def test_함께_읽기를_권하는_말은_출처_꼬리표가_아니다(written: str) -> None:
+    # 과거형("함께 읽은")만 출처로 본다. 넓게 잡으면 좋은 이유가 저자·연도 문장으로 바뀐다(#661 리뷰)
+    spec = chat.Spec.model_validate(SPEC)
+    book = _graph_book(2, "이방인", "알베르 카뮈", "부조리한 살인 사건을 다룬 소설.")
+
+    assert not picking.names_source(written)
+    assert chat._lane_reasons({"reason_short": written}, book, spec)[0] == written
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "함께 대출된 책이에요.",
+        "같이 빌린 사람이 많은 책이에요.",
+        "정보나루 추천 책이에요.",
+    ],
+)
+def test_출처를_말하는_다른_꼴도_꼬리표로_본다(written: str) -> None:
+    assert picking.names_source(written)
+
+
+def test_소개로_쓴_한_줄_이유는_그래프_책이어도_그대로_쓴다() -> None:
+    spec = chat.Spec.model_validate(SPEC)
+    book = _graph_book(2, "이방인", "알베르 카뮈", "부조리한 살인 사건을 다룬 소설.")
+
+    short = chat._lane_reasons(
+        {"reason_short": "부조리한 살인 사건을 따라가요."}, book, spec
+    )[0]
+
+    assert short == "부조리한 살인 사건을 따라가요."
 
 
 # 마니아 목록 없는 기준 책의 "비슷한 책 더"(#654). 그래프의 아몬드는 함께 대출 줄만 있고 마니아 줄이 없다
