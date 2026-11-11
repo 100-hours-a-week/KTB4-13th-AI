@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.chat import options
+from app.chat import options, reasons
 from app.chat.lanes import display_title
 from app.core import voice
 
@@ -297,7 +297,8 @@ JUDGE_PROMPT = ChatPromptTemplate.from_template(
     "cards 를 고르면:\n"
     "반드시 한국어로만 답하라. book_id 는 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. cards 에 적은 차례가 "
     "화면의 1번, 2번, 3번이다.\n"
-    "reason_short 는 80자 이내 한 줄 이유, reason_long 은 사용자가 찾은 것과 이 책 소개의 어떤 점이 맞는지 잇는 "
+    + reasons.SHORT_RULE
+    + "reason_long 은 사용자가 찾은 것과 이 책 소개의 어떤 점이 맞는지 잇는 "
     "2-4문장(최대 300자)이다. 책 소개 문장을 옮기거나 줄여 쓰지 마라. 근거는 그 책의 소개에 있는 것만 쓴다. "
     "match_basis 는 reason_short·reason_long 과 같은 근거를 label(예: 분위기, 장르, 가격)과 detail(그 근거의 구체적 "
     "내용) 짝으로 1~3개 적어라 — 새로운 근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
@@ -307,7 +308,7 @@ JUDGE_PROMPT = ChatPromptTemplate.from_template(
     + voice.RULES
     + "다음 JSON 형식으로만 답하라. action 을 맨 앞에 쓴다. 고른 action 에 쓰지 않는 칸은 넣지 마라: "
     '{{"action": "cards 또는 ask 또는 search_again", '
-    '"cards": [{{"book_id": 정수, "reason_short": "한 줄 이유", "reason_long": "긴 이유", '
+    '"cards": [{{"book_id": 정수, "reason_short": "다른 책과 갈리는 점(30자 이내)", "reason_long": "긴 이유", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}], '
     '"reply": "말풍선", "question": "ask 일 때 묻는 말", "options": ["ask 일 때 답 보기"], '
     '"missed": "search_again 일 때 놓친 조건", "query": "search_again 일 때 새 검색어"}}\n\n'
