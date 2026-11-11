@@ -159,6 +159,17 @@ def test_지목한_책이_없으면_실행하지_않는다() -> None:
     assert _code(_ctx(), {"source": "focused"}) == ToolErrorCode.NO_FOCUSED_BOOK
 
 
+def test_지목한_책이_없고_카드가_한_권뿐이면_그_카드다() -> None:
+    # 챗봇 화면의 "이거 주문해 줘"(11/10 dev)
+    ctx = _ctx(cards=[_card(A, 1)])
+
+    assert resolve(ctx, BookRef(source="focused")) == A
+
+
+def test_지목한_책이_없고_카드도_없으면_실행하지_않는다() -> None:
+    assert _code(_ctx(cards=[]), {"source": "focused"}) == ToolErrorCode.NO_FOCUSED_BOOK
+
+
 # --- 요청에서 만들기 ---
 
 
