@@ -91,8 +91,9 @@ class AgentRun:
     checkout: checkout_plan.Plan | None = None
     # 턴 시간이 다 되어 가서 도구를 그만 쓰고 답하게 했다(반복 상한 전에)
     out_of_time: bool = False
-    # 앞 턴에 담아 둔 책으로 주문 화면을 열었을 때(#678) 주문 화면에 올린 장바구니 줄과, 살 수 없어 뺀 줄
+    # 장바구니를 바꾸지 않고, 앞 턴에 담아 둔 책만으로 주문 화면을 연 턴의 그 줄들(#678). 이 턴의 답은 코드가 쓴다
     ordered_cart: list[CartLine] = field(default_factory=list)
+    # 주문하겠다고 짚었지만 지금 살 수 없어서 주문 화면에 넣지 않은 장바구니 줄(#678)
     unorderable: list[CartLine] = field(default_factory=list)
 
 
@@ -193,6 +194,9 @@ def _offered(
     """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만(#631), 책 정보·리뷰는 읽을 곳(info)이 있을 때만
     준다(#650). None 이면 전부다."""
     hidden: set[ToolName] = set()
+    # 주문 화면은 기능이 켜져 있을 때만 연다(#631, #664)
+    if not ctx.checkout_enabled:
+        hidden.add(ToolName.ORDER_OPEN)
     if finder is None:
         hidden.add(ToolName.BOOK_SEARCH)
     if info is None:
@@ -524,35 +528,30 @@ async def run_agent(
     final_text = _text(out["messages"][-1])
     actions: list[CartAction] = []
     plan: checkout_plan.Plan | None = None
-    ordered: list[CartLine] = []
-    left_out: list[CartLine] = []
-    if any(
-        call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
+    wrote = any(
+        (call.name in guard.WRITE_TOOLS and call.result.get("ok") is True)
+        or (call.name == ToolName.ORDER_OPEN and call.result.get("added"))
         for call in out["tool_calls"]
-    ):
+    )
+    ordered = checkout and ctx.logged_in and bool(ctx.order_isbns)
+    carried: list[CartLine] = []
+    unorderable: list[CartLine] = []
+    if wrote or ordered:
         end = await gateway.get_cart(ctx.user_id)
-        actions = diff_cart(start, end)
-        if checkout and ctx.logged_in and evidence.wants_order(ctx):
-            coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
-            plan = _plan(ctx, actions, end, coupon_ids)
-    elif checkout and ctx.logged_in and evidence.wants_order(ctx):
-        # 앞 턴에 담아 둔 책으로 주문(#678). FE 는 이 턴의 장바구니 변경에 set 으로 든 책만 주문 화면에 올리고, BE 는
-        # 변경이 없는 쇼핑 턴의 쿠폰·포인트를 버린다. 그래서 주문할 줄을 같은 수량으로 다시 set 한다. BE 는 같은 수량의
-        # 변경도 받아 실행 기록을 남긴다(기대 수량 = 지금 수량)
-        ordered, left_out = _cart_to_order(ctx, out["tool_calls"], start)
-        if ordered:
-            actions = [
-                CartAction("set", line.isbn, line.quantity)
-                for line in reversed(ordered)
-            ]
-            coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
-            plan = _plan(ctx, actions, ordered, coupon_ids)
+        actions = diff_cart(start, end) if wrote else []
+        # 주문하려는 말인지는 모델이 order.open 으로 정한다(#664). 모델이 부르지 않아도 담고 주문 낱말이 있으면 연다
+        if ordered or (
+            checkout and ctx.logged_in and wrote and evidence.wants_order(ctx)
+        ):
+            actions, carried, unorderable = _with_ordered(actions, end, ctx.order_isbns)
+            # 주문 화면에 올릴 책이 하나도 없으면(짚은 책이 모두 살 수 없는 책) 열지 않는다(#678)
+            if actions:
+                coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
+                plan = _plan(ctx, actions, end, coupon_ids)
     return AgentRun(
         final_text=final_text,
-        # "주문" 한 마디에 쇼핑이 아니라고 했어도 장바구니로 주문 화면을 열었으면 쇼핑 턴이다(#678)
         not_shopping=not out["tool_calls"]
-        and final_text.strip() == prompts.NOT_SHOPPING
-        and not ordered,
+        and final_text.strip() == prompts.NOT_SHOPPING,
         tool_calls=out["tool_calls"],
         iterations=out["iterations"],
         llm_calls=out["llm_calls"],
@@ -562,68 +561,9 @@ async def run_agent(
         actions=actions,
         checkout=plan,
         out_of_time=out["out_of_time"],
-        ordered_cart=ordered,
-        unorderable=left_out if ordered else [],
+        ordered_cart=carried if plan is not None and not wrote else [],
+        unorderable=unorderable,
     )
-
-
-def _cart_to_order(
-    ctx: TurnContext, calls: list[ToolCall], cart: list[CartLine]
-) -> tuple[list[CartLine], list[CartLine]]:
-    """쓰기가 성공하지 않은 주문 턴에 주문 화면에 올릴 장바구니 줄과, 장바구니 전체를 올릴 때 살 수 없어서 뺀 줄(#678).
-
-    - 사용자가 짚은 책이 이미 담겨 있었으면(ALREADY_IN_CART, "1번 주문해 줘") 그 책만. 장바구니의 다른 책은 말하지
-      않았으니 그중 살 수 없는 책도 알리지 않는다(#683 리뷰)
-    - 책을 짚지 않고 주문하겠다고만 했으면("이제 주문할게") 장바구니 전체. 이 턴에 장바구니 밖의 책을 말했다고 볼
-      호출이 있었으면 올리지 않는다(_looked_for_books)
-    살 수 없는 줄(판매 중지·재고 부족)은 올리지 않는다.
-    """
-    sellable = [line for line in cart if line.available and line.price is not None]
-    already = {
-        call.arguments.get("isbn")
-        for call in calls
-        if call.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
-    }
-    if already:
-        return [line for line in sellable if line.isbn in already], []
-    if evidence.orders_cart(ctx) and not _looked_for_books(
-        calls, cart, evidence.proposed_books(ctx)
-    ):
-        return sellable, [line for line in cart if line not in sellable]
-    return [], []
-
-
-def _looked_for_books(
-    calls: list[ToolCall], cart: list[CartLine], proposed: set[str]
-) -> bool:
-    """이 턴에 사용자가 장바구니가 아닌 어떤 책을 말했다고 볼 도구 호출이 있었나(막혔어도). 그러면 장바구니를 그대로
-    주문 화면에 올리지 않는다(#678).
-
-    - 책 찾기·조합 고르기·빼기를 불렀으면 그렇다
-    - 장바구니 밖의 책을 담으려 한 것은 직전 에이전트 말이 그 책을 제안했을 때만 센다("《데미안》을 담을까요?" →
-      "이제 주문할게"). 아니면 모델이 말을 잘못 읽은 것이다. 실제 모델(gpt-5.4-mini)이 "이제 주문할게"에 카드에
-      보이는 책(장바구니에 있는 책, 없는 책)을 담으려다 근거 부족으로 막히곤 했다(8번 중 3번)
-    - 이미 담긴 책을 다시 담으려 한 것은 세지 않는다. 수량을 다르게 바꾸려 한 것은 센다
-    """
-    held = {line.isbn: line.quantity for line in cart}
-    for call in calls:
-        if call.name in (
-            ToolName.BOOK_SEARCH,
-            ToolName.SELECTION_PICK,
-            ToolName.CART_REMOVE,
-        ):
-            return True
-        if call.name not in (ToolName.CART_ADD, ToolName.CART_UPDATE):
-            continue
-        isbn = call.arguments.get("isbn")
-        if isbn not in held:
-            if isbn in proposed:
-                return True
-            continue
-        quantity = call.arguments.get("quantity")
-        if call.name == ToolName.CART_UPDATE and quantity != held[isbn]:
-            return True
-    return False
 
 
 # 주문 턴에 카드·장바구니 책의 쿠폰 대상을 읽는 데 쓰는 최대 시간(초). 넘으면 그 책은 대상을 모르는 것으로 본다
@@ -666,6 +606,29 @@ async def _coupon_targets(
         if pid in details:
             targets[isbn] = details[pid].coupon_ids
     return targets
+
+
+def _with_ordered(
+    actions: list[CartAction], end: list[CartLine], ordered: list[str]
+) -> tuple[list[CartAction], list[CartLine], list[CartLine]]:
+    """주문할 책 중 이번 턴에 담지 않은 책(이미 장바구니에 있던 책)을 지금 수량 그대로 set 으로 붙인다(#664).
+
+    BE 는 이번 턴에 반영한 변경(actions)이 있어야 주문 화면 버튼과 checkout 을 넘기고, FE 는 그 반영 기록에 든 책을
+    주문 화면에 넣는다(BE#533). 지금 수량으로 다시 set 하면 장바구니는 그대로이고 그 책이 반영 기록에 들어가
+    주문 화면에 오른다. BE 를 고치지 않고 이미 담긴 책을 주문하게 하는 방법이다.
+
+    살 수 없는 줄(판매 중지·재고 부족)은 붙이지 않는다. 주문 화면에 올려도 결제할 수 없다(#678).
+    돌려주는 것: (붙인 뒤의 actions, 붙인 줄, 살 수 없어서 붙이지 않은 줄)
+    """
+    have = {action.isbn for action in actions if action.op == "set"}
+    lines = {line.isbn: line for line in end}
+    picked = [lines[isbn] for isbn in ordered if isbn not in have and isbn in lines]
+    carried = [line for line in picked if line.available and line.price is not None]
+    unorderable = [line for line in picked if line not in carried]
+    extra = [
+        CartAction(op="set", isbn=line.isbn, quantity=line.quantity) for line in carried
+    ]
+    return actions + extra, carried, unorderable
 
 
 def _plan(

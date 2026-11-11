@@ -23,6 +23,7 @@ from app.agent.checkout import Plan
 from app.agent.errors import ToolErrorCode
 from app.agent.graph import AgentRun
 from app.agent.prompts import NOT_SHOPPING
+from app.agent.reference import TurnContext
 from app.agent.schemas import (
     Action,
     AgentActData,
@@ -37,7 +38,7 @@ from app.agent.schemas import (
 )
 from app.agent.tools import UI_TARGETS
 from app.agent.view import label
-from app.gateway.commerce import CommerceErrorCode
+from app.gateway.commerce import CartLine, CommerceErrorCode
 
 # 반복을 다 쓰거나 LLM 이 빈 글로 끝났을 때, 지운 문장도 없을 때 쓰는 안내
 FALLBACK_REPLY = "요청을 끝까지 처리하지 못했어요. 다시 한 번 말씀해 주세요."
@@ -47,10 +48,11 @@ CART_SCREEN = "CART-001"
 ORDER_SCREEN = "ORDER-001"
 ORDER_LABEL = "주문 화면으로"
 COUPON_LATER = "쿠폰과 포인트는 주문 화면에서 적용돼요."
-# 주문해 달라는데 주문 화면으로 보낼 책이 없을 때. 장바구니에 담아 둔 책은 같은 수량으로 다시 담아 주문 화면을 연다(#678).
-# 그래도 보낼 책이 없으면(장바구니가 비었거나 살 수 없는 책뿐) 쇼핑이 아니라고 ③으로 넘기지 않고("주문" → 추천 카드,
-# 11/10 dev) 그렇다고 말한 뒤 장바구니로 보낸다
-ORDER_FROM_CART = "지금 주문 화면으로 보낼 수 있는 책이 장바구니에 없어요. 주문할 책을 말씀해 주시거나 장바구니를 확인해 주세요."
+# 주문해 달라는데 이번 턴에 주문 화면으로 보낼 책을 못 정했을 때(모델이 order.open 을 부르지 않았다). 쇼핑이 아니라고
+# ③으로 넘기면 엉뚱한 추천이 나오고("주문" → 추천 카드), 그대로 두면 "이미 담겨 있어서 그대로 뒀어요"로만 끝나 주문은
+# 어떻게 하는지 모른다(11/10 dev). 책을 짚어 다시 말하게 하고 장바구니로도 보낸다. 이미 장바구니에 있는 책도 order.open 이
+# 같은 수량으로 주문 화면에 올리므로(#664) "장바구니 책은 못 보낸다"고 말하지 않는다
+ORDER_NO_BOOK = "주문 화면으로 보낼 책을 정하지 못했어요. 주문할 책을 번호나 제목으로 말씀해 주시거나, 장바구니에서 바로 주문해 주세요."
 
 # 완료 표현. 말투를 하나씩 막는 목록이라 빠진 말이 있을 수 있다. 그래서 이 목록은 "LLM 이 완료를 말했나"를
 # 넓게 잡는 데만 쓰고, 사용자에게 가는 결과 문장은 이 목록과 상관없이 코드가 만든다(_outcomes).
@@ -418,6 +420,26 @@ def _picked(calls: list[ToolCall]) -> ToolCall | None:
     return None
 
 
+# 찾은 책으로 고른 조합을 확인 버튼으로 받지 못할 때 붙이는 안내(#664)
+PICK_SAY_TITLE = "담으시려면 담고 싶은 책 제목을 말씀해 주세요."
+
+
+def _known_to_be(ctx: TurnContext, isbn: str) -> bool:
+    """BE 가 이 턴의 요청으로 아는 책인가(카드, 장바구니, 지금 보는 책). BE 는 고른 조합(selection)의 책을 이 안에서만
+    찾고, 없으면 턴 전체를 E502 로 거절한다(BE CallAgentChatUseCase.validate, 11/11 dev). 찾은 책(book.search)은
+    BE 가 모른다."""
+    return (
+        any(card.isbn == isbn for card in ctx.cards)
+        or any(line.isbn == isbn for line in ctx.cart_snapshot or [])
+        or ctx.focused_isbn == isbn
+    )
+
+
+def _confirmable(ctx: TurnContext, picked: ToolCall) -> bool:
+    """고른 조합을 확인 버튼(selection)으로 보낼 수 있는가. 찾은 책이 섞여 있으면 BE 가 거절하므로 보내지 않는다."""
+    return all(_known_to_be(ctx, book["isbn"]) for book in picked.result["chosen"])
+
+
 # 사용자의 말로 책이 하나로 정해지지 않아 막힌 쓰기. 그 호출의 책은 모델이 고른 것이다
 _UNDECIDED = frozenset(
     {ToolErrorCode.REFERENCE_NOT_STATED.value, ToolErrorCode.AMBIGUOUS_BOOK.value}
@@ -472,14 +494,14 @@ def _wrote(calls: list[ToolCall]) -> bool:
     )
 
 
-def _selection(calls: list[ToolCall]) -> Selection | None:
+def _selection(calls: list[ToolCall], ctx: TurnContext) -> Selection | None:
     """코드가 고른 조합. 골라 담기를 하지 않았거나 고르지 못했으면 None.
 
     골라서 담으라고 맡겨 고른 책을 이미 담았으면(#631) 확인받을 조합이 아니다. BE 는 selection 이 있으면 actions 를
     보지 않고 담기 제안만 저장하므로 싣지 않는다.
     """
     picked = _picked(calls)
-    if picked is None or _wrote(calls):
+    if picked is None or _wrote(calls) or not _confirmable(ctx, picked):
         return None
     return Selection(
         goal="budget_pick",
@@ -513,14 +535,20 @@ def _touched_cart(call: ToolCall) -> bool:
     )
 
 
-def _buttons(calls: list[ToolCall], logged_in: bool, order: bool) -> list[Button]:
+def _buttons(calls: list[ToolCall], ctx: TurnContext, order: bool) -> list[Button]:
+    logged_in = ctx.logged_in
     buttons: list[Button] = []
     seen: set[str] = set()
 
     # AI 가 고른 조합은 담지 않고 이 버튼으로 확인받는다. 로그인하지 않았으면 담을 수 없으니 만들지 않는다.
     # 골라서 담으라고 맡겨 이미 담았으면 확인받지 않는다(#631)
     picked = _picked(calls)
-    if picked is not None and logged_in and not _wrote(calls):
+    if (
+        picked is not None
+        and logged_in
+        and not _wrote(calls)
+        and _confirmable(ctx, picked)
+    ):
         isbns = [book["isbn"] for book in picked.result["chosen"]]
         buttons.append(Button(label="담기", action="confirm_selection", isbns=isbns))
 
@@ -548,6 +576,21 @@ def _buttons(calls: list[ToolCall], logged_in: bool, order: bool) -> list[Button
 
 def _coupon_name(name: str) -> str:
     return name if "쿠폰" in name else f"{name} 쿠폰"
+
+
+# 앞 턴에 담아 둔 책으로 연 주문 화면(#678)에서 이름을 들어 말하는 책 수. 넘으면 "외 n종"으로 줄인다
+_ORDERED_NAMED = 3
+
+
+def _ordered_line(lines: list[CartLine]) -> str:
+    """장바구니에 담아 둔 책으로 주문 화면을 연 결과. 책과 수량은 장바구니 값이다."""
+    names = ", ".join(f"《{line.title}》" for line in lines[:_ORDERED_NAMED])
+    if len(lines) > _ORDERED_NAMED:
+        names += f" 외 {len(lines) - _ORDERED_NAMED}종"
+    copies = sum(line.quantity for line in lines)
+    # 한 권이면 "모두"를 붙이지 않는다("《한중록》 1권으로", #683 리뷰)
+    counted = f"{names} {copies}권" if len(lines) == 1 else f"{names}, 모두 {copies}권"
+    return f"장바구니에 담긴 {counted}으로 주문 화면을 열어 둘게요."
 
 
 def _checkout_line(plan: Plan) -> str:
@@ -591,7 +634,7 @@ def _cannot_order(run: AgentRun, *, words_only: bool = False) -> bool:
 def _order_from_cart_reply() -> AgentActData:
     """쇼핑이 아니라고 답했지만 주문하겠다는 말이었을 때의 응답. 장바구니로 보낸다."""
     return AgentActData(
-        reply=ORDER_FROM_CART,
+        reply=ORDER_NO_BOOK,
         not_shopping=False,
         actions=[],
         tool_calls=[],
@@ -601,28 +644,6 @@ def _order_from_cart_reply() -> AgentActData:
             Button(label=UI_TARGETS[CART_SCREEN], action="navigate", target=CART_SCREEN)
         ],
     )
-
-
-# 앞 턴에 담아 둔 책으로 연 주문 화면(#678)에서 이름을 들어 말하는 책 수. 넘으면 "외 n종"으로 줄인다
-_ORDERED_NAMED = 3
-
-
-def _ordered_line(run: AgentRun) -> str:
-    """장바구니에 담아 둔 책으로 주문 화면을 연 결과. 책과 수량은 요청의 장바구니 값이다."""
-    lines = run.ordered_cart
-    names = ", ".join(f"《{line.title}》" for line in lines[:_ORDERED_NAMED])
-    if len(lines) > _ORDERED_NAMED:
-        names += f" 외 {len(lines) - _ORDERED_NAMED}종"
-    copies = sum(line.quantity for line in lines)
-    # 한 권이면 "모두"를 붙이지 않는다("《한중록》 1권으로", #683 리뷰)
-    counted = f"{names} {copies}권" if len(lines) == 1 else f"{names}, 모두 {copies}권"
-    sentence = f"장바구니에 담긴 {counted}으로 주문 화면을 열어 둘게요."
-    for line in run.unorderable:
-        eun = _particle(line.title, "은", "는")
-        sentence += (
-            f" 《{line.title}》{eun} 지금 살 수 없어서 주문 화면에 넣지 않았어요."
-        )
-    return sentence
 
 
 def _checkout(plan: Plan | None) -> Checkout | None:
@@ -649,9 +670,20 @@ def finish(run: AgentRun) -> Finished:
     removed: list[str] = []
     flagged: set[int] = set()
     kept_lines: list[str] = []
+    picked = _picked(run.tool_calls)
+    # 찾은 책으로 고른 조합은 확인 버튼을 못 붙인다(#664). 모델이 "담기 버튼을 누르면"이라고 해도 버튼이 없다
+    no_button = (
+        picked is not None
+        and run.ctx.logged_in
+        and not _wrote(run.tool_calls)
+        and not _confirmable(run.ctx, picked)
+    )
     for line in _units(text):
         kept: list[str] = []
         for sentence in line:
+            if no_button and "버튼" in sentence:
+                removed.append("NO_PICK_BUTTON")
+                continue
             problem = _check(sentence, facts)
             if problem is None:
                 kept.append(sentence)
@@ -674,10 +706,18 @@ def finish(run: AgentRun) -> Finished:
     # 422 나 "처리하지 못했어요"가 나가지 않는다
     outcome_lines = _outcomes(run, facts.titles)
     if run.ordered_cart:
-        # 모델은 이 턴에 장바구니를 바꾸지 않았으므로 "결제는 할 수 없어요", "주문내역에서 확인해 주세요"처럼 주문
-        # 화면을 여는 이 턴과 어긋난 말을 썼을 수 있다. 결과는 코드가 말한다
-        outcome_lines.append(_ordered_line(run))
+        outcome_lines.append(_ordered_line(run.ordered_cart))
+    if run.ordered_cart or (run.unorderable and run.checkout is None):
+        # 장바구니를 바꾸지 않고 주문 화면만 연 턴(앞 턴에 담아 둔 책)이거나, 짚은 책이 모두 살 수 없어 열지 못한 턴이다
+        # (#678). 모델은 "주문 화면으로 넘겨드렸습니다. 주문내역에서 확인해 주세요", "장바구니에서 확인하실 수
+        # 있습니다"처럼 다른 화면을 가리키는 말을 덧붙이곤 했다(11/11 실제 모델 10번 중 7번). 이 턴에 모델이 더 말할
+        # 결과가 없으므로 결과는 코드가 말한다
         kept_lines = []
+    for line in run.unorderable:
+        eun = _particle(line.title, "은", "는")
+        outcome_lines.append(
+            f"《{line.title}》{eun} 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+        )
     if run.checkout is not None:
         outcome_lines.append(_checkout_line(run.checkout))
     elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):
@@ -687,7 +727,9 @@ def finish(run: AgentRun) -> Finished:
         c.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
         for c in run.tool_calls
     ):
-        outcome_lines.append(ORDER_FROM_CART)
+        outcome_lines.append(ORDER_NO_BOOK)
+    if no_button:
+        kept_lines.append(PICK_SAY_TITLE)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
     if not reply:
         if removed:
@@ -706,8 +748,8 @@ def finish(run: AgentRun) -> Finished:
         ],
         tool_calls=calls,
         resolved_reference=_resolved(run),
-        selection=_selection(calls),
-        buttons=_buttons(calls, run.ctx.logged_in, order=run.checkout is not None),
+        selection=_selection(calls, run.ctx),
+        buttons=_buttons(calls, run.ctx, order=run.checkout is not None),
         checkout=_checkout(run.checkout),
     )
     return Finished(data, removed)

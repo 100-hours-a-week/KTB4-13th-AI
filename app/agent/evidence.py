@@ -435,8 +435,13 @@ _MAX_AGREEMENT_CHARS = 30
 _CART_MENTION = re.compile(r"장바구니\s*(\d+)\s*번째")
 
 
-def _books_named(ctx: TurnContext, text: str) -> set[str]:
-    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+def _known_titles(ctx: TurnContext) -> dict[str, str]:
+    """제목을 아는 책(장바구니 줄과 조회한 카드)의 ISBN → 제목."""
+    return {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
+
+
+def _numbered_books(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 번호("카드 1번", "2번", "장바구니 1번째")로 짚은 책들."""
     text = normalize(text)
     named: set[str] = set()
     for match in _CART_MENTION.finditer(text):
@@ -447,8 +452,14 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     rest = _CART_MENTION.sub(" ", text)
     ranks = {int(m.group(1)) for m in _CARD_MENTION.finditer(rest)} | ordinals(rest)
     named |= {card.isbn for card in ctx.cards if card.rank in ranks}
-    spoken = _flat(text)
-    known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
+    return named
+
+
+def _books_named(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+    named = _numbered_books(ctx, text)
+    spoken = _flat(normalize(text))
+    known = _known_titles(ctx)
     # 번호로 짚은 책의 제목 안에 든 제목은 그 책을 말한 것이다. 권마다 ISBN 이 다른 시리즈처럼 카드 여러 장의 제목이
     # 같으면("카드 1번 《한강》을 담을까요?") 제목 일치로 다른 《한강》까지 세어 한 권을 짚은 말이 아니게 되고, "네"가
     # 근거가 못 되어 같은 질문만 되풀이했다(11/11 dev)
@@ -487,6 +498,8 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
     last = ctx.turns[-1].text
     named = _books_named(ctx, last)
     if len(named) >= 2 and isbn in named:
+        if _only_by_shared_title(ctx, named, last, isbn):
+            return False
         return _for_named_books(ctx, named, last, message)
     if named != {isbn}:
         return False
@@ -500,6 +513,27 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
         bool(_AGREE.match(message))
         and len(message) <= _MAX_AGREEMENT_CHARS
         and bool(_PROPOSAL.search(last))
+    )
+
+
+def _only_by_shared_title(
+    ctx: TurnContext, named: set[str], text: str, isbn: str
+) -> bool:
+    """이 책을 번호 없이 제목으로만 짚었고, 같이 짚힌 다른 책도 제목이 같은가.
+
+    "《한강》을 담을까요?"는 같은 제목 카드 여러 장을 다 짚은 말로 세어진다. 그 말에 대한 "네"는 여러 권 모두에 대한
+    동의가 아니라 어느 《한강》인지 모르는 말이다(#663). 여러 권 동의(_for_named_books)로 넘기면 같은 제목 카드를 모두
+    담았다.
+    """
+    if isbn in _numbered_books(ctx, text):
+        return False
+    known = _known_titles(ctx)
+    title = known.get(isbn)
+    if title is None:
+        return False
+    return any(
+        other != isbn and other in known and _flat(known[other]) == _flat(title)
+        for other in named
     )
 
 
@@ -774,9 +808,11 @@ _ADD = re.compile(
     r"담(?:아(?!\s*내|낸)|어|을|으|자|기|겠)|담고(?!\s*있)|넣|추가(?!로|적)"
 )
 # 주문하겠다는 말. 주문 화면을 연다(주문서를 만들거나 결제하지는 않는다). "주문 내역", "주문한 책", "주문했어?"는
-# 이미 한 주문을 묻는 말이라 들지 않는다
+# 이미 한 주문을 묻는 말이라 들지 않는다. "주문을 해주라고", "주문시켜줘", 말끝의 "~ 주문"도 주문이다(#664, 11/11 dev).
+# 주문 화면을 열지는 모델이 order.open 으로 정하고, 이 목록은 모델이 부르지 않았을 때의 보조다
 _ORDER = re.compile(
-    r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
+    r"(?:주문|결제|구매|구입)\s*(?:을|를|좀)?\s*(?:해|하고|할|하기|하려|하자|까지|부탁|시켜|진행)"
+    r"|(?:주문|결제|구매|구입)\s*[.!~]*$"
     r"|바로\s*(?:주문|구매|결제)|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)|살게|살래|사고\s*싶"
     # 말이 "주문"으로 끝나는 꼴("1번 주문"). 주문해 달라는 말을 줄인 것이다. "주문 내역", "주문했어?"는 끝이 아니다
     r"|(?:주문|구매|결제)\s*[.!~]*$"
@@ -820,8 +856,13 @@ def delegates_pick(ctx: TurnContext) -> bool:
     if ctx.message is None:
         return False
     message = normalize(ctx.message)
+    ordered = bool(_ORDER.search(message))
+    if ordered and _MONEY.search(message):
+        # "3만원내로 개발도서 주문": 금액을 말하고 주문하라면 고르기와 주문을 함께 맡긴 것이다(#664). 확인받을 조합으로
+        # 돌려보내면 찾은 책이 든 조합을 BE 가 받지 않아 턴이 실패했다(11/11 dev E502)
+        return True
     return bool(_CHOOSE.search(message)) and bool(
-        _ADD.search(message) or _BUY.search(message) or _ORDER.search(message)
+        _ADD.search(message) or _BUY.search(message) or ordered
     )
 
 
@@ -837,52 +878,6 @@ def orders_alone(ctx: TurnContext) -> bool:
     """주문·결제 낱말만으로 된 말인가("주문", "결제할게요"). "선물로 한 권 사고 싶은데 뭐가 좋을까요"처럼 주문 낱말이
     든 추천 요청은 들지 않는다."""
     return ctx.message is not None and bool(_ORDER_ALONE.match(normalize(ctx.message)))
-
-
-# 장바구니를 그대로 주문하겠다는 말(#678). _ORDER 에서 "사 줘", "살게"를 뺐다. 그 말은 보인 책 하나를 사겠다는 뜻일
-# 때가 많아서("그럼 살게") 장바구니 전체를 주문 화면에 올리면 안 된다
-_ORDER_WORD = re.compile(
-    r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
-    r"|바로\s*(?:주문|구매|결제)"
-)
-# 묻는 말. "주문할 때 쿠폰 써?", "결제하려면 어떻게 해", "주문할까?"는 주문하겠다는 말이 아니다
-_QUESTION = re.compile(r"\?|(?:까|나요|니|냐|는지)\s*[.!~]*$")
-# 장바구니를 그대로 주문하겠다는 말에 붙는 말. 이것과 주문 낱말을 지우고 낱말이 남으면 어떤 책을 말한 것이다
-# ("리눅스 책 바로 주문할게요", "1번 주문해 줘", "그거 결제해 줘")
-_ORDER_FILLER = re.compile(
-    r"(?:주문|결제|구매|구입)(?:을|를)?\s*(?:해|하고|할|하기|하려|하자|까지|부탁)[가-힣]*"
-    r"|(?:담아\s*둔|담아\s*놓은|담은|담긴|있는)\s*(?:거|것|책)(?:들)?(?:을|를|로|으로|도)?"
-    r"|장바구니(?:에|에서|의|를|에\s*있는)?"
-    r"|(?:쿠폰|포인트|할인)(?:도|이랑|랑|하고|을|를)?\s*(?:써서|쓰고|적용해서|적용하고|받아서)?"
-    r"|(?<![가-힣])(?:이제|그럼|그러면|그래서|자|바로|지금|이대로|그대로|일단|그냥|전부|모두|다|책|책들|"
-    r"네|넵|응|좋아|좋아요|오케이|ㅇㅋ|ㅇㅇ|요|줘|줘요|주세요|줄래|주라|감사합니다|고마워|고마워요|고맙습니다)(?![가-힣])"
-)
-_WORD_LEFT = re.compile(r"[0-9A-Za-z가-힣]")
-
-
-def proposed_books(ctx: TurnContext) -> set[str]:
-    """직전 에이전트 말이 짚어 제안한 책("카드 1번 《데미안》을 담을까요?"). 제안이 아니면 빈 집합(#678)."""
-    if not ctx.turns or ctx.turns[-1].role != "assistant":
-        return set()
-    text = ctx.turns[-1].text
-    return _books_named(ctx, text) if _PROPOSAL.search(text) else set()
-
-
-def orders_cart(ctx: TurnContext) -> bool:
-    """책을 가리키지 않고 주문하겠다고만 했는가("이제 주문할게", "장바구니에 있는 거 다 결제해 줘"). 그러면
-    장바구니에 담아 둔 책으로 주문 화면을 연다(#678).
-
-    묻는 말과, 어떤 책을 말한 말("1번 주문해 줘", "그거 주문할게", "리눅스 책 바로 주문할게요")은 아니다. 그런 말은
-    지금처럼 모델이 고른 도구(카드 담기, 책 찾기)를 따른다.
-    """
-    if ctx.message is None:
-        return False
-    if orders_alone(ctx):
-        return True  # "주문", "결제할게요"
-    message = normalize(ctx.message).strip()
-    if not _ORDER_WORD.search(message) or _QUESTION.search(message):
-        return False
-    return not _WORD_LEFT.search(_ORDER_FILLER.sub(" ", message))
 
 
 _EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
