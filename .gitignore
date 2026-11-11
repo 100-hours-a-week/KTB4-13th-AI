@@ -28,7 +28,8 @@ evals/search/results/
 # ③ 단계별 측정 원본·채점 중간 파일(evals/chat_stages). 모델 호출 기록이라 올리지 않는다
 evals/chat_stages/results/
 
-# data/ 의 다른 파일(정보나루 원본 usage.jsonl 등)은 올리지 않는다. ③ 그래프 파일과 출처 안내만 올린다(정보나루 공개 배포 허락, 11/10)
+# data/ 의 다른 파일(정보나루 원본 usage.jsonl 등)은 올리지 않는다. ③ 그래프·인기 책 파일과 출처 안내만 올린다(정보나루 공개 배포 허락, 11/10)
 data/*
 !data/reading_graph.json.gz
+!data/popular_books.json.gz
 !data/README.md

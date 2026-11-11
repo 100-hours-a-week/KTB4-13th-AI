@@ -43,6 +43,8 @@ COPY --from=builder --chown=app:app /app/hf /app/hf
 COPY app ./app
 # ③ 함께 대출·마니아 그래프(READING_GRAPH_PATH 기본값). 없으면 그 갈래 없이 돈다
 COPY data/reading_graph.json.gz ./data/reading_graph.json.gz
+# ③ 분야만 말한 요청의 많이 읽힌 책(POPULAR_BOOKS_PATH 기본값, #514). 없으면 검색으로 찾는다
+COPY data/popular_books.json.gz ./data/popular_books.json.gz
 COPY main.py ./main.py
 
 USER app

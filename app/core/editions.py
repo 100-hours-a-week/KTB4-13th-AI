@@ -6,6 +6,7 @@
 """
 
 import re
+import unicodedata
 
 # 역할 접두어는 콜론이 있을 때만, 접미어는 앞에 공백이 있을 때만 뗀다 — 안 그러면 이름 속 글자("글", "저")가
 # 같이 잘린다
@@ -21,6 +22,16 @@ _NON_WORD = re.compile(r"[\W_]+")
 # 소개글의 "웹툰", "만화로도 만들어진"도 넣지 않는다 — 원작 소설의 소개글에 흔하다(평가 DB 한국문학 "웹툰" 881권)
 _ADAPTED_AUTHOR = re.compile(r"각색|만화")
 _ADAPTED_TEXT = re.compile(r"그래픽\s?노블|만화로\s?(옮|만나|읽|그려|그린|보)")
+
+# 로마자 바로 뒤의 # 이나 ++ 는 제목의 일부다(C#·C++·F#). title_key 는 문장부호와 함께 지워서 "C# 프로그래밍"과
+# "C 프로그래밍"이 같은 키가 된다. "머신러닝+딥러닝"의 + 처럼 낱말 사이에 끼운 것은 표기마다 달라 보지 않는다
+_LANGUAGE_MARK = re.compile(r"[a-z](?:\+\+|#)")
+
+
+def language_marks(title: str | None) -> tuple[str, ...]:
+    """제목 속 "c#"·"c++" 같은 언어 이름 표시. 둘이 다르면 키가 같아도 다른 책이다."""
+    text = unicodedata.normalize("NFKC", title or "").replace("♯", "#").casefold()
+    return tuple(sorted(_LANGUAGE_MARK.findall(text)))
 
 
 def title_key(title: str | None) -> str:
