@@ -161,13 +161,15 @@ def _clients(settings: Settings) -> tuple[Any, Any]:
         # 그룹이 처음 붙을 때 남아 있는 메시지부터 받는다. BE 는 발행 확인으로 작업을 끝내므로, 늦게 붙은 소비자가
         # 앞 메시지를 건너뛰면 그 프로필은 다시 오지 않는다
         auto_offset_reset="earliest",
-        # 기본(1MB)이면 8MB 본문을 못 받는다
-        max_partition_fetch_bytes=limit + _HEADER_ROOM_BYTES,
+        # 받기 한도(max_partition_fetch_bytes)는 기본값이면 된다. 브로커가 한도보다 큰 메시지도 첫 하나는 돌려준다
+        # (로컬 브로커에서 3.6MB 본문을 기본값으로 받음, #670)
     )
     producer = AIOKafkaProducer(
         bootstrap_servers=servers,
         client_id="bookjeok-ai",
         acks="all",
+        # DLT 로 원본을 다시 보낸다. 발행 한도가 기본(1MB)이면 큰 원본은 MessageSizeTooLargeError 로 못 보내고, DLT 를
+        # 못 보내면 원본도 넘기지 않으니 그 파티션이 멈춘다(로컬 브로커에서 확인, #670)
         max_request_size=limit + _HEADER_ROOM_BYTES,
     )
     return consumer, producer
