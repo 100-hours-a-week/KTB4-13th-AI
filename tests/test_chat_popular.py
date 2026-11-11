@@ -496,6 +496,33 @@ def test_취향이_있으면_취향_가까운_순으로_다시_세운다(
         assert asyncio.run(chat._popular_order(_Conn(no_taste), pool, 1)) == pool
 
 
+def test_취향이_있어도_취향_가까운_책_안에서_매번_다르게_뽑는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Conn:
+        async def fetchrow(self, sql, user_id):
+            return {"centroid": "[0.1, 0.2]", "cold_start": False}
+
+    # 60권, 번호가 클수록 취향에 가깝다
+    async def _similarities(conn, book_ids, centroid):
+        return {book_id: book_id / 100 for book_id in book_ids}
+
+    monkeypatch.setattr(chat, "_fetch_similarities", _similarities)
+    pool = [_book(n) for n in range(1, 61)]
+    near = set(range(61 - popular.TASTE_POOL, 61))
+
+    picks = [
+        [c["book_id"] for c in asyncio.run(chat._popular_order(_Conn(), pool, 1))]
+        for _ in range(6)
+    ]
+
+    for ids in picks:
+        assert len(set(ids)) == chat.CANDIDATE_LIMIT
+        assert set(ids) <= near
+    # 새 대화마다 같은 10권이 아니다
+    assert len({tuple(sorted(ids)) for ids in picks}) > 1
+
+
 def test_취향을_모르면_많이_읽힌_순서에_기대어_카드_수만큼_뽑는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

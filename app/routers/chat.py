@@ -1372,9 +1372,10 @@ async def _popular_order(
 ) -> list[dict]:
     """많이 읽힌 순의 후보(최대 popular.FETCH_LIMIT 권)에서 카드 LLM 에 넘길 CANDIDATE_LIMIT 권을 고른다(#514).
 
-    취향 벡터가 있는 사용자는 취향 가까운 순으로 세운다. 취향이 같은 책끼리는 많이 읽힌 순서를 지키고(안정 정렬),
-    벡터가 없는 책은 뒤로 간다. 취향을 모르면 많이 읽힌 순서에 기대어 뽑는다(popular.sample) — 맨 위 10권을 그대로
-    주면 같은 분야를 물은 사람이 모두 같은 책을 받는다.
+    취향 벡터가 있는 사용자는 취향 가까운 순으로 세우고, 위 popular.TASTE_POOL 권 안에서 취향 순서에 기대어 뽑는다.
+    취향이 같은 책끼리는 많이 읽힌 순서를 지키고(안정 정렬), 벡터가 없는 책은 뒤로 간다. 취향을 모르면 많이 읽힌 순서에
+    기대어 뽑는다. 어느 쪽이든 맨 위 10권을 그대로 주면 같은 요청에 늘 같은 책이 나온다 — 모르는 사람은 모두가, 취향이
+    있는 사람은 새 대화마다.
     """
     row = await conn.fetchrow(
         "SELECT centroid::text AS centroid, cold_start FROM taste_profile WHERE user_id = $1",
@@ -1385,7 +1386,8 @@ async def _popular_order(
     similarities = await _fetch_similarities(
         conn, [c["book_id"] for c in pool], json.loads(row["centroid"])
     )
-    return sorted(pool, key=lambda c: -similarities.get(c["book_id"], -1.0))
+    by_taste = sorted(pool, key=lambda c: -similarities.get(c["book_id"], -1.0))
+    return popular.sample(by_taste[: popular.TASTE_POOL], CANDIDATE_LIMIT)
 
 
 async def get_candidates(
