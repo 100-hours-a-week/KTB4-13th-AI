@@ -1,6 +1,8 @@
 """BE → AI 반영(#640 6단계, #710) — BE MySQL 의 책·상품을 읽어 AI v_books·v_products 로 옮긴다.
 
-- BE 시각(DATETIME)은 UTC 다(BE 코드에 시간대 설정이 없고, CLOUD #3 에서 UTC 로 확인).
+- BE 시각(DATETIME)은 한국 시간이다. 반영 SQL(handoff/sync_catalog_to_commerce.sql)이 세션 시간대를 +09:00 으로
+  두고 찍고, 앱도 한국 시간으로 쓴다(11/11 개발 BE 의 주문 created_at 이 UTC 지금보다 뒤). DB 서버 시간대는 UTC 라
+  CLOUD #3 에는 UTC 로 적혔다. 옛 복제도 한국 시간으로 읽어 UTC 로 바꿨다(BE 13:34 → AI 04:34+00). AI 에는 UTC 로 둔다.
 - 재고는 BE 처럼 product_inventory 의 보유 − 예약(줄이 없으면 20)이다. products.stock_quantity 는 BE 가 V58 뒤로
   더 바꾸지 않는다.
 - 지운 책·상품은 deleted_at 으로 안다(BE V8 부터 상태 칸 대신 쓴다). AI 표에는 줄을 남기고 deleted_at 만 채운다
@@ -17,6 +19,7 @@ from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pymysql
@@ -26,6 +29,8 @@ import pymysql.cursors
 DEFAULT_ON_HAND = 20
 
 _ISBN13 = re.compile(r"[0-9]{13}")
+# BE 가 시각을 찍는 시간대(위 설명)
+BE_TZ = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -55,11 +60,13 @@ class Product:
     deleted_at: datetime | None
 
 
-def _utc(value: datetime | None) -> datetime | None:
-    """BE DATETIME(시간대 없음, UTC)을 aware 로."""
+def _from_be(value: datetime | None) -> datetime | None:
+    """BE DATETIME(시간대 없음, 한국 시간)을 UTC aware 로."""
     if value is None:
         return None
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=BE_TZ)
+    return value.astimezone(UTC)
 
 
 def _isbn13(value: str | None) -> str | None:
@@ -101,8 +108,8 @@ def to_book(row: dict[str, Any]) -> Book:
         description=row.get("description"),
         price=_won(row["discounted_price"]) if has_product else 0,
         in_stock=has_product and _available(row) > 0,
-        updated_at=_utc(row["updated_at"]),
-        deleted_at=_utc(row.get("deleted_at")),
+        updated_at=_from_be(row["updated_at"]),
+        deleted_at=_from_be(row.get("deleted_at")),
     )
 
 
@@ -112,8 +119,8 @@ def to_product(row: dict[str, Any]) -> Product:
         book_id=row["book_id"],
         discounted_price=row["discounted_price"],
         stock_quantity=_available(row),
-        updated_at=_utc(row["updated_at"]),
-        deleted_at=_utc(row.get("deleted_at")),
+        updated_at=_from_be(row["updated_at"]),
+        deleted_at=_from_be(row.get("deleted_at")),
     )
 
 
@@ -170,7 +177,10 @@ class BeSource:
     ) -> Iterator[list[dict]]:
         where = "" if since is None else f" WHERE {alias}.updated_at >= %s"
         query = f"{sql}{where} ORDER BY {alias}.updated_at, {alias}.id"
-        params = () if since is None else (since.astimezone(UTC).replace(tzinfo=None),)
+        # BE 칸은 한국 시간이라 시작 시각도 한국 시간으로 바꿔 넘긴다
+        params = (
+            () if since is None else (since.astimezone(BE_TZ).replace(tzinfo=None),)
+        )
         with self._conn.cursor(pymysql.cursors.SSDictCursor) as cursor:
             cursor.execute(query, params)
             while rows := cursor.fetchmany(size):
