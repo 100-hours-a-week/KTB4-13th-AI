@@ -1098,6 +1098,24 @@ def test_BE가_거절한_빼기를_약속한_말은_묻지_않고_지운다() ->
     assert finished.removed == ["ACTION_PROMISED"]
 
 
+def test_주문_화면을_연_턴의_담기_약속은_묻지_않고_지운다() -> None:
+    # order.open 이 책을 담고 주문 화면을 열었다(#664). "담아 드릴까요?"로 바꾸면 이미 담은 책을 다시 묻는다
+    opened = _call(
+        ToolName.ORDER_OPEN,
+        {"ok": True, "titles": ["책"], "added": [A]},
+        {"isbns": [A]},
+    )
+    finished = finish(
+        _run(
+            "《책》을 장바구니에 담아 드릴게요. 주문 화면에서 확인해 주세요.", [opened]
+        )
+    )
+
+    assert "드릴까요" not in finished.data.reply
+    assert "담아 드릴게요" not in finished.data.reply
+    assert finished.removed == ["ACTION_PROMISED"]
+
+
 def test_장바구니가_아닌_곳에서_빼겠다는_말은_그대로_둔다() -> None:
     # 묻는 말로 바꾸면 다음 "네"가 장바구니 빼기로 갈 수 있다(#684 리뷰)
     finished = finish(_run("그 책은 추천에서 뺄게요.", []))

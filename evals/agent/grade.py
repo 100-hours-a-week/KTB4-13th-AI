@@ -143,6 +143,9 @@ def _check_reply(case: dict, record: dict) -> list[str]:
     for wanted in expect.get("buttons_include", []):
         if not any(all(b.get(k) == v for k, v in wanted.items()) for b in buttons):
             problems.append(f"있어야 하는 버튼이 없음: {wanted}")
+    for unwanted in expect.get("buttons_exclude", []):
+        if any(all(b.get(k) == v for k, v in unwanted.items()) for b in buttons):
+            problems.append(f"있으면 안 되는 버튼: {unwanted}")
     if "checkout" in expect and _data(record).get("checkout") != expect["checkout"]:
         problems.append(
             f"주문 화면 쿠폰·포인트가 기대와 다름: {_data(record).get('checkout')}"

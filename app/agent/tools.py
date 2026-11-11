@@ -34,7 +34,7 @@ from app.agent.reviews import (
     ReviewSummarizer,
     ReviewSummaryError,
 )
-from app.agent.schemas import MAX_CONTEXT_CARDS, ToolCall, ToolName
+from app.agent.schemas import MAX_CART_LINES, MAX_CONTEXT_CARDS, ToolCall, ToolName
 from app.gateway.book_finder import BookFinder, FinderUnavailable
 from app.gateway.book_info import (
     BookInfo,
@@ -48,6 +48,7 @@ from app.gateway.commerce import (
     CommerceError,
     CommerceGateway,
     OfferMemory,
+    Restorable,
 )
 
 # book.search 가 한 번에 보여 주는 책 수. 많으면 LLM 이 읽을 것이 늘고 BE 상품 상세 호출도 는다
@@ -140,6 +141,21 @@ class CompareArgs(_Args):
     )
 
 
+class OrderArgs(_Args):
+    books: list[BookRef] = Field(
+        min_length=1,
+        max_length=MAX_CART_LINES,
+        description="주문할 책들. 같은 책은 한 번만 쓴다. 장바구니에 없으면 이 도구가 담는다",
+    )
+    quantity: int | None = Field(
+        default=None,
+        description=(
+            "책 한 권을 여러 권 주문하라고 했을 때만 그 권수('두 권 주문할게요'면 2). "
+            "말하지 않았으면 넣지 않는다(1권)"
+        ),
+    )
+
+
 # ui.guide 로 안내할 수 있는 화면(FE 화면 식별자 → 버튼 글자). 목록에 없는 화면은 받지 않는다
 UI_TARGETS: dict[str, str] = {
     "CART-001": "장바구니 보기",
@@ -169,6 +185,7 @@ ARG_MODELS: dict[ToolName, type[_Args]] = {
     ToolName.SELECTION_PICK: PickArgs,
     ToolName.BOOK_COMPARE: CompareArgs,
     ToolName.UI_GUIDE: UiGuideArgs,
+    ToolName.ORDER_OPEN: OrderArgs,
 }
 
 _Done = tuple[dict[str, Any], dict[str, Any]]  # (기록할 arguments, 결과)
@@ -388,7 +405,11 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
         blocked = await _unstated(ctx, gateway, args.book, isbn, verb)
         if blocked is not None:
             return arguments, blocked
-    if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
+    # 주문 화면 열기(order.open)가 담는 책은 모델이 주문하려는 말로 읽은 것이 담으라는 말이다(#664)
+    if (
+        not ctx.ordering
+        and (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None
+    ):
         return arguments, blocked
     # 담기는 "요청 수량으로 바꾸기"다(BE#284). 수량을 말하지 않은 "담아줘"로 이미 3권 담긴 책이 1권이 되지 않게,
     # 담기 전에 장바구니를 다시 읽어 확인한다. 사용자가 수량을 말했으면("2권 담아줘") 그 수량으로 바꾼다(#489).
@@ -837,6 +858,54 @@ async def _ui_guide(
     return {"target": args.target}, {"ok": True, "label": UI_TARGETS[args.target]}
 
 
+async def _order(ctx: TurnContext, gateway: CommerceGateway, args: OrderArgs) -> _Done:
+    """주문하겠다는 책을 짚는다(#664). 턴이 끝나면 graph 가 이 책들로 주문 화면을 연다.
+
+    주문하려는 말인지는 모델이 정한다. 낱말 목록(evidence.wants_order)만으로는 "주문을 해주라고", "주문시켜줘"를
+    놓쳐 담기만 하고 주문 화면이 열리지 않았다(11/11 dev). 주문 화면은 결제가 아니라 사용자가 확인하고 결제 버튼을
+    눌러야 주문된다.
+
+    장바구니에 없는 책은 여기서 담는다. 프롬프트와 도구 설명에 "먼저 cart_add 로 담는다"고 적어도 실제 모델이 담지
+    않고 이 도구만 불러 74번 중 12번 주문이 안 됐다(11/11 평가). 담기는 cart.add 와 같은 길이라 책의 근거 검사는
+    그대로다. 장바구니를 바꾸라는 말인지(ACTION_NOT_STATED)는 보지 않는다. 모델이 주문하려는 말로 읽은 것이 그
+    말이다("1번 결제창 띄워줘"). 하나라도 못 담으면 담은 것도 되돌리고, 그 이유(되물을 말 ask 포함)를 그대로 돌려준다.
+    """
+    if not ctx.logged_in:
+        return {}, _fail(ToolErrorCode.LOGIN_REQUIRED.value)
+    pairs = list({resolve(ctx, ref): ref for ref in args.books}.items())
+    isbns = [isbn for isbn, _ in pairs]
+    arguments = {"isbns": isbns}
+    cart = {line.isbn for line in await gateway.get_cart(ctx.user_id)}
+    point = gateway.checkpoint() if isinstance(gateway, Restorable) else None
+    changed = ctx.changed_cart
+    added: list[str] = []
+    ctx.ordering = True
+    try:
+        for isbn, ref in pairs:
+            if isbn in cart:
+                continue
+            # 권수는 책이 한 권일 때만 그 책의 수량이다. 여러 책이면 서로 다른 책의 수라서 한 권씩이다
+            quantity = args.quantity if len(pairs) == 1 else None
+            _, result = await _add(ctx, gateway, AddArgs(book=ref, quantity=quantity))
+            if result.get("ok") is not True:
+                if added and point is not None:
+                    gateway.restore(point)
+                    ctx.changed_cart = changed
+                return arguments, result
+            added.append(isbn)
+    finally:
+        ctx.ordering = False
+    for isbn in isbns:
+        if isbn not in ctx.order_isbns:
+            ctx.order_isbns.append(isbn)
+    titles = {line.isbn: line.title for line in await gateway.get_cart(ctx.user_id)}
+    return arguments, {
+        "ok": True,
+        "titles": [titles.get(isbn) for isbn in isbns],
+        "added": added,
+    }
+
+
 _HANDLERS: dict[ToolName, _Handler] = {
     ToolName.CART_VIEW: _view,
     ToolName.CART_ADD: _add,
@@ -845,6 +914,7 @@ _HANDLERS: dict[ToolName, _Handler] = {
     ToolName.BOOK_OFFER: _offer,
     ToolName.SELECTION_PICK: _pick,
     ToolName.UI_GUIDE: _ui_guide,
+    ToolName.ORDER_OPEN: _order,
 }
 
 

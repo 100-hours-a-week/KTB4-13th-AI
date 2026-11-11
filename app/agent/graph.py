@@ -190,6 +190,9 @@ def _offered(
     """LLM 에게 줄 도구. 책 찾기는 찾을 곳(finder)이 있을 때만(#631), 책 정보·리뷰는 읽을 곳(info)이 있을 때만
     준다(#650). None 이면 전부다."""
     hidden: set[ToolName] = set()
+    # 주문 화면은 기능이 켜져 있을 때만 연다(#631, #664)
+    if not ctx.checkout_enabled:
+        hidden.add(ToolName.ORDER_OPEN)
     if finder is None:
         hidden.add(ToolName.BOOK_SEARCH)
     if info is None:
@@ -521,13 +524,20 @@ async def run_agent(
     final_text = _text(out["messages"][-1])
     actions: list[CartAction] = []
     plan: checkout_plan.Plan | None = None
-    if any(
-        call.name in guard.WRITE_TOOLS and call.result.get("ok") is True
+    wrote = any(
+        (call.name in guard.WRITE_TOOLS and call.result.get("ok") is True)
+        or (call.name == ToolName.ORDER_OPEN and call.result.get("added"))
         for call in out["tool_calls"]
-    ):
+    )
+    ordered = checkout and ctx.logged_in and bool(ctx.order_isbns)
+    if wrote or ordered:
         end = await gateway.get_cart(ctx.user_id)
-        actions = diff_cart(start, end)
-        if checkout and ctx.logged_in and evidence.wants_order(ctx):
+        actions = diff_cart(start, end) if wrote else []
+        # 주문하려는 말인지는 모델이 order.open 으로 정한다(#664). 모델이 부르지 않아도 담고 주문 낱말이 있으면 연다
+        if ordered or (
+            checkout and ctx.logged_in and wrote and evidence.wants_order(ctx)
+        ):
+            actions = _with_ordered(actions, end, ctx.order_isbns)
             coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
             plan = _plan(ctx, actions, end, coupon_ids)
     return AgentRun(
@@ -586,6 +596,25 @@ async def _coupon_targets(
         if pid in details:
             targets[isbn] = details[pid].coupon_ids
     return targets
+
+
+def _with_ordered(
+    actions: list[CartAction], end: list[CartLine], ordered: list[str]
+) -> list[CartAction]:
+    """주문할 책 중 이번 턴에 담지 않은 책(이미 장바구니에 있던 책)을 지금 수량 그대로 set 으로 붙인다(#664).
+
+    BE 는 이번 턴에 반영한 변경(actions)이 있어야 주문 화면 버튼과 checkout 을 넘기고, FE 는 그 반영 기록에 든 책을
+    주문 화면에 넣는다(BE#533). 지금 수량으로 다시 set 하면 장바구니는 그대로이고 그 책이 반영 기록에 들어가
+    주문 화면에 오른다. BE 를 고치지 않고 이미 담긴 책을 주문하게 하는 방법이다.
+    """
+    have = {action.isbn for action in actions if action.op == "set"}
+    quantities = {line.isbn: line.quantity for line in end}
+    extra = [
+        CartAction(op="set", isbn=isbn, quantity=quantities[isbn])
+        for isbn in ordered
+        if isbn not in have and isbn in quantities
+    ]
+    return actions + extra
 
 
 def _plan(

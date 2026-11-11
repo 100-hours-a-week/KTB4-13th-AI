@@ -2028,6 +2028,1644 @@
         "cart": {},
         "checkout": null
       }
+    },
+    {
+      "id": "order-01",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 조사 낀 주문 말",
+      "checkout": true,
+      "request": {
+        "user_id": 9106641,
+        "conversation_id": "eval_order-01",
+        "message": "1번 주문을 해줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-01_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-02",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문시켜",
+      "checkout": true,
+      "request": {
+        "user_id": 9106642,
+        "conversation_id": "eval_order-02",
+        "message": "2번 주문시켜줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-02_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-03",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문 좀 해",
+      "checkout": true,
+      "request": {
+        "user_id": 9106643,
+        "conversation_id": "eval_order-03",
+        "message": "3번 주문 좀 해 줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-03_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-04",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 말끝의 주문",
+      "checkout": true,
+      "request": {
+        "user_id": 9106644,
+        "conversation_id": "eval_order-04",
+        "message": "1번 주문",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-04_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-05",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문 진행",
+      "checkout": true,
+      "request": {
+        "user_id": 9106645,
+        "conversation_id": "eval_order-05",
+        "message": "2번으로 주문 진행해줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-05_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-06",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 결제창",
+      "checkout": true,
+      "request": {
+        "user_id": 9106646,
+        "conversation_id": "eval_order-06",
+        "message": "1번 결제창 띄워줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-06_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-07",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 카드 밖 책 주문시켜",
+      "checkout": true,
+      "request": {
+        "user_id": 9106647,
+        "conversation_id": "eval_order-07",
+        "message": "리눅스 책 하나 주문시켜 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-07_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001056": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-08",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 카드 밖 책 말끝 주문",
+      "checkout": true,
+      "request": {
+        "user_id": 9106648,
+        "conversation_id": "eval_order-08",
+        "message": "네트워크 책 주문",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-08_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001063": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-09",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 살래",
+      "checkout": true,
+      "request": {
+        "user_id": 9106649,
+        "conversation_id": "eval_order-09",
+        "message": "2번 살래",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-09_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-10",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 구매 진행",
+      "checkout": true,
+      "request": {
+        "user_id": 9106650,
+        "conversation_id": "eval_order-10",
+        "message": "3번 구매 진행해 주세요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-10_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001025": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-11",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담은 뒤 주문을 해주라고(11/11 dev)",
+      "checkout": true,
+      "request": {
+        "user_id": 9106651,
+        "conversation_id": "eval_order-11",
+        "message": "주문을 해주라고",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-11_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      },
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ]
+    },
+    {
+      "id": "order-12",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담은 뒤 이제 주문",
+      "checkout": true,
+      "request": {
+        "user_id": 9106652,
+        "conversation_id": "eval_order-12",
+        "message": "이제 주문해 줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-12_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      },
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ]
+    },
+    {
+      "id": "order-13",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담긴 2권 그대로 주문",
+      "checkout": true,
+      "request": {
+        "user_id": 9106653,
+        "conversation_id": "eval_order-13",
+        "message": "장바구니에 있는 데이터베이스 책 주문할게요",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-13_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001018": 2
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-14",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 장바구니 책 제목으로 주문",
+      "checkout": true,
+      "request": {
+        "user_id": 9106654,
+        "conversation_id": "eval_order-14",
+        "message": "리눅스 명령어 사전 주문해 줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-14_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          },
+          {
+            "isbn": "9788900001056",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1,
+          "9788900001056": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-15",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 카드 1번이 이미 담김",
+      "checkout": true,
+      "request": {
+        "user_id": 9106655,
+        "conversation_id": "eval_order-15",
+        "message": "1번 주문해줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-15_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-16",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담긴 거 결제",
+      "checkout": true,
+      "request": {
+        "user_id": 9106656,
+        "conversation_id": "eval_order-16",
+        "message": "장바구니에 담긴 거 결제할게",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-16_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001063",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001063": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-17",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 대화의 책 사줘",
+      "checkout": true,
+      "request": {
+        "user_id": 9106657,
+        "conversation_id": "eval_order-17",
+        "message": "그거 사줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-17_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      },
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        }
+      ]
+    },
+    {
+      "id": "order-18",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담긴 알고리즘 책 주문 진행",
+      "checkout": true,
+      "request": {
+        "user_id": 9106658,
+        "conversation_id": "eval_order-18",
+        "message": "알고리즘 책 주문 진행해 주세요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-18_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001032",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001032": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-19",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담긴 3권 주문할래요",
+      "checkout": true,
+      "request": {
+        "user_id": 9106659,
+        "conversation_id": "eval_order-19",
+        "message": "소프트웨어 설계의 기본기 주문할래요",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-19_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001049",
+            "qty": 3
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001049": 3
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-20",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담을까요 다음 아니 주문하라고",
+      "checkout": true,
+      "request": {
+        "user_id": 9106660,
+        "conversation_id": "eval_order-20",
+        "message": "아니 주문하라고",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-20_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": {
+          "owned_coupon_id": null,
+          "use_point": 0
+        },
+        "buttons_include": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      },
+      "history": [
+        {
+          "role": "user",
+          "text": "1번 담아줘"
+        },
+        {
+          "role": "assistant",
+          "text": "《처음 만나는 파이썬》을 장바구니에 담았어요."
+        },
+        {
+          "role": "user",
+          "text": "주문해줘"
+        },
+        {
+          "role": "assistant",
+          "text": "장바구니 1번째 《처음 만나는 파이썬》을 담을까요?"
+        }
+      ]
+    },
+    {
+      "id": "order-21",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문 내역",
+      "checkout": true,
+      "request": {
+        "user_id": 9106661,
+        "conversation_id": "eval_order-21",
+        "message": "주문 내역 보여줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-21_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-22",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 배송 문의",
+      "checkout": true,
+      "request": {
+        "user_id": 9106662,
+        "conversation_id": "eval_order-22",
+        "message": "주문한 책 언제 와?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-22_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-23",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문했는지 묻기",
+      "checkout": true,
+      "request": {
+        "user_id": 9106663,
+        "conversation_id": "eval_order-23",
+        "message": "주문했어?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-23_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-24",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 담기만",
+      "checkout": true,
+      "request": {
+        "user_id": 9106664,
+        "conversation_id": "eval_order-24",
+        "message": "1번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-24_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-25",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 장바구니 보기",
+      "checkout": true,
+      "request": {
+        "user_id": 9106665,
+        "conversation_id": "eval_order-25",
+        "message": "장바구니 보여줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-25_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-26",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 값 묻기",
+      "checkout": true,
+      "request": {
+        "user_id": 9106666,
+        "conversation_id": "eval_order-26",
+        "message": "1번 얼마야?",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-26_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-27",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문은 나중에",
+      "checkout": true,
+      "request": {
+        "user_id": 9106667,
+        "conversation_id": "eval_order-27",
+        "message": "주문은 나중에 할게, 1번만 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-27_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-28",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 빼기",
+      "checkout": true,
+      "request": {
+        "user_id": 9106668,
+        "conversation_id": "eval_order-28",
+        "message": "데이터베이스 책 빼줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-28_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001018",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "executed",
+        "cart": {},
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-29",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 주문 취소",
+      "checkout": true,
+      "request": {
+        "user_id": 9106669,
+        "conversation_id": "eval_order-29",
+        "message": "주문 취소하고 싶어",
+        "context_cards": [
+          {
+            "isbn": "9788900001001",
+            "rank": 1,
+            "match_score": 92
+          },
+          {
+            "isbn": "9788900001018",
+            "rank": 2,
+            "match_score": 87
+          },
+          {
+            "isbn": "9788900001025",
+            "rank": 3,
+            "match_score": 81
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-29_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": [
+          {
+            "isbn": "9788900001001",
+            "qty": 1
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {
+          "9788900001001": 1
+        },
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-30",
+      "kind": "checkout",
+      "split": "heldout",
+      "about": "#664 찾은 책 고르기만",
+      "checkout": true,
+      "request": {
+        "user_id": 9106670,
+        "conversation_id": "eval_order-30",
+        "message": "3만원 안에서 개발 입문서 한 권 골라줘",
+        "context_cards": [],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_order-30_1",
+        "owned_coupons": [],
+        "point_balance": null
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "informed",
+        "cart": {},
+        "checkout": null,
+        "buttons_exclude": [
+          {
+            "action": "navigate",
+            "target": "ORDER-001"
+          }
+        ],
+        "forbidden_text": [
+          "버튼"
+        ]
+      }
     }
   ]
 }
