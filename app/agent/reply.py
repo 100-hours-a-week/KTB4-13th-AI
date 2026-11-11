@@ -83,6 +83,23 @@ _ORDER_CLAIM = re.compile(
 _NEGATED_ACTION = re.compile(
     r"(?<![가-힣])(못|안)\s*(담|넣|추가|빼|뺐|삭제|제거|지웠|바꿨|바꿔|변경|수정|줄였|늘렸|조정)[가-힣]*"
 )
+# 하지 않은 담기·빼기·수량 바꾸기를 앞으로 하겠다고 단정하는 말("장바구니 1번째 《한중록》을 빼드릴게요.")(#679).
+# 과거형("뺐어요")만 보면 이 말은 그대로 나가서, 사용자는 빠질 줄 알았는데 장바구니가 그대로였다(11/11 dev 시험).
+# 하지 않은 일이면 묻는 말로 바꾼다. 사용자가 "네"라고 하면 다음 턴에 그 책을 짚은 제안에 대한 동의로 처리된다.
+# "원하시면 담아 드릴게요"처럼 조건을 단 말은 이미 제안이라 그대로 둔다
+_PROMISES: dict[ToolName, re.Pattern[str]] = {
+    ToolName.CART_ADD: re.compile(
+        r"(담아|넣어)\s*드릴게요|(담아|넣어)\s*드리겠(?:습니다|어요)|(담을|넣을)게요"
+    ),
+    ToolName.CART_REMOVE: re.compile(
+        r"(빼)\s*드릴게요|(빼)\s*드리겠(?:습니다|어요)|(뺄)게요"
+    ),
+    ToolName.CART_UPDATE: re.compile(
+        r"(바꿔)\s*드릴게요|(바꿔)\s*드리겠(?:습니다|어요)|(바꿀)게요"
+    ),
+}
+_CONDITION = re.compile(r"[가-힣]면(?:\s|,|$)")
+_END_MARK = re.compile(r"[.!~。]*\s*$")
 _MONEY = re.compile(r"(\d[\d,]*)\s*원")
 # "합계는 52,000원"처럼 합계 말 바로 뒤의 금액. 말과 금액 사이에 숫자가 끼면(총 2권, 52,000원) 합계 주장이
 # 아니다. 그 금액은 아래의 일반 금액 검사를 받는다. "총"은 숫자 바로 앞에서만 합계 말이다. 글자 하나라서
@@ -212,6 +229,70 @@ def _mask(sentence: str, titles: dict[str, str]) -> str:
     ):
         masked = masked.replace(title, _MASK)
     return masked
+
+
+def _ask_instead_of_promise(sentence: str, facts: _Facts) -> str | None:
+    """하지 않은 장바구니 변경을 하겠다고 단정한 문장이면 묻는 문장으로 바꿔 돌려준다. 아니면 None."""
+    if sentence.rstrip().endswith("?") or _CONDITION.search(sentence):
+        return None
+    for tool, pattern in _PROMISES.items():
+        if tool in facts.succeeded or not pattern.search(sentence):
+            continue
+
+        def _ask(match: re.Match[str]) -> str:
+            verb = next(g for g in match.groups() if g)
+            return (
+                f"{verb} 드릴까요"
+                if verb in ("담아", "넣어", "빼", "바꿔")
+                else f"{verb}까요"
+            )
+
+        return _END_MARK.sub("?", pattern.sub(_ask, sentence, count=1), count=1)
+    return None
+
+
+# 책을 번호로 짚은 말("카드 2번", "장바구니 1번째")
+_NAMED_NUMBER = re.compile(r"\d+\s*번")
+# 하지 않은 일을 했다고 쓴 문장을 묻는 말로 바꿀 때 쓰는 동사(#679)
+_CLAIM_QUESTIONS = {
+    ToolName.CART_ADD: "담을까요?",
+    ToolName.CART_REMOVE: "뺄까요?",
+    ToolName.CART_UPDATE: "바꿀까요?",
+}
+
+
+def _claim_question(sentence: str, facts: _Facts, calls: list[ToolCall]) -> str | None:
+    """도구를 부르지도 않고 장바구니를 바꿨다고 쓴 문장("《한중록》을 장바구니에서 뺐어요.")을 묻는 말("《한중록》을
+    장바구니에서 뺄까요?")로 바꾼다. 한 가지 일만 말했고 그 도구를 이 턴에 한 번도 안 불렀을 때만이다. 불렀다가
+    실패했으면 실패를 코드가 따로 말한다."""
+    if sentence.rstrip().endswith("?"):
+        return None
+    claimable = _NEGATED_ACTION.sub("", _mask(sentence, facts.titles))
+    if _ORDER_CLAIM.search(claimable):
+        return None
+    claimed = [tool for tool, p in _ACTION_CLAIMS.items() if p.search(claimable)]
+    if len(claimed) != 1 or any(call.name == claimed[0] for call in calls):
+        return None
+    match = _ACTION_CLAIMS[claimed[0]].search(sentence)
+    if match is None:  # 제목을 가리기 전에는 다른 곳에서 걸린다
+        return None
+    head = sentence[: match.start()].rstrip()
+    # 어느 책인지 짚은 문장만 묻는 말이 된다. "수량을 늘렸어요"를 "수량을 바꿀까요?"로 물으면 답할 수가 없다
+    if not (_BRACKETED_TITLE.search(head) or _NAMED_NUMBER.search(head)):
+        return None
+    return f"{head} {_CLAIM_QUESTIONS[claimed[0]]}"
+
+
+def _held_asks(calls: list[ToolCall]) -> list[str]:
+    """근거가 없어 막힌 쓰기에 코드가 만든 되묻기 문장("장바구니 1번째 《한중록》을 뺄까요?", #531)."""
+    asks = [
+        call.result["ask"]
+        for call in calls
+        if call.name in guard.WRITE_TOOLS
+        and call.result.get("ok") is False
+        and isinstance(call.result.get("ask"), str)
+    ]
+    return list(dict.fromkeys(asks))
 
 
 def _check(sentence: str, facts: _Facts) -> tuple[str, int | None] | None:
@@ -579,15 +660,25 @@ def finish(run: AgentRun) -> Finished:
     removed: list[str] = []
     flagged: set[int] = set()
     kept_lines: list[str] = []
+    claim_questions: list[str] = []
     for line in _units(text):
         kept: list[str] = []
         for sentence in line:
+            asked = _ask_instead_of_promise(sentence, facts)
+            if asked is not None:
+                removed.append("ACTION_PROMISED")
+                kept.append(asked)
+                continue
             problem = _check(sentence, facts)
             if problem is None:
                 kept.append(sentence)
                 continue
             reason, flag_at = problem
             removed.append(reason)
+            if reason == "ACTION_NOT_DONE" and (
+                question := _claim_question(sentence, facts, run.tool_calls)
+            ):
+                claim_questions.append(question)
             if flag_at is not None:
                 flagged.add(flag_at)
             if reason == "ACTION_NOT_DONE":
@@ -610,9 +701,16 @@ def finish(run: AgentRun) -> Finished:
         outcome_lines.append(COUPON_LATER)
     reply = "\n".join([" ".join(outcome_lines)] * bool(outcome_lines) + kept_lines)
     if not reply:
-        if removed:
+        # 모델이 막힌 쓰기를 "뺐어요"라고 써서 지웠더니 남는 말이 없다. 코드가 만든 되묻기가 있으면 그것으로 답한다.
+        # 422 는 BE 에서 오류 화면이 된다(11/11 dev 시험, #679)
+        # 되묻기가 없으면(모델이 도구를 부르지도 않고 "뺐어요"라고 썼으면) 그 문장을 묻는 말로 바꿔 답한다
+        asks = _held_asks(run.tool_calls) or claim_questions[:1]
+        if asks:
+            reply = " ".join(asks)
+        elif removed:
             raise GroundingFailed(removed)
-        reply = FALLBACK_REPLY
+        else:
+            reply = FALLBACK_REPLY
 
     calls = [
         c.model_copy(update={"grounded": False}) if i in flagged else c

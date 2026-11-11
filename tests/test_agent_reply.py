@@ -280,7 +280,7 @@ def test_한_문장에_두_가지를_했다고_하면_둘_다_성공해야_한�
         "추가하지 못했어요.",
         "담지 않았어요.",
         "로그인하셔야 담을 수 있어요.",
-        "담아 드릴게요.",
+        "원하시면 담아 드릴게요.",  # 조건을 단 말은 제안이다(#679)
         "장바구니에 담긴 책은 2권이에요.",
         "추가 배송비는 없어요.",
         "추가로 궁금한 점이 있으세요?",
@@ -1009,3 +1009,96 @@ def test_말하지_않은_번호의_책은_빠진다() -> None:
     run = _run_saying("1번 재고 있어?", "1번 재고가 있어요.", [_lookup(A, B)])
 
     assert finish(run).data.resolved_reference.isbns == [A]
+
+
+# --- 하지 않은 일을 약속하는 말과 막힌 쓰기의 되묻기 (#679) ---
+
+
+@pytest.mark.parametrize(
+    ("text", "asked"),
+    [
+        # 11/11 dev 시험의 실제 답: 빼기 도구를 부르지 않고 이렇게만 말해 장바구니가 그대로였다
+        (
+            "장바구니 1번째 《한중록》을 빼드릴게요.",
+            "장바구니 1번째 《한중록》을 빼 드릴까요?",
+        ),
+        ("카드 2번을 담아 드릴게요.", "카드 2번을 담아 드릴까요?"),
+        ("2권으로 바꿔 드리겠습니다.", "2권으로 바꿔 드릴까요?"),
+        ("그 책은 뺄게요", "그 책은 뺄까요?"),
+        ("바로 넣을게요!", "바로 넣을까요?"),
+    ],
+)
+def test_하지_않은_변경을_하겠다고_단정하면_묻는_말로_바꾼다(
+    text: str, asked: str
+) -> None:
+    finished = finish(_run(text, []))
+
+    assert finished.data.reply == asked
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_PROMISED"]
+
+
+def test_한_일을_하겠다고_말한_것은_바꾸지_않는다() -> None:
+    # 담기가 성공한 턴의 "담아 드릴게요"는 묻지 않는다. 결과는 코드가 따로 말한다
+    finished = finish(_run("담아 드릴게요.", [_add()]))
+
+    assert "드릴까요" not in finished.data.reply
+
+
+def _held_remove() -> ToolCall:
+    return _call(
+        ToolName.CART_REMOVE,
+        {
+            "ok": False,
+            "error": "REFERENCE_NOT_STATED",
+            "book": "장바구니 1번째 《한중록》",
+            "ask": "장바구니 1번째 《한중록》을 뺄까요?",
+        },
+        {"book": {"source": "cart", "n": 1}},
+    )
+
+
+def test_막힌_빼기를_뺐다고_써서_답이_비면_422_대신_코드의_되묻기로_답한다() -> None:
+    # 11/11 dev 시험: "조선시대 그 책은 빼줘"에 빼기가 근거 부족으로 막혔는데 모델이 "뺐어요"라고 써서 422 가 났다
+    finished = finish(_run("《한중록》을 장바구니에서 뺐어요.", [_held_remove()]))
+
+    assert finished.data.reply == "장바구니 1번째 《한중록》을 뺄까요?"
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_되묻기가_없는_쓰기에서_답이_비면_지금처럼_422다() -> None:
+    unasked = _call(
+        ToolName.CART_REMOVE, {"ok": False, "error": "REFERENCE_NOT_STATED"}
+    )
+
+    with pytest.raises(GroundingFailed):
+        finish(_run("뺐어요.", [unasked]))
+
+
+@pytest.mark.parametrize(
+    ("text", "asked"),
+    [
+        # 11/11 실제 모델: 빼기 도구를 부르지 않고 이렇게 써서 422 가 났다
+        (
+            "장바구니 1번째 《한중록》을 장바구니에서 뺐어요.",
+            "장바구니 1번째 《한중록》을 장바구니에서 뺄까요?",
+        ),
+        ("카드 2번을 장바구니에 담았어요.", "카드 2번을 장바구니에 담을까요?"),
+        ("《한중록》 수량을 2권으로 바꿨어요.", "《한중록》 수량을 2권으로 바꿀까요?"),
+    ],
+)
+def test_도구를_부르지_않고_바꿨다고_써서_답이_비면_그_문장을_묻는_말로_바꾼다(
+    text: str, asked: str
+) -> None:
+    finished = finish(_run(text, [_view()]))
+
+    assert finished.data.reply == asked
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_두_가지를_했다고_쓴_문장은_묻는_말로_바꾸지_않는다() -> None:
+    # 어느 것을 물을지 모른다. 지금처럼 422 다
+    with pytest.raises(GroundingFailed):
+        finish(_run("1번은 뺐고 2번은 담았어요.", []))
