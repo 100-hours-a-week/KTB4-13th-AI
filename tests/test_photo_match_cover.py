@@ -427,3 +427,20 @@ def test_판_표시는_숫자가_있어도_권_번호가_아니다(edition: str)
     )
 
     assert result.kind == "found"
+
+
+def test_C샵_표지를_C_책으로_확정하지_않는다() -> None:
+    # title_key 가 # 을 지워 "C# 프로그래밍 언어"와 "C 프로그래밍 언어"의 키가 같다(나의 도서관 QA 11/11)
+    other = _book("C 프로그래밍 언어", "강희훈", "출판사")
+
+    assert match.decide(_cover("C# 프로그래밍 언어"), [other]).kind == "none"
+
+
+def test_C샵_표지는_C샵_책을_찾는다() -> None:
+    c = _book("C 프로그래밍 언어", "강희훈", "출판사")
+    csharp = _book("C# 프로그래밍 언어", "앤더스 헤일스버그", "출판사")
+
+    result = match.decide(_cover("C# 프로그래밍 언어"), [c, csharp])
+
+    assert result.kind == "found"
+    assert result.books[0].book == csharp

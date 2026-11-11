@@ -173,16 +173,28 @@ def _near(cover_keys: set[str], catalog_keys: set[str]) -> bool:
     )
 
 
+def _marks_agree(text: BookText, title: str) -> bool:
+    """표지와 카탈로그 제목의 "C#"·"C++" 표시가 같은가. title_key 가 # 과 + 를 지워서 "C# 프로그래밍 언어"와
+    "C 프로그래밍 언어"의 키가 같아진다(나의 도서관 QA 11/11)."""
+    catalog_marks = {
+        editions.language_marks(t)
+        for t in (title, *(title.split(s, 1)[0] for s in _SUBTITLE_SEPARATORS))
+    }
+    cover = (text.title, f"{text.title} {text.subtitle or ''}")
+    return any(editions.language_marks(t) in catalog_marks for t in cover)
+
+
 def score(text: BookText, book: Book) -> Scored:
     cover_keys, catalog_keys = _cover_title_keys(text), _catalog_title_keys(book.title)
-    title_hit = bool(cover_keys & catalog_keys)
+    marks = _marks_agree(text, book.title)
+    title_hit = marks and bool(cover_keys & catalog_keys)
     return Scored(
         book=book,
         title_hit=title_hit,
         author_hit=_author_hit(text.authors, book.author),
         publisher_hit=_publisher_hit(text.publisher, book.publisher),
         author_closeness=_author_closeness(text.authors, book.author),
-        title_near=not title_hit and _near(cover_keys, catalog_keys),
+        title_near=marks and not title_hit and _near(cover_keys, catalog_keys),
     )
 
 

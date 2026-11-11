@@ -6,6 +6,7 @@
 """
 
 import re
+import unicodedata
 
 # 역할 접두어는 콜론이 있을 때만, 접미어는 앞에 공백이 있을 때만 뗀다 — 안 그러면 이름 속 글자("글", "저")가
 # 같이 잘린다
@@ -15,6 +16,15 @@ _AUTHOR_ROLE_PREFIX = re.compile(
 _AUTHOR_ROLE_SUFFIX = re.compile(r"\s+(지음|옮김|엮음|그림|글|저|역|편)\s*$")
 _AUTHOR_SEPARATOR = re.compile(r"[;,]")
 _NON_WORD = re.compile(r"[\W_]+")
+# 로마자 바로 뒤의 # 이나 ++ 는 제목의 일부다(C#·C++·F#). title_key 는 문장부호와 함께 지워서 "C# 프로그래밍"과
+# "C 프로그래밍"이 같은 키가 된다. "머신러닝+딥러닝"의 + 처럼 낱말 사이에 끼운 것은 표기마다 달라 보지 않는다
+_LANGUAGE_MARK = re.compile(r"[a-z](?:\+\+|#)")
+
+
+def language_marks(title: str | None) -> tuple[str, ...]:
+    """제목 속 "c#"·"c++" 같은 언어 이름 표시. 둘이 다르면 키가 같아도 다른 책이다."""
+    text = unicodedata.normalize("NFKC", title or "").replace("♯", "#").casefold()
+    return tuple(sorted(_LANGUAGE_MARK.findall(text)))
 
 
 def title_key(title: str | None) -> str:
