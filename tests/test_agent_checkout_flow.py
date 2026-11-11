@@ -184,8 +184,8 @@ def test_검색한_뒤_상품_상세로_가격_재고_쿠폰을_채운다() -> N
     books = asyncio.run(_be(handler).find("개발 입문서", 5))
 
     assert books == [
-        FoundBook(P1, 101, "책1", "가", 13500, True, frozenset({3, 9})),
-        FoundBook(P4, 104, "품절", None, 9000, False, frozenset()),
+        FoundBook(P1, 101, "책1", "가", 13500, True, frozenset({3, 9}), 3),
+        FoundBook(P4, 104, "품절", None, 9000, False, frozenset(), 0),
     ]
     assert not any(
         "/products/102" in url for url in seen
@@ -1782,3 +1782,123 @@ def test_기능이_꺼져_있으면_주문_한_마디도_예전처럼_쇼핑이_
     _, data, _ = _card_turn("주문", [ai_text("NOT_SHOPPING")], checkout=False)
 
     assert data.not_shopping is True
+
+
+# --- 앞 턴에 담아 둔 책으로 주문 화면을 연 턴의 답 (#678) ---
+
+CART_TWO = [
+    {
+        "isbn": P1,
+        "title": "미우의 과학 모험",
+        "price": 10000,
+        "quantity": 1,
+        "available": True,
+    },
+    {
+        "isbn": P2,
+        "title": "과학 만화 일기",
+        "price": 9500,
+        "quantity": 2,
+        "available": True,
+    },
+]
+
+
+def test_담아_둔_책만으로_주문_화면을_열면_코드가_책과_권수를_말하고_모델의_다른_화면_안내는_뺀다() -> (
+    None
+):
+    # 11/11 실제 모델: order.open 은 불렀지만 "주문 화면으로 넘겨드렸습니다. 주문내역에서 확인해 주세요"를 덧붙였다
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.ORDER_OPEN, {"books": [cart(1), cart(2)]})),
+            ai_text("주문 화면으로 넘겨드렸습니다. 주문내역에서 확인해 주세요."),
+        ],
+        cart=CART_TWO,
+        point_balance=3000,
+    )
+
+    assert sorted((a.op, a.isbn, a.quantity) for a in data.actions) == [
+        ("set", P1, 1),
+        ("set", P2, 2),
+    ]
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert data.reply == (
+        "장바구니에 담긴 《미우의 과학 모험》, 《과학 만화 일기》, 모두 3권으로 주문 화면을 열어 둘게요. "
+        "주문 화면에 포인트 3,000원을 적용해 둘게요. 확인하고 주문해 주세요."
+    )
+
+
+def test_담아_둔_책이_한_권이면_모두를_붙이지_않는다() -> None:
+    _, data, _ = _turn(
+        "주문을 해주라고",
+        [
+            ai_calls((ToolName.ORDER_OPEN, {"books": [cart(1)]})),
+            ai_text("장바구니에서 확인하실 수 있습니다."),
+        ],
+        cart=[IN_CART],
+    )
+
+    assert data.reply.startswith(
+        "장바구니에 담긴 《처음 배우는 개발 입문서》 2권으로 주문 화면을 열어 둘게요."
+    )
+    assert "모두" not in data.reply
+    assert "장바구니에서 확인" not in data.reply
+
+
+def test_살_수_없는_줄은_주문_화면에_넣지_않고_알린다() -> None:
+    # 판매 중지된 책을 같은 수량으로 다시 담아 주문 화면에 올려도 결제할 수 없다
+    _, data, _ = _turn(
+        "이제 결제해 줘",
+        [
+            ai_calls((ToolName.ORDER_OPEN, {"books": [cart(1), cart(2)]})),
+            ai_text("주문 화면으로 보냈어요."),
+        ],
+        cart=[CART_TWO[0], {**CART_TWO[1], "available": False}],
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", P1, 1)]
+    assert (
+        "장바구니에 담긴 《미우의 과학 모험》 1권으로 주문 화면을 열어 둘게요."
+        in data.reply
+    )
+    assert (
+        "《과학 만화 일기》는 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+        in data.reply
+    )
+
+
+def test_짚은_책이_모두_살_수_없으면_주문_화면을_열지_않는다() -> None:
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.ORDER_OPEN, {"books": [cart(1)]})),
+            ai_text("주문 화면으로 넘겨드렸어요."),
+        ],
+        cart=[{**CART_TWO[0], "available": False}],
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
+    assert all(b.target != ORDER_SCREEN for b in data.buttons)
+    # 열지 않은 주문 화면을 열었다고 하지 않는다
+    assert (
+        data.reply
+        == "《미우의 과학 모험》은 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+    )
+
+
+def test_이번_턴에_책을_담았으면_담아_둔_책_문장을_쓰지_않는다() -> None:
+    # 장바구니를 바꾼 턴은 담기 결과를 코드가 따로 말한다. 담아 둔 책만 올린 턴이 아니다
+    _, data, _ = _card_turn(
+        "1번이랑 장바구니 거 같이 주문해줘",
+        [
+            ai_calls((ToolName.ORDER_OPEN, {"books": [card(1), cart(1)]})),
+            ai_text("두 권을 주문 화면에 올렸어요."),
+        ],
+        cart=[IN_CART],
+    )
+
+    assert sorted(a.isbn for a in data.actions) == sorted([CARD_A, P1])
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert "장바구니에 담긴" not in data.reply

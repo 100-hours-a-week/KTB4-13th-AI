@@ -213,10 +213,14 @@ def passes(book: dict, filters: SearchFilters, publisher: str | None) -> bool:
 
 
 def _best_edition(rows: Sequence[dict]) -> dict:
-    """한 작품의 판본 중 카드로 낼 하나. 소개글이 있는 것, 살 수 있는 것, 새 판 순이다."""
+    """한 작품의 판본 중 카드로 낼 하나. 원작 꼴인 것, 소개글이 있는 것, 살 수 있는 것, 새 판 순이다.
+
+    그래픽노블·만화로 옮긴 판본은 다른 판본이 있으면 뒤로 민다(#691). 새 판이 각색판일 때가 많다(『듄』 그래픽노블 2025).
+    """
     return max(
         rows,
         key=lambda r: (
+            not editions.is_adaptation(r["author"], r["description"]),
             bool(r["description"].strip()),
             r["in_stock"],
             r["pub_year"] or 0,
@@ -268,8 +272,9 @@ async def resolve_anchor(
     return Anchor(None, plan.anchor.title, plan.anchor.author, work)
 
 
-async def _match_title(conn: asyncpg.Connection, title: Title) -> int | None:
-    """제목과 저자가 둘 다 맞는 책 한 묶음이 있으면 그 판본의 book_id. 표지 글자로 책을 찾는 규칙(#572)을 쓴다."""
+async def _match_title(conn: asyncpg.Connection, title: Title) -> list[int]:
+    """제목과 저자가 둘 다 맞는 책 한 묶음이 있으면 그 판본들의 book_id. 표지 글자로 책을 찾는 규칙(#572)이 고른 판본이
+    맨 앞이고, 같은 묶음에서 저자가 맞는 다른 판본이 뒤에 온다. 못 찾으면 빈 목록이다."""
     text = BookText(
         is_book_cover=True,
         title=title.title,
@@ -277,19 +282,42 @@ async def _match_title(conn: asyncpg.Connection, title: Title) -> int | None:
     )
     found = await match_cover.match(conn, text)
     if found.kind != "found" or not found.books[0].author_hit:
-        return None
-    return found.books[0].book.book_id
+        return []
+    picked = found.books[0].book.book_id
+    others = [
+        s.book.book_id
+        for s in found.editions
+        if s.author_hit and s.book.book_id != picked
+    ]
+    return [picked, *others]
+
+
+def _plain_edition(books: Sequence[dict]) -> dict:
+    """떠올린 제목으로 찾은 판본들(고른 것이 맨 앞) 중 카드로 낼 하나.
+
+    표지 규칙은 새 판을 고르는데, 새 판이 그래픽노블·만화판일 때가 있다. 11/11 dev 시험에서 "SF도 괜찮음"의 『듄』
+    카드가 그래픽노블 3권이었고 그대로 담겨 주문 화면까지 갔다(#691). 고른 판본이 각색판이고 같은 묶음에 원작 꼴
+    판본이 있으면 그중에서 고른다. 없으면 고른 판본 그대로다 — 책을 버리지 않는다.
+    """
+    first = books[0]
+    if not editions.is_adaptation(first["author"], first["description"]):
+        return first
+    plain = [
+        b for b in books if not editions.is_adaptation(b["author"], b["description"])
+    ]
+    return _best_edition(plain) if plain else first
 
 
 async def _find_titled(title: Title) -> dict | None:
     if not title.author:
         return None
     async with db.get_pool().acquire() as conn:
-        book_id = await _match_title(conn, title)
-        if book_id is None:
+        ids = await _match_title(conn, title)
+        if not ids:
             return None
-        rows = await conn.fetch(_BY_IDS_SQL, [book_id])
-    return dict(rows[0]) if rows else None
+        rows = {r["book_id"]: dict(r) for r in await conn.fetch(_BY_IDS_SQL, ids)}
+    books = [rows[i] for i in ids if i in rows]
+    return _plain_edition(books) if books else None
 
 
 async def _find_named(title: Title, graph: ReadingGraph | None) -> dict | None:
@@ -360,6 +388,10 @@ _POINTING = re.compile(
 _OTHER_AUTHOR = re.compile(
     r"(이|그|저)\s?(작가|저자)\s?(말고|빼고|아닌|외에|제외)|다른\s?(작가|저자)"
 )
+# 보여 준 책의 저자가 쓴 다른 책을 찾는 말("1번 작가 다른 책", "이 작가 책 더", "2번 저자 책 또 있어?", #694)
+_AUTHOR_MORE = re.compile(
+    r"(작가|저자|지은이|작자)\s?(님)?\s?(의|가|이)?\s?(다른|딴|책|작품|소설|거|것|더|또)"
+)
 # "다른 거 보여줘"는 보여 준 책과 다른 책을 원하는 말이다. 11/10 실험 1에서 4o 가 카드 3장 앞의 이 말을 "1번과 비슷한
 # 책"으로 읽었다. 함께 읽은·비슷한 낱말이 같이 있으면("다른 작가 책으로 비슷한 거") 기준 책을 짚는 말일 수 있어 그대로 둔다
 _OTHER_BOOKS = re.compile(r"(?<![가-힣])(다른|딴)\s?(거|것|걸|책)")
@@ -409,6 +441,31 @@ def points_at_book(message: str) -> bool:
         or _ORDINAL_WORD.search(message)
         or _POINTING.search(message)
         or _CO_WORDS.search(message)
+    )
+
+
+def asked_card_author(
+    message: str,
+    plan: Plan,
+    ranks: Sequence[int],
+    card_titles: Mapping[int, str] | None = None,
+) -> int | None:
+    """보여 준 카드 하나를 짚고 그 책 저자의 다른 책을 찾는 말이면 그 카드 번호, 아니면 None(#694).
+
+    "1번 작가 다른 책도 보여줘"는 조건에 저자를 넣지 않고 1번을 기준 책으로 둔 함께 읽은 책·비슷한 책 찾기가 되어,
+    그 작가 책 1권 + 다른 작가 책 1권이 나왔다(11/11 dev 3번 중 3번). 이 말은 저자로 찾는 말이다. 카드는 번호·차례·
+    제목으로 짚었거나, 카드가 한 장인데 지시어로 짚었거나, 메시지에 비춰 본 기준 책(fill_plan 결과)이 카드일 때만 받는다.
+    "이 작가 말고"는 반대 뜻이라 받지 않는다.
+    """
+    if not _AUTHOR_MORE.search(message) or _OTHER_AUTHOR.search(message):
+        return None
+    said = _said_card(message, ranks, card_titles or {})
+    if said is not None:
+        return said
+    if len(ranks) == 1 and _POINTING.search(message):
+        return ranks[0]
+    return (
+        plan.anchor if isinstance(plan.anchor, int) and plan.anchor in ranks else None
     )
 
 

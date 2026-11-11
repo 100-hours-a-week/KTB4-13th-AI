@@ -19,7 +19,9 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import APIRouter, Request
@@ -29,6 +31,7 @@ from pydantic import ValidationError
 
 from app.chat import (
     asking,
+    authors,
     invented_mood,
     jobs,
     lanes,
@@ -131,6 +134,13 @@ def parse_request(payload: Any) -> ChatRequest | tuple[int, str]:
         return (400, "invalid_request")
 
 
+def _today_text() -> str:
+    """1단계 프롬프트에 싣는 오늘 날짜(서비스 시간대). 날짜가 없으니 모델이 "최근 2~3년"을 2020년 이후로 짐작했다
+    (11/11 dev 3번 중 3번, #693). 프롬프트를 채울 때마다 다시 읽는다."""
+    today = datetime.now(ZoneInfo(get_settings().tz)).date()
+    return f"{today.year}년 {today.month}월 {today.day}일"
+
+
 # {spec_json}·{message}가 채워지는 자리다. JSON 예시의 중괄호는 {{ }}로 겹쳐 쓴다
 # (CARD_PROMPT와 같은 이유 — 실제로 모델에 가는 글자는 겹치기 전과 같다).
 #
@@ -208,7 +218,11 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '{{"filters": {{"price_max": null}}}}처럼 그 키를 null로 채워라. 그냥 '
     "안 넣으면 이전 값이 그대로 남으니, 없애려면 반드시 null을 명시해야 한다.\n"
     "exclude는 이번에 새로 빼고 싶은 책 id만 넣어라 — 기존 목록은 서버가 "
-    "그대로 유지하니 다시 적을 필요 없다.\n\n"
+    "그대로 유지하니 다시 적을 필요 없다.\n"
+    '오늘은 {today}이다. 출간 시기를 "최근 N년", "N년 안에", "올해", "작년 이후"처럼 '
+    "기간으로 말하면 오늘 연도로 셈해 filters.pub_year_from에 연도를 넣어라 — "
+    '"최근 N년"은 오늘 연도에서 N을 뺀 해이고, "2~3년"처럼 범위로 말하면 큰 수로 셈한다. '
+    "연도를 짐작하지 마라.\n\n"
     "이번 메시지가 제목·저자·가격·장르·제외처럼 구체적인 조건이 아니라 "
     '"너무 무겁지 않게", "더 재밌는 걸로", "덜 슬프게"처럼 분위기나 톤을 '
     "조정하는 말이면, 지금 semantic 문장을 바탕으로 그 톤을 반영한 "
@@ -260,7 +274,7 @@ SPEC_PROMPT = ChatPromptTemplate.from_template(
     '{{"intent": "exact", "exact": {{"title": "데미안"}}}}'
     # 에이전트 칸은 켰을 때만 채운다. 안 채우면 빈 문자열이라 이 기능 전 프롬프트와 같다
     "{agent_rule}"
-).partial(agent_rule="")
+).partial(agent_rule="", today=_today_text)
 
 # 책 추천 에이전트(CHAT_AGENT)가 1단계 호출에 더 받는 칸(app/chat/lanes.py). 호출을 늘리지 않으려고 같은 호출에 얹는다.
 # - anchor_card·anchor_title·relation: 사용자가 짚은 기준 책과, 그 책에 대해 물은 관계. 함께 읽은 책을 묻는 말을 보여
@@ -1312,6 +1326,21 @@ async def _shown_book_ids(req: ChatRequest) -> list[int]:
     return await _book_ids_for_isbns(req.exclude_isbns)
 
 
+async def _books_by_author(author: str, search_filters: SearchFilters) -> list[dict]:
+    """그 저자의 책(app/chat/authors.py). 테스트가 DB 없이 바꿔 끼우는 자리다.
+
+    못 가져오면 빈 목록이다. 그러면 호출부가 지금까지의 검색 결과로 후보를 만든다 — 저자로 좁히는 것은 덤이라, 이 조회가
+    늦거나 실패했다고 엉뚱한 책이라도 나오던 요청을 500 으로 바꾸지 않는다(#658 리뷰). 예외 종류를 좁히지 않는 까닭은
+    app/search/service.py 의 벡터 검색과 같다 — TimeoutError·InterfaceError 는 PostgresError 하위가 아니다.
+    """
+    try:
+        async with db.get_pool().acquire() as conn:
+            return await authors.fetch(conn, author, search_filters)
+    except Exception:
+        logger.exception("저자 책 조회 실패. 검색 결과로 후보를 만든다")
+        return []
+
+
 async def get_candidates(
     spec: Spec,
     exclude_book_ids: list[int],
@@ -1350,11 +1379,26 @@ async def get_candidates(
         if catalog_categories is not None:
             search_filters = spec.filters.model_copy(update={"category": None})
 
-    outcome = await service.search(
-        SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
+    # 저자를 짚었으면 그 저자의 책으로 좁힌다(#655). ① 검색은 이름을 낱말로 찾아 "한강"이면 제목에 한강이 든 책이 후보를 채운다.
+    # 저자만 말했으면 그 저자의 책을 DB 에서 바로 가져온다. 분위기도 말했으면 그 분위기로 찾은 검색 결과 중 그 저자의 책을 앞에 둔다.
+    # 제목도 말했으면 검색 결과에서 그 저자의 책만 남긴다 — 『한강, 소년이 온다 깊게 읽기』 같은 남의 해설서가 빠진다.
+    author = spec.exact.author
+    by_author = (
+        await _books_by_author(author, search_filters)
+        if author and not spec.exact.title
+        else []
     )
+    if by_author and not spec.semantic:
+        results = by_author
+    else:
+        outcome = await service.search(
+            SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
+        )
+        results = outcome.results
+        if author:
+            results = authors.narrow(results, author, by_author)
     exclude = set(exclude_book_ids) | set(spec.exclude)
-    pool = [r for r in outcome.results if r["book_id"] not in exclude]
+    pool = [r for r in results if r["book_id"] not in exclude]
     if catalog_categories is not None:
         book_categories = await _fetch_categories([c["book_id"] for c in pool])
         pool = [
@@ -1388,8 +1432,10 @@ async def get_candidates(
     if spec.intent == "semantic":
         pool = [c for c in pool if c["description"]]
 
-    # 이미 보여 준 책의 다른 판본, 그리고 후보끼리 겹치는 판본을 CANDIDATE_LIMIT 전에 걷어 낸다(#281).
-    shown_keys = await _fetch_edition_keys(list(exclude))
+    # 이미 보여 준 책·가진 책의 다른 판본, 그리고 후보끼리 겹치는 판본을 CANDIDATE_LIMIT 전에 걷어 낸다(#281).
+    # 가진 책도 넣는다 — 카탈로그에 같은 책이 출판사 표기만 다르게 두 번 든 경우(『RAG 비법노트』)가 있어
+    # book_id 로만 빼면 도서관에 있는 책이 다른 번호로 다시 추천된다.
+    shown_keys = await _fetch_edition_keys([*exclude, *(owned_book_ids or [])])
     if shown_keys:
         pool = [
             c
@@ -1653,6 +1699,8 @@ class CardResult:
     degraded: bool
     # 카드 아래에 보일 답 보기(#652). 지금은 책 추천 에이전트의 함께 읽은 책·비슷한 책 제안만 쓴다
     options: tuple[str, ...] = ()
+    # 말풍선 맨 끝에 붙일 출처 문장(picking.source_note). 끝 질문을 followup 으로 옮긴 뒤에 붙인다
+    note: str | None = None
 
 
 def _card_prompt_conditions(spec: Spec) -> str:
@@ -1857,6 +1905,30 @@ class _LaneTurn:
     pool: list[dict]
 
 
+def _author_of_card(
+    spec: Spec, plan: lanes.Plan, message: str, shown_books: list[shown.ShownBook]
+) -> tuple[Spec, lanes.Plan]:
+    """보여 준 카드의 저자가 쓴 다른 책을 찾는 말이면 그 저자로 찾는 spec 과 빈 계획으로 바꾼다(#694).
+
+    기준 책을 둔 채 찾으면 함께 읽은 책·비슷한 책이 섞이고 같은 저자 한 장 규칙이 걸려, 그 작가 책은 한 장만 남았다
+    (11/11 dev "1번 작가 다른 책도 보여줘" 3번 중 3번). 저자를 콕 집은 요청("박경리 책 보여줘")과 같은 길로 찾는다.
+    짚은 카드 책은 보여 준 책이라 후보에서 빠진다. 가격·연도 같은 조건은 그대로 둔다.
+    """
+    rank = lanes.asked_card_author(
+        message,
+        plan,
+        [book.rank for book in shown_books],
+        {book.rank: book.title for book in shown_books},
+    )
+    book = next((b for b in shown_books if b.rank == rank), None)
+    name = editions.first_author(book.author) if book is not None else ""
+    if not name:
+        return spec, plan
+    logger.info("%d번 카드 저자의 다른 책을 찾는 말 — 저자로 찾는다", rank)
+    exact = spec.exact.model_copy(update={"title": None, "author": name})
+    return spec.model_copy(update={"intent": "exact", "exact": exact}), lanes.EMPTY_PLAN
+
+
 def _uses_lanes(spec: Spec, plan: lanes.Plan) -> bool:
     """세 갈래로 찾을 턴인가. 제목·저자를 콕 집은 요청은 그 책 자체를 찾는 말이라 지금처럼 검색만 한다."""
     return spec.intent == "semantic" or plan.anchor is not None
@@ -2014,7 +2086,7 @@ async def _gather_lanes(
     excluded = set(shown_ids) | set(spec.exclude)
     skip = lanes.Skip(
         book_ids=excluded | set(owned or []),
-        edition_keys=await _fetch_edition_keys(list(excluded)),
+        edition_keys=await _fetch_edition_keys([*excluded, *(owned or [])]),
     )
     if anchor is not None and anchor.book_id is not None:
         skip.book_ids.add(anchor.book_id)
@@ -2149,30 +2221,20 @@ async def _search_again(turn: _LaneTurn, query: str) -> None:
     logger.info("다시 찾기: 검색 %d권 → 후보 %d권", len(searched), len(turn.pool))
 
 
-def _graph_source(book: dict) -> tuple[str, str] | None:
-    return next(
-        (
-            (lane, anchor)
-            for lane, anchor in book.get("sources") or []
-            if lane in ("co", "mania")
-        ),
-        None,
-    )
-
-
 def _lane_reasons(
-    item: dict, book: dict, spec: Spec, *, relation_asked: bool = False
+    item: dict, book: dict, spec: Spec
 ) -> tuple[str, Any, list[dict]] | None:
     """카드 한 장의 (한 줄 이유, 긴 이유, 근거). 한 줄 이유를 못 만들면 None(카드에서 뺀다).
 
-    소개글이 있으면 모델이 소개로 쓴 이유를 쓴다. 그래프에서 온 책이면 관계 사실을 근거 맨 앞에 두고, 모델 글이
-    목록으로 알 수 없는 것("많이 읽은")을 말하면 관계 사실 문장으로 바꾼다. 소개글이 없으면 모델 글을 쓰지 않는다
-    (#86): 그래프 책은 관계 사실, 떠올린 책은 확인된 칸(저자·연도·분류), 제목·저자로 찾은 책은 "찾으신 …"이다.
+    소개글이 있으면 모델이 소개로 쓴 이유를 쓴다. 소개글이 없으면 모델 글을 쓰지 않는다(#86): 제목·저자로 찾은 책은
+    "찾으신 …", 그 밖의 책은 확인된 칸(저자·연도·분류)이다.
 
-    사용자가 기준 책과의 관계("이 책 읽은 사람들은 또 뭐 읽었어?")를 물었으면(relation_asked) 그래프 책의 한 줄 이유는
-    소개글이 있어도 관계 사실이다. 그 물음의 답이 관계다.
+    그래프에서 온 책(함께 읽은 책·마니아 추천)은 관계 사실을 근거 칸 맨 앞에 둔다. 한 줄 이유에는 관계를 쓰지 않는다 —
+    기준 책 제목만 들어가는 틀 문장이라 같은 기준 책에서 온 카드 세 장이 같은 이유로 도배됐다(11/11 사용자). 출처는
+    말풍선 끝 한 문장(picking.source_note)이 말한다. 모델이 목록으로 알 수 없는 것("많이 읽은")을 말하거나 출처
+    꼬리표("마니아 추천")를 옮겨 적은 한 줄 이유는 확인된 칸으로 바꾼다.
     """
-    source = _graph_source(book)
+    source = picking.graph_source(book)
     if _has_description(book):
         reason_short = item.get("reason_short")
         reason_long = _unless_copied(item.get("reason_long"), book)
@@ -2181,16 +2243,16 @@ def _lane_reasons(
         )
         if source is not None:
             if (
-                relation_asked
-                or not isinstance(reason_short, str)
+                not isinstance(reason_short, str)
                 or picking.overclaims(reason_short)
+                or picking.names_source(reason_short)
             ):
-                reason_short = picking.relation_reason(*source)
+                reason_short = picking.confirmed_reason(book)
             if isinstance(reason_long, str) and picking.overclaims(reason_long):
                 reason_long = None
             basis = [picking.relation_basis(*source), *basis][:3]
     elif source is not None:
-        reason_short = picking.relation_reason(*source)
+        reason_short = picking.confirmed_reason(book)
         reason_long, basis = None, [picking.relation_basis(*source)]
     elif spec.intent == "exact":
         reason_short, reason_long, basis = _no_description_reason(book), None, []
@@ -2229,6 +2291,16 @@ def _lane_reply(
         cleaned = picking.without_overclaims(cleaned, co_titles)
     if cleaned is not None:
         cleaned = voice.without_vague_question(cleaned)
+    if cleaned is not None and picking.source_note(picked) is not None:
+        # 출처는 코드가 말풍선 끝에 붙인다. 모델이 따로 말한 문장은 뺀다 — 같은 말이 두 번 나가지 않게
+        cleaned = (
+            " ".join(
+                sentence
+                for sentence in picking.sentences(cleaned)
+                if not picking.names_source(sentence)
+            )
+            or None
+        )
     return cleaned
 
 
@@ -2263,12 +2335,7 @@ def _lane_cards(
         author = editions.author_key(book.get("author"))
         if one_per_author and author and author in authors:
             continue
-        reasons = _lane_reasons(
-            item,
-            book,
-            turn.spec,
-            relation_asked=turn.anchor is not None and turn.plan.relation is not None,
-        )
+        reasons = _lane_reasons(item, book, turn.spec)
         if reasons is None:
             continue
         reason_short, reason_long, basis = reasons
@@ -2290,6 +2357,12 @@ def _lane_cards(
         )
     proposed = picking.proposal_options(picked)
     return cards, _lane_reply(decision.reply, picked, proposed), proposed
+
+
+def _picked_books(cards: list[dict], pool: list[dict]) -> list[dict]:
+    """카드에 오른 책을 후보 목록에서 카드 순서대로 찾는다."""
+    by_isbn = {b.get("isbn"): b for b in pool}
+    return [by_isbn[c["isbn"]] for c in cards if c.get("isbn") in by_isbn]
 
 
 def _fallback_pool(pool: list[dict]) -> list[dict]:
@@ -2332,7 +2405,8 @@ async def _pick_from_lanes(
             or "",
         )
     cards, reply, proposed = _lane_cards(decision, turn)
-    return CardResult(cards, reply, False, tuple(proposed)), None
+    note = picking.source_note(_picked_books(cards, turn.pool))
+    return CardResult(cards, reply, False, tuple(proposed), note), None
 
 
 # 되묻기 1단계(#283) — 카드가 없을 때 followup을 상황에 맞는 질문으로 만든다. LLM은 더 안 부른다.
@@ -2486,7 +2560,9 @@ _EARLIER_TURN = re.compile(
 _ANTECEDENT_MIN_CHARS = 3
 _ONLY_JAMO = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ!?.~,;]+$")
 _DIGIT = re.compile(r"\d")
-_YEAR_WORD = re.compile(r"(\d{4}\s*년|올해|작년|재작년|금년)")
+# 출간 시기를 이미 정한 말. 연도("2024년")뿐 아니라 기간("2~3년 안", "3년 이내", "6개월")도 정한 것이다 — "최근 2~3년
+# 안에 나온 걸로"에 '"최근"은 어느 정도까지 보시나요?'라고 다시 물었다(11/11 dev, #693)
+_YEAR_WORD = re.compile(r"(\d+\s*(년|개월)|올해|작년|재작년|금년)")
 _RECIPIENT = re.compile(
     r"(엄마|아빠|어머니|아버지|부모|친구|연인|남자친구|여자친구|남편|아내|동료|상사"
     r"|선생|할머니|할아버지|형|누나|동생|언니|오빠|딸|아들)"
@@ -2579,17 +2655,17 @@ def _split_turn_question(reply: str) -> tuple[str, str | None]:
     return " ".join(parts[:-1]), parts[-1]
 
 
-def _fit_reply(reply: str) -> str:
+def _fit_reply(reply: str, max_chars: int = _REPLY_MAX_CHARS) -> str:
     """명세의 reply 최대 200자를 지킨다. 넘으면 뒷 문장부터 덜어 내고, 한 문장만으로도 넘으면 자른다."""
-    if len(reply) <= _REPLY_MAX_CHARS:
+    if len(reply) <= max_chars:
         return reply
     sentences = re.split(r"(?<=[.!?])\s+", reply.strip())
-    while len(sentences) > 1 and len(" ".join(sentences)) > _REPLY_MAX_CHARS:
+    while len(sentences) > 1 and len(" ".join(sentences)) > max_chars:
         sentences = sentences[:-1]
     fitted = " ".join(sentences)
-    if len(fitted) <= _REPLY_MAX_CHARS:
+    if len(fitted) <= max_chars:
         return fitted
-    return fitted[: _REPLY_MAX_CHARS - 1] + "…"
+    return fitted[: max_chars - 1] + "…"
 
 
 # 넓은 첫 요청에 한 번 묻기(#530, app/chat/asking.py). 대화의 첫 요청에서만 묻는다. 그 뒤로도 물으면 설문지가 된다.
@@ -2619,7 +2695,10 @@ def _is_pinned(spec: Spec) -> bool:
 # 대답 턴(#530) — 새 책을 찾는 말이 아닌 질문에는 검색하지 않고 답한다. 1단계가 turn: answer 로 가려 준다.
 # 보여 준 책에 대한 답은 그 책 소개로만 한다. 카드는 0장이고, 명세상 카드가 없으면 followup 이 있어야 해서 대화를
 # 이어 갈 질문을 같이 받는다. 호출은 1단계와 이것, 두 번이다.
-ANSWER_DESCRIPTION_CHARS = 300
+# 소개는 거의 통째로 넣는다(#702). 앞 300자만 넣었더니 『최후의 증인』(1,199자)의 "대장이 누구야"에 소개 839번째
+# 글자에 있는 "대장 강만호"를 못 보고 모른다고 했다(dev 11/11, 4o 로 다시 물어 300자 0/5·전체 5/5, 시간 차이 없음).
+# 상한은 아주 긴 소개(최대 9,147자) 때문에 둔다. 2,000자면 소개의 99% 넘게 잘리지 않는다.
+ANSWER_DESCRIPTION_CHARS = 2000
 SPEC_SHOWN_DESCRIPTION_CHARS = 80
 _ANSWER_FALLBACK_REPLY = "지금은 답을 드리기 어려워요."
 _ANSWER_FALLBACK_FOLLOWUP = "잠시 뒤에 다시 물어봐 주시겠어요?"
@@ -2858,8 +2937,15 @@ async def _respond(
             if not turn.not_shopping:
                 logger.info("문지기: 쇼핑으로 처리했다")
                 return responses.success(turn.message, {**turn.data, "route": "shop"})
-            logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
-            target = "recommend"
+            if gate_rules.asks_about_shown(
+                req.message or "", shopping.cards_shown(payload)
+            ):
+                # 화면 카드에 대해 묻는 말을 새로 찾으면 카드가 바뀌어 다음 번호가 다른 책을 가리킨다(#701)
+                logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③ 대답 턴으로 되돌린다")
+                target = "card"
+            else:
+                logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
+                target = "recommend"
     return await _recommend(
         req,
         lane,
@@ -2983,6 +3069,7 @@ async def _recommend(
             [book.rank for book in shown_books],
             {book.rank: book.title for book in shown_books},
         )
+        spec, plan = _author_of_card(spec, plan, req.message or "", shown_books)
         if plan.ask_card and _agent_on():
             # 카드가 여럿인데 어느 책을 읽은 사람들인지 말하지 않았다. 아무 카드나 찍지 않고 번호를 묻는다(LLM·검색 없이)
             _drop(update.recall)
@@ -3080,6 +3167,14 @@ async def _recommend(
         # 카드 턴의 질문과 답 보기는 카드 아래(followup)에 둔다(#652). 빠진 정보를 묻는 질문(slot_question)이 있으면
         # 그것을 묻는다 — 카드 프롬프트는 이때 묻지 말라고 한다
         reply, turn_question = _split_turn_question(reply)
+        if result.note:
+            # 출처 문장은 자르지 않는다. 모델 말을 그만큼 덜어 낸다. 모델 말이 없으면 "골라봤어요." 대신 그 문장만 낸다
+            room = _REPLY_MAX_CHARS - len(result.note) - 1
+            reply = (
+                f"{_fit_reply(reply, room)} {result.note}".strip()
+                if llm_reply
+                else result.note
+            )
         followup = option_lines.with_options(
             slot_question or turn_question, result.options, asking.FOLLOWUP_MAX_CHARS
         )

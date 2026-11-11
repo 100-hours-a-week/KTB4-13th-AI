@@ -105,3 +105,33 @@ def test_SPEC_PROMPT에_재고_조건이_실리지_않는다() -> None:
 
     assert "in_stock_only" not in text
     assert "재고" not in text
+
+
+def test_SPEC_PROMPT에_오늘_날짜와_기간을_연도로_셈하라는_규칙이_실린다(
+    monkeypatch,
+) -> None:
+    # 날짜가 없으니 4o 가 "최근 2~3년"을 2020년 이후로 짐작했다(11/11 dev 3번 중 3번, #693)
+    monkeypatch.setattr(chat, "_today_text", lambda: "2026년 11월 11일")
+    prompt = chat.SPEC_PROMPT.partial(today=chat._today_text)
+    text = prompt.format_messages(
+        recent_turns="(없음)",
+        shown="(없음)",
+        spec_json="{}",
+        message="최근 2~3년 안에 나온 팀장 책",
+        ask_rule="",
+    )[0].content
+
+    assert "오늘은 2026년 11월 11일이다." in text
+    assert "filters.pub_year_from" in text
+
+
+def test_오늘_날짜는_채울_때마다_서비스_시간대로_읽는다() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    text = chat.SPEC_PROMPT.format_messages(
+        recent_turns="(없음)", shown="(없음)", spec_json="{}", message="책", ask_rule=""
+    )[0].content
+
+    assert f"오늘은 {today.year}년 {today.month}월 {today.day}일이다." in text
