@@ -668,6 +668,7 @@ ASK_WHICH = (
         "그래",
         "그걸로 해줘",
         "ㅇㅇ",
+        "ㄱㄱ",
         "오케이",
         "네 담아줘",
         "네!",
@@ -680,6 +681,33 @@ def test_에이전트가_한_권을_제안했고_동의하면_그_책이_근거�
 
     assert evidence.has_evidence(ctx, _card(1), PY)
     # 제안하지 않은 책에는 근거를 주지 않는다
+    assert not evidence.has_evidence(ctx, _card(2), DB)
+
+
+def test_같은_제목_카드가_여럿이어도_번호로_짚어_제안했으면_동의가_근거다() -> None:
+    # 권마다 ISBN 이 다른 시리즈(《한강》 1·2권)가 카드에 같이 나왔다. 제목 일치로 다른 권까지 세면 한 권을 짚은
+    # 제안이 아니게 되어 "네"가 막히고 같은 질문만 되풀이했다(11/11 dev)
+    ctx = _history(
+        _ctx("네", cards=[PY, DB, K8S]),
+        ("user", "1번 주문"),
+        ("assistant", "카드 1번 《한강》을 담을까요?"),
+    )
+    ctx.titles = {PY: "한강", DB: "한강", K8S: TITLES[K8S]}
+
+    assert evidence.has_evidence(ctx, _card(1), PY)
+    assert not evidence.has_evidence(ctx, _card(2), DB)
+
+
+def test_같은_제목을_번호_없이_말한_제안에_대한_네는_근거가_아니다() -> None:
+    # 번호가 없으면 어느 《한강》인지 모른다
+    ctx = _history(
+        _ctx("네", cards=[PY, DB, K8S]),
+        ("user", "한강 담아줘"),
+        ("assistant", "《한강》을 담을까요?"),
+    )
+    ctx.titles = {PY: "한강", DB: "한강", K8S: TITLES[K8S]}
+
+    assert not evidence.has_evidence(ctx, _card(1), PY)
     assert not evidence.has_evidence(ctx, _card(2), DB)
 
 

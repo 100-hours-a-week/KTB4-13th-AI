@@ -231,9 +231,12 @@ def _ctx(message: str, **overrides) -> TurnContext:
         ("개발 입문서 두 권 골라서 쿠폰 적용해서 주문해 줘", True),
         ("파이썬 입문서 하나 사 줘", True),
         ("결제까지 해 줘", True),
+        ("1번 주문", True),
+        ("2번 구매!", True),
         ("파이썬 입문서 하나 담아 줘", False),
         ("주문 내역 보여줘", False),
         ("주문한 책 언제 와?", False),
+        ("주문내역", False),
     ],
 )
 def test_주문하겠다는_말만_주문으로_본다(message: str, order: bool) -> None:
@@ -1461,3 +1464,317 @@ def test_한_책을_여러_권_주문하라면_그_권수로_담는다() -> None
 
     assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", P4, 2)]
     assert data.checkout is not None
+
+
+# --- 쿠폰·포인트를 쓰지 말라는 말 (11/10 dev) ---
+
+_CARD_TITLE = "웹 서비스 개발 입문서"
+
+
+def card(n: int) -> dict:
+    return {"source": "card", "n": n}
+
+
+CARD_B = "9788900000028"
+CARD_C = "9788900000035"
+
+
+def _card_turn(message: str, replies, *, turns=(), cards=1, **extra):
+    """카드(《웹 서비스 개발 입문서》, 둘이면 《자바 첫걸음》도)를 보여 준 뒤의 말."""
+    shown = [(CARD_A, _CARD_TITLE), (CARD_B, "자바 첫걸음"), (CARD_C, "파이썬 산책")][
+        :cards
+    ]
+    return _turn(
+        message,
+        replies,
+        context_cards=[
+            {"isbn": isbn, "rank": rank, "match_score": 48}
+            for rank, (isbn, _) in enumerate(shown, start=1)
+        ],
+        offers=[
+            {"isbn": isbn, "title": title, "price": 28000, "in_stock": True}
+            for isbn, title in shown
+        ],
+        recent_turns=[{"role": r, "text": t} for r, t in turns],
+        owned_coupons=COUPONS,
+        point_balance=3000,
+        **extra,
+    )
+
+
+_SHOWN = [
+    ("user", "개발 입문서"),
+    ("assistant", f"개발 입문서로 손색없는 『{_CARD_TITLE}』이 눈에 띄어요."),
+]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "이거 주문해줘 포인트 적용하지 말고",
+        "이 책 주문해 줘 포인트는 안 쓸래",
+        "그거 사 줘 쿠폰이랑 포인트 없이",
+    ],
+)
+def test_할인을_쓰지_말라는_말은_지시어가_가리킨_책을_부정하지_않는다(
+    message: str,
+) -> None:
+    # "말고"를 책 부정으로 읽어 "지금 보고 있는 책이 없어요"로 끝났다(11/10 dev)
+    _, data, _ = _card_turn(
+        message,
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")],
+        turns=_SHOWN,
+    )
+
+    assert [(a.op, a.isbn) for a in data.actions] == [("set", CARD_A)]
+
+
+def test_책_말고는_여전히_그_책을_부정한다() -> None:
+    _, data, _ = _card_turn(
+        "그거 말고 다른 거 주문해 줘 포인트 쓰지 말고",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("어느 책일까요?")],
+        turns=_SHOWN,
+        cards=2,
+    )
+
+    assert data.actions == []
+
+
+def test_포인트를_쓰지_말라면_주문_화면에_포인트를_채우지_않고_그렇다고_알린다() -> (
+    None
+):
+    _, data, _ = _card_turn(
+        "1번책 주문해봐 포인트 적용하지말고",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")],
+        turns=_SHOWN,
+    )
+
+    assert data.checkout == Checkout(owned_coupon_id=None, use_point=0)
+    assert "포인트는 쓰지 않게 해 둘게요" in data.reply
+    assert "포인트 3,000원" not in data.reply
+
+
+def test_앞서_포인트를_쓰지_말라고_했으면_다음_주문에도_채우지_않는다() -> None:
+    _, data, _ = _card_turn(
+        "이 책 2개 주문해줘",
+        [
+            ai_calls((ToolName.CART_ADD, {"book": card(1), "quantity": 2})),
+            ai_text("2권으로 바꿨어요."),
+        ],
+        turns=[
+            *_SHOWN,
+            ("user", "1번책 주문해봐 포인트 적용하지말고"),
+            ("assistant", f"《{_CARD_TITLE}》을 장바구니에 담았어요."),
+        ],
+    )
+
+    assert data.checkout is not None and data.checkout.use_point == 0
+
+
+def test_이번_말이_포인트를_쓰라고_하면_앞의_말보다_이번_말을_따른다() -> None:
+    _, data, _ = _card_turn(
+        "1번 주문해 줘 포인트 써 줘",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("담았어요.")],
+        turns=[*_SHOWN, ("user", "포인트 쓰지 말고 주문할게")],
+    )
+
+    assert data.checkout is not None and data.checkout.use_point == 3000
+
+
+def test_쿠폰만_빼라면_포인트는_그대로_채운다() -> None:
+    lines = [OrderLine(P1, 40000, 1, frozenset({3}))]
+    coupons = [_coupon(7, 3, "FIXED_AMOUNT", 3000)]
+
+    result = plan(lines, coupons, point_balance=5000, use_coupon=False)
+
+    assert result.coupon is None and result.coupon_declined
+    assert result.use_point == 5000 and not result.points_declined
+
+
+@pytest.mark.parametrize(
+    ("message", "coupon", "point"),
+    [
+        ("쿠폰 말고 포인트만 써서 주문해 줘", True, False),
+        ("포인트 빼고 주문해 줘", False, True),
+        ("쿠폰 없이 주문해 줘", True, False),
+        ("포인트 사용 안 함", False, True),
+        ("쿠폰 적용해서 주문해 줘", False, False),
+        ("1번 주문해 줘", False, False),
+    ],
+)
+def test_쓰지_말라는_할인만_알아본다(message: str, coupon: bool, point: bool) -> None:
+    ctx = _ctx(message)
+    assert evidence.declines_discount(ctx, "쿠폰") is coupon
+    assert evidence.declines_discount(ctx, "포인트") is point
+
+
+def test_카드가_한_권이면_이거를_지금_보는_책으로_불러도_그_카드를_담는다() -> None:
+    # 11/10 dev: 모델이 "이거"를 지금 보는 책(focused)으로 불러 "지금 보고 있는 책이 없어요"로 끝났다
+    _, data, _ = _card_turn(
+        "이거 주문해줘 포인트 적용하지 말고",
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "focused"}})),
+            ai_text("담았어요."),
+        ],
+        turns=_SHOWN,
+    )
+
+    assert [(a.op, a.isbn) for a in data.actions] == [("set", CARD_A)]
+    assert data.checkout == Checkout(owned_coupon_id=None, use_point=0)
+
+
+# --- 직전 말이 여러 권을 짚었을 때의 "네", "둘 다" (11/10 dev) ---
+# "카드 1번과 2번을 담을까요?" → "네" → "어느 책을 담을까요?" → "둘다" → 같은 물음이 되풀이됐다
+
+_BOTH_PROPOSED = f"카드 1번 《{_CARD_TITLE}》과 카드 2번 《자바 첫걸음》을 담을까요?"
+_BOTH_CHOICE = (
+    f"카드 1번 《{_CARD_TITLE}》과 카드 2번 《자바 첫걸음》 중 어느 책을 담을까요?"
+)
+_ADD_BOTH = [
+    ai_calls(
+        (ToolName.CART_ADD, {"book": card(1)}),
+        (ToolName.CART_ADD, {"book": card(2)}),
+    ),
+    ai_text("담았어요."),
+]
+
+
+@pytest.mark.parametrize(
+    ("last", "message"),
+    [
+        (_BOTH_PROPOSED, "네"),
+        (_BOTH_PROPOSED, "둘다"),
+        (_BOTH_CHOICE, "둘다"),
+        (_BOTH_CHOICE, "둘 다요"),
+        (_BOTH_CHOICE, "모두 담아줘"),
+    ],
+)
+def test_직전_말이_두_권을_짚었으면_동의나_둘_다는_두_권_다다(
+    last: str, message: str
+) -> None:
+    _, data, _ = _card_turn(
+        message,
+        _ADD_BOTH,
+        turns=[("user", "1번 2번 담아"), ("assistant", last)],
+        cards=3,
+    )
+
+    assert {a.isbn for a in data.actions} == {CARD_A, CARD_B}
+
+
+@pytest.mark.parametrize(
+    ("last", "message"),
+    [
+        (_BOTH_CHOICE, "네"),  # 고르라는 물음에 "네"는 어느 책인지 모른다
+        (_BOTH_PROPOSED, "네 근데 3번으로요"),
+        (_BOTH_PROPOSED, "아니요"),
+    ],
+)
+def test_직전_말이_두_권을_짚어도_전부를_뜻하지_않는_말이면_담지_않는다(
+    last: str, message: str
+) -> None:
+    run, _, _ = _card_turn(
+        message,
+        [*_ADD_BOTH[:1], ai_text("어느 책일까요?")],
+        turns=[("user", "1번 2번 담아"), ("assistant", last)],
+        cards=3,
+    )
+
+    assert run.actions == []
+
+
+def test_주문_기능이_켜져_있으면_포인트_빼고는_책을_빼라는_말이_아니라고_알려_준다() -> (
+    None
+):
+    from app.agent import prompts
+
+    assert "책을 빼라는 말이 아니다" in prompts.system_prompt(search=True, order=True)
+    assert "책을 빼라는 말이 아니다" not in prompts.system_prompt(
+        search=False, order=False
+    )
+
+
+# --- 주문해 달라는데 주문 화면으로 보낼 책이 없을 때 (11/10 dev) ---
+
+
+def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구니로_보낸다() -> None:
+    _, data, _ = _card_turn(
+        "1번 주문해줘",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
+        cart=[
+            {
+                "isbn": CARD_A,
+                "title": _CARD_TITLE,
+                "quantity": 1,
+                "price": 28000,
+                "available": True,
+            }
+        ],
+    )
+
+    assert data.checkout is None
+    assert reply_module.ORDER_FROM_CART in data.reply
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", "CART-001")]
+
+
+def test_담기만_해_달라면_이미_담긴_책에_주문_안내를_붙이지_않는다() -> None:
+    _, data, _ = _card_turn(
+        "1번 담아줘",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
+        cart=[
+            {
+                "isbn": CARD_A,
+                "title": _CARD_TITLE,
+                "quantity": 1,
+                "price": 28000,
+                "available": True,
+            }
+        ],
+    )
+
+    assert reply_module.ORDER_FROM_CART not in data.reply
+
+
+@pytest.mark.parametrize("message", ["주문", "주문이요", "결제할게요", "주문!"])
+def test_주문_한_마디에_쇼핑이_아니라고_해도_추천으로_넘기지_않는다(
+    message: str,
+) -> None:
+    run, data, _ = _card_turn(message, [ai_text("NOT_SHOPPING")])
+
+    assert run.not_shopping
+    assert data.not_shopping is False
+    assert data.reply == reply_module.ORDER_FROM_CART
+    assert [b.target for b in data.buttons] == ["CART-001"]
+
+
+@pytest.mark.parametrize(
+    "message", ["주문 내역 보여줘", "추천해줘", "주문한 책 언제 와?"]
+)
+def test_주문하겠다는_말이_아니면_쇼핑이_아님은_그대로다(message: str) -> None:
+    _, data, _ = _card_turn(message, [ai_text("NOT_SHOPPING")])
+
+    assert data.not_shopping is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "선물로 책 한 권 사고 싶은데 뭐가 좋을까요",
+        "책 하나 구매하고 싶은데 뭘 사야 할지 모르겠어요",
+    ],
+)
+def test_주문_낱말이_든_추천_요청은_쇼핑이_아니라면_추천으로_돌아간다(
+    message: str,
+) -> None:
+    # 주문 기능을 켜면 문지기가 이런 말을 쇼핑으로 보낸다. 에이전트가 쇼핑이 아니라고 하면 장바구니 안내로 끝내지
+    # 않고 추천으로 돌려보낸다(#649 리뷰)
+    _, data, _ = _card_turn(message, [ai_text("NOT_SHOPPING")])
+
+    assert data.not_shopping is True
+    assert data.reply != reply_module.ORDER_FROM_CART
+
+
+def test_기능이_꺼져_있으면_주문_한_마디도_예전처럼_쇼핑이_아니다() -> None:
+    _, data, _ = _card_turn("주문", [ai_text("NOT_SHOPPING")], checkout=False)
+
+    assert data.not_shopping is True
