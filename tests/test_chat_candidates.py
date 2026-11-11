@@ -647,6 +647,34 @@ def test_요청으로_온_가진_책은_후보에서_빠진다(
     assert [c["book_id"] for c in result] == [2]
 
 
+def test_가진_책의_다른_판본도_후보에서_빠진다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 『RAG 비법노트』는 카탈로그에 출판사 표기만 다르게 두 번 있다(1960148·1960149). 도서관에 한쪽이 있으면
+    # 다른 쪽도 이미 가진 책이다(나의 도서관 QA 11/11)
+    _fake_search(
+        monkeypatch,
+        [
+            _book(1960149, title="RAG 비법노트", author="김가희"),
+            _book(2, title="랭체인 입문", author="박작가"),
+        ],
+    )
+    _fake_descriptions(monkeypatch)
+    asked: list[list[int]] = []
+
+    async def _owned_keys(book_ids: list[int]) -> set[tuple[str, str]]:
+        asked.append(book_ids)
+        return {chat._edition_key("RAG 비법노트", "김가희")}
+
+    monkeypatch.setattr(chat, "_fetch_edition_keys", _owned_keys)
+
+    spec = _spec(intent="semantic", semantic="랭체인")
+    result = asyncio.run(chat.get_candidates(spec, [], 1, owned_book_ids=[1960148]))
+
+    assert [c["book_id"] for c in result] == [2]
+    assert asked == [[1960148]]
+
+
 def test_가진_책이_빈_목록이면_아무것도_빼지_않는다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
