@@ -7,10 +7,16 @@
 """
 
 import re
+import ssl
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+import pymysql
+import pymysql.cursors
 
 # BE ProductInventory.INITIAL_ON_HAND_QUANTITY. 재고 줄이 없는 상품을 BE 는 이만큼 있다고 본다
 DEFAULT_ON_HAND = 20
@@ -105,3 +111,80 @@ def to_product(row: dict[str, Any]) -> Product:
         updated_at=_utc(row["updated_at"]),
         deleted_at=_utc(row.get("deleted_at")),
     )
+
+
+def connect_args(url: str) -> dict[str, Any]:
+    """mysql://<계정>:<비밀번호>@<호스트>:<포트>/<DB>[?ssl-mode=REQUIRED] 를 pymysql 접속 인자로."""
+    parsed = urlparse(url)
+    query = {k.lower(): v[-1] for k, v in parse_qs(parsed.query).items()}
+    context = None
+    if query.get("ssl-mode", "").upper() == "REQUIRED":
+        # mysql 클라이언트의 --ssl-mode=REQUIRED 와 같다: 암호화하되 인증서는 따지지 않는다
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return {
+        "host": parsed.hostname,
+        "port": parsed.port or 3306,
+        "user": unquote(parsed.username or ""),
+        "password": unquote(parsed.password or ""),
+        "database": parsed.path.lstrip("/"),
+        "ssl": context,
+        "charset": "utf8mb4",
+        "connect_timeout": 15,
+        "read_timeout": 600,
+    }
+
+
+_BE_BOOKS = """
+SELECT b.id, b.isbn13, b.title, b.author, b.publisher, b.category, b.published_at,
+       b.cover_image_url, b.description, b.updated_at, b.deleted_at,
+       p.id AS product_id, p.discounted_price, p.deleted_at AS product_deleted_at,
+       i.on_hand_quantity, i.reserved_quantity
+FROM books b
+LEFT JOIN products p ON p.book_id = b.id
+LEFT JOIN product_inventory i ON i.product_id = p.id
+"""
+_BE_PRODUCTS = """
+SELECT p.id, p.book_id, p.discounted_price, p.updated_at, p.deleted_at,
+       i.on_hand_quantity, i.reserved_quantity
+FROM products p
+LEFT JOIN product_inventory i ON i.product_id = p.id
+"""
+
+
+class BeSource:
+    """BE MySQL 을 읽기 전용으로 읽는다."""
+
+    def __init__(self, url: str) -> None:
+        self._conn = pymysql.connect(**connect_args(url), autocommit=True)
+        with self._conn.cursor() as cursor:
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+
+    def _stream(
+        self, sql: str, alias: str, since: datetime | None, size: int
+    ) -> Iterator[list[dict]]:
+        where = "" if since is None else f" WHERE {alias}.updated_at >= %s"
+        query = f"{sql}{where} ORDER BY {alias}.updated_at, {alias}.id"
+        params = () if since is None else (since.astimezone(UTC).replace(tzinfo=None),)
+        with self._conn.cursor(pymysql.cursors.SSDictCursor) as cursor:
+            cursor.execute(query, params)
+            while rows := cursor.fetchmany(size):
+                yield list(rows)
+
+    def books_since(self, since: datetime | None, size: int) -> Iterator[list[dict]]:
+        return self._stream(_BE_BOOKS, "b", since, size)
+
+    def products_since(self, since: datetime | None, size: int) -> Iterator[list[dict]]:
+        return self._stream(_BE_PRODUCTS, "p", since, size)
+
+    def books_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        marks = ", ".join(["%s"] * len(ids))
+        with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(_BE_BOOKS + f" WHERE b.id IN ({marks})", ids)
+            return list(cursor.fetchall())
+
+    def close(self) -> None:
+        self._conn.close()

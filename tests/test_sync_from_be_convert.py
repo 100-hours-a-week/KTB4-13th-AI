@@ -115,3 +115,42 @@ def test_상품은_할인가와_남은_재고를_싣는다() -> None:
     assert product.discounted_price == Decimal("13500.00")
     assert product.stock_quantity == 5
     assert product.updated_at == datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "mysql://reader:p%40ss@be-db:3307/bookjeok",
+            {
+                "host": "be-db",
+                "port": 3307,
+                "user": "reader",
+                "password": "p@ss",
+                "database": "bookjeok",
+            },
+        ),
+        (
+            "mysql://reader@be-db/bookjeok",
+            {
+                "host": "be-db",
+                "port": 3306,
+                "user": "reader",
+                "password": "",
+                "database": "bookjeok",
+            },
+        ),
+    ],
+)
+def test_BE_주소를_접속_인자로_바꾼다(url: str, expected: dict) -> None:
+    args = sync.connect_args(url)
+
+    assert {key: args[key] for key in expected} == expected
+    assert args["ssl"] is None
+
+
+def test_ssl_mode_REQUIRED면_암호화해서_붙는다() -> None:
+    # mysql 클라이언트의 --ssl-mode=REQUIRED 와 같다: 암호화하되 인증서는 따지지 않는다(RDS)
+    args = sync.connect_args("mysql://reader:x@be-db:3306/bookjeok?ssl-mode=REQUIRED")
+
+    assert args["ssl"] is not None
