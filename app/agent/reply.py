@@ -38,7 +38,7 @@ from app.agent.schemas import (
 )
 from app.agent.tools import UI_TARGETS
 from app.agent.view import label
-from app.gateway.commerce import CommerceErrorCode
+from app.gateway.commerce import CartLine, CommerceErrorCode
 
 # 반복을 다 쓰거나 LLM 이 빈 글로 끝났을 때, 지운 문장도 없을 때 쓰는 안내
 FALLBACK_REPLY = "요청을 끝까지 처리하지 못했어요. 다시 한 번 말씀해 주세요."
@@ -578,6 +578,21 @@ def _coupon_name(name: str) -> str:
     return name if "쿠폰" in name else f"{name} 쿠폰"
 
 
+# 앞 턴에 담아 둔 책으로 연 주문 화면(#678)에서 이름을 들어 말하는 책 수. 넘으면 "외 n종"으로 줄인다
+_ORDERED_NAMED = 3
+
+
+def _ordered_line(lines: list[CartLine]) -> str:
+    """장바구니에 담아 둔 책으로 주문 화면을 연 결과. 책과 수량은 장바구니 값이다."""
+    names = ", ".join(f"《{line.title}》" for line in lines[:_ORDERED_NAMED])
+    if len(lines) > _ORDERED_NAMED:
+        names += f" 외 {len(lines) - _ORDERED_NAMED}종"
+    copies = sum(line.quantity for line in lines)
+    # 한 권이면 "모두"를 붙이지 않는다("《한중록》 1권으로", #683 리뷰)
+    counted = f"{names} {copies}권" if len(lines) == 1 else f"{names}, 모두 {copies}권"
+    return f"장바구니에 담긴 {counted}으로 주문 화면을 열어 둘게요."
+
+
 def _checkout_line(plan: Plan) -> str:
     """주문 화면에 채울 쿠폰·포인트 안내. 금액은 코드가 계산한 값이라 답변 검사를 거치지 않는다.
 
@@ -690,6 +705,19 @@ def finish(run: AgentRun) -> Finished:
     # 쓰기의 결과는 코드가 먼저 말한다. LLM 의 글이 전부 지워지거나 비어도, 이미 바뀐 장바구니를 두고
     # 422 나 "처리하지 못했어요"가 나가지 않는다
     outcome_lines = _outcomes(run, facts.titles)
+    if run.ordered_cart:
+        outcome_lines.append(_ordered_line(run.ordered_cart))
+    if run.ordered_cart or (run.unorderable and run.checkout is None):
+        # 장바구니를 바꾸지 않고 주문 화면만 연 턴(앞 턴에 담아 둔 책)이거나, 짚은 책이 모두 살 수 없어 열지 못한 턴이다
+        # (#678). 모델은 "주문 화면으로 넘겨드렸습니다. 주문내역에서 확인해 주세요", "장바구니에서 확인하실 수
+        # 있습니다"처럼 다른 화면을 가리키는 말을 덧붙이곤 했다(11/11 실제 모델 10번 중 7번). 이 턴에 모델이 더 말할
+        # 결과가 없으므로 결과는 코드가 말한다
+        kept_lines = []
+    for line in run.unorderable:
+        eun = _particle(line.title, "은", "는")
+        outcome_lines.append(
+            f"《{line.title}》{eun} 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+        )
     if run.checkout is not None:
         outcome_lines.append(_checkout_line(run.checkout))
     elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):
