@@ -1730,7 +1730,7 @@ def test_권_번호_있는_책에_그거_말고_N권이면_바꾸지_않고_두_
     assert fake.cart_state(UID) == {A: 1}
 
 
-def test_담기로_수량을_바꿔도_같이_묻는다() -> None:
+def test_이미_담긴_책을_담기로_수량을_바꿔도_같이_묻는다() -> None:
     spy, fake, ctx = _one_card_cart("태백산맥 상", "그거 대신 3권으로 해줘")
 
     call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1), "quantity": 3})
@@ -1738,6 +1738,53 @@ def test_담기로_수량을_바꿔도_같이_묻는다() -> None:
     assert call.result["error"] == "ACTION_NOT_STATED"
     assert call.result["ask"].startswith("《태백산맥》의 다른 권을 원하시는 건가요")
     assert fake.cart_state(UID) == {A: 1}
+
+
+def test_새로_담는_책의_N권은_묻지_않고_수량으로_담는다() -> None:
+    spy, fake, ctx = _setup(
+        cards=[ContextCard(isbn=A, rank=1, match_score=90)],
+        message="그거 대신 2권 담아줘",
+    )
+    ctx.titles[A] = "토지 1"
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1), "quantity": 2})
+
+    assert call.result == {"ok": True}
+    assert fake.cart_state(UID) == {A: 2}
+
+
+# 번호나 제목으로 어느 책인지 짚은 말의 "N권"은 그 책의 수량이다(#700 리뷰). 짚은 책은 이미 1권 담겨 있다
+@pytest.mark.parametrize(
+    ("message", "tool", "n"),
+    [
+        ("이거 말고 3번 책 2권 담아줘", ToolName.CART_ADD, 3),
+        ("1번 말고 2번 두 권 넣어줘", ToolName.CART_ADD, 2),
+        ("3번 말고 1번을 2권으로 바꿔줘", ToolName.CART_UPDATE, 1),
+    ],
+)
+def test_번호로_짚은_말은_권_번호를_묻지_않고_수량을_바꾼다(
+    message: str, tool: ToolName, n: int
+) -> None:
+    isbn = [A, B, C][n - 1]
+    spy, fake, ctx = _setup(seed=[(isbn, 1)], message=message)
+    ctx.titles.update({A: "토지 1", B: "토지 3", C: "해리 포터와 마법사의 돌 1"})
+
+    call = _run(ctx, spy, tool, {"book": card(n), "quantity": 2})
+
+    assert call.result.get("ok") is True, call.result
+    assert fake.cart_state(UID) == {isbn: 2}
+
+
+@pytest.mark.parametrize(
+    "message", ["토지 1 말고 토지 3 두 권 담아줘", "그거 말고 토지 3 두 권 담아줘"]
+)
+def test_제목으로_짚은_말은_권_번호를_묻지_않고_수량을_바꾼다(message: str) -> None:
+    spy, fake, ctx = _one_card_cart("토지 3", message)
+
+    call = _run(ctx, spy, ToolName.CART_ADD, {"book": card(1), "quantity": 2})
+
+    assert call.result.get("ok") is True, call.result
+    assert fake.cart_state(UID) == {A: 2}
 
 
 @pytest.mark.parametrize(

@@ -685,17 +685,28 @@ def said_quantity_lately(ctx: TurnContext) -> bool:
 
 
 # 권 번호가 있는 책(『토지 1』, 『삼국지 3』, 상·중·하)에 "그거 말고 2권으로"라고 하면 다른 권을 원하는 말일 수 있다.
-# ⑦은 "2권"을 수량으로만 읽어 『토지 1』을 2권으로 바꿨다(11/11 dev 3번 중 3번, #695). 이런 말이면 바꾸지 않고 묻는다
-_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
+# ⑦은 "2권"을 수량으로만 읽어 『토지 1』을 2권으로 바꿨다(11/11 dev 3번 중 3번, #695). 이런 말이면 바꾸지 않고 묻는다.
+# 묻는 것은 지시어("그거·이거·그 책")로만 짚은 말뿐이다. 번호("3번 말고 1번을 2권으로")나 제목("토지 1 말고 토지 3 두
+# 권")으로 어느 책인지 짚은 말의 "N권"은 그 책의 수량이다(#700 리뷰)
+_DEICTIC_INSTEAD = re.compile(
+    _DEICTIC.pattern + r"\s*(?:은|는)?\s*(?:말고|대신|아니고|아니라)"
+)
 _VOLUME_TITLE = re.compile(r"^(?P<base>.*\S)\s+(?P<volume>\d{1,2}|상|중|하)(?:\s?권)?$")
 
 
 def swaps_volume(ctx: TurnContext) -> bool:
-    """이번 말이 "말고·대신"과 권수를 같이 말했는가("아 그거 말고 2권으로"). 다른 권을 원하는 말일 수 있다."""
+    """이번 말이 지시어로만 책을 짚고 "말고·대신"과 권수를 같이 말했는가("아 그거 말고 2권으로"). 다른 권을 원하는
+    말일 수 있다. 번호나 아는 책의 제목을 말했으면 그 책을 짚은 말이라 아니다."""
     if ctx.message is None:
         return False
     message = normalize(ctx.message)
-    return bool(_INSTEAD.search(message) and _QUANTITY.search(message))
+    if not (_DEICTIC_INSTEAD.search(message) and _QUANTITY.search(message)):
+        return False
+    spoken = _flat(message)
+    titles = [_flat(title) for title in _known_titles(ctx).values()]
+    return not ordinals(message) and not any(
+        len(title) >= 2 and title in spoken for title in titles
+    )
 
 
 def volume_title(title: str | None) -> tuple[str, str] | None:
