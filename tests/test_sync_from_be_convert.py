@@ -9,7 +9,7 @@ from app.jobs import sync_from_be as sync
 
 
 def _be_time(*parts: int) -> datetime:
-    """BE MySQL DATETIME 은 시간대 없이 온다(값은 UTC)."""
+    """BE MySQL DATETIME 은 시간대 없이 한국 시간으로 온다."""
     return datetime(*parts, tzinfo=UTC).replace(tzinfo=None)
 
 
@@ -66,11 +66,13 @@ def test_ISBN은_13자리_숫자만_싣는다(raw: str | None, kept: str | None)
     assert sync.to_book(_be_book(isbn13=raw)).isbn13 == kept
 
 
-def test_BE_시각은_UTC로_읽고_출간일은_연도만_싣는다() -> None:
-    book = sync.to_book(_be_book(deleted_at=_be_time(2026, 11, 2, 0, 0, 0)))
+def test_BE_시각은_한국_시간으로_읽어_UTC로_바꾸고_출간일은_연도만_싣는다() -> None:
+    book = sync.to_book(_be_book(deleted_at=_be_time(2026, 11, 2, 9, 0, 0)))
 
-    assert book.updated_at == datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
+    # BE 11/1 03:00(한국) = 10/31 18:00 UTC
+    assert book.updated_at == datetime(2026, 10, 31, 18, 0, 0, tzinfo=UTC)
     assert book.deleted_at == datetime(2026, 11, 2, 0, 0, 0, tzinfo=UTC)
+    assert book.updated_at.tzinfo is UTC
     assert book.pub_year == 2025
 
 
@@ -114,7 +116,7 @@ def test_상품은_할인가와_남은_재고를_싣는다() -> None:
 
     assert product.discounted_price == Decimal("13500.00")
     assert product.stock_quantity == 5
-    assert product.updated_at == datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
+    assert product.updated_at == datetime(2026, 10, 31, 18, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

@@ -85,7 +85,8 @@ def test_지운_책은_줄을_남기고_지운_시각만_채운다() -> None:
     row = _in_tx(body)
 
     assert row["title"] == "시험 책"
-    assert row["deleted_at"] == datetime(2026, 11, 3, 0, 0, 0, tzinfo=UTC)
+    # BE 11/3 00:00(한국) = 11/2 15:00 UTC
+    assert row["deleted_at"] == datetime(2026, 11, 2, 15, 0, 0, tzinfo=UTC)
 
 
 def test_다른_책이_가진_ISBN은_비우고_센다() -> None:

@@ -38,7 +38,7 @@ needs_db = pytest.mark.skipif(
 
 
 class _FakeBe:
-    """BE MySQL 대신. books_since·products_since 는 since 뒤의 줄을 묶음으로 준다."""
+    """BE MySQL 대신. books_since·products_since 는 since 뒤의 줄을 묶음으로 준다(BE 시각은 한국 시간)."""
 
     def __init__(self, books: list[dict], products: list[dict]) -> None:
         self.books = books
@@ -50,7 +50,7 @@ class _FakeBe:
         rows = [
             b
             for b in self.books
-            if since is None or b["updated_at"].replace(tzinfo=UTC) >= since
+            if since is None or b["updated_at"].replace(tzinfo=sync.BE_TZ) >= since
         ]
         for start in range(0, len(rows), size):
             yield rows[start : start + size]
@@ -60,7 +60,7 @@ class _FakeBe:
         rows = [
             p
             for p in self.products
-            if since is None or p["updated_at"].replace(tzinfo=UTC) >= since
+            if since is None or p["updated_at"].replace(tzinfo=sync.BE_TZ) >= since
         ]
         for start in range(0, len(rows), size):
             yield rows[start : start + size]
@@ -120,7 +120,9 @@ def test_바뀐_책과_상품을_옮기고_진행_기록을_남긴다() -> None:
         "price": 13500,
         "in_stock": True,
         "pub_year": 2025,
-        "updated_at": datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC),
+        "updated_at": datetime(
+            2026, 10, 31, 18, 0, 0, tzinfo=UTC
+        ),  # BE 11/1 03:00(한국)
         "deleted_at": None,
     }
     assert dict(product) == {
@@ -128,7 +130,7 @@ def test_바뀐_책과_상품을_옮기고_진행_기록을_남긴다() -> None:
         "discounted_price": Decimal("13500.00"),
         "stock_quantity": 5,
     }
-    assert cursors[sync.BOOKS_CURSOR] == datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
+    assert cursors[sync.BOOKS_CURSOR] == datetime(2026, 10, 31, 18, 0, 0, tzinfo=UTC)
 
 
 @needs_db
