@@ -13,7 +13,7 @@ import asyncpg
 import pytest
 
 from app.jobs import sync_from_be as sync
-from tests.test_sync_from_be_convert import _be_book, _be_time
+from tests.test_sync_from_be_convert import _be_book, _be_product, _be_time
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")
 _MIGRATION = (
@@ -108,3 +108,37 @@ def test_다른_책이_가진_ISBN은_비우고_센다() -> None:
 
     assert dropped == 1
     assert rows == [(990000001, "9788900000011"), (990000002, None)]
+
+
+def test_값이_같은_줄은_다시_쓰지_않는다() -> None:
+    # 10/22 적재처럼 한 시각에 찍힌 125만 권을 겹쳐 다시 읽을 때, 같은 값이면 줄을 새로 쓰지 않아야 표가 부풀지
+    # 않는다. 다시 쓰면 줄의 물리 위치(ctid)가 바뀐다
+    book = sync.to_book(_be_book())
+    product = sync.to_product(_be_product())
+
+    async def body(conn):
+        await sync.upsert_books(conn, [book])
+        await sync.upsert_products(conn, [product])
+        before = (
+            await conn.fetchval(
+                "SELECT ctid::text FROM v_books WHERE book_id = 990000001"
+            ),
+            await conn.fetchval(
+                "SELECT ctid::text FROM v_products WHERE id = 880000001"
+            ),
+        )
+        await sync.upsert_books(conn, [book])
+        await sync.upsert_products(conn, [product])
+        after = (
+            await conn.fetchval(
+                "SELECT ctid::text FROM v_books WHERE book_id = 990000001"
+            ),
+            await conn.fetchval(
+                "SELECT ctid::text FROM v_products WHERE id = 880000001"
+            ),
+        )
+        return before, after
+
+    before, after = _in_tx(body)
+
+    assert before == after

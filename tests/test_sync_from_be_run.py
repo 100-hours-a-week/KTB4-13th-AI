@@ -117,8 +117,9 @@ def test_바뀐_책과_상품을_옮기고_진행_기록을_남긴다() -> None:
     assert dict(book) == {
         "title": "시험 책",
         "isbn13": "9788900000011",
-        "price": 13500,
-        "in_stock": True,
+        # 옛 칸은 새 줄에 0·false 로 들어간다(서버 표와 같다)
+        "price": 0,
+        "in_stock": False,
         "pub_year": 2025,
         "updated_at": datetime(
             2026, 10, 31, 18, 0, 0, tzinfo=UTC

@@ -15,6 +15,8 @@
 - 지운 책·상품은 줄을 남기고 deleted_at 만 채운다(옛 복제와 같다).
 - 재고는 BE 처럼 product_inventory 의 보유 − 예약(줄이 없으면 20)이다. products.stock_quantity 는 BE 가 V58 뒤로
   더 바꾸지 않는다. 시각이 바뀌지 않은 상품의 재고 변화는 #711 이 맞춘다.
+- 값이 같은 줄은 다시 쓰지 않는다 — 겹쳐 다시 읽은 줄(10/22 적재는 125만 권이 한 시각)을 새로 쓰면 표가 부풀고
+  캐시를 밀어낸다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진 ISBN 은 비운다.
 - 끝 검증: 이번에 옮긴 책 몇십 권을 BE 와 다시 맞춰 보고, 다르면 진행 기록을 남기지 않고 오류로 끝난다. 표 전체를
   세지 않는다 — 작은 DB 에서 매일 210만 줄을 읽으면 검색이 쓰는 캐시를 밀어낸다.
 """
@@ -28,7 +30,7 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
@@ -73,8 +75,6 @@ class Book:
     pub_year: int | None
     cover_url: str | None
     description: str | None
-    price: int
-    in_stock: bool
     updated_at: datetime
     deleted_at: datetime | None
 
@@ -118,19 +118,9 @@ def _available(row: dict[str, Any]) -> int:
     return max(0, on_hand - (row.get("reserved_quantity") or 0))
 
 
-def _won(value: Decimal) -> int:
-    """할인가를 원 단위 정수로. PostgreSQL numeric::int 와 같게 반올림한다(app/core/products.py)."""
-    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
-
-
 def to_book(row: dict[str, Any]) -> Book:
-    """BE books(+ 상품·재고) 한 줄을 v_books 한 줄로. 가격·재고는 v_books 의 옛 칸이라 채우기만 한다 — AI 는
-    가격·재고를 v_products 에서 읽는다."""
-    has_product = (
-        row.get("product_id") is not None
-        and row.get("discounted_price") is not None
-        and row.get("product_deleted_at") is None
-    )
+    """BE books 한 줄을 v_books 한 줄로. v_books 의 price·in_stock 은 옛 칸이라 싣지 않는다 — AI 는 가격·재고를
+    v_products 에서 읽고(app/core/products.py), 서버 표의 두 칸은 모두 0·false 다(11/11 개발 AI DB 210만 권)."""
     published: date | None = row.get("published_at")
     return Book(
         book_id=row["id"],
@@ -142,8 +132,6 @@ def to_book(row: dict[str, Any]) -> Book:
         pub_year=published.year if published else None,
         cover_url=row.get("cover_image_url"),
         description=row.get("description"),
-        price=_won(row["discounted_price"]) if has_product else 0,
-        in_stock=has_product and _available(row) > 0,
         updated_at=_from_be(row["updated_at"]),
         deleted_at=_from_be(row.get("deleted_at")),
     )
@@ -190,12 +178,8 @@ def connect_args(url: str) -> dict[str, Any]:
 
 _BE_BOOKS = """
 SELECT b.id, b.isbn13, b.title, b.author, b.publisher, b.category, b.published_at,
-       b.cover_image_url, b.description, b.updated_at, b.deleted_at,
-       p.id AS product_id, p.discounted_price, p.deleted_at AS product_deleted_at,
-       i.on_hand_quantity, i.reserved_quantity
+       b.cover_image_url, b.description, b.updated_at, b.deleted_at
 FROM books b
-LEFT JOIN products p ON p.book_id = b.id
-LEFT JOIN product_inventory i ON i.product_id = p.id
 """
 _BE_PRODUCTS = """
 SELECT p.id, p.book_id, p.discounted_price, p.updated_at, p.deleted_at,
@@ -245,16 +229,24 @@ class BeSource:
         self._conn.close()
 
 
+# price·in_stock 은 옛 칸이라 새 줄에만 0·false 로 넣고(서버 표와 같다) 고치지 않는다(to_book 설명)
 _UPSERT_BOOKS = """
 INSERT INTO v_books (book_id, isbn13, title, author, publisher, category, pub_year, cover_url,
                      description, price, in_stock, updated_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, false, $10, $11)
 ON CONFLICT (book_id) DO UPDATE SET
     isbn13 = EXCLUDED.isbn13, title = EXCLUDED.title, author = EXCLUDED.author,
     publisher = EXCLUDED.publisher, category = EXCLUDED.category, pub_year = EXCLUDED.pub_year,
-    cover_url = EXCLUDED.cover_url, description = EXCLUDED.description, price = EXCLUDED.price,
-    in_stock = EXCLUDED.in_stock, updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
+    cover_url = EXCLUDED.cover_url, description = EXCLUDED.description,
+    updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
 WHERE v_books.updated_at <= EXCLUDED.updated_at
+  AND (v_books.isbn13, v_books.title, v_books.author, v_books.publisher, v_books.category,
+       v_books.pub_year, v_books.cover_url, v_books.description, v_books.updated_at,
+       v_books.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.isbn13, EXCLUDED.title, EXCLUDED.author, EXCLUDED.publisher, EXCLUDED.category,
+       EXCLUDED.pub_year, EXCLUDED.cover_url, EXCLUDED.description, EXCLUDED.updated_at,
+       EXCLUDED.deleted_at)
 """
 _UPSERT_PRODUCTS = """
 INSERT INTO v_products (id, book_id, discounted_price, stock_quantity, updated_at, deleted_at)
@@ -264,6 +256,11 @@ ON CONFLICT (id) DO UPDATE SET
     stock_quantity = EXCLUDED.stock_quantity, updated_at = EXCLUDED.updated_at,
     deleted_at = EXCLUDED.deleted_at
 WHERE v_products.updated_at <= EXCLUDED.updated_at
+  AND (v_products.book_id, v_products.discounted_price, v_products.stock_quantity,
+       v_products.updated_at, v_products.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.book_id, EXCLUDED.discounted_price, EXCLUDED.stock_quantity,
+       EXCLUDED.updated_at, EXCLUDED.deleted_at)
 """
 
 
@@ -298,8 +295,6 @@ async def upsert_books(conn: asyncpg.Connection, books: list[Book]) -> int:
                 book.pub_year,
                 book.cover_url,
                 book.description,
-                book.price,
-                book.in_stock,
                 book.updated_at,
                 book.deleted_at,
             )
