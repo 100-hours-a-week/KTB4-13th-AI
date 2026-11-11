@@ -1,11 +1,15 @@
-"""BE → AI 반영(#640 6단계, #710) — BE MySQL 의 책·상품을 읽어 AI v_books·v_products 줄 모양으로 바꾼다.
+"""BE → AI 반영(#640 6단계, #710) — BE MySQL 의 책·상품을 읽어 AI v_books·v_products 로 옮긴다.
 
 - BE 시각(DATETIME)은 한국 시간이다. 반영 SQL(handoff/sync_catalog_to_commerce.sql)이 세션 시간대를 +09:00 으로
   두고 찍고, 앱도 한국 시간으로 쓴다(11/11 개발 BE 의 주문 created_at 이 UTC 지금보다 뒤). DB 서버 시간대는 UTC 라
   CLOUD #3 에는 UTC 로 적혔다. 옛 복제도 한국 시간으로 읽어 UTC 로 바꿨다(BE 13:34 → AI 04:34+00). AI 에는 UTC 로 둔다.
 - 재고는 BE 처럼 product_inventory 의 보유 − 예약(줄이 없으면 20)이다. products.stock_quantity 는 BE 가 V58 뒤로
   더 바꾸지 않는다.
-- 지운 책·상품은 deleted_at 으로 안다(BE V8 부터 상태 칸 대신 쓴다).
+- 지운 책·상품은 deleted_at 으로 안다(BE V8 부터 상태 칸 대신 쓴다). AI 표에는 줄을 남기고 deleted_at 만 채운다
+  (옛 복제와 같다).
+- AI 표에는 키로 덮어쓰고, 더 오래된 BE 줄은 새 값을 덮어쓰지 않는다. 값이 같은 줄은 다시 쓰지 않는다 — 겹쳐 다시
+  읽은 줄(10/22 적재는 125만 권이 한 시각)을 새로 쓰면 표가 부풀고 캐시를 밀어낸다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진
+  ISBN 은 비운다.
 """
 
 import re
@@ -18,6 +22,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
 
+import asyncpg
 import pymysql
 import pymysql.cursors
 
@@ -180,3 +185,94 @@ class BeSource:
 
     def close(self) -> None:
         self._conn.close()
+
+
+# price·in_stock 은 옛 칸이라 새 줄에만 0·false 로 넣고(서버 표와 같다) 고치지 않는다(to_book 설명)
+_UPSERT_BOOKS = """
+INSERT INTO v_books (book_id, isbn13, title, author, publisher, category, pub_year, cover_url,
+                     description, price, in_stock, updated_at, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, false, $10, $11)
+ON CONFLICT (book_id) DO UPDATE SET
+    isbn13 = EXCLUDED.isbn13, title = EXCLUDED.title, author = EXCLUDED.author,
+    publisher = EXCLUDED.publisher, category = EXCLUDED.category, pub_year = EXCLUDED.pub_year,
+    cover_url = EXCLUDED.cover_url, description = EXCLUDED.description,
+    updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
+WHERE v_books.updated_at <= EXCLUDED.updated_at
+  AND (v_books.isbn13, v_books.title, v_books.author, v_books.publisher, v_books.category,
+       v_books.pub_year, v_books.cover_url, v_books.description, v_books.updated_at,
+       v_books.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.isbn13, EXCLUDED.title, EXCLUDED.author, EXCLUDED.publisher, EXCLUDED.category,
+       EXCLUDED.pub_year, EXCLUDED.cover_url, EXCLUDED.description, EXCLUDED.updated_at,
+       EXCLUDED.deleted_at)
+"""
+_UPSERT_PRODUCTS = """
+INSERT INTO v_products (id, book_id, discounted_price, stock_quantity, updated_at, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (id) DO UPDATE SET
+    book_id = EXCLUDED.book_id, discounted_price = EXCLUDED.discounted_price,
+    stock_quantity = EXCLUDED.stock_quantity, updated_at = EXCLUDED.updated_at,
+    deleted_at = EXCLUDED.deleted_at
+WHERE v_products.updated_at <= EXCLUDED.updated_at
+  AND (v_products.book_id, v_products.discounted_price, v_products.stock_quantity,
+       v_products.updated_at, v_products.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.book_id, EXCLUDED.discounted_price, EXCLUDED.stock_quantity,
+       EXCLUDED.updated_at, EXCLUDED.deleted_at)
+"""
+
+
+async def upsert_books(conn: asyncpg.Connection, books: list[Book]) -> int:
+    """책을 키로 덮어쓴다. 다른 책이 이미 가진 ISBN 은 비우고 그 수를 돌려준다(isbn13 은 겹치면 안 된다)."""
+    isbns = [b.isbn13 for b in books if b.isbn13]
+    owners = {
+        r["isbn13"]: r["book_id"]
+        for r in await conn.fetch(
+            "SELECT isbn13, book_id FROM v_books WHERE isbn13 = ANY($1::text[])", isbns
+        )
+    }
+    dropped = 0
+    rows = []
+    for book in books:
+        isbn = book.isbn13
+        if isbn is not None:
+            owner = owners.get(isbn)
+            if owner is not None and owner != book.book_id:
+                isbn = None
+                dropped += 1
+            else:
+                owners[isbn] = book.book_id
+        rows.append(
+            (
+                book.book_id,
+                isbn,
+                book.title,
+                book.author,
+                book.publisher,
+                book.category,
+                book.pub_year,
+                book.cover_url,
+                book.description,
+                book.updated_at,
+                book.deleted_at,
+            )
+        )
+    await conn.executemany(_UPSERT_BOOKS, rows)
+    return dropped
+
+
+async def upsert_products(conn: asyncpg.Connection, products: list[Product]) -> None:
+    await conn.executemany(
+        _UPSERT_PRODUCTS,
+        [
+            (
+                p.id,
+                p.book_id,
+                p.discounted_price,
+                p.stock_quantity,
+                p.updated_at,
+                p.deleted_at,
+            )
+            for p in products
+        ],
+    )
