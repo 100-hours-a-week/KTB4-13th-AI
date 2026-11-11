@@ -2187,17 +2187,19 @@ def _lane_reply(
 def _lane_cards(
     decision: picking.Decision, turn: _LaneTurn
 ) -> tuple[list[dict], str | None, list[str]]:
-    """판단 호출이 고른 책으로 카드를 만든다. 같은 저자 책은 한 장까지다(마니아 목록은 같은 저자 쏠림이 25%).
+    """판단 호출이 고른 책으로 카드를 만든다. "비슷한 책" 턴에서는 같은 저자 책을 한 장까지 낸다.
 
-    저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 이 제한을 걸지 않는다. 함께 읽은 책을 물은 턴도 걸지 않는다 — 그 책
-    독자가 같은 작가의 다른 책을 같이 읽었다는 것이 답이고, 판단 호출에도 목록에서 카드 장수를 채우라고 시켰다. 줄리언
-    반스 책의 함께 읽은 책이 전부 반스 책이라 카드가 1장만 남았다(11/11 실측).
+    같은 저자 쏠림(25%)은 기준 책의 마니아 목록에서 잰 값이라, 그 목록을 데려오는 "비슷한 책" 턴에만 건다(#674·#675).
+    판단 호출에도 그 턴에만 같은 저자 책은 한 권까지라고 시킨다(picking._RELATION_RULE). 이 제한은 말풍선을 쓴 뒤에 카드를
+    빼는 것이라 다른 턴에도 걸면 말풍선과 카드 장수가 어긋난다. 일반 추천 턴에서는 "같은 작가 책 두 권을 골랐어요" 아래에
+    카드가 한 장만 남았고(11/11 dev 멀티턴 시험), 함께 읽은 책 턴에서는 줄리언 반스 책의 함께 읽은 책이 전부 반스 책이라
+    카드가 1장만 남았다(11/11 실측). 저자를 콕 집은 요청은 그 저자 책만 찾는 말이라 걸지 않는다.
     """
     by_id = {b["book_id"]: b for b in turn.pool}
     one_per_author = (
-        turn.spec.intent == "semantic"
+        turn.anchor is not None
+        and turn.plan.relation == "similar"
         and not turn.spec.exact.author
-        and not (turn.anchor is not None and turn.plan.relation == "co")
     )
     cards: list[dict] = []
     picked: list[dict] = []
