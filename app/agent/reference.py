@@ -99,7 +99,8 @@ class TurnContext:
     # 카드·장바구니 책의 BE 판매 상품 번호(요청의 product_id, BE#536). 책 정보·리뷰·쿠폰을 읽을 때 쓴다(#650).
     # 찾은 책의 번호는 found 에 있다
     product_ids: dict[str, int] = field(default_factory=dict)
-    # 카드 책의 남은 재고 수량(요청의 offers[].stock_quantity). 책 정보가 켜져 있을 때만 book.offer 결과에 싣는다(#650)
+    # 카드 책의 남은 재고 수량(요청의 offers[].stock_quantity). 책 정보가 켜져 있을 때만 book.offer 결과에 싣는다(#650).
+    # 담기·수량 바꾸기는 책 정보와 상관없이 이 수보다 많이 쓰지 않는다(#692)
     stock: dict[str, int] = field(default_factory=dict)
     book_info_enabled: bool = False
     # order.open 으로 주문하겠다고 짚은 장바구니 책의 ISBN(#664). 짚은 차례대로, 같은 책은 한 번
@@ -136,6 +137,14 @@ class TurnContext:
                 if offer.stock_quantity is not None
             },
         )
+
+    def stock_of(self, isbn: str) -> int | None:
+        """이 책의 남은 재고 수량. 카드 책은 요청의 offers, 이번 턴에 찾은 책은 BE 상품 상세의 값이다. 장바구니에만 있는
+        책은 BE 가 수량을 보내지 않아(available 만) None 이다."""
+        if isbn in self.stock:
+            return self.stock[isbn]
+        found = self.found.get(isbn)
+        return found.stock_quantity if found is not None else None
 
     def product_id(self, isbn: str) -> int | None:
         """이 책의 BE 판매 상품 번호. 요청에 없고 이번 턴에 찾은 책도 아니면 None."""
