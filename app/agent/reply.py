@@ -604,6 +604,26 @@ def _order_from_cart_reply() -> AgentActData:
     )
 
 
+# 앞 턴에 담아 둔 책으로 연 주문 화면(#678)에서 이름을 들어 말하는 책 수. 넘으면 "외 n종"으로 줄인다
+_ORDERED_NAMED = 3
+
+
+def _ordered_line(run: AgentRun) -> str:
+    """장바구니에 담아 둔 책으로 주문 화면을 연 결과. 책과 수량은 요청의 장바구니 값이다."""
+    lines = run.ordered_cart
+    names = ", ".join(f"《{line.title}》" for line in lines[:_ORDERED_NAMED])
+    if len(lines) > _ORDERED_NAMED:
+        names += f" 외 {len(lines) - _ORDERED_NAMED}종"
+    copies = sum(line.quantity for line in lines)
+    sentence = f"장바구니에 담긴 {names}, 모두 {copies}권으로 주문 화면을 열어 둘게요."
+    for line in run.unorderable:
+        eun = _particle(line.title, "은", "는")
+        sentence += (
+            f" 《{line.title}》{eun} 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+        )
+    return sentence
+
+
 def _checkout(plan: Plan | None) -> Checkout | None:
     if plan is None:
         return None
@@ -652,6 +672,11 @@ def finish(run: AgentRun) -> Finished:
     # 쓰기의 결과는 코드가 먼저 말한다. LLM 의 글이 전부 지워지거나 비어도, 이미 바뀐 장바구니를 두고
     # 422 나 "처리하지 못했어요"가 나가지 않는다
     outcome_lines = _outcomes(run, facts.titles)
+    if run.ordered_cart:
+        # 모델은 이 턴에 장바구니를 바꾸지 않았으므로 "결제는 할 수 없어요", "주문내역에서 확인해 주세요"처럼 주문
+        # 화면을 여는 이 턴과 어긋난 말을 썼을 수 있다. 결과는 코드가 말한다
+        outcome_lines.append(_ordered_line(run))
+        kept_lines = []
     if run.checkout is not None:
         outcome_lines.append(_checkout_line(run.checkout))
     elif run.ctx.checkout_enabled and run.actions and evidence.mentions_coupon(run.ctx):

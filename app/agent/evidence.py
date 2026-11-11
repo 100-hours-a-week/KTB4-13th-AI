@@ -839,6 +839,50 @@ def orders_alone(ctx: TurnContext) -> bool:
     return ctx.message is not None and bool(_ORDER_ALONE.match(normalize(ctx.message)))
 
 
+# 장바구니를 그대로 주문하겠다는 말(#678). _ORDER 에서 "사 줘", "살게"를 뺐다. 그 말은 보인 책 하나를 사겠다는 뜻일
+# 때가 많아서("그럼 살게") 장바구니 전체를 주문 화면에 올리면 안 된다
+_ORDER_WORD = re.compile(
+    r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
+    r"|바로\s*(?:주문|구매|결제)"
+)
+# 묻는 말. "주문할 때 쿠폰 써?", "결제하려면 어떻게 해", "주문할까?"는 주문하겠다는 말이 아니다
+_QUESTION = re.compile(r"\?|(?:까|나요|니|냐|는지)\s*[.!~]*$")
+# 장바구니를 그대로 주문하겠다는 말에 붙는 말. 이것과 주문 낱말을 지우고 낱말이 남으면 어떤 책을 말한 것이다
+# ("리눅스 책 바로 주문할게요", "1번 주문해 줘", "그거 결제해 줘")
+_ORDER_FILLER = re.compile(
+    r"(?:주문|결제|구매|구입)(?:을|를)?\s*(?:해|하고|할|하기|하려|하자|까지|부탁)[가-힣]*"
+    r"|(?:담아\s*둔|담아\s*놓은|담은|담긴|있는)\s*(?:거|것|책)(?:들)?(?:을|를|로|으로|도)?"
+    r"|장바구니(?:에|에서|의|를|에\s*있는)?"
+    r"|(?:쿠폰|포인트|할인)(?:도|이랑|랑|하고|을|를)?\s*(?:써서|쓰고|적용해서|적용하고|받아서)?"
+    r"|(?<![가-힣])(?:이제|그럼|그러면|그래서|자|바로|지금|이대로|그대로|일단|그냥|전부|모두|다|책|책들|"
+    r"네|넵|응|좋아|좋아요|오케이|ㅇㅋ|ㅇㅇ|요|줘|줘요|주세요|줄래|주라|감사합니다|고마워|고마워요|고맙습니다)(?![가-힣])"
+)
+_WORD_LEFT = re.compile(r"[0-9A-Za-z가-힣]")
+
+
+def proposed_books(ctx: TurnContext) -> set[str]:
+    """직전 에이전트 말이 짚어 제안한 책("카드 1번 《데미안》을 담을까요?"). 제안이 아니면 빈 집합(#678)."""
+    if not ctx.turns or ctx.turns[-1].role != "assistant":
+        return set()
+    text = ctx.turns[-1].text
+    return _books_named(ctx, text) if _PROPOSAL.search(text) else set()
+
+
+def orders_cart(ctx: TurnContext) -> bool:
+    """책을 가리키지 않고 주문하겠다고만 했는가("이제 주문할게", "장바구니에 있는 거 다 결제해 줘"). 그러면
+    장바구니에 담아 둔 책으로 주문 화면을 연다(#678).
+
+    묻는 말과, 어떤 책을 말한 말("1번 주문해 줘", "그거 주문할게", "리눅스 책 바로 주문할게요")은 아니다. 그런 말은
+    지금처럼 모델이 고른 도구(카드 담기, 책 찾기)를 따른다.
+    """
+    if ctx.message is None:
+        return False
+    message = normalize(ctx.message).strip()
+    if not _ORDER_WORD.search(message) or _QUESTION.search(message):
+        return False
+    return not _WORD_LEFT.search(_ORDER_FILLER.sub(" ", message))
+
+
 _EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
 
 

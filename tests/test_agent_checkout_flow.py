@@ -1583,3 +1583,236 @@ def test_기능이_꺼져_있으면_주문_한_마디도_예전처럼_쇼핑이_
     _, data, _ = _card_turn("주문", [ai_text("NOT_SHOPPING")], checkout=False)
 
     assert data.not_shopping is True
+
+
+# --- 앞 턴에 담아 둔 책으로 주문 화면 열기 (#678) ---
+
+
+@pytest.mark.parametrize(
+    ("message", "orders"),
+    [
+        ("이제 주문할게", True),
+        ("이제 결제해 줘", True),
+        ("장바구니에 있는 거 다 주문해 줘", True),
+        ("쿠폰 써서 주문해 줘", True),
+        ("네 주문할게요 감사합니다", True),
+        ("리눅스 책 바로 주문할게요", False),  # 새 책을 말했다. 모델이 찾는다
+        ("1번 주문해줘", False),
+        ("그거 주문할게", False),
+        ("데미안만 주문할게", False),
+        ("주문할 때 쿠폰 써?", False),
+        ("결제하려면 어떻게 해", False),
+        ("그럼 살게", False),  # 보인 책 하나를 사겠다는 말일 때가 많다
+        ("주문 취소해줘", False),
+    ],
+)
+def test_책을_말하지_않은_주문_말만_장바구니_주문이다(
+    message: str, orders: bool
+) -> None:
+    assert evidence.orders_cart(_ctx(message)) is orders
+
+
+CART_TWO = [
+    {
+        "isbn": P1,
+        "title": "미우의 과학 모험",
+        "price": 10000,
+        "quantity": 1,
+        "available": True,
+    },
+    {
+        "isbn": P2,
+        "title": "과학 만화 일기",
+        "price": 9500,
+        "quantity": 2,
+        "available": True,
+    },
+]
+
+
+def test_담아_둔_책으로_주문하겠다면_같은_수량으로_다시_담아_주문_화면을_연다() -> None:
+    # 11/11 dev 시험: 앞 턴에 담고 "이제 주문할게"면 주문 화면이 한 번도 안 열렸다(8번 중 0번)
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.CART_VIEW, {})),
+            ai_calls((ToolName.UI_GUIDE, {"target": "ORDER-LIST-001"})),
+            ai_text("결제는 제가 할 수 없어요. 주문내역에서 확인해 주세요."),
+        ],
+        cart=CART_TWO,
+        point_balance=3000,
+    )
+
+    # FE 는 이 턴의 장바구니 변경에 set 으로 든 책만 주문 화면에 올린다. 수량은 그대로다
+    assert sorted((a.op, a.isbn, a.quantity) for a in data.actions) == [
+        ("set", P1, 1),
+        ("set", P2, 2),
+    ]
+    assert data.checkout == Checkout(owned_coupon_id=None, use_point=3000)
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert (
+        "《미우의 과학 모험》, 《과학 만화 일기》, 모두 3권으로 주문 화면을 열어 둘게요."
+        in data.reply
+    )
+    assert "포인트 3,000원을 적용해 둘게요" in data.reply
+    assert "결제는 제가 할 수 없어요" not in data.reply
+    assert "주문내역" not in data.reply
+
+
+def test_살_수_없는_줄은_주문_화면에_넣지_않고_알린다() -> None:
+    cart = [CART_TWO[0], {**CART_TWO[1], "available": False}]
+    _, data, _ = _turn(
+        "이제 결제해 줘",
+        [ai_text("장바구니에서 결제해 주세요.")],
+        cart=cart,
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", P1, 1)]
+    assert (
+        "《과학 만화 일기》는 지금 살 수 없어서 주문 화면에 넣지 않았어요."
+        in data.reply
+    )
+
+
+def test_살_수_있는_줄이_없으면_장바구니를_다시_담지_않는다() -> None:
+    cart = [{**line, "available": False} for line in CART_TWO]
+    _, data, _ = _turn(
+        "이제 주문할게", [ai_text("지금은 살 수 있는 책이 없어요.")], cart=cart
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
+    assert data.reply == "지금은 살 수 있는 책이 없어요."
+
+
+def test_모델이_책을_찾았으면_장바구니를_주문_화면에_올리지_않는다() -> None:
+    # 말에 남은 낱말이 없어도 모델이 책을 찾거나 담으려 했으면 사용자는 어떤 책을 말한 것이다
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.BOOK_SEARCH, {"query": "개발 입문서"})),
+            ai_text("어느 책을 주문할까요?"),
+        ],
+        cart=CART_TWO,
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
+
+
+def test_장바구니가_비었으면_주문_화면을_열지_않는다() -> None:
+    _, data, _ = _turn("이제 주문할게", [ai_text("장바구니가 비어 있어요.")])
+
+    assert data.actions == []
+    assert all(b.target != ORDER_SCREEN for b in data.buttons)
+
+
+def test_주문_기능이_꺼져_있으면_장바구니를_다시_담지_않는다() -> None:
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [ai_text("주문은 장바구니에서 해 주세요.")],
+        checkout=False,
+        finder=False,
+        cart=CART_TWO,
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
+
+
+def test_모델이_장바구니_책을_다시_담으려다_막혀도_주문_화면을_연다() -> None:
+    # 실제 모델(gpt-5.4-mini)이 "이제 주문할게"에 카드에 보이는 장바구니 책 두 권을 다시 담으려다 근거 부족으로
+    # 막혀 "주문내역에서 확인하실 수 있어요"라고 답했다(3번 중 2번)
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls(
+                (ToolName.CART_ADD, {"book": {"source": "cart", "n": 1}}),
+                (ToolName.CART_ADD, {"book": {"source": "cart", "n": 2}}),
+            ),
+            ai_text("주문내역에서 확인하실 수 있어요."),
+        ],
+        cart=CART_TWO,
+    )
+
+    assert sorted((a.op, a.isbn, a.quantity) for a in data.actions) == [
+        ("set", P1, 1),
+        ("set", P2, 2),
+    ]
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert "주문내역" not in data.reply
+
+
+TWO_CARDS = {
+    # 카드가 두 장이라 "이제 주문할게"로는 어느 카드인지 몰라 담기가 막힌다
+    "context_cards": [
+        {"isbn": CARD_A, "rank": 1, "match_score": 80},
+        {"isbn": P3, "rank": 2, "match_score": 70},
+    ],
+    "offers": [
+        {"isbn": CARD_A, "title": "카드 책", "price": 12000, "in_stock": True},
+        {"isbn": P3, "title": "다른 카드 책", "price": 15000, "in_stock": True},
+    ],
+}
+
+
+def test_제안하지_않은_카드_책을_담으려다_막혀도_장바구니로_주문_화면을_연다() -> None:
+    # 실제 모델이 "이제 주문할게"에 장바구니에 없는 카드 1번을 담으려다 막혔다. 사용자는 책을 말하지 않았다
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("주문내역에서 확인해 주세요."),
+        ],
+        cart=CART_TWO,
+        **TWO_CARDS,
+    )
+
+    assert sorted(a.isbn for a in data.actions) == sorted([P1, P2])
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+
+
+def test_한_권을_제안한_뒤의_주문하겠다는_말은_그_책만_주문_화면에_올린다() -> None:
+    # "카드 1번 《카드 책》을 담을까요?" 뒤의 "이제 주문할게"는 그 책을 주문하겠다는 말이다. 담기가 근거를 얻어 성공하고,
+    # 장바구니에 있던 책은 다시 담지 않는다
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("담았어요."),
+        ],
+        cart=CART_TWO,
+        recent_turns=[
+            {"role": "user", "text": "1번 어때?"},
+            {"role": "assistant", "text": "카드 1번 《카드 책》을 담을까요?"},
+        ],
+        **TWO_CARDS,
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", CARD_A, 1)]
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+
+
+def test_직전에_제안한_책을_담으려다_막혔으면_장바구니를_주문_화면에_올리지_않는다() -> (
+    None
+):
+    # 두 권을 짚어 물은 뒤라 어느 책인지 몰라 담기가 막혔다. 사용자는 그 질문에 답한 것이라 장바구니 전체가 아니다
+    _, data, _ = _turn(
+        "이제 주문할게",
+        [
+            ai_calls((ToolName.CART_ADD, {"book": {"source": "card", "n": 1}})),
+            ai_text("어느 책을 주문할까요?"),
+        ],
+        cart=CART_TWO,
+        recent_turns=[
+            {"role": "user", "text": "둘 다 괜찮네"},
+            {
+                "role": "assistant",
+                "text": "카드 1번 《카드 책》과 카드 2번 《다른 카드 책》 중 어느 책을 담을까요?",
+            },
+        ],
+        **TWO_CARDS,
+    )
+
+    assert data.actions == []
+    assert data.checkout is None
