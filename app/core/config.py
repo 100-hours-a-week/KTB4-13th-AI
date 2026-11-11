@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     db_pool_min: int = 1
     db_pool_max: int = 10
 
+    # --- BE MySQL (#640 6단계 배치만) ---
+    # BE 에서 바뀐 책·상품·재고를 AI 표로 옮기는 배치가 읽는다. mysql://<계정>:<비밀번호>@<호스트>:<포트>/<DB> 꼴이고
+    # 읽기 전용 계정을 쓴다. 비어 있으면(기본) 배치는 아무것도 하지 않고 끝난다. API 서버는 이 값을 읽지 않는다.
+    be_mysql_url: str = ""
+
     # --- 인증 (① 부터) ---
     ai_service_token: str = ""
     cursor_signing_key: str = ""
