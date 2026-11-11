@@ -1502,7 +1502,10 @@ def test_주문_기능이_켜져_있으면_포인트_빼고는_책을_빼라는_
 # --- 주문해 달라는데 주문 화면으로 보낼 책이 없을 때 (11/10 dev) ---
 
 
-def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구니로_보낸다() -> None:
+def test_이미_담긴_책을_주문해_달라면_그_책만_같은_수량으로_다시_담아_주문_화면을_연다() -> (
+    None
+):
+    # 예전(#649)에는 "이미 장바구니에 있는 책은 주문 화면으로 보내지 못해요"였다. 같은 수량으로 다시 담으면 연다(#678)
     _, data, _ = _card_turn(
         "1번 주문해줘",
         [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
@@ -1513,6 +1516,35 @@ def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구
                 "quantity": 1,
                 "price": 28000,
                 "available": True,
+            },
+            {
+                "isbn": P1,
+                "title": "다른 장바구니 책",
+                "quantity": 1,
+                "price": 10000,
+                "available": True,
+            },
+        ],
+    )
+
+    assert [(a.op, a.isbn, a.quantity) for a in data.actions] == [("set", CARD_A, 1)]
+    assert data.checkout is not None
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
+    assert reply_module.ORDER_FROM_CART not in data.reply
+    assert "다른 장바구니 책" not in data.reply  # 짚은 책만 올린다
+
+
+def test_이미_담긴_책이_살_수_없으면_주문_화면을_열지_않고_장바구니로_보낸다() -> None:
+    _, data, _ = _card_turn(
+        "1번 주문해줘",
+        [ai_calls((ToolName.CART_ADD, {"book": card(1)})), ai_text("그대로 뒀어요.")],
+        cart=[
+            {
+                "isbn": CARD_A,
+                "title": _CARD_TITLE,
+                "quantity": 1,
+                "price": 28000,
+                "available": False,
             }
         ],
     )
@@ -1520,6 +1552,17 @@ def test_이미_담긴_책을_주문해_달라면_못_한다고_하고_장바구
     assert data.checkout is None
     assert reply_module.ORDER_FROM_CART in data.reply
     assert [(b.action, b.target) for b in data.buttons] == [("navigate", "CART-001")]
+
+
+def test_주문_한_마디에_쇼핑이_아니라고_해도_담아_둔_책이_있으면_주문_화면을_연다() -> (
+    None
+):
+    run, data, _ = _card_turn("주문", [ai_text("NOT_SHOPPING")], cart=CART_TWO)
+
+    assert run.not_shopping is False
+    assert data.not_shopping is False
+    assert sorted(a.isbn for a in data.actions) == sorted([P1, P2])
+    assert [(b.action, b.target) for b in data.buttons] == [("navigate", ORDER_SCREEN)]
 
 
 def test_담기만_해_달라면_이미_담긴_책에_주문_안내를_붙이지_않는다() -> None:

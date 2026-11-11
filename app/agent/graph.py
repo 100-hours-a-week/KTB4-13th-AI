@@ -534,18 +534,11 @@ async def run_agent(
         if checkout and ctx.logged_in and evidence.wants_order(ctx):
             coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
             plan = _plan(ctx, actions, end, coupon_ids)
-    elif (
-        checkout
-        and ctx.logged_in
-        and evidence.orders_cart(ctx)
-        and not _looked_for_books(
-            out["tool_calls"], start, evidence.proposed_books(ctx)
-        )
-    ):
-        # 앞 턴에 담아 둔 책으로 "이제 주문할게"(#678). FE 는 이 턴의 장바구니 변경에 set 으로 든 책만 주문 화면에
-        # 올리고, BE 는 변경이 없는 쇼핑 턴의 쿠폰·포인트를 버린다. 그래서 살 수 있는 줄을 같은 수량으로 다시 set
-        # 한다. BE 는 같은 수량의 변경도 받아 실행 기록을 남긴다(기대 수량 = 지금 수량)
-        ordered = [line for line in start if line.available and line.price is not None]
+    elif checkout and ctx.logged_in and evidence.wants_order(ctx):
+        # 앞 턴에 담아 둔 책으로 주문(#678). FE 는 이 턴의 장바구니 변경에 set 으로 든 책만 주문 화면에 올리고, BE 는
+        # 변경이 없는 쇼핑 턴의 쿠폰·포인트를 버린다. 그래서 주문할 줄을 같은 수량으로 다시 set 한다. BE 는 같은 수량의
+        # 변경도 받아 실행 기록을 남긴다(기대 수량 = 지금 수량)
+        ordered = _cart_to_order(ctx, out["tool_calls"], start)
         if ordered:
             actions = [
                 CartAction("set", line.isbn, line.quantity)
@@ -555,8 +548,10 @@ async def run_agent(
             plan = _plan(ctx, actions, ordered, coupon_ids)
     return AgentRun(
         final_text=final_text,
+        # "주문" 한 마디에 쇼핑이 아니라고 했어도 장바구니로 주문 화면을 열었으면 쇼핑 턴이다(#678)
         not_shopping=not out["tool_calls"]
-        and final_text.strip() == prompts.NOT_SHOPPING,
+        and final_text.strip() == prompts.NOT_SHOPPING
+        and not ordered,
         tool_calls=out["tool_calls"],
         iterations=out["iterations"],
         llm_calls=out["llm_calls"],
@@ -567,8 +562,41 @@ async def run_agent(
         checkout=plan,
         out_of_time=out["out_of_time"],
         ordered_cart=ordered,
-        unorderable=[line for line in start if line not in ordered] if ordered else [],
+        unorderable=_unorderable(start, ordered),
     )
+
+
+def _unorderable(cart: list[CartLine], ordered: list[CartLine]) -> list[CartLine]:
+    """장바구니 전체를 주문 화면에 올렸을 때 살 수 없어서 뺀 줄. 짚은 책만 올렸으면 알리지 않는다."""
+    if not ordered:
+        return []
+    left = [line for line in cart if line not in ordered]
+    return [line for line in left if not (line.available and line.price is not None)]
+
+
+def _cart_to_order(
+    ctx: TurnContext, calls: list[ToolCall], cart: list[CartLine]
+) -> list[CartLine]:
+    """쓰기가 성공하지 않은 주문 턴에 주문 화면에 올릴 장바구니 줄(#678). 없으면 빈 목록.
+
+    - 사용자가 짚은 책이 이미 담겨 있었으면(ALREADY_IN_CART, "1번 주문해 줘") 그 책만
+    - 책을 짚지 않고 주문하겠다고만 했으면("이제 주문할게") 장바구니 전체. 이 턴에 장바구니 밖의 책을 말했다고 볼
+      호출이 있었으면 올리지 않는다(_looked_for_books)
+    살 수 없는 줄(판매 중지·재고 부족)은 올리지 않는다.
+    """
+    sellable = [line for line in cart if line.available and line.price is not None]
+    already = {
+        call.arguments.get("isbn")
+        for call in calls
+        if call.result.get("error") == ToolErrorCode.ALREADY_IN_CART.value
+    }
+    if already:
+        return [line for line in sellable if line.isbn in already]
+    if evidence.orders_cart(ctx) and not _looked_for_books(
+        calls, cart, evidence.proposed_books(ctx)
+    ):
+        return sellable
+    return []
 
 
 def _looked_for_books(

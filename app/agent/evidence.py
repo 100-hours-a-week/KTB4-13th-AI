@@ -877,6 +877,8 @@ def orders_cart(ctx: TurnContext) -> bool:
     """
     if ctx.message is None:
         return False
+    if orders_alone(ctx):
+        return True  # "주문", "결제할게요"
     message = normalize(ctx.message).strip()
     if not _ORDER_WORD.search(message) or _QUESTION.search(message):
         return False
