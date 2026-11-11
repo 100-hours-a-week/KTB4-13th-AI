@@ -711,6 +711,20 @@ def test_같은_제목을_번호_없이_말한_제안에_대한_네는_근거가
     assert not evidence.has_evidence(ctx, _card(2), DB)
 
 
+def test_같은_제목_두_권을_번호로_짚은_제안에_대한_네는_두_권_다의_근거다() -> None:
+    # 번호가 있으면 어느 《한강》인지 안다. 같은 제목 막기(#663)가 여러 권 동의(#649)를 막지 않는다
+    ctx = _history(
+        _ctx("네", cards=[PY, DB, K8S]),
+        ("user", "한강 둘 다 담아줘"),
+        ("assistant", "카드 1번 《한강》과 카드 2번 《한강》을 담을까요?"),
+    )
+    ctx.titles = {PY: "한강", DB: "한강", K8S: TITLES[K8S]}
+
+    assert evidence.has_evidence(ctx, _card(1), PY)
+    assert evidence.has_evidence(ctx, _card(2), DB)
+    assert not evidence.has_evidence(ctx, _card(3), K8S)
+
+
 def test_선택지를_나열한_말에_대한_네는_근거가_아니다() -> None:
     ctx = _history(_ctx("네", cards=[PY, DB, K8S]), ("user", "그거 담아줘"), ASK_WHICH)
 
