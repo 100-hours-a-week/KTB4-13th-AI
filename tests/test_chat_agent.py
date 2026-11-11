@@ -497,10 +497,26 @@ def test_일반_추천_턴은_같은_저자_책도_고른_대로_낸다(
     assert [c["title"] for c in data["cards"]] == ["반도체 입문", "반도체 심화"]
 
 
-def test_기준_책이_있는_턴은_같은_저자_책을_한_장까지_낸다(
+def test_비슷한_책_턴은_같은_저자_책을_한_장까지_낸다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 기준 책의 마니아·함께 대출 목록을 데려오는 턴이다. 같은 저자 쏠림은 이 목록에서 잰 것이다
+    # 기준 책의 마니아 목록을 데려오는 턴이다. 같은 저자 쏠림은 이 목록에서 잰 것이고, 판단 호출에도 한 권까지라고 시킨다
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(
+        monkeypatch,
+        {"semantic": "반도체 산업", "anchor_card": 1, "relation": "similar"},
+        TWO_BY_ONE_AUTHOR,
+    )
+
+    data = _post("이거랑 비슷한 반도체 책 더 보여줘")
+
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+
+
+def test_기준_책만_짚고_관계를_묻지_않은_턴은_같은_저자_책도_고른_대로_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 판단 호출에 같은 저자 제한을 알리지 않는 턴이라, 빼면 말풍선 "두 권" 아래 카드가 한 장이 된다(#682 리뷰)
     _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
     _use_model(
         monkeypatch, {"semantic": "반도체 산업", "anchor_card": 1}, TWO_BY_ONE_AUTHOR
@@ -508,7 +524,7 @@ def test_기준_책이_있는_턴은_같은_저자_책을_한_장까지_낸다(
 
     data = _post("반도체 산업이 궁금해")
 
-    assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문", "반도체 심화"]
 
 
 def test_떠올린_책에_소개글이_없으면_확인된_칸으로만_이유를_쓴다(
