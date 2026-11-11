@@ -469,29 +469,62 @@ def test_카드_턴_말풍선_끝_질문과_두_갈래_제안은_카드_아래�
     )
 
 
-def test_같은_저자_책은_한_장까지다(monkeypatch: pytest.MonkeyPatch) -> None:
-    same_author = {
-        **SEARCHED,
-        "book_id": 302,
-        "isbn": "9790000000302",
-        "title": "반도체 심화",
-    }
-    _use_search(monkeypatch, SEARCHED, same_author)
-    _use_model(
-        monkeypatch,
-        {"semantic": "반도체"},
-        {
-            "action": "cards",
-            "cards": [
-                {"book_id": 301, "reason_short": "가"},
-                {"book_id": 302, "reason_short": "나"},
-            ],
-        },
-    )
+SAME_AUTHOR = {
+    **SEARCHED,
+    "book_id": 302,
+    "isbn": "9790000000302",
+    "title": "반도체 심화",
+}
+TWO_BY_ONE_AUTHOR = {
+    "action": "cards",
+    "cards": [
+        {"book_id": 301, "reason_short": "가"},
+        {"book_id": 302, "reason_short": "나"},
+    ],
+    "reply": "김반도 작가의 반도체 책 두 권을 골랐어요.",
+}
+
+
+def test_일반_추천_턴은_같은_저자_책도_고른_대로_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 기준 책이 없는 턴에서 같은 저자 책을 빼면 말풍선은 "두 권"인데 카드는 한 장이 된다(#674)
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(monkeypatch, {"semantic": "반도체"}, TWO_BY_ONE_AUTHOR)
 
     data = _post("반도체 책", shown=False)
 
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문", "반도체 심화"]
+
+
+def test_비슷한_책_턴은_같은_저자_책을_한_장까지_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 기준 책의 마니아 목록을 데려오는 턴이다. 같은 저자 쏠림은 이 목록에서 잰 것이고, 판단 호출에도 한 권까지라고 시킨다
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(
+        monkeypatch,
+        {"semantic": "반도체 산업", "anchor_card": 1, "relation": "similar"},
+        TWO_BY_ONE_AUTHOR,
+    )
+
+    data = _post("이거랑 비슷한 반도체 책 더 보여줘")
+
     assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+
+
+def test_기준_책만_짚고_관계를_묻지_않은_턴은_같은_저자_책도_고른_대로_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 판단 호출에 같은 저자 제한을 알리지 않는 턴이라, 빼면 말풍선 "두 권" 아래 카드가 한 장이 된다(#682 리뷰)
+    _use_search(monkeypatch, SEARCHED, SAME_AUTHOR)
+    _use_model(
+        monkeypatch, {"semantic": "반도체 산업", "anchor_card": 1}, TWO_BY_ONE_AUTHOR
+    )
+
+    data = _post("반도체 산업이 궁금해")
+
+    assert [c["title"] for c in data["cards"]] == ["반도체 입문", "반도체 심화"]
 
 
 def test_떠올린_책에_소개글이_없으면_확인된_칸으로만_이유를_쓴다(
@@ -1313,6 +1346,87 @@ def test_이웃_책_DB_조회가_실패하면_그_갈래만_빼고_검색_책으
     listing = prompts[0].split("책 목록:\n", 1)[1]
     assert "AI 2041" not in listing
     assert [c["title"] for c in data["cards"]] == ["반도체 입문"]
+
+
+def _install_anchor_lists(
+    monkeypatch: pytest.MonkeyPatch, *co: tuple[str, str, str]
+) -> None:
+    """기준 책(AI 지도책)의 함께 대출 목록만 바꾼 그래프. 허브는 없다."""
+    monkeypatch.setattr(reading_graph, "HUB_TOP", 0)
+    line = _usage(
+        ANCHOR_ISBN, "AI 지도책", "케이트 크로퍼드 지음", coLoanBooks=list(co)
+    )
+    reading_graph.install(reading_graph.from_data(reading_graph.build([line])))
+    for book_id, book in enumerate(co, start=600):
+        monkeypatch.setitem(CATALOG, book[0], _row(book_id, *book, "소개."))
+
+
+def test_함께_읽은_책을_물었는데_허브_아닌_이웃이_모자라면_허브로_채운다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_search(monkeypatch, SEARCHED)
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "AI 지도책 함께 읽은 책", "anchor_card": 1, "relation": "co"},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 201}],
+            "reply": "함께 읽은 책이에요.",
+        },
+    )
+
+    _post("이 책 읽은 사람들은 또 뭐 읽었어?")
+
+    # 허브 아닌 이웃은 칩 워 1권뿐이라 카드 장수만큼 허브(불편한 편의점)를 뒤에 붙인다. 관계를 묻지 않은 턴은 허브를
+    # 붙이지 않는다(test_보여_준_책에서_이어_새_조건을_말하면_그_책의_함께_대출에서도_고른다)
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert listing.index("칩 워") < listing.index("불편한 편의점")
+
+
+def test_기준_책과_표시_제목이_같은_다른_저자_책은_후보에서_뺀다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    same_title = ("9790000000020", "AI 지도책 : 그림으로 보는 인공지능", "다른 저자")
+    _install_anchor_lists(monkeypatch, CHIP_WAR, same_title)
+    _use_search(monkeypatch)
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "AI 지도책 함께 읽은 책", "anchor_card": 1, "relation": "co"},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 600}],
+            "reply": "함께 읽은 책이에요.",
+        },
+    )
+
+    _post("이 책 읽은 사람들은 또 뭐 읽었어?")
+
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert "칩 워" in listing
+    assert "그림으로 보는 인공지능" not in listing
+
+
+def test_함께_읽은_책을_물으면_같은_저자_책도_카드로_낸다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = ("9790000000021", "시대의 소음", "줄리언 반스")
+    second = ("9790000000022", "연애의 기억", "줄리언 반스")
+    _install_anchor_lists(monkeypatch, first, second)
+    _use_search(monkeypatch)
+    _use_model(
+        monkeypatch,
+        {"semantic": "AI 지도책 함께 읽은 책", "anchor_card": 1, "relation": "co"},
+        {
+            "action": "cards",
+            "cards": [{"book_id": 600}, {"book_id": 601}],
+            "reply": "함께 읽은 책이에요.",
+        },
+    )
+
+    data = _post("이 책 읽은 사람들은 또 뭐 읽었어?")
+
+    # 같은 저자 한 장 규칙은 마니아 목록 쏠림용이다. 함께 읽은 책은 그 독자가 실제로 같이 읽은 책이라 그대로 낸다
+    assert [c["title"] for c in data["cards"]] == ["시대의 소음", "연애의 기억"]
 
 
 def test_설정이_없으면_에이전트가_켜진다(monkeypatch: pytest.MonkeyPatch) -> None:

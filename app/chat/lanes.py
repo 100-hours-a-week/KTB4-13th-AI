@@ -5,7 +5,8 @@ CHAT_AGENT 를 켰을 때 쓴다.
   LLM 은 제목만 떠올리고(검색어 역할), 책인지는 책 표가 정한다. 제목과 저자가 둘 다 맞는 책만 받는다(10/28 실험: 제목만
   맞춘 9권 중 5권이 이름만 같은 다른 책)
 - 기준 책: 사용자가 보여 준 카드나 특정 책을 짚으면 그 책. 1단계가 내고, 코드가 메시지에 근거가 있는지 본다(fill_plan).
-  그 책의 함께 대출·마니아 목록(app/chat/reading_graph.py)에서 한 걸음 이웃을 데려온다. 순서는 쓰지 않고 허브만 뺀 전부다
+  그 책의 함께 대출·마니아 목록(app/chat/reading_graph.py)에서 한 걸음 이웃을 데려온다. 순서는 쓰지 않고 허브만 뺀 전부다.
+  관계를 물은 턴에 허브 아닌 이웃이 카드 장수보다 적으면 허브로 채운다(neighbor_books)
 
 A 는 지금의 get_candidates 그대로다(app/routers/chat.py). 크로스 인코더(#639)도 A 에만 쓴다. 관련 책은 소개글이 없는
 책이 30% 라 글로 줄 세우면 밀린다(11/10 실측).
@@ -143,19 +144,32 @@ def display_title(title: str) -> str:
     return _SUBTITLE.sub("", title).strip() or title
 
 
+def title_key(title: str | None) -> str:
+    """부제를 뗀 표시 제목의 키. 화면에서 같은 제목으로 보이는 책을 가른다."""
+    return editions.title_key(display_title(title or ""))
+
+
 @dataclass
 class Skip:
-    """후보에서 뺄 책: 보여 준 책·뺀 책·가진 책(book_id)과 그 판본들, 기준 책 작품, 빼 달라고 한 저자."""
+    """후보에서 뺄 책: 보여 준 책·뺀 책·가진 책(book_id)과 그 판본들, 기준 책 작품, 빼 달라고 한 저자,
+    기준 책과 표시 제목이 같은 책.
+
+    기준 책 작품(works)은 판본만 묶는다. 저자가 다른 같은 제목 책(칼 세이건 『코스모스』를 짚었는데 앤 드루얀
+    『코스모스』)은 다른 작품이지만 카드로 내면 기준 책이 다시 나온 것처럼 보인다(11/11 실측) — titles 로 뺀다.
+    """
 
     book_ids: set[int] = field(default_factory=set)
     edition_keys: set[tuple[str, str]] = field(default_factory=set)
     works: set[int] = field(default_factory=set)
     authors: set[str] = field(default_factory=set)
+    titles: set[str] = field(default_factory=set)
 
     def blocks(self, book: dict, graph: ReadingGraph | None) -> bool:
         if book["book_id"] in self.book_ids:
             return True
         if self.authors and editions.author_key(book.get("author")) in self.authors:
+            return True
+        if self.titles and title_key(book.get("title")) in self.titles:
             return True
         if (
             editions.edition_key(book.get("title"), book.get("author"))
@@ -458,38 +472,55 @@ def relation_kinds(relation: Relation | None) -> tuple[Kind, ...]:
 
 
 async def neighbor_books(
-    graph: ReadingGraph, anchor: Anchor, kinds: Sequence[Kind]
+    graph: ReadingGraph,
+    anchor: Anchor,
+    kinds: Sequence[Kind],
+    *,
+    skip: Skip | None = None,
+    fill_to: int = 0,
 ) -> list[dict]:
-    """C — 기준 책의 목록(한 걸음)에 든 작품을 우리 서점 책으로 바꾼다. 허브는 뺀다. 작품마다 판본 하나."""
+    """C — 기준 책의 목록(한 걸음)에 든 작품을 우리 서점 책으로 바꾼다. 허브는 뺀다. 작품마다 판본 하나.
+
+    fill_to 는 관계를 물은 턴에 채울 카드 장수다. 허브 아닌 이웃(skip 이 빼는 책 말고)이 그보다 적으면 남의 목록에 덜 든
+    허브부터 모자란 만큼 채운다. 허브는 남의 목록 수 상위 100작품이라 그래프가 커지면 바뀐다 — 6.4만 권 그래프에서
+    사피엔스·넥서스가 허브가 되자 "코스모스 읽은 사람들은?" 후보가 5권에서 3권으로 줄었다(11/11 실측). 허브 가운데 덜 든
+    책은 막 허브가 된 책이라 불편한 편의점 같은 맨 위 허브보다 먼저 온다.
+    """
     if anchor.work is None:
         return []
     kind_of: dict[int, list[Kind]] = {}
     for kind in kinds:
         for work in graph.neighbors(anchor.work, kind):
-            if not graph.is_hub(work):
-                kind_of.setdefault(work, []).append(kind)
+            kind_of.setdefault(work, []).append(kind)
     isbns = [isbn for work in kind_of for isbn in graph.isbns.get(work, ())]
     by_work: dict[int, list[dict]] = {}
     for row in await _rows_by_isbns(isbns):
         work = graph.by_isbn.get(row["isbn"])
-        if work in kind_of:
+        if work in kind_of and not (skip is not None and skip.blocks(row, graph)):
             by_work.setdefault(work, []).append(row)
+
     # 판본마다 받은 목록을 합치면 이웃이 40권을 넘기도 한다(데미안 12판본 → 마니아 41작품). 판단 호출에 넣는 책 수를
     # 고정하려고 허브 보정 순서(남의 목록에 덜 든 책부터)로 MAX_NEIGHBOR_BOOKS 권만 남긴다
-    ranked = sorted(
-        by_work,
-        key=lambda w: (min(graph.listed[kind][w] for kind in kind_of[w]), w),
-    )[:MAX_NEIGHBOR_BOOKS]
+    def by_listed(works: Iterable[int]) -> list[int]:
+        return sorted(
+            works, key=lambda w: (min(graph.listed[kind][w] for kind in kind_of[w]), w)
+        )
+
+    ranked = by_listed(w for w in by_work if not graph.is_hub(w))[:MAX_NEIGHBOR_BOOKS]
+    hubs = by_listed(w for w in by_work if graph.is_hub(w))[
+        : max(0, fill_to - len(ranked))
+    ]
     books = []
-    for work in ranked:
+    for work in ranked + hubs:
         book = _best_edition(by_work[work])
         book["sources"] = [(kind, anchor.title) for kind in kind_of[work]]
         books.append(book)
     logger.info(
-        "기준 책 이웃 %d작품 중 우리 서점에 있는 %d권, 그중 %d권을 데려왔다",
+        "기준 책 이웃 %d작품 중 우리 서점에 있고 뺄 책이 아닌 %d권, 그중 %d권을 데려왔다(허브로 채운 책 %d권)",
         len(kind_of),
         len(by_work),
         len(books),
+        len(hubs),
     )
     return books
 
