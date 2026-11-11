@@ -1432,8 +1432,10 @@ async def get_candidates(
     if spec.intent == "semantic":
         pool = [c for c in pool if c["description"]]
 
-    # 이미 보여 준 책의 다른 판본, 그리고 후보끼리 겹치는 판본을 CANDIDATE_LIMIT 전에 걷어 낸다(#281).
-    shown_keys = await _fetch_edition_keys(list(exclude))
+    # 이미 보여 준 책·가진 책의 다른 판본, 그리고 후보끼리 겹치는 판본을 CANDIDATE_LIMIT 전에 걷어 낸다(#281).
+    # 가진 책도 넣는다 — 카탈로그에 같은 책이 출판사 표기만 다르게 두 번 든 경우(『RAG 비법노트』)가 있어
+    # book_id 로만 빼면 도서관에 있는 책이 다른 번호로 다시 추천된다.
+    shown_keys = await _fetch_edition_keys([*exclude, *(owned_book_ids or [])])
     if shown_keys:
         pool = [
             c
@@ -2084,7 +2086,7 @@ async def _gather_lanes(
     excluded = set(shown_ids) | set(spec.exclude)
     skip = lanes.Skip(
         book_ids=excluded | set(owned or []),
-        edition_keys=await _fetch_edition_keys(list(excluded)),
+        edition_keys=await _fetch_edition_keys([*excluded, *(owned or [])]),
     )
     if anchor is not None and anchor.book_id is not None:
         skip.book_ids.add(anchor.book_id)
