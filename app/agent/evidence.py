@@ -435,8 +435,13 @@ _MAX_AGREEMENT_CHARS = 30
 _CART_MENTION = re.compile(r"장바구니\s*(\d+)\s*번째")
 
 
-def _books_named(ctx: TurnContext, text: str) -> set[str]:
-    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+def _known_titles(ctx: TurnContext) -> dict[str, str]:
+    """제목을 아는 책(장바구니 줄과 조회한 카드)의 ISBN → 제목."""
+    return {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
+
+
+def _numbered_books(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 번호("카드 1번", "2번", "장바구니 1번째")로 짚은 책들."""
     text = normalize(text)
     named: set[str] = set()
     for match in _CART_MENTION.finditer(text):
@@ -447,8 +452,14 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     rest = _CART_MENTION.sub(" ", text)
     ranks = {int(m.group(1)) for m in _CARD_MENTION.finditer(rest)} | ordinals(rest)
     named |= {card.isbn for card in ctx.cards if card.rank in ranks}
-    spoken = _flat(text)
-    known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
+    return named
+
+
+def _books_named(ctx: TurnContext, text: str) -> set[str]:
+    """에이전트의 말이 짚은 책들. 번호("카드 1번", "2번")와 제목 전체로 찾는다."""
+    named = _numbered_books(ctx, text)
+    spoken = _flat(normalize(text))
+    known = _known_titles(ctx)
     # 번호로 짚은 책의 제목 안에 든 제목은 그 책을 말한 것이다. 권마다 ISBN 이 다른 시리즈처럼 카드 여러 장의 제목이
     # 같으면("카드 1번 《한강》을 담을까요?") 제목 일치로 다른 《한강》까지 세어 한 권을 짚은 말이 아니게 되고, "네"가
     # 근거가 못 되어 같은 질문만 되풀이했다(11/11 dev)
@@ -487,6 +498,8 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
     last = ctx.turns[-1].text
     named = _books_named(ctx, last)
     if len(named) >= 2 and isbn in named:
+        if _only_by_shared_title(ctx, named, last, isbn):
+            return False
         return _for_named_books(ctx, named, last, message)
     if named != {isbn}:
         return False
@@ -500,6 +513,27 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
         bool(_AGREE.match(message))
         and len(message) <= _MAX_AGREEMENT_CHARS
         and bool(_PROPOSAL.search(last))
+    )
+
+
+def _only_by_shared_title(
+    ctx: TurnContext, named: set[str], text: str, isbn: str
+) -> bool:
+    """이 책을 번호 없이 제목으로만 짚었고, 같이 짚힌 다른 책도 제목이 같은가.
+
+    "《한강》을 담을까요?"는 같은 제목 카드 여러 장을 다 짚은 말로 세어진다. 그 말에 대한 "네"는 여러 권 모두에 대한
+    동의가 아니라 어느 《한강》인지 모르는 말이다(#663). 여러 권 동의(_for_named_books)로 넘기면 같은 제목 카드를 모두
+    담았다.
+    """
+    if isbn in _numbered_books(ctx, text):
+        return False
+    known = _known_titles(ctx)
+    title = known.get(isbn)
+    if title is None:
+        return False
+    return any(
+        other != isbn and other in known and _flat(known[other]) == _flat(title)
+        for other in named
     )
 
 
