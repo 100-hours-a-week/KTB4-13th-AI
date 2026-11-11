@@ -7,7 +7,8 @@
   더 바꾸지 않는다.
 - 지운 책·상품은 deleted_at 으로 안다(BE V8 부터 상태 칸 대신 쓴다). AI 표에는 줄을 남기고 deleted_at 만 채운다
   (옛 복제와 같다).
-- AI 표에는 키로 덮어쓰고, 더 오래된 BE 줄은 새 값을 덮어쓰지 않는다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진
+- AI 표에는 키로 덮어쓰고, 더 오래된 BE 줄은 새 값을 덮어쓰지 않는다. 값이 같은 줄은 다시 쓰지 않는다 — 겹쳐 다시
+  읽은 줄(10/22 적재는 125만 권이 한 시각)을 새로 쓰면 표가 부풀고 캐시를 밀어낸다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진
   ISBN 은 비운다.
 """
 
@@ -214,6 +215,13 @@ ON CONFLICT (book_id) DO UPDATE SET
     cover_url = EXCLUDED.cover_url, description = EXCLUDED.description, price = EXCLUDED.price,
     in_stock = EXCLUDED.in_stock, updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
 WHERE v_books.updated_at <= EXCLUDED.updated_at
+  AND (v_books.isbn13, v_books.title, v_books.author, v_books.publisher, v_books.category,
+       v_books.pub_year, v_books.cover_url, v_books.description, v_books.price, v_books.in_stock,
+       v_books.updated_at, v_books.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.isbn13, EXCLUDED.title, EXCLUDED.author, EXCLUDED.publisher, EXCLUDED.category,
+       EXCLUDED.pub_year, EXCLUDED.cover_url, EXCLUDED.description, EXCLUDED.price, EXCLUDED.in_stock,
+       EXCLUDED.updated_at, EXCLUDED.deleted_at)
 """
 _UPSERT_PRODUCTS = """
 INSERT INTO v_products (id, book_id, discounted_price, stock_quantity, updated_at, deleted_at)
@@ -223,6 +231,11 @@ ON CONFLICT (id) DO UPDATE SET
     stock_quantity = EXCLUDED.stock_quantity, updated_at = EXCLUDED.updated_at,
     deleted_at = EXCLUDED.deleted_at
 WHERE v_products.updated_at <= EXCLUDED.updated_at
+  AND (v_products.book_id, v_products.discounted_price, v_products.stock_quantity,
+       v_products.updated_at, v_products.deleted_at)
+      IS DISTINCT FROM
+      (EXCLUDED.book_id, EXCLUDED.discounted_price, EXCLUDED.stock_quantity,
+       EXCLUDED.updated_at, EXCLUDED.deleted_at)
 """
 
 
