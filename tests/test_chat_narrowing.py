@@ -652,6 +652,43 @@ def test_질문이면_검색하지_않고_보여_준_책_소개로_답한다(
     assert len(rec.prompts) == 2  # 호출은 두 번
 
 
+def test_대답_턴은_300자_뒤에_있는_소개도_넣고_아주_긴_소개만_자른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 『최후의 증인』처럼 묻는 내용이 소개 뒷부분에 있을 때 앞 300자만 넣으면 모른다고 답했다(#702)
+    late = "가" * 800 + " 대장은 강만호다."
+    huge = "나" * (chat.ANSWER_DESCRIPTION_CHARS + 500)
+    books = [
+        shown.ShownBook(1, 1, "최후의 증인", "김성종", late),
+        shown.ShownBook(2, 2, "긴 책", "저자", huge),
+    ]
+    monkeypatch.setattr(shown, "fetch", lambda cards: asyncio.sleep(0, books))
+    rec = _Recorder(
+        json.dumps({"turn": "answer"}),
+        json.dumps(
+            {"reply": "대장은 강만호예요.", "followup": "다른 인물도 궁금하세요?"},
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+    body = _request(
+        message="1번에서 대장이 누구야?",
+        recent_turns=[{"role": "user", "text": "추리소설"}],
+        context_cards=[
+            {"isbn": "9780000000001", "rank": 1, "match_score": 30},
+            {"isbn": "9780000000002", "rank": 2, "match_score": 28},
+        ],
+    )
+
+    data = client.post("/recommendations/chat", json=body).json()["data"]
+
+    assert data["reply"] == "대장은 강만호예요."
+    answer_prompt = rec.prompts[1]
+    assert "대장은 강만호다." in answer_prompt
+    assert "나" * chat.ANSWER_DESCRIPTION_CHARS in answer_prompt
+    assert "나" * (chat.ANSWER_DESCRIPTION_CHARS + 1) not in answer_prompt
+
+
 def test_대답_턴의_followup이_비면_기본_질문을_쓴다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -62,15 +62,59 @@ def _clip(title: str, room: int) -> str:
     return title if len(title) <= room else title[: max(room - 1, 1)].rstrip() + "…"
 
 
-def relation_reason(kind: str, anchor: str) -> str:
-    """그래프에서 온 책의 한 줄 이유. 관계 사실만 쓴다. 80자 안에 들게 기준 책 제목을 줄인다."""
-    if kind == "co":
-        frame = "『{t}』{p} 읽은 사람들이 함께 읽은 책이에요(" + SOURCE_NOTE + ")."
-    else:
-        frame = "『{t}』의 정보나루 마니아 추천 목록에 있는 책이에요."
-    room = MAX_REASON_SHORT_CHARS - len(frame.format(t="", p="을"))
-    title = _clip(anchor, room)
-    return frame.format(t=title, p=_object_particle(title))
+def graph_source(book: dict) -> tuple[str, str] | None:
+    """책이 기준 책의 함께 읽은 책·마니아 추천에서 왔으면 (갈래, 기준 책 제목). 아니면 None."""
+    return next(
+        (
+            (lane, anchor)
+            for lane, anchor in book.get("sources") or []
+            if lane in ("co", "mania")
+        ),
+        None,
+    )
+
+
+# 말풍선 끝에 붙이는 출처 문장의 기준 책 제목 상한. 말풍선이 120자 안팎이라 문장 하나가 너무 길지 않게 한다
+_NOTE_ANCHOR_CHARS = 30
+_NOTE_TITLE_CHARS = 20
+
+
+def _topic_particle(word: str) -> str:
+    return "은" if options.has_object_final(word) else "는"
+
+
+def source_note(picked: list[dict]) -> str | None:
+    """카드가 함께 읽은 책·마니아 추천에서 왔으면 어떻게 골랐는지 말풍선 끝에 붙일 한 문장. 아니면 None.
+
+    전에는 카드 한 줄 이유를 "『X』의 정보나루 마니아 추천 목록에 있는 책이에요." 틀로 썼다. 기준 책 제목만 들어가는
+    틀이라 같은 기준 책에서 온 카드 세 장이 같은 이유로 도배됐다(11/11 사용자). 그래서 출처는 말풍선에서 한 번 말하고,
+    카드 이유는 책마다 다른 것(소개글, 없으면 저자·연도·분류)을 쓴다.
+
+    카드 순서에서 처음 나오는 기준 책 갈래 하나만 말한다. 카드가 모두 그 갈래면 "…책으로 골랐어요", 일부면 그 책
+    제목을 짚는다. 목록으로는 몇 명이 읽었는지·무엇으로 골랐는지 모르니(위 모듈 설명) 누가 읽었는지와 출처만 말한다.
+    마니아 추천은 정보나루 이름("마니아를 위한 추천도서")대로 그 책을 좋아하는 독자에게 권하는 목록이라고 말한다.
+    출처(도서관 정보나루)는 카드 근거 칸(relation_basis)이 적으니 이 문장에는 쓰지 않는다.
+    """
+    sources = [(book, graph_source(book)) for book in picked]
+    first = next((s for _, s in sources if s is not None), None)
+    if first is None:
+        return None
+    kind, anchor = first
+    anchor = _clip(display_title(anchor), _NOTE_ANCHOR_CHARS)
+    who = (
+        f"『{anchor}』{_object_particle(anchor)} 읽은 분들이 함께 읽은"
+        if kind == "co"
+        else f"『{anchor}』{_object_particle(anchor)} 좋아하는 분께 권하는"
+    )
+    titles = [
+        _clip(display_title(book["title"]), _NOTE_TITLE_CHARS)
+        for book, s in sources
+        if s == first
+    ]
+    if len(titles) == len(picked):
+        return f"{who} 책으로 골랐어요."
+    named = "·".join(f"『{t}』" for t in titles)
+    return f"{named}{_topic_particle(titles[-1])} {who} 책이에요."
 
 
 def relation_basis(kind: str, anchor: str) -> dict:
@@ -176,6 +220,20 @@ def proposal_options(picked: list[dict]) -> list[str]:
 def overclaims(text: str) -> bool:
     """함께 대출·마니아 목록으로는 알 수 없는 것을 말하는가."""
     return bool(_OVERCLAIM.search(text))
+
+
+# 판단 호출 목록의 출처 꼬리표("『X』 마니아 추천", "『X』 함께 읽은 책")를 한 줄 이유에 옮겨 적은 말. 같은 기준 책에서
+# 온 카드마다 같은 말이 되어 이유가 책을 가르지 못한다(11/11 사용자). 출처는 근거 칸이 따로 말한다.
+# "함께"는 과거형(읽은·빌린)과 대출만 본다. "함께 읽기 좋은"·"함께 읽을 수 있는"·"함께 읽으면"은 아이·가족 책에서 흔한
+# 좋은 이유인데, 넓게 잡으면 확인된 칸 문장으로 바뀌고 말풍선 문장도 지워진다(#661 리뷰).
+_SOURCE_TAG = re.compile(
+    r"마니아|함께\s?(?:읽은|빌린|대출)|(?:읽은|빌린)\s?(?:사람|분)|정보나루"
+)
+
+
+def names_source(text: str) -> bool:
+    """한 줄 이유가 책 내용 대신 출처 꼬리표를 말하는가."""
+    return bool(_SOURCE_TAG.search(text))
 
 
 def without_overclaims(reply: str, co_titles: set[str]) -> str | None:
@@ -305,6 +363,8 @@ JUDGE_PROMPT = ChatPromptTemplate.from_template(
     "reply 는 말풍선에 보일 1-2문장이다(최대 120자). 먼저 이번 메시지에 반응하라. 요청을 되풀이하며 시작하지 "
     "마라. 카드 제목을 늘어놓지 말고 고른 책들이 어떤 결인지 한마디로 말하라. {propose}\n"
     '"비슷한 책"(함께 읽은 책), "더 깊은 책"(마니아 추천 책), "많이 읽은", "다음에 읽은" 같은 말은 쓰지 마라.\n'
+    "책을 어느 출처(함께 읽은 책·마니아 추천)에서 데려왔는지는 화면이 말풍선 끝에 따로 붙인다. reply 와 reason_short "
+    "에 출처를 쓰지 말고, reason_short 는 그 책 소개에서 이유를 찾아라.\n"
     + voice.RULES
     + "다음 JSON 형식으로만 답하라. action 을 맨 앞에 쓴다. 고른 action 에 쓰지 않는 칸은 넣지 마라: "
     '{{"action": "cards 또는 ask 또는 search_again", '

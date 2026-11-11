@@ -1,4 +1,9 @@
 
+**V2 기능 소개** (2026.10 배포 기능, 11월 개발 서버에서 촬영)
+
+https://github.com/user-attachments/assets/bf982f52-a356-4c9b-aa13-d539ab6a850d
+
+**V1 기능 소개**
 
 https://github.com/user-attachments/assets/e6779a38-6470-4ced-a916-4f860274e825
 

@@ -91,6 +91,10 @@ class AgentRun:
     checkout: checkout_plan.Plan | None = None
     # 턴 시간이 다 되어 가서 도구를 그만 쓰고 답하게 했다(반복 상한 전에)
     out_of_time: bool = False
+    # 장바구니를 바꾸지 않고, 앞 턴에 담아 둔 책만으로 주문 화면을 연 턴의 그 줄들(#678). 이 턴의 답은 코드가 쓴다
+    ordered_cart: list[CartLine] = field(default_factory=list)
+    # 주문하겠다고 짚었지만 지금 살 수 없어서 주문 화면에 넣지 않은 장바구니 줄(#678)
+    unorderable: list[CartLine] = field(default_factory=list)
 
 
 class _State(TypedDict):
@@ -530,6 +534,8 @@ async def run_agent(
         for call in out["tool_calls"]
     )
     ordered = checkout and ctx.logged_in and bool(ctx.order_isbns)
+    carried: list[CartLine] = []
+    unorderable: list[CartLine] = []
     if wrote or ordered:
         end = await gateway.get_cart(ctx.user_id)
         actions = diff_cart(start, end) if wrote else []
@@ -537,9 +543,11 @@ async def run_agent(
         if ordered or (
             checkout and ctx.logged_in and wrote and evidence.wants_order(ctx)
         ):
-            actions = _with_ordered(actions, end, ctx.order_isbns)
-            coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
-            plan = _plan(ctx, actions, end, coupon_ids)
+            actions, carried, unorderable = _with_ordered(actions, end, ctx.order_isbns)
+            # 주문 화면에 올릴 책이 하나도 없으면(짚은 책이 모두 살 수 없는 책) 열지 않는다(#678)
+            if actions:
+                coupon_ids = await _coupon_targets(ctx, actions, info, deadline)
+                plan = _plan(ctx, actions, end, coupon_ids)
     return AgentRun(
         final_text=final_text,
         not_shopping=not out["tool_calls"]
@@ -553,6 +561,8 @@ async def run_agent(
         actions=actions,
         checkout=plan,
         out_of_time=out["out_of_time"],
+        ordered_cart=carried if plan is not None and not wrote else [],
+        unorderable=unorderable,
     )
 
 
@@ -600,21 +610,25 @@ async def _coupon_targets(
 
 def _with_ordered(
     actions: list[CartAction], end: list[CartLine], ordered: list[str]
-) -> list[CartAction]:
+) -> tuple[list[CartAction], list[CartLine], list[CartLine]]:
     """주문할 책 중 이번 턴에 담지 않은 책(이미 장바구니에 있던 책)을 지금 수량 그대로 set 으로 붙인다(#664).
 
     BE 는 이번 턴에 반영한 변경(actions)이 있어야 주문 화면 버튼과 checkout 을 넘기고, FE 는 그 반영 기록에 든 책을
     주문 화면에 넣는다(BE#533). 지금 수량으로 다시 set 하면 장바구니는 그대로이고 그 책이 반영 기록에 들어가
     주문 화면에 오른다. BE 를 고치지 않고 이미 담긴 책을 주문하게 하는 방법이다.
+
+    살 수 없는 줄(판매 중지·재고 부족)은 붙이지 않는다. 주문 화면에 올려도 결제할 수 없다(#678).
+    돌려주는 것: (붙인 뒤의 actions, 붙인 줄, 살 수 없어서 붙이지 않은 줄)
     """
     have = {action.isbn for action in actions if action.op == "set"}
-    quantities = {line.isbn: line.quantity for line in end}
+    lines = {line.isbn: line for line in end}
+    picked = [lines[isbn] for isbn in ordered if isbn not in have and isbn in lines]
+    carried = [line for line in picked if line.available and line.price is not None]
+    unorderable = [line for line in picked if line not in carried]
     extra = [
-        CartAction(op="set", isbn=isbn, quantity=quantities[isbn])
-        for isbn in ordered
-        if isbn not in have and isbn in quantities
+        CartAction(op="set", isbn=line.isbn, quantity=line.quantity) for line in carried
     ]
-    return actions + extra
+    return actions + extra, carried, unorderable
 
 
 def _plan(
