@@ -1013,6 +1013,33 @@ def test_말하지_않은_번호의_책은_빠진다() -> None:
     assert finish(run).data.resolved_reference.isbns == [A]
 
 
+# --- 남은 재고(#692) ---
+
+
+def test_재고보다_크게_바꾸려다_막혔으면_바꿨다는_말을_지우고_남은_수량을_말한다() -> (
+    None
+):
+    # 11/11 dev: 20권 남은 책을 "50권으로 해줘"에 "수량을 50권으로 바꿨어요"라고 답했다
+    blocked = _call(
+        ToolName.CART_UPDATE,
+        {"ok": False, "error": "INSUFFICIENT_PRODUCT_STOCK", "stock": 20},
+        {"isbn": A, "quantity": 50},
+    )
+
+    finished = finish(_run("수량을 50권으로 바꿨어요.", [blocked]))
+
+    assert finished.data.reply == (
+        "재고가 부족해서 1번 책의 수량을 바꾸지 못했어요. 남은 재고는 20권이에요."
+    )
+    assert finished.data.actions == []
+
+
+def test_남은_수량을_모르는_재고_부족은_예전_문장_그대로다() -> None:
+    finished = finish(_run("", [_add(ok=False)]))
+
+    assert finished.data.reply == "1번 책은 재고가 부족해서 담지 못했어요."
+
+
 # --- 하지 않은 일을 약속하는 말과 막힌 쓰기의 되묻기 (#679) ---
 
 

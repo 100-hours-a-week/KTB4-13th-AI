@@ -46,6 +46,7 @@ from app.gateway.commerce import (
     BookOffer,
     CartLine,
     CommerceError,
+    CommerceErrorCode,
     CommerceGateway,
     OfferMemory,
     Restorable,
@@ -232,6 +233,19 @@ def picked_ref(ctx: TurnContext, isbn: str) -> dict[str, Any] | None:
         if card.isbn == isbn:
             return {"source": "card", "n": card.rank}
     return None
+
+
+def _over_stock(ctx: TurnContext, isbn: str, quantity: int) -> dict[str, Any] | None:
+    """남은 재고보다 많은 수량이면 BE 와 같은 이유로 막은 결과, 아니면 None(#692).
+
+    이번 턴의 장바구니(SnapshotCommerce)는 재고를 있고 없음만 받아, 20권 남은 책을 50권으로 바꿔도 "바꿨어요"라고
+    답하고 BE 가 반영할 때 INSUFFICIENT_PRODUCT_STOCK 으로 거절했다(11/11 dev). 남은 수량을 아는 책(카드 책·찾은
+    책)이면 BE 에 보내기 전에 막고, 답이 남은 수량을 말할 수 있게 결과에 싣는다. 모르는 책은 BE 에 맡긴다.
+    """
+    left = ctx.stock_of(isbn)
+    if left is None or quantity <= left:
+        return None
+    return _fail(CommerceErrorCode.INSUFFICIENT_PRODUCT_STOCK.value, stock=left)
 
 
 def _delegated(ctx: TurnContext) -> bool:
@@ -426,6 +440,8 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
             quantity=existing.quantity,
         )
         return arguments, failure
+    if (short := _over_stock(ctx, isbn, quantity)) is not None:
+        return arguments, short
     arguments, result = await _write(
         ctx, arguments, gateway.add_item(ctx.user_id, isbn, quantity)
     )
@@ -447,6 +463,8 @@ async def _update(
         return arguments, blocked
     if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return arguments, blocked
+    if (short := _over_stock(ctx, isbn, args.quantity)) is not None:
+        return arguments, short
     return await _write(
         ctx, arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
     )
