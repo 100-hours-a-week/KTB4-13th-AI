@@ -128,7 +128,7 @@ def test_담아_달라는_요청이_끝까지_돌아_장바구니가_바뀐다(m
     assert res.status_code == 200
     data = res.json()["data"]
     assert (
-        data["reply"] == "1번 책을 장바구니에 담았어요."
+        data["reply"] == "1번 《책1》을 장바구니에 담았어요."
     )  # LLM 의 문장이 아니라 코드가 만든 문장
     assert data["not_shopping"] is False
     assert [c["name"] for c in data["tool_calls"]] == ["cart.add"]
@@ -409,7 +409,7 @@ def test_담기가_성공한_턴은_LLM이_합계만_말해도_422가_아니라_
 
     assert res.status_code == 200
     data = res.json()["data"]
-    assert data["reply"] == "1번 책을 장바구니에 담았어요."
+    assert data["reply"] == "1번 《책1》을 장바구니에 담았어요."
 
 
 def test_합계를_지어내면_그_문장만_지우고_200이다(monkeypatch) -> None:
@@ -745,7 +745,7 @@ def test_같은_키와_본문으로_다시_보내면_LLM을_부르지_않고_처
 
     assert first.status_code == second.status_code == 200
     assert second.json() == first.json()
-    assert first.json()["data"]["reply"] == "1번 책을 장바구니에 담았어요."
+    assert first.json()["data"]["reply"] == "1번 《책1》을 장바구니에 담았어요."
     assert len(model.calls) == llm_calls  # 다시 처리하지 않았다
 
 
@@ -851,7 +851,7 @@ def test_기록소가_고장_나도_200으로_답한다(monkeypatch) -> None:
     res = client.post(URL, json=_request(idempotency_key="idem_down"))
 
     assert res.status_code == 200
-    assert res.json()["data"]["reply"] == "1번 책을 장바구니에 담았어요."
+    assert res.json()["data"]["reply"] == "1번 《책1》을 장바구니에 담았어요."
 
 
 def _lose_the_race(monkeypatch, idempotency_rows, earlier_digest: str, body: dict):

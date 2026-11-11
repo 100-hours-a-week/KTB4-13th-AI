@@ -491,3 +491,43 @@ def test_권수_없이_구매만_말한_추천_요청은_추천이다(message: s
 def test_권수_없이_사고_싶다는_말은_판정에_맡긴다(message: str) -> None:
     # 낱말로 정하면 고르는 말까지 ⑦이 받아 말로 그린 책을 아무거나 찾아 담을 수 있다
     assert not rules.decide(message, False, buy_requests=True).sure
+
+
+# --- ⑦이 쇼핑이 아니라고 되돌린 말이 화면 카드에 대한 질문인지(#701) ---
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "이 중에 장바구니에 있는 책이랑 겹치는 거 있어?",
+        "이중에 초등학생이 읽을 만한 거 있어?",
+        "여기서 제일 얇은 게 뭐야?",
+        "2번은 어떤 내용이야?",
+        "그거 작가가 누구야?",
+    ],
+)
+def test_카드를_가리키고_새_책을_찾지_않는_말은_카드에_대한_질문이다(
+    message: str,
+) -> None:
+    assert rules.asks_about_shown(message, True)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "그거 말고 다른 거 보여줘",
+        "이 중에 없으면 다른 책 추천해줘",
+        "2번이랑 비슷한 책",
+        "1번 빼고 더 보여줘",
+        "너무 두꺼운 건 빼고",
+        "안녕",
+    ],
+)
+def test_새_책을_찾거나_카드를_가리키지_않는_말은_카드에_대한_질문이_아니다(
+    message: str,
+) -> None:
+    assert not rules.asks_about_shown(message, True)
+
+
+def test_카드가_없으면_카드에_대한_질문이_아니다() -> None:
+    assert not rules.asks_about_shown("이 중에 겹치는 거 있어?", False)

@@ -2893,8 +2893,15 @@ async def _respond(
             if not turn.not_shopping:
                 logger.info("문지기: 쇼핑으로 처리했다")
                 return responses.success(turn.message, {**turn.data, "route": "shop"})
-            logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
-            target = "recommend"
+            if gate_rules.asks_about_shown(
+                req.message or "", shopping.cards_shown(payload)
+            ):
+                # 화면 카드에 대해 묻는 말을 새로 찾으면 카드가 바뀌어 다음 번호가 다른 책을 가리킨다(#701)
+                logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③ 대답 턴으로 되돌린다")
+                target = "card"
+            else:
+                logger.info("문지기: ⑦이 쇼핑이 아니라고 해서 ③으로 되돌린다")
+                target = "recommend"
     return await _recommend(
         req,
         lane,
