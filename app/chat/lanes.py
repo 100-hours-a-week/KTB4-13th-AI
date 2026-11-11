@@ -360,6 +360,10 @@ _POINTING = re.compile(
 _OTHER_AUTHOR = re.compile(
     r"(이|그|저)\s?(작가|저자)\s?(말고|빼고|아닌|외에|제외)|다른\s?(작가|저자)"
 )
+# 보여 준 책의 저자가 쓴 다른 책을 찾는 말("1번 작가 다른 책", "이 작가 책 더", "2번 저자 책 또 있어?", #694)
+_AUTHOR_MORE = re.compile(
+    r"(작가|저자|지은이|작자)\s?(님)?\s?(의|가|이)?\s?(다른|딴|책|작품|소설|거|것|더|또)"
+)
 # "다른 거 보여줘"는 보여 준 책과 다른 책을 원하는 말이다. 11/10 실험 1에서 4o 가 카드 3장 앞의 이 말을 "1번과 비슷한
 # 책"으로 읽었다. 함께 읽은·비슷한 낱말이 같이 있으면("다른 작가 책으로 비슷한 거") 기준 책을 짚는 말일 수 있어 그대로 둔다
 _OTHER_BOOKS = re.compile(r"(?<![가-힣])(다른|딴)\s?(거|것|걸|책)")
@@ -409,6 +413,31 @@ def points_at_book(message: str) -> bool:
         or _ORDINAL_WORD.search(message)
         or _POINTING.search(message)
         or _CO_WORDS.search(message)
+    )
+
+
+def asked_card_author(
+    message: str,
+    plan: Plan,
+    ranks: Sequence[int],
+    card_titles: Mapping[int, str] | None = None,
+) -> int | None:
+    """보여 준 카드 하나를 짚고 그 책 저자의 다른 책을 찾는 말이면 그 카드 번호, 아니면 None(#694).
+
+    "1번 작가 다른 책도 보여줘"는 조건에 저자를 넣지 않고 1번을 기준 책으로 둔 함께 읽은 책·비슷한 책 찾기가 되어,
+    그 작가 책 1권 + 다른 작가 책 1권이 나왔다(11/11 dev 3번 중 3번). 이 말은 저자로 찾는 말이다. 카드는 번호·차례·
+    제목으로 짚었거나, 카드가 한 장인데 지시어로 짚었거나, 메시지에 비춰 본 기준 책(fill_plan 결과)이 카드일 때만 받는다.
+    "이 작가 말고"는 반대 뜻이라 받지 않는다.
+    """
+    if not _AUTHOR_MORE.search(message) or _OTHER_AUTHOR.search(message):
+        return None
+    said = _said_card(message, ranks, card_titles or {})
+    if said is not None:
+        return said
+    if len(ranks) == 1 and _POINTING.search(message):
+        return ranks[0]
+    return (
+        plan.anchor if isinstance(plan.anchor, int) and plan.anchor in ranks else None
     )
 
 

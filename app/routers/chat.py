@@ -1903,6 +1903,30 @@ class _LaneTurn:
     pool: list[dict]
 
 
+def _author_of_card(
+    spec: Spec, plan: lanes.Plan, message: str, shown_books: list[shown.ShownBook]
+) -> tuple[Spec, lanes.Plan]:
+    """보여 준 카드의 저자가 쓴 다른 책을 찾는 말이면 그 저자로 찾는 spec 과 빈 계획으로 바꾼다(#694).
+
+    기준 책을 둔 채 찾으면 함께 읽은 책·비슷한 책이 섞이고 같은 저자 한 장 규칙이 걸려, 그 작가 책은 한 장만 남았다
+    (11/11 dev "1번 작가 다른 책도 보여줘" 3번 중 3번). 저자를 콕 집은 요청("박경리 책 보여줘")과 같은 길로 찾는다.
+    짚은 카드 책은 보여 준 책이라 후보에서 빠진다. 가격·연도 같은 조건은 그대로 둔다.
+    """
+    rank = lanes.asked_card_author(
+        message,
+        plan,
+        [book.rank for book in shown_books],
+        {book.rank: book.title for book in shown_books},
+    )
+    book = next((b for b in shown_books if b.rank == rank), None)
+    name = editions.first_author(book.author) if book is not None else ""
+    if not name:
+        return spec, plan
+    logger.info("%d번 카드 저자의 다른 책을 찾는 말 — 저자로 찾는다", rank)
+    exact = spec.exact.model_copy(update={"title": None, "author": name})
+    return spec.model_copy(update={"intent": "exact", "exact": exact}), lanes.EMPTY_PLAN
+
+
 def _uses_lanes(spec: Spec, plan: lanes.Plan) -> bool:
     """세 갈래로 찾을 턴인가. 제목·저자를 콕 집은 요청은 그 책 자체를 찾는 말이라 지금처럼 검색만 한다."""
     return spec.intent == "semantic" or plan.anchor is not None
@@ -3033,6 +3057,7 @@ async def _recommend(
             [book.rank for book in shown_books],
             {book.rank: book.title for book in shown_books},
         )
+        spec, plan = _author_of_card(spec, plan, req.message or "", shown_books)
         if plan.ask_card and _agent_on():
             # 카드가 여럿인데 어느 책을 읽은 사람들인지 말하지 않았다. 아무 카드나 찍지 않고 번호를 묻는다(LLM·검색 없이)
             _drop(update.recall)
