@@ -184,8 +184,8 @@ def test_검색한_뒤_상품_상세로_가격_재고_쿠폰을_채운다() -> N
     books = asyncio.run(_be(handler).find("개발 입문서", 5))
 
     assert books == [
-        FoundBook(P1, 101, "책1", "가", 13500, True, frozenset({3, 9})),
-        FoundBook(P4, 104, "품절", None, 9000, False, frozenset()),
+        FoundBook(P1, 101, "책1", "가", 13500, True, frozenset({3, 9}), 3),
+        FoundBook(P4, 104, "품절", None, 9000, False, frozenset(), 0),
     ]
     assert not any(
         "/products/102" in url for url in seen
