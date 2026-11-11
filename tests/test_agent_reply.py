@@ -5,6 +5,7 @@
 """
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from app.agent.prompts import NOT_SHOPPING
 from app.agent.reference import TurnContext
 from app.agent.reply import FALLBACK_REPLY, LOGIN_REPLY, GroundingFailed, finish
 from app.agent.schemas import AgentActData, ContextCard, ToolCall, ToolName
+from app.gate.rules import asked_action
 from app.gateway.commerce import CartLine
 
 A, B, C = (f"97889{n:08d}" for n in (1, 2, 3))
@@ -280,7 +282,7 @@ def test_한_문장에_두_가지를_했다고_하면_둘_다_성공해야_한�
         "추가하지 못했어요.",
         "담지 않았어요.",
         "로그인하셔야 담을 수 있어요.",
-        "담아 드릴게요.",
+        "원하시면 담아 드릴게요.",  # 조건을 단 말은 제안이다(#679)
         "장바구니에 담긴 책은 2권이에요.",
         "추가 배송비는 없어요.",
         "추가로 궁금한 점이 있으세요?",
@@ -1009,3 +1011,173 @@ def test_말하지_않은_번호의_책은_빠진다() -> None:
     run = _run_saying("1번 재고 있어?", "1번 재고가 있어요.", [_lookup(A, B)])
 
     assert finish(run).data.resolved_reference.isbns == [A]
+
+
+# --- 하지 않은 일을 약속하는 말과 막힌 쓰기의 되묻기 (#679) ---
+
+
+@pytest.mark.parametrize(
+    ("text", "asked"),
+    [
+        # 11/11 dev 시험의 실제 답: 빼기 도구를 부르지 않고 이렇게만 말해 장바구니가 그대로였다
+        (
+            "장바구니 1번째 《한중록》을 빼드릴게요.",
+            "장바구니 1번째 《한중록》을 빼 드릴까요?",
+        ),
+        ("카드 2번을 담아 드릴게요.", "카드 2번을 담아 드릴까요?"),
+        ("2권으로 바꿔 드리겠습니다.", "2권으로 바꿔 드릴까요?"),
+        ("그 책은 뺄게요", "그 책은 뺄까요?"),
+        ("바로 넣을게요!", "바로 담을까요?"),
+    ],
+)
+def test_하지_않은_변경을_하겠다고_단정하면_묻는_말로_바꾼다(
+    text: str, asked: str
+) -> None:
+    finished = finish(_run(text, []))
+
+    assert finished.data.reply == asked
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_PROMISED"]
+
+
+def test_한_일을_하겠다고_말한_것은_바꾸지_않는다() -> None:
+    # 담기가 성공한 턴의 "담아 드릴게요"는 묻지 않는다. 결과는 코드가 따로 말한다
+    finished = finish(_run("담아 드릴게요.", [_add()]))
+
+    assert "드릴까요" not in finished.data.reply
+
+
+@pytest.mark.parametrize(
+    ("text", "asked"),
+    [
+        # 모델이 자주 쓰는 말. 묻는 말은 도구마다 정한 꼴로 바꾼다("추가해 드릴까요?"가 아니다, #684 리뷰)
+        ("장바구니에 추가해 드릴게요.", "장바구니에 담아 드릴까요?"),
+        ("《한중록》을 장바구니에 추가할게요.", "《한중록》을 장바구니에 담을까요?"),
+        ("《한중록》을 삭제해 드릴게요.", "《한중록》을 빼 드릴까요?"),
+        (
+            "카드 1번은 장바구니에서 제거해드리겠습니다.",
+            "카드 1번은 장바구니에서 빼 드릴까요?",
+        ),
+        ("《한중록》을 장바구니에서 지울게요.", "《한중록》을 장바구니에서 뺄까요?"),
+        ("《한중록》을 3권으로 늘려 드릴게요.", "《한중록》을 3권으로 바꿔 드릴까요?"),
+        ("《한중록》을 1권으로 변경할게요.", "《한중록》을 1권으로 바꿀까요?"),
+    ],
+)
+def test_추가·삭제·변경을_약속해도_그_도구의_묻는_꼴로_바꾼다(
+    text: str, asked: str
+) -> None:
+    finished = finish(_run(text, []))
+
+    assert finished.data.reply == asked
+    assert finished.removed == ["ACTION_PROMISED"]
+    # 문지기가 행동 질문으로 알아봐야 다음 "네"가 장바구니 챗봇으로 간다
+    assert asked_action([SimpleNamespace(role="assistant", text=asked)])
+
+
+def test_틀린_금액을_실은_약속은_묻는_말로_바꾸지_않고_금액_검사로_지운다() -> None:
+    # 도구가 준 값은 13,000원. 묻는 말로 먼저 바꾸면 "?"로 끝나 금액 검사를 건너뛰었다(#684 리뷰)
+    view = _view(13000, [(13000, 1)])
+
+    wrong = finish(
+        _run("99,000원짜리 《한중록》을 빼드릴게요. 다른 책도 볼까요?", [view])
+    )
+    right = finish(_run("13,000원짜리 《한중록》을 빼드릴게요.", [view]))
+
+    assert wrong.data.reply == "다른 책도 볼까요?"
+    assert wrong.removed == ["NUMBER_NOT_FROM_TOOLS"]
+    assert right.data.reply == "13,000원짜리 《한중록》을 빼 드릴까요?"
+
+
+def test_BE가_거절한_빼기를_약속한_말은_묻지_않고_지운다() -> None:
+    # 실패는 코드가 따로 말한다. 그 뒤에 "빼 드릴까요?"가 붙으면 실패 문장과 어긋난다(#684 리뷰)
+    finished = finish(_run("《책3》을 빼 드릴게요.", [_remove(ok=False)]))
+
+    assert "드릴까요" not in finished.data.reply
+    assert "드릴게요" not in finished.data.reply
+    assert "장바구니에 없어요" in finished.data.reply
+    assert finished.removed == ["ACTION_PROMISED"]
+
+
+def test_주문_화면을_연_턴의_담기_약속은_묻지_않고_지운다() -> None:
+    # order.open 이 책을 담고 주문 화면을 열었다(#664). "담아 드릴까요?"로 바꾸면 이미 담은 책을 다시 묻는다
+    opened = _call(
+        ToolName.ORDER_OPEN,
+        {"ok": True, "titles": ["책"], "added": [A]},
+        {"isbns": [A]},
+    )
+    finished = finish(
+        _run(
+            "《책》을 장바구니에 담아 드릴게요. 주문 화면에서 확인해 주세요.", [opened]
+        )
+    )
+
+    assert "드릴까요" not in finished.data.reply
+    assert "담아 드릴게요" not in finished.data.reply
+    assert finished.removed == ["ACTION_PROMISED"]
+
+
+def test_장바구니가_아닌_곳에서_빼겠다는_말은_그대로_둔다() -> None:
+    # 묻는 말로 바꾸면 다음 "네"가 장바구니 빼기로 갈 수 있다(#684 리뷰)
+    finished = finish(_run("그 책은 추천에서 뺄게요.", []))
+
+    assert finished.data.reply == "그 책은 추천에서 뺄게요."
+    assert finished.removed == []
+
+
+def _held_remove() -> ToolCall:
+    return _call(
+        ToolName.CART_REMOVE,
+        {
+            "ok": False,
+            "error": "REFERENCE_NOT_STATED",
+            "book": "장바구니 1번째 《한중록》",
+            "ask": "장바구니 1번째 《한중록》을 뺄까요?",
+        },
+        {"book": {"source": "cart", "n": 1}},
+    )
+
+
+def test_막힌_빼기를_뺐다고_써서_답이_비면_422_대신_코드의_되묻기로_답한다() -> None:
+    # 11/11 dev 시험: "조선시대 그 책은 빼줘"에 빼기가 근거 부족으로 막혔는데 모델이 "뺐어요"라고 써서 422 가 났다
+    finished = finish(_run("《한중록》을 장바구니에서 뺐어요.", [_held_remove()]))
+
+    assert finished.data.reply == "장바구니 1번째 《한중록》을 뺄까요?"
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_되묻기가_없는_쓰기에서_답이_비면_지금처럼_422다() -> None:
+    unasked = _call(
+        ToolName.CART_REMOVE, {"ok": False, "error": "REFERENCE_NOT_STATED"}
+    )
+
+    with pytest.raises(GroundingFailed):
+        finish(_run("뺐어요.", [unasked]))
+
+
+@pytest.mark.parametrize(
+    ("text", "asked"),
+    [
+        # 11/11 실제 모델: 빼기 도구를 부르지 않고 이렇게 써서 422 가 났다
+        (
+            "장바구니 1번째 《한중록》을 장바구니에서 뺐어요.",
+            "장바구니 1번째 《한중록》을 장바구니에서 뺄까요?",
+        ),
+        ("카드 2번을 장바구니에 담았어요.", "카드 2번을 장바구니에 담을까요?"),
+        ("《한중록》 수량을 2권으로 바꿨어요.", "《한중록》 수량을 2권으로 바꿀까요?"),
+    ],
+)
+def test_도구를_부르지_않고_바꿨다고_써서_답이_비면_그_문장을_묻는_말로_바꾼다(
+    text: str, asked: str
+) -> None:
+    finished = finish(_run(text, [_view()]))
+
+    assert finished.data.reply == asked
+    assert finished.data.actions == []
+    assert finished.removed == ["ACTION_NOT_DONE"]
+
+
+def test_두_가지를_했다고_쓴_문장은_묻는_말로_바꾸지_않는다() -> None:
+    # 어느 것을 물을지 모른다. 지금처럼 422 다
+    with pytest.raises(GroundingFailed):
+        finish(_run("1번은 뺐고 2번은 담았어요.", []))
