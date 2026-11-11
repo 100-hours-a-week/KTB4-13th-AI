@@ -68,6 +68,26 @@ def test_같은_책의_판본이_여럿이면_표지와_더_맞고_살_수_있�
     assert result.books[0].book == newest
 
 
+def test_찾았으면_고른_판본이_든_묶음을_같이_준다() -> None:
+    # 챗봇의 떠올린 제목이 각색판을 피해 같은 묶음의 다른 판본을 고를 때 쓴다(#691)
+    novel = _book("듄", "프랭크 허버트, 김승욱", "황금가지", pub_year=2021)
+    comic = _book("듄", "프랭크 허버트, 케빈 J. 앤더슨 각색", "황금가지", pub_year=2025)
+    other = _book("듄", "다른 사람")
+
+    result = match.decide(_cover("듄", "프랭크 허버트"), [novel, comic, other])
+
+    assert result.kind == "found"
+    assert result.books[0].book == comic  # 표지 규칙의 순서(새 판)는 그대로다
+    assert {s.book.book_id for s in result.editions} == {novel.book_id, comic.book_id}
+
+
+def test_후보로_남기면_묶음을_주지_않는다() -> None:
+    result = match.decide(_cover("마음"), [_book("마음", "가"), _book("마음", "나")])
+
+    assert result.kind == "candidates"
+    assert result.editions == ()
+
+
 def test_제목이_같은_다른_저자의_책은_저자로_가른다() -> None:
     soseki = _book("마음", "나쓰메 소세키")
     other = _book("마음", "김철수")

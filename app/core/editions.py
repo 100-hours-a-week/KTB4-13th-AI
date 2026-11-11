@@ -15,6 +15,12 @@ _AUTHOR_ROLE_PREFIX = re.compile(
 _AUTHOR_ROLE_SUFFIX = re.compile(r"\s+(지음|옮김|엮음|그림|글|저|역|편)\s*$")
 _AUTHOR_SEPARATOR = re.compile(r"[;,]")
 _NON_WORD = re.compile(r"[\W_]+")
+# 원작을 다른 꼴로 옮긴 판본(그래픽노블·만화·각색)의 표시(#691). 『듄』 그래픽노블은 저자 칸이 "프랭크 허버트, …, 케빈 J.
+# 앤더슨 각색, 라울 앨런, …"이라 첫 저자로 묶으면 소설과 한 묶음이 된다. 저자 칸의 역할 말과 소개글로만 안다.
+# "그림"은 넣지 않는다 — 삽화가 든 소설·그림책은 판본마다 "그림"이 붙어 있어 원작과 다른 꼴이라는 뜻이 아니다.
+# 소개글의 "웹툰", "만화로도 만들어진"도 넣지 않는다 — 원작 소설의 소개글에 흔하다(평가 DB 한국문학 "웹툰" 881권)
+_ADAPTED_AUTHOR = re.compile(r"각색|만화")
+_ADAPTED_TEXT = re.compile(r"그래픽\s?노블|만화로\s?(옮|만나|읽|그려|그린|보)")
 
 
 def title_key(title: str | None) -> str:
@@ -33,3 +39,10 @@ def edition_key(title: str | None, author: str | None) -> tuple[str, str] | None
     """같은 책의 다른 판본을 한 키로. 제목이나 저자가 비면 None — 다른 책일 수 있어 묶지 않는다."""
     key = (title_key(title), author_key(author))
     return key if all(key) else None
+
+
+def is_adaptation(author: str | None, description: str | None) -> bool:
+    """원작을 그래픽노블·만화로 옮긴 판본인가. 저자 칸이나 소개글에 표시가 있을 때만 안다."""
+    return bool(_ADAPTED_AUTHOR.search(author or "")) or bool(
+        _ADAPTED_TEXT.search(description or "")
+    )
