@@ -1410,3 +1410,179 @@ def test_소개로_쓴_한_줄_이유는_그래프_책이어도_그대로_쓴다
     )[0]
 
     assert short == "부조리한 살인 사건을 따라가요."
+
+
+# 마니아 목록 없는 기준 책의 "비슷한 책 더"(#654). 그래프의 아몬드는 함께 대출 줄만 있고 마니아 줄이 없다
+ALMOND_ISBN = "9790000000010"
+NEAR = _row(
+    401,
+    "9790000000401",
+    "말 없는 소년",
+    "정소년",
+    "감정을 잘 느끼지 못하는 소년의 성장.",
+)
+
+
+def _post_almond(monkeypatch: pytest.MonkeyPatch, message: str) -> dict:
+    """보여 준 카드 1장이 『아몬드』인 대화."""
+
+    async def _shown(cards):
+        return [
+            ShownBook(rank, 102, "아몬드", "손원평", "감정을 못 느끼는 소년.")
+            for rank, isbn in cards
+            if isbn == ALMOND_ISBN
+        ]
+
+    monkeypatch.setattr(chat, "_shown_books", _shown)
+    body = {
+        "user_id": 1,
+        "consented": True,
+        "spec": SPEC,
+        "message": message,
+        "recent_turns": [{"role": "user", "text": "내 취향에 맞는 책 추천해줘"}],
+        "exclude_isbns": [],
+        "image_ref": None,
+        "context_cards": [{"rank": 1, "isbn": ALMOND_ISBN}],
+    }
+    res = client.post("/recommendations/chat", json=body)
+    assert res.status_code == 200, res.text
+    return res.json()["data"]
+
+
+def _use_near(monkeypatch: pytest.MonkeyPatch, books: list[dict] | None) -> list:
+    calls = []
+
+    async def _fake(anchor):
+        calls.append(anchor)
+        return (
+            None
+            if books is None
+            else [{**b, "sources": [("search", None)]} for b in books]
+        )
+
+    monkeypatch.setattr(lanes, "near_books", _fake)
+    return calls
+
+
+# 1단계가 앞 턴 주제("내 취향")를 검색어로 남긴 채 기준 책을 짚는다 — dev 에서 다른 주제가 나온 턴(11/11)
+OLD_TOPIC = {"semantic": "편안한 위로 에세이", "anchor_card": 1, "relation": "similar"}
+
+
+def test_마니아_목록_없는_책의_비슷한_책은_앞_턴_주제로_찾지_않고_그_책과_가까운_책에서_고른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    searches = _use_search(monkeypatch, SEARCHED)
+    near_calls = _use_near(monkeypatch, [NEAR])
+    prompts = _use_model(
+        monkeypatch,
+        OLD_TOPIC,
+        {
+            "action": "cards",
+            "cards": [
+                {
+                    "book_id": 401,
+                    "reason_short": "감정을 잘 못 느끼는 소년의 성장 이야기예요.",
+                    "reason_long": "감정을 잘 느끼지 못하는 소년이 자라는 이야기예요.",
+                }
+            ],
+            "reply": "감정을 다룬 성장소설이에요.",
+        },
+    )
+
+    data = _post_almond(monkeypatch, "『아몬드』와 비슷한 책 더 보여줘")
+
+    assert searches == []
+    assert [a.title for a in near_calls] == ["아몬드"]
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert "말 없는 소년" in listing
+    assert "반도체 입문" not in listing
+    assert [c["title"] for c in data["cards"]] == ["말 없는 소년"]
+
+
+def test_기준_책_벡터가_없으면_앞_턴_주제_대신_기준_책_제목으로_찾는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    searches = _use_search(monkeypatch, SEARCHED)
+    _use_near(monkeypatch, None)
+    _use_model(
+        monkeypatch,
+        OLD_TOPIC,
+        {"action": "cards", "cards": [{"book_id": 301}], "reply": "찾은 책이에요."},
+    )
+
+    _post_almond(monkeypatch, "『아몬드』와 비슷한 책 더 보여줘")
+
+    assert [(s.intent, s.semantic, s.exact.title) for s in searches] == [
+        ("semantic", "아몬드", None)
+    ]
+
+
+def test_마니아_목록이_있는_책의_비슷한_책은_지금처럼_마니아_목록과_검색에서_고른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    searches = _use_search(monkeypatch, SEARCHED)
+    near_calls = _use_near(monkeypatch, [NEAR])
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "AI 교양서", "anchor_card": 1, "relation": "similar"},
+        {"action": "cards", "cards": [{"book_id": 202}], "reply": "AI 이야기예요."},
+    )
+
+    _post("AI 지도책이랑 비슷한 책 더 보여줘")
+
+    assert near_calls == []
+    assert [s.semantic for s in searches] == ["AI 교양서"]
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert listing.index("AI 2041") < listing.index("반도체 입문")
+
+
+def test_가까운_책은_기준_책과_그_판본을_빼고_검색_꼬리표를_단다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = {
+        102: _row(102, ALMOND_ISBN, "아몬드", "손원평"),
+        103: _row(103, "9790000000103", "아몬드 (양장)", "손원평"),
+        401: NEAR,
+    }
+
+    class _Conn:
+        async def fetchval(self, sql, book_id):
+            assert book_id == 102
+            return "[0.1, 0.2]"
+
+        async def fetch(self, sql, ids):
+            return [rows[i] for i in ids if i in rows]
+
+    class _Pool:
+        def acquire(self):
+            return nullcontext(_Conn())
+
+    async def _nearest(conn, query_vector, filters, limit):
+        assert query_vector == [0.1, 0.2]
+        return [102, 103, 401]
+
+    monkeypatch.setattr(lanes.db, "get_pool", lambda: _Pool())
+    monkeypatch.setattr(lanes.vector, "search_ids", _nearest)
+    anchor = lanes.Anchor(book_id=102, title="아몬드", author="손원평", work=None)
+
+    books = asyncio.run(lanes.near_books(anchor))
+
+    assert [b["book_id"] for b in books] == [401]
+    assert books[0]["sources"] == [("search", None)]
+
+
+def test_가까운_책은_기준_책_벡터가_없으면_None(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Conn:
+        async def fetchval(self, sql, book_id):
+            return None
+
+    class _Pool:
+        def acquire(self):
+            return nullcontext(_Conn())
+
+    monkeypatch.setattr(lanes.db, "get_pool", lambda: _Pool())
+    anchor = lanes.Anchor(book_id=102, title="아몬드", author="손원평", work=None)
+
+    assert asyncio.run(lanes.near_books(anchor)) is None

@@ -103,7 +103,8 @@ _KKEO = re.compile(r"꺼(?![가-힣])")
 # "다"는 앞뒤에 한글이 붙지 않은 낱말일 때만 센다. "좋겠다 담아줘"의 "다"는 어미다
 _ALL_WORDS = re.compile(r"전부(?!터)|모두|모든")
 _BARE_ALL = re.compile(r"(?<![가-힣])다\s*(?:담|빼|지워|넣|삭제)")
-_COUNT_ALL = re.compile(r"(?<![가-힣])([둘셋넷])\s*다(?![가-힣])")
+# "둘 다요", "셋 다요"처럼 존댓말 끝(요)이 붙어도 전체다
+_COUNT_ALL = re.compile(r"(?<![가-힣])([둘셋넷])\s*다(?:요)?(?![가-힣])")
 _COUNT_WORDS = {"둘": 2, "셋": 3, "넷": 4}
 # 말한 수량("두 권", "2권", "둘"). 전체가 아니라 그 수만큼을 말한 것일 수 있다
 _DIGIT_COUNT = re.compile(r"(\d+)\s*권")
@@ -401,7 +402,7 @@ def _says_title(ctx: TurnContext, ref: BookRef, isbn: str, message: str) -> bool
 #  2) 사용자가 그 책을 "그거", "이거", "방금 거"로 가리켰다
 # 선택지를 나열한 말에 대한 "네"는 어느 책인지 모르므로 근거가 아니다.
 _AGREE = re.compile(
-    r"^\s*(?:네|넵|예|응|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|오케이|ok|okay)(?![가-힣])",
+    r"^\s*(?:네|넵|넹|예|응|웅|그래|그래요|좋아|좋아요|맞아|맞아요|그걸로|ㅇㅇ|ㅇㅋ|ㄱㄱ|고고|오케이|ok|okay)(?![가-힣])",
     re.IGNORECASE,
 )
 _DEICTIC = re.compile(
@@ -414,6 +415,21 @@ _PROPOSAL = re.compile(r"\?|까요|드릴까")
 # 낱말만 있으면 들어오므로, 이 꼴을 보지 않으면 거절이 그 책에 대한 근거가 된다. "나쁘지 않네 담아줘"도 막히지만
 # 막히면 그 책을 짚어 되묻는 쪽이라 잘못 담는 것보다 낫다
 _NEGATION = re.compile(r"말고|아니|싫|그만|지\s*(?:마|말)|않|안\s*(?:담|넣|빼|사|살)")
+# 쿠폰·포인트를 쓰지 말라는 꼴("포인트 적용하지 말고", "쿠폰은 안 쓸래", "포인트 없이"). 책이 아니라 할인을 거절하는
+# 말이라 책 부정(_NEGATION)으로 보지 않는다. "이거 주문해줘 포인트 적용하지 말고"가 "말고" 때문에 지시어의 근거를 잃어
+# "지금 보고 있는 책이 없어요"로 끝났다(11/10 dev). 주문 화면에 채울 값에서도 그 할인을 뺀다(declines_discount)
+_DISCOUNT_DECLINE = re.compile(
+    r"(쿠폰|포인트|적립금|할인)\s*(?:은|는|도|을|를|이|가)?\s*(?:적용|사용|쓰|써)?\s*(?:하|해)?\s*"
+    r"(?:지\s*(?:말(?:고|아|아요|구)?|마(?:세요|요)?|않(?:고|게|을|아|아요)?)|않(?:고|게|을)?|없이|말고|빼고|빼\s*(?:줘|주|고|서)"
+    r"|안\s*(?:쓰|써|쓸|하|할|함|적용|사용))"
+)
+
+
+def _without_discount_decline(message: str) -> str:
+    """책 부정을 볼 때 할인을 거절하는 말은 지운다."""
+    return _DISCOUNT_DECLINE.sub(" ", message)
+
+
 # 동의 뒤에 길게 이어지는 말은 다른 요청이 섞인 것이라 동의로만 보지 않는다
 _MAX_AGREEMENT_CHARS = 30
 _CART_MENTION = re.compile(r"장바구니\s*(\d+)\s*번째")
@@ -433,7 +449,16 @@ def _books_named(ctx: TurnContext, text: str) -> set[str]:
     named |= {card.isbn for card in ctx.cards if card.rank in ranks}
     spoken = _flat(text)
     known = {line.isbn: line.title for line in ctx.cart_snapshot or []} | ctx.titles
-    named |= {isbn for isbn, title in known.items() if _flat(title) in spoken}
+    # 번호로 짚은 책의 제목 안에 든 제목은 그 책을 말한 것이다. 권마다 ISBN 이 다른 시리즈처럼 카드 여러 장의 제목이
+    # 같으면("카드 1번 《한강》을 담을까요?") 제목 일치로 다른 《한강》까지 세어 한 권을 짚은 말이 아니게 되고, "네"가
+    # 근거가 못 되어 같은 질문만 되풀이했다(11/11 dev)
+    numbered = [_flat(known[isbn]) for isbn in named if isbn in known]
+    named |= {
+        isbn
+        for isbn, title in known.items()
+        if _flat(title) in spoken
+        and not any(_flat(title) in numbered_title for numbered_title in numbered)
+    }
     return named
 
 
@@ -460,9 +485,14 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
     if not ctx.turns or ctx.turns[-1].role != "assistant":
         return False
     last = ctx.turns[-1].text
-    if _books_named(ctx, last) != {isbn}:
+    named = _books_named(ctx, last)
+    if len(named) >= 2 and isbn in named:
+        return _for_named_books(ctx, named, last, message)
+    if named != {isbn}:
         return False
-    if _NEGATION.search(message) or _names_other_book(ctx, isbn, message):
+    if _NEGATION.search(_without_discount_decline(message)) or _names_other_book(
+        ctx, isbn, message
+    ):
         return False
     if _DEICTIC.search(message):
         return True
@@ -470,6 +500,37 @@ def _from_history(ctx: TurnContext, isbn: str, message: str) -> bool:
         bool(_AGREE.match(message))
         and len(message) <= _MAX_AGREEMENT_CHARS
         and bool(_PROPOSAL.search(last))
+    )
+
+
+# 직전 에이전트의 말이 여러 권을 짚었을 때. "카드 1번 《A》과 카드 2번 《B》를 담을까요?"에 "네"라고 하면 두 권 다에 대한
+# 동의이고, "A과 B 중 어느 책을 담을까요?"에 "둘 다"라고 하면 짚은 책 전부다. 예전에는 한 권을 짚었을 때만 이력을 봐서
+# "네" → "어느 책을 담을까요?" → "둘다" → 같은 물음이 되풀이됐다(11/10 dev). "둘 다"는 짚은 책의 수와 같아야 한다
+# (카드가 셋이어도 직전 말이 두 권을 짚었으면 그 두 권이다). 고르라는 물음("중 어느")에 대한 "네"는 어느 책인지 모른다.
+_CHOICE_QUESTION = re.compile(r"중\s*(?:어느|어떤|무엇|뭘|하나)|어느\s*(?:책|쪽|것|거)")
+
+
+def _for_named_books(
+    ctx: TurnContext, named: set[str], last: str, message: str
+) -> bool:
+    """직전 말이 짚은 여러 권 중 하나에 대해, 이번 말이 그 전부를 가리키거나 전부에 동의하는가.
+    짚지 않은 책을 스스로 가리키면("네 근데 3번으로요") 아니다."""
+    if _NEGATION.search(_without_discount_decline(message)):
+        return False
+    others = [
+        (BookRef(source="card", n=card.rank), card.isbn)
+        for card in ctx.cards
+        if card.isbn not in named
+    ]
+    if any(_explicit(ctx, ref, other, message) for ref, other in others):
+        return False
+    if _says_all(message, len(named)):
+        return True
+    return (
+        bool(_AGREE.match(message))
+        and len(message) <= _MAX_AGREEMENT_CHARS
+        and bool(_PROPOSAL.search(last))
+        and not _CHOICE_QUESTION.search(normalize(last))
     )
 
 
@@ -561,7 +622,7 @@ def _from_topic(ctx: TurnContext, isbn: str, message: str) -> bool:
     if topic_book(ctx) != isbn:
         return False
     return not (
-        _NEGATION.search(message)
+        _NEGATION.search(_without_discount_decline(message))
         or _OTHER_BOOK.search(message)
         or _names_other_book(ctx, isbn, message)
     )
@@ -717,6 +778,13 @@ _ADD = re.compile(
 _ORDER = re.compile(
     r"(?:주문|결제|구매|구입)\s*(?:해|하고|할|하기|하려|하자|까지|부탁)"
     r"|바로\s*(?:주문|구매|결제)|(?<![가-힣])사\s*(?:줘|주세요|줄래|주라)|살게|살래|사고\s*싶"
+    # 말이 "주문"으로 끝나는 꼴("1번 주문"). 주문해 달라는 말을 줄인 것이다. "주문 내역", "주문했어?"는 끝이 아니다
+    r"|(?:주문|구매|결제)\s*[.!~]*$"
+)
+# 낱말 하나로 주문하겠다고 한 말("주문", "주문이요", "결제할게요"). 앞 대화에 이어서 하는 말이다. 이 꼴이 없으면 "주문"
+# 한 마디가 쇼핑이 아닌 말로 ③에 가서 추천 카드가 나왔다(11/10 dev)
+_ORDER_ALONE = re.compile(
+    r"^\s*(?:주문|결제|구매)\s*(?:요|이요|할게요?|할래요?|하기)?\s*[.!~]*\s*$"
 )
 _COUPON = re.compile(r"쿠폰|포인트|할인")
 
@@ -759,7 +827,16 @@ def delegates_pick(ctx: TurnContext) -> bool:
 
 def wants_order(ctx: TurnContext) -> bool:
     """주문하겠다고 했는가. 그러면 담은 뒤 주문 화면으로 보낸다."""
-    return ctx.message is not None and bool(_ORDER.search(normalize(ctx.message)))
+    if ctx.message is None:
+        return False
+    message = normalize(ctx.message)
+    return bool(_ORDER.search(message) or _ORDER_ALONE.match(message))
+
+
+def orders_alone(ctx: TurnContext) -> bool:
+    """주문·결제 낱말만으로 된 말인가("주문", "결제할게요"). "선물로 한 권 사고 싶은데 뭐가 좋을까요"처럼 주문 낱말이
+    든 추천 요청은 들지 않는다."""
+    return ctx.message is not None and bool(_ORDER_ALONE.match(normalize(ctx.message)))
 
 
 _EACH = re.compile(r"씩|각각|각\s*\d|각\s*(?:한|두|세|네)")
@@ -814,3 +891,32 @@ def copies_of(ctx: TurnContext, isbn: str) -> int | None:
 def mentions_coupon(ctx: TurnContext) -> bool:
     """쿠폰이나 포인트, 할인을 말했는가. 주문하지 않는 말이면 쿠폰은 주문 화면에서 쓴다고 알려 준다."""
     return ctx.message is not None and bool(_COUPON.search(normalize(ctx.message)))
+
+
+def declines_discount(ctx: TurnContext, kind: str) -> bool:
+    """사용자가 쿠폰(kind="쿠폰")이나 포인트(kind="포인트")를 쓰지 말라고 했는가. 그러면 주문 화면에 채우지 않는다.
+
+    이번 말에 더해 모델에게 보여 준 대화의 자기 말도 본다. "1번 주문해 줘 포인트 적용하지 말고" 다음의 "이 책 2개
+    주문해 줘"에 다시 포인트를 채우면 앞에서 한 말을 잊은 것이다(11/10 dev). 이번 말이 그 할인을 거절하지 않고
+    말했으면("포인트 써 줘") 이번 말을 따른다. "적립금"은 포인트로 본다.
+    """
+    if ctx.message is None:
+        return False
+
+    def said(text: str) -> bool | None:
+        """이 말이 그 할인을 거절했으면 True, 거절 없이 말했으면 False, 말하지 않았으면 None."""
+        text = normalize(text)
+        names = ("포인트", "적립금") if kind == "포인트" else (kind,)
+        declined = [m for m in _DISCOUNT_DECLINE.finditer(text) if m.group(1) in names]
+        if declined:
+            return True
+        return False if any(name in text for name in names) else None
+
+    for text in [
+        ctx.message,
+        *(t.text for t in reversed(ctx.turns[-PROMPT_TURNS:]) if t.role == "user"),
+    ]:
+        verdict = said(text)
+        if verdict is not None:
+            return verdict
+    return False
