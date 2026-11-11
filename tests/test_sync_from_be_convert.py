@@ -26,11 +26,6 @@ def _be_book(**overrides) -> dict:
         "description": "소개",
         "updated_at": _be_time(2026, 11, 1, 3, 0, 0),
         "deleted_at": None,
-        "product_id": 880000001,
-        "discounted_price": Decimal("13500.00"),
-        "product_deleted_at": None,
-        "on_hand_quantity": 7,
-        "reserved_quantity": 2,
     }
     row.update(overrides)
     return row
@@ -76,30 +71,11 @@ def test_BE_시각은_한국_시간으로_읽어_UTC로_바꾸고_출간일은_�
     assert book.pub_year == 2025
 
 
-def test_책의_가격과_재고는_상품에서_읽고_재고는_보유에서_예약을_뺀다() -> None:
+def test_책_줄에는_가격·재고를_싣지_않는다() -> None:
+    # v_books.price·in_stock 은 옛 칸이다. AI 는 가격·재고를 v_products 에서 읽는다
     book = sync.to_book(_be_book())
 
-    assert book.price == 13500
-    assert book.in_stock is True
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"product_id": None, "discounted_price": None},
-        {"product_deleted_at": _be_time(2026, 11, 1, 0, 0, 0)},
-        {"on_hand_quantity": 2, "reserved_quantity": 2},
-    ],
-)
-def test_상품이_없거나_지웠거나_남은_재고가_없으면_품절이다(overrides: dict) -> None:
-    book = sync.to_book(_be_book(**overrides))
-
-    assert book.in_stock is False
-
-
-def test_상품이_없는_책의_가격은_0이다() -> None:
-    # v_books.price 는 비워 둘 수 없다. AI 는 가격을 v_products 에서 읽어 이 값을 쓰지 않는다
-    assert sync.to_book(_be_book(product_id=None, discounted_price=None)).price == 0
+    assert not hasattr(book, "price") and not hasattr(book, "in_stock")
 
 
 def test_재고_줄이_없는_상품은_20권으로_본다() -> None:
@@ -109,6 +85,15 @@ def test_재고_줄이_없는_상품은_20권으로_본다() -> None:
     )
 
     assert product.stock_quantity == 20
+
+
+def test_예약이_보유만큼이면_남은_재고는_0이다() -> None:
+    assert (
+        sync.to_product(
+            _be_product(on_hand_quantity=2, reserved_quantity=2)
+        ).stock_quantity
+        == 0
+    )
 
 
 def test_상품은_할인가와_남은_재고를_싣는다() -> None:

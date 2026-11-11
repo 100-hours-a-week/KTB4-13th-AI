@@ -17,7 +17,7 @@ import ssl
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
@@ -45,8 +45,6 @@ class Book:
     pub_year: int | None
     cover_url: str | None
     description: str | None
-    price: int
-    in_stock: bool
     updated_at: datetime
     deleted_at: datetime | None
 
@@ -83,19 +81,9 @@ def _available(row: dict[str, Any]) -> int:
     return max(0, on_hand - (row.get("reserved_quantity") or 0))
 
 
-def _won(value: Decimal) -> int:
-    """할인가를 원 단위 정수로. PostgreSQL numeric::int 와 같게 반올림한다(app/core/products.py)."""
-    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
-
-
 def to_book(row: dict[str, Any]) -> Book:
-    """BE books(+ 상품·재고) 한 줄을 v_books 한 줄로. 가격·재고는 v_books 의 옛 칸이라 채우기만 한다 — AI 는
-    가격·재고를 v_products 에서 읽는다."""
-    has_product = (
-        row.get("product_id") is not None
-        and row.get("discounted_price") is not None
-        and row.get("product_deleted_at") is None
-    )
+    """BE books 한 줄을 v_books 한 줄로. v_books 의 price·in_stock 은 옛 칸이라 싣지 않는다 — AI 는 가격·재고를
+    v_products 에서 읽고(app/core/products.py), 서버 표의 두 칸은 모두 0·false 다(11/11 개발 AI DB 210만 권)."""
     published: date | None = row.get("published_at")
     return Book(
         book_id=row["id"],
@@ -107,8 +95,6 @@ def to_book(row: dict[str, Any]) -> Book:
         pub_year=published.year if published else None,
         cover_url=row.get("cover_image_url"),
         description=row.get("description"),
-        price=_won(row["discounted_price"]) if has_product else 0,
-        in_stock=has_product and _available(row) > 0,
         updated_at=_from_be(row["updated_at"]),
         deleted_at=_from_be(row.get("deleted_at")),
     )
@@ -150,12 +136,8 @@ def connect_args(url: str) -> dict[str, Any]:
 
 _BE_BOOKS = """
 SELECT b.id, b.isbn13, b.title, b.author, b.publisher, b.category, b.published_at,
-       b.cover_image_url, b.description, b.updated_at, b.deleted_at,
-       p.id AS product_id, p.discounted_price, p.deleted_at AS product_deleted_at,
-       i.on_hand_quantity, i.reserved_quantity
+       b.cover_image_url, b.description, b.updated_at, b.deleted_at
 FROM books b
-LEFT JOIN products p ON p.book_id = b.id
-LEFT JOIN product_inventory i ON i.product_id = p.id
 """
 _BE_PRODUCTS = """
 SELECT p.id, p.book_id, p.discounted_price, p.updated_at, p.deleted_at,
