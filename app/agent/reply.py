@@ -86,19 +86,41 @@ _NEGATED_ACTION = re.compile(
 # 하지 않은 담기·빼기·수량 바꾸기를 앞으로 하겠다고 단정하는 말("장바구니 1번째 《한중록》을 빼드릴게요.")(#679).
 # 과거형("뺐어요")만 보면 이 말은 그대로 나가서, 사용자는 빠질 줄 알았는데 장바구니가 그대로였다(11/11 dev 시험).
 # 하지 않은 일이면 묻는 말로 바꾼다. 사용자가 "네"라고 하면 다음 턴에 그 책을 짚은 제안에 대한 동의로 처리된다.
-# "원하시면 담아 드릴게요"처럼 조건을 단 말은 이미 제안이라 그대로 둔다
-_PROMISES: dict[ToolName, re.Pattern[str]] = {
-    ToolName.CART_ADD: re.compile(
-        r"(담아|넣어)\s*드릴게요|(담아|넣어)\s*드리겠(?:습니다|어요)|(담을|넣을)게요"
+# "원하시면 담아 드릴게요"처럼 조건을 단 말은 이미 제안이라 그대로 둔다.
+# 묻는 말은 도구마다 한 꼴로 쓴다. 문지기의 행동 질문 꼴(app/gate/rules.py 의 _ACTION_QUESTION)이 알아보는 꼴이라야
+# 다음 턴의 "네"가 장바구니 챗봇으로 간다. "추가해 드릴까요?"는 문지기가 모른다(#684 리뷰)
+_PROMISE_FORMS: dict[ToolName, tuple[str, str, str, str]] = {
+    # (… 드릴게요 앞의 말, … 게요 앞의 말, 바꿀 묻는 말, 짧게 바꿀 묻는 말)
+    ToolName.CART_ADD: (
+        r"담아|넣어|추가\s*해",
+        r"담을|넣을|추가\s*할",
+        "담아 드릴까요",
+        "담을까요",
     ),
-    ToolName.CART_REMOVE: re.compile(
-        r"(빼)\s*드릴게요|(빼)\s*드리겠(?:습니다|어요)|(뺄)게요"
+    ToolName.CART_REMOVE: (
+        r"빼|삭제\s*해|제거\s*해|지워",
+        r"뺄|삭제\s*할|제거\s*할|지울",
+        "빼 드릴까요",
+        "뺄까요",
     ),
-    ToolName.CART_UPDATE: re.compile(
-        r"(바꿔)\s*드릴게요|(바꿔)\s*드리겠(?:습니다|어요)|(바꿀)게요"
+    ToolName.CART_UPDATE: (
+        r"바꿔|변경\s*해|수정\s*해|조정\s*해|늘려|줄여",
+        r"바꿀|변경\s*할|수정\s*할|조정\s*할|늘릴|줄일",
+        "바꿔 드릴까요",
+        "바꿀까요",
     ),
 }
+_PROMISES: dict[ToolName, tuple[re.Pattern[str], re.Pattern[str]]] = {
+    tool: (
+        re.compile(rf"(?:{give})\s*드(?:릴게요|리겠(?:습니다|어요))"),
+        re.compile(rf"(?:{will})게요"),
+    )
+    for tool, (give, will, _, _) in _PROMISE_FORMS.items()
+}
 _CONDITION = re.compile(r"[가-힣]면(?:\s|,|$)")
+# 장바구니가 아닌 곳에서 빼거나 넣겠다는 말("그 책은 추천에서 뺄게요")은 장바구니 일이 아니다. 묻는 말로 바꾸면
+# 다음 "네"가 장바구니 챗봇으로 간다(#684 리뷰). "장바구니 목록에서"는 장바구니다
+_ELSEWHERE = re.compile(r"(?:추천|목록|후보|검색|결과)\s*에")
 _END_MARK = re.compile(r"[.!~。]*\s*$")
 _MONEY = re.compile(r"(\d[\d,]*)\s*원")
 # "합계는 52,000원"처럼 합계 말 바로 뒤의 금액. 말과 금액 사이에 숫자가 끼면(총 2권, 52,000원) 합계 주장이
@@ -231,24 +253,44 @@ def _mask(sentence: str, titles: dict[str, str]) -> str:
     return masked
 
 
-def _ask_instead_of_promise(sentence: str, facts: _Facts) -> str | None:
-    """하지 않은 장바구니 변경을 하겠다고 단정한 문장이면 묻는 문장으로 바꿔 돌려준다. 아니면 None."""
+def _promised(sentence: str, facts: _Facts) -> ToolName | None:
+    """하지 않은 장바구니 변경을 하겠다고 단정한 문장이면 그 도구, 아니면 None."""
     if sentence.rstrip().endswith("?") or _CONDITION.search(sentence):
         return None
-    for tool, pattern in _PROMISES.items():
-        if tool in facts.succeeded or not pattern.search(sentence):
-            continue
-
-        def _ask(match: re.Match[str]) -> str:
-            verb = next(g for g in match.groups() if g)
-            return (
-                f"{verb} 드릴까요"
-                if verb in ("담아", "넣어", "빼", "바꿔")
-                else f"{verb}까요"
-            )
-
-        return _END_MARK.sub("?", pattern.sub(_ask, sentence, count=1), count=1)
+    if "장바구니" not in sentence and _ELSEWHERE.search(sentence):
+        return None
+    for tool, patterns in _PROMISES.items():
+        if tool not in facts.succeeded and any(p.search(sentence) for p in patterns):
+            return tool
     return None
+
+
+def _as_question(sentence: str, tool: ToolName) -> str:
+    """약속한 말을 그 도구의 묻는 꼴로 바꾼다("《한중록》을 삭제해 드릴게요." → "《한중록》을 빼 드릴까요?")."""
+    give, will = _PROMISES[tool]
+    _, _, ask, ask_short = _PROMISE_FORMS[tool]
+    asked, n = give.subn(ask, sentence, count=1)
+    if n == 0:
+        asked = will.sub(ask_short, sentence, count=1)
+    return _END_MARK.sub("?", asked, count=1)
+
+
+def _told(calls: list[ToolCall]) -> set[ToolName]:
+    """코드가 결과 문장을 따로 말하는 쓰기 도구. BE 까지 갔거나 로그인 때문에 막힌 호출이다(_outcomes).
+
+    이런 도구를 하겠다는 약속은 묻는 말로 바꾸지 않고 지운다. BE 가 거절한 빼기 뒤에 "빼 드릴까요?"가 붙으면
+    실패 문장과 어긋난다(#684 리뷰). 근거가 없어 막힌 호출은 BE 에 가지 않았으니 묻는 말로 바꾼다.
+    """
+    return {
+        call.name
+        for call in calls
+        if call.name in guard.WRITE_TOOLS
+        and (
+            call.result.get("ok") is True
+            or call.result.get("error") in _REACHED_BE
+            or call.result.get("error") == ToolErrorCode.LOGIN_REQUIRED.value
+        )
+    }
 
 
 # 책을 번호로 짚은 말("카드 2번", "장바구니 1번째")
@@ -661,15 +703,19 @@ def finish(run: AgentRun) -> Finished:
     flagged: set[int] = set()
     kept_lines: list[str] = []
     claim_questions: list[str] = []
+    told = _told(run.tool_calls)
     for line in _units(text):
         kept: list[str] = []
         for sentence in line:
-            asked = _ask_instead_of_promise(sentence, facts)
-            if asked is not None:
-                removed.append("ACTION_PROMISED")
-                kept.append(asked)
-                continue
             problem = _check(sentence, facts)
+            # 약속을 묻는 말로 바꾸는 것은 금액 등 다른 검사를 지난 문장만이다. 바꾼 문장은 "?"로 끝나 검사를
+            # 건너뛰므로, 먼저 바꾸면 틀린 금액이 묻는 말에 실려 나갔다(#684 리뷰)
+            promised = _promised(sentence, facts) if problem is None else None
+            if promised is not None:
+                removed.append("ACTION_PROMISED")
+                if promised not in told:
+                    kept.append(_as_question(sentence, promised))
+                continue
             if problem is None:
                 kept.append(sentence)
                 continue
