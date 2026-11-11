@@ -34,6 +34,7 @@ from app.chat import (
     lanes,
     picking,
     reading_graph,
+    reasons,
     recall,
     shown,
     streaming,
@@ -1502,7 +1503,8 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     "반드시 한국어로만 답하라. 다른 언어를 섞지 마라.\n"
     "book_id는 반드시 아래 목록에 적힌 값을 그대로 써라. 순서 번호가 아니다. "
     "picks에 적은 차례가 화면의 1번, 2번, 3번이다. cards에는 picks의 책을 같은 차례로 적어라.\n"
-    "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
+    + reasons.SHORT_RULE
+    + "match_basis는 reason_short·reason_long과 같은 근거를 label(예: 분위기, "
     "장르, 가격)과 detail(그 근거의 구체적 내용) 짝으로 1~3개 적어라 — 새로운 "
     "근거를 지어내지 말고 두 이유 문장에 이미 쓴 근거만 옮겨 적어라.\n"
     "reason_long은 도서 상세 페이지에서 책 소개와 함께 보인다. 책 소개 문장을 옮기거나 "
@@ -1518,7 +1520,7 @@ CARD_PROMPT = ChatPromptTemplate.from_template(
     + '다음 JSON 형식으로만, 이 칸 순서대로 답하라: {{"picks": [고른 책의 book_id 정수], '
     '"reply": "말풍선에 보일 1-2문장", '
     '"cards": [{{"book_id": 정수, '
-    '"reason_short": "한 줄 이유(80자 이내)", '
+    '"reason_short": "다른 책과 갈리는 점(30자 이내)", '
     '"reason_long": "사용자가 찾은 것과 이 책이 맞는 점을 잇는 긴 이유(2-4문장)", '
     '"match_basis": [{{"label": "근거 이름", "detail": "그 근거의 구체적 내용"}}]}}]}}\n\n'
     "책 목록:\n{listing}"
