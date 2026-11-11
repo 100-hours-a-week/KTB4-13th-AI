@@ -1,7 +1,9 @@
 """BE → AI 반영(#640 6단계, #710) — BE MySQL 에서 바뀐 책·상품을 AI v_books·v_products 로 옮긴다.
 
+실행: uv run python -m app.jobs.sync_from_be
+
 5분 복제가 10/27 RDS 이전 뒤 한 번도 돌지 않아 AI 쪽 책·가격이 10/22 에 멈췄다. 복제를 되살리지 않고 이 배치가
-대신한다. 실행은 클라우드가 한다(AI DB 쓰기).
+대신한다. 실행은 클라우드가 한다(AI DB 쓰기). BE_MYSQL_URL 이 비어 있으면 아무것도 하지 않고 끝난다.
 
 - 바뀐 줄: BE updated_at 이 지난 실행의 마지막 시각(replication_state 의 be_books·be_products) 뒤인 줄. 기록이
   없으면 AI 표의 마지막 updated_at 에서 시작한다(첫 실행은 저절로 10/22 이후 전부). 옛 복제가 쓰던 books·products
@@ -15,9 +17,11 @@
   세지 않는다 — 작은 DB 에서 매일 210만 줄을 읽으면 검색이 쓰는 캐시를 밀어낸다.
 """
 
+import asyncio
 import logging
 import re
 import ssl
+import sys
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -29,6 +33,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import asyncpg
 import pymysql
 import pymysql.cursors
+
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -402,3 +408,33 @@ async def run(conn: asyncpg.Connection, source: Any) -> Summary:
 
 def _order(value: datetime | None) -> datetime:
     return value or datetime.min.replace(tzinfo=UTC)
+
+
+async def main() -> int:
+    """끝난 상태 번호: 0 끝(할 일 없음 포함), 1 끝 검증 실패."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    settings = get_settings()
+    if not settings.be_mysql_url:
+        logger.info("BE_MYSQL_URL 이 비어 있다 — 아무것도 하지 않는다")
+        return 0
+    source = BeSource(settings.be_mysql_url)
+    conn = await asyncpg.connect(settings.database_url)
+    try:
+        summary = await run(conn, source)
+    except CheckFailed:
+        logger.exception("끝 검증 실패 — 진행 기록을 남기지 않았다")
+        return 1
+    finally:
+        await conn.close()
+        source.close()
+    logger.info(
+        "끝. 책 %d권 · 상품 %d개 · 다른 책이 가진 ISBN 이라 비운 것 %d권",
+        summary.books,
+        summary.products,
+        summary.isbn_dropped,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

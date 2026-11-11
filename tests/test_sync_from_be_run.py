@@ -1,8 +1,9 @@
 """BE → AI 반영 배치의 실행·진행 기록·끝 검증(app/jobs/sync_from_be.py, #710) 시험.
 
-앞 하나는 DB 없이 돌고, 나머지는 SEARCH_TEST_DATABASE_URL 이 있을 때만 돈다(트랜잭션 안에서 하고 되돌린다). BE 는 가짜다.
+앞 둘은 DB 없이 돌고, 나머지는 SEARCH_TEST_DATABASE_URL 이 있을 때만 돈다(트랜잭션 안에서 하고 되돌린다). BE 는 가짜다.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -18,6 +19,16 @@ def test_다시_읽는_시작은_마지막_시각에서_조금_겹친다() -> No
 
     assert sync.since_of(last) == last - sync.OVERLAP
     assert sync.since_of(None) is None
+
+
+def test_BE_주소가_없으면_아무것도_하지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sync,
+        "get_settings",
+        lambda: type("S", (), {"be_mysql_url": "", "database_url": "unused"})(),
+    )
+
+    assert asyncio.run(sync.main()) == 0
 
 
 needs_db = pytest.mark.skipif(
