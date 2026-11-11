@@ -22,11 +22,15 @@ def title_key(title: str | None) -> str:
     return _NON_WORD.sub("", (title or "").casefold())
 
 
+def first_author(author: str | None) -> str:
+    """저자 칸의 첫 저자 이름. "지은이:"·"지음" 같은 역할 말만 떼고 표기는 그대로 둔다(검색어로 쓴다)."""
+    first = _AUTHOR_SEPARATOR.split(author or "")[0].strip()
+    return _AUTHOR_ROLE_SUFFIX.sub("", _AUTHOR_ROLE_PREFIX.sub("", first)).strip()
+
+
 def author_key(author: str | None) -> str:
     """저자 칸의 첫 저자. "지은이:" 같은 역할 말을 떼고 띄어쓰기와 문장부호를 뺀다."""
-    first = _AUTHOR_SEPARATOR.split(author or "")[0].strip()
-    first = _AUTHOR_ROLE_SUFFIX.sub("", _AUTHOR_ROLE_PREFIX.sub("", first))
-    return _NON_WORD.sub("", first.casefold())
+    return _NON_WORD.sub("", first_author(author).casefold())
 
 
 def edition_key(title: str | None, author: str | None) -> tuple[str, str] | None:
