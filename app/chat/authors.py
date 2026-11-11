@@ -20,14 +20,17 @@ from app.search.schemas import SearchFilters
 # 저자 칸 하나에 여러 사람이 "김인숙, 공선옥, 한강"처럼 이어진다. 210만 권 중 60만 권이 이렇다.
 _SEPARATOR = re.compile(r"\s*[;,]\s*")
 
-# 아래 SQL 의 이름 목록 식. db/migrations/20261111_author_names_idx.sql 의 색인과 글자까지 같아야 색인을 탄다.
-# names() 와 같은 일을 한다. "한강 지음"처럼 역할 말이 붙은 칸(210만 권 중 약 3천 권)은 떼지 않아 못 찾는다.
+# 아래 SQL 의 이름 목록 식. names() 와 같은 일을 한다. "한강 지음"처럼 역할 말이 붙은 칸(210만 권 중 약 3천 권)은 떼지 않아 못 찾는다.
 NAMES_SQL = r"regexp_split_to_array(btrim(lower(b.author)), '\s*[;,]\s*')"
 
-# 저자 조회를 기다리는 최대 시간(초). 이름 목록 색인이 있으면 0.02초다. 색인이 없는 DB 에서 두 글자 이름은 표 전체를
-# 훑어 개발 AI DB 에서 "한강" 4.6초·"김훈" 5.5초였다(11/10). 연결 기본 한도(db.py 의 command_timeout 5초)에 맡기면
-# 챗봇이 500 을 내므로, 짧게 끊고 호출부가 지금까지의 검색으로 넘어가게 한다.
+# 저자 조회를 기다리는 최대 시간(초). 평가 DB 에서 "한강" 1.7ms·"김훈" 5.8ms·"이상" 72ms 다. 그래도 한 글자 이름처럼
+# 후보가 아주 많은 이름이 있을 수 있어 연결 기본 한도(db.py 의 command_timeout 5초)에 맡기지 않는다. 넘으면 챗봇이
+# 500 을 내므로, 짧게 끊고 호출부가 지금까지의 검색으로 넘어가게 한다(#658 리뷰).
 QUERY_TIMEOUT_SECONDS = 1.0
+
+# 이보다 짧은 이름은 DB 에서 찾지 않는다. 한 글자("김")는 저자 칸의 낱말 39만 개가 후보라 평가 DB 에서 2.8초였고,
+# 한 글자 이름의 작가를 찾는 요청은 드물다. 그때는 호출부가 지금까지의 검색으로 후보를 만든다.
+MIN_NAME_CHARS = 2
 
 # 저자가 같은 책을 이만큼까지 가져온다. 뒤에서 판본을 묶고(한강 66권 → 작품 수십 개) 10권으로 자른다.
 AUTHOR_BOOKS_LIMIT = 50
@@ -39,13 +42,13 @@ _SQL = f"""
 SELECT b.book_id
 FROM v_books b
 LEFT JOIN v_book_popularity p USING (book_id)
-WHERE b.author ILIKE $1 AND {NAMES_SQL} @> ARRAY[$2::text]{{filters}}
+WHERE $1 <<% b.author AND {NAMES_SQL} @> ARRAY[$1::text]{{filters}}
 ORDER BY {popularity.score_sql("p")} DESC,
-         ({NAMES_SQL})[1] = $2 DESC,
+         ({NAMES_SQL})[1] = $1 DESC,
          (coalesce(b.description, '') <> '') DESC,
          b.pub_year DESC NULLS LAST,
          b.book_id DESC
-LIMIT $3
+LIMIT $2
 """
 
 
@@ -64,28 +67,23 @@ def wrote(book: dict, author: str) -> bool:
     return key(author) in names(book.get("author"))
 
 
-def _like_pattern(name: str) -> str:
-    """ILIKE 의 % 와 _ 를 글자 그대로 찾게 한다."""
-    escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
-
-
 async def fetch(
     conn: asyncpg.Connection, author: str, search_filters: SearchFilters
 ) -> list[dict]:
     """그 저자의 책을 검색 결과와 같은 모양으로 가져온다. 사용자 조건(가격·출간연도·분야)도 건다.
 
-    ILIKE 를 먼저 거는 까닭: 이름 목록 색인이 없는 DB 에서도 이름이 세 글자 이상이면 저자 글자 조각 색인을 탄다.
-    두 글자 이름은 이름 목록 색인이 없으면 표 전체를 훑는다(평가 DB 0.8초, 개발 AI DB 4.6~5.5초). 그래서
-    QUERY_TIMEOUT_SECONDS 에서 끊는다. 시간 초과는 TimeoutError 로 올라가고, 호출부가 받아 검색으로 넘어간다.
+    `$1 <<% b.author`(pg_trgm 의 낱말 통째 비슷함)로 먼저 거르는 까닭: 이미 있는 저자 글자 조각 색인
+    (v_books_author_trgm_idx)을 두 글자 이름도 탄다. 부분 일치(ILIKE '%한강%')는 세 글자보다 짧으면 이 색인을 못 타서
+    표 전체를 훑었다(평가 DB 0.8초, 개발 AI DB 4.6~5.5초). 저자 칸에 이름이 낱말 통째로 있으면 비슷함이 1이라 기준값
+    (0.5)을 늘 넘고, 진짜 거르기는 이름 목록 식이 한다. 평가 DB 에서 한강·김훈·이상·히가시노 게이고·J.K. 롤링·황석영의
+    책 수가 부분 일치로 찾은 것과 같았다. 새 색인을 만들지 않아도 된다(11/11).
     """
     name = key(author)
-    if not name:
+    if len(name) < MIN_NAME_CHARS:
         return []
-    where, params = filters.build_where(search_filters, first_param=4)
+    where, params = filters.build_where(search_filters, first_param=3)
     rows = await conn.fetch(
         _SQL.format(filters=where),
-        _like_pattern(name),
         name,
         AUTHOR_BOOKS_LIMIT,
         *params,

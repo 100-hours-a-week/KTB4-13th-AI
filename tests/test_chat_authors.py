@@ -52,10 +52,6 @@ def test_로마자_이름은_대소문자를_가리지_않는다() -> None:
     assert authors.wrote(_book(1, "Haruki Murakami"), " haruki murakami ")
 
 
-def test_ILIKE_의_특수_글자는_그대로_찾는다() -> None:
-    assert authors._like_pattern("a%b_c") == "%a\\%b\\_c%"
-
-
 # --- 검색 결과와 합치기 ---
 
 
@@ -222,6 +218,15 @@ def test_저자_조회는_짧은_한도로_끊는다() -> None:
 
     assert seen == {"timeout": authors.QUERY_TIMEOUT_SECONDS}
     assert authors.QUERY_TIMEOUT_SECONDS < 5
+
+
+def test_한_글자_이름은_DB에서_찾지_않는다() -> None:
+    # "김"은 저자 칸 낱말 39만 개가 후보라 평가 DB 에서 2.8초였다
+    class _Conn:
+        async def fetch(self, sql, *args, **kwargs):
+            raise AssertionError("DB 를 보면 안 된다")
+
+    assert asyncio.run(authors.fetch(_Conn(), " 김 ", SearchFilters())) == []
 
 
 # --- 실제 DB ---
