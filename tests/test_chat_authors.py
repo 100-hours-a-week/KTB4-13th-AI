@@ -183,6 +183,47 @@ def test_분위기도_말하면_그_분위기로_찾은_그_저자의_책을_앞
     assert calls == {"search": 1, "by_author": 1}
 
 
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError(), asyncpg.InterfaceError("연결 끊김"), asyncpg.PostgresError()],
+)
+def test_저자_조회가_늦거나_실패하면_500_대신_지금처럼_검색_결과를_쓴다(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    # 이름 목록 색인이 없는 개발 DB 에서 "한강"이 4.6초 걸려 DB 한도(5초)에 닿았다(#658 리뷰)
+    calls = {"search": 0}
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        calls["search"] += 1
+        return SearchOutcome(results=RIVER_BOOKS, degraded=None)
+
+    async def _fail(conn, author, search_filters):
+        raise error
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat.authors, "fetch", _fail)
+
+    result = asyncio.run(chat.get_candidates(_spec(None, "한강"), [], 1))
+
+    # 검색 결과 중 그 저자의 책만 남기는 것은 DB 없이 되므로 그대로 한다
+    assert [c["book_id"] for c in result] == [3]
+    assert calls == {"search": 1}
+
+
+def test_저자_조회는_짧은_한도로_끊는다() -> None:
+    seen: dict = {}
+
+    class _Conn:
+        async def fetch(self, sql, *args, **kwargs):
+            seen.update(kwargs)
+            return []
+
+    asyncio.run(authors.fetch(_Conn(), "한강", SearchFilters()))
+
+    assert seen == {"timeout": authors.QUERY_TIMEOUT_SECONDS}
+    assert authors.QUERY_TIMEOUT_SECONDS < 5
+
+
 # --- 실제 DB ---
 
 _DB_URL = os.environ.get("SEARCH_TEST_DATABASE_URL")

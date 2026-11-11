@@ -1313,9 +1313,18 @@ async def _shown_book_ids(req: ChatRequest) -> list[int]:
 
 
 async def _books_by_author(author: str, search_filters: SearchFilters) -> list[dict]:
-    """그 저자의 책(app/chat/authors.py). 테스트가 DB 없이 바꿔 끼우는 자리다."""
-    async with db.get_pool().acquire() as conn:
-        return await authors.fetch(conn, author, search_filters)
+    """그 저자의 책(app/chat/authors.py). 테스트가 DB 없이 바꿔 끼우는 자리다.
+
+    못 가져오면 빈 목록이다. 그러면 호출부가 지금까지의 검색 결과로 후보를 만든다 — 저자로 좁히는 것은 덤이라, 이 조회가
+    늦거나 실패했다고 엉뚱한 책이라도 나오던 요청을 500 으로 바꾸지 않는다(#658 리뷰). 예외 종류를 좁히지 않는 까닭은
+    app/search/service.py 의 벡터 검색과 같다 — TimeoutError·InterfaceError 는 PostgresError 하위가 아니다.
+    """
+    try:
+        async with db.get_pool().acquire() as conn:
+            return await authors.fetch(conn, author, search_filters)
+    except Exception:
+        logger.exception("저자 책 조회 실패. 검색 결과로 후보를 만든다")
+        return []
 
 
 async def get_candidates(

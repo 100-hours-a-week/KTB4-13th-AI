@@ -24,6 +24,11 @@ _SEPARATOR = re.compile(r"\s*[;,]\s*")
 # names() 와 같은 일을 한다. "한강 지음"처럼 역할 말이 붙은 칸(210만 권 중 약 3천 권)은 떼지 않아 못 찾는다.
 NAMES_SQL = r"regexp_split_to_array(btrim(lower(b.author)), '\s*[;,]\s*')"
 
+# 저자 조회를 기다리는 최대 시간(초). 이름 목록 색인이 있으면 0.02초다. 색인이 없는 DB 에서 두 글자 이름은 표 전체를
+# 훑어 개발 AI DB 에서 "한강" 4.6초·"김훈" 5.5초였다(11/10). 연결 기본 한도(db.py 의 command_timeout 5초)에 맡기면
+# 챗봇이 500 을 내므로, 짧게 끊고 호출부가 지금까지의 검색으로 넘어가게 한다.
+QUERY_TIMEOUT_SECONDS = 1.0
+
 # 저자가 같은 책을 이만큼까지 가져온다. 뒤에서 판본을 묶고(한강 66권 → 작품 수십 개) 10권으로 자른다.
 AUTHOR_BOOKS_LIMIT = 50
 
@@ -71,7 +76,8 @@ async def fetch(
     """그 저자의 책을 검색 결과와 같은 모양으로 가져온다. 사용자 조건(가격·출간연도·분야)도 건다.
 
     ILIKE 를 먼저 거는 까닭: 이름 목록 색인이 없는 DB 에서도 이름이 세 글자 이상이면 저자 글자 조각 색인을 탄다.
-    두 글자 이름은 이름 목록 색인이 없으면 표 전체를 훑는다(평가 DB 0.8초).
+    두 글자 이름은 이름 목록 색인이 없으면 표 전체를 훑는다(평가 DB 0.8초, 개발 AI DB 4.6~5.5초). 그래서
+    QUERY_TIMEOUT_SECONDS 에서 끊는다. 시간 초과는 TimeoutError 로 올라가고, 호출부가 받아 검색으로 넘어간다.
     """
     name = key(author)
     if not name:
@@ -83,6 +89,7 @@ async def fetch(
         name,
         AUTHOR_BOOKS_LIMIT,
         *params,
+        timeout=QUERY_TIMEOUT_SECONDS,
     )
     return await books.fetch(conn, [r["book_id"] for r in rows])
 
