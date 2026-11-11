@@ -130,3 +130,16 @@ def test_크기_한도를_넘으면_읽지_않는다() -> None:
         parse(b"42", value, max_bytes=len(value) - 1)
 
     assert caught.value.reason == "too_large"
+
+
+def test_틀린_까닭에_본문을_싣지_않는다() -> None:
+    secret = _profile(idempotency_key="")
+    secret["memories"] = [{"keyword": "아무도_몰라야_하는_취향"}]
+
+    with pytest.raises(BadMessage) as caught:
+        parse(b"42", _value(profile=secret), max_bytes=MAX_BYTES)
+
+    assert "아무도_몰라야_하는_취향" not in str(caught.value)
+    assert "아무도_몰라야_하는_취향" not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
