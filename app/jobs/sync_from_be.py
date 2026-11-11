@@ -187,23 +187,24 @@ class BeSource:
         self._conn.close()
 
 
+# price·in_stock 은 옛 칸이라 새 줄에만 0·false 로 넣고(서버 표와 같다) 고치지 않는다(to_book 설명)
 _UPSERT_BOOKS = """
 INSERT INTO v_books (book_id, isbn13, title, author, publisher, category, pub_year, cover_url,
                      description, price, in_stock, updated_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, false, $10, $11)
 ON CONFLICT (book_id) DO UPDATE SET
     isbn13 = EXCLUDED.isbn13, title = EXCLUDED.title, author = EXCLUDED.author,
     publisher = EXCLUDED.publisher, category = EXCLUDED.category, pub_year = EXCLUDED.pub_year,
-    cover_url = EXCLUDED.cover_url, description = EXCLUDED.description, price = EXCLUDED.price,
-    in_stock = EXCLUDED.in_stock, updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
+    cover_url = EXCLUDED.cover_url, description = EXCLUDED.description,
+    updated_at = EXCLUDED.updated_at, deleted_at = EXCLUDED.deleted_at
 WHERE v_books.updated_at <= EXCLUDED.updated_at
   AND (v_books.isbn13, v_books.title, v_books.author, v_books.publisher, v_books.category,
-       v_books.pub_year, v_books.cover_url, v_books.description, v_books.price, v_books.in_stock,
-       v_books.updated_at, v_books.deleted_at)
+       v_books.pub_year, v_books.cover_url, v_books.description, v_books.updated_at,
+       v_books.deleted_at)
       IS DISTINCT FROM
       (EXCLUDED.isbn13, EXCLUDED.title, EXCLUDED.author, EXCLUDED.publisher, EXCLUDED.category,
-       EXCLUDED.pub_year, EXCLUDED.cover_url, EXCLUDED.description, EXCLUDED.price, EXCLUDED.in_stock,
-       EXCLUDED.updated_at, EXCLUDED.deleted_at)
+       EXCLUDED.pub_year, EXCLUDED.cover_url, EXCLUDED.description, EXCLUDED.updated_at,
+       EXCLUDED.deleted_at)
 """
 _UPSERT_PRODUCTS = """
 INSERT INTO v_products (id, book_id, discounted_price, stock_quantity, updated_at, deleted_at)
@@ -252,8 +253,6 @@ async def upsert_books(conn: asyncpg.Connection, books: list[Book]) -> int:
                 book.pub_year,
                 book.cover_url,
                 book.description,
-                book.price,
-                book.in_stock,
                 book.updated_at,
                 book.deleted_at,
             )
