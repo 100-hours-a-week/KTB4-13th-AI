@@ -1,19 +1,27 @@
-"""BE → AI 반영(#640 6단계, #710) — BE MySQL 의 책·상품을 읽어 AI v_books·v_products 로 옮긴다.
+"""BE → AI 반영(#640 6단계, #710) — BE MySQL 에서 바뀐 책·상품을 AI v_books·v_products 로 옮긴다.
 
+5분 복제가 10/27 RDS 이전 뒤 한 번도 돌지 않아 AI 쪽 책·가격이 10/22 에 멈췄다. 복제를 되살리지 않고 이 배치가
+대신한다. 실행은 클라우드가 한다(AI DB 쓰기).
+
+- 바뀐 줄: BE updated_at 이 지난 실행의 마지막 시각(replication_state 의 be_books·be_products) 뒤인 줄. 기록이
+  없으면 AI 표의 마지막 updated_at 에서 시작한다(첫 실행은 저절로 10/22 이후 전부). 옛 복제가 쓰던 books·products
+  줄은 KST 시각에 +00 이 붙어 9시간 어긋나 있어 쓰지 않는다. 조금(OVERLAP) 겹쳐 다시 읽고 키로 덮어쓰므로 겹쳐도
+  결과가 같고, 더 오래된 BE 줄은 새 값을 덮어쓰지 않는다.
 - BE 시각(DATETIME)은 UTC 다(BE 코드에 시간대 설정이 없고, CLOUD #3 에서 UTC 로 확인).
+- 지운 책·상품은 줄을 남기고 deleted_at 만 채운다(옛 복제와 같다).
 - 재고는 BE 처럼 product_inventory 의 보유 − 예약(줄이 없으면 20)이다. products.stock_quantity 는 BE 가 V58 뒤로
-  더 바꾸지 않는다.
-- 지운 책·상품은 deleted_at 으로 안다(BE V8 부터 상태 칸 대신 쓴다). AI 표에는 줄을 남기고 deleted_at 만 채운다
-  (옛 복제와 같다).
-- AI 표에는 키로 덮어쓰고, 더 오래된 BE 줄은 새 값을 덮어쓰지 않는다. isbn13 은 겹치면 안 되므로 다른 책이 이미 가진
-  ISBN 은 비운다.
+  더 바꾸지 않는다. 시각이 바뀌지 않은 상품의 재고 변화는 #711 이 맞춘다.
+- 끝 검증: 이번에 옮긴 책 몇십 권을 BE 와 다시 맞춰 보고, 다르면 진행 기록을 남기지 않고 오류로 끝난다. 표 전체를
+  세지 않는다 — 작은 DB 에서 매일 210만 줄을 읽으면 검색이 쓰는 캐시를 밀어낸다.
 """
 
+import logging
 import re
 import ssl
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -22,10 +30,25 @@ import asyncpg
 import pymysql
 import pymysql.cursors
 
+logger = logging.getLogger(__name__)
+
+# 지난 실행의 마지막 시각에서 이만큼 앞부터 다시 읽는다. 같은 시각에 커밋된 줄을 놓치지 않으려는 여유다
+OVERLAP = timedelta(minutes=10)
+# BE 에서 한 번에 받아 AI 에 쓰는 줄 수
+FETCH_SIZE = 2000
+# 끝 검증에서 BE 와 다시 맞춰 보는 책 수(이번에 옮긴 것 중 마지막 것들)
+SAMPLE_SIZE = 50
 # BE ProductInventory.INITIAL_ON_HAND_QUANTITY. 재고 줄이 없는 상품을 BE 는 이만큼 있다고 본다
 DEFAULT_ON_HAND = 20
 
+BOOKS_CURSOR = "be_books"
+PRODUCTS_CURSOR = "be_products"
+
 _ISBN13 = re.compile(r"[0-9]{13}")
+
+
+class CheckFailed(RuntimeError):
+    """옮긴 뒤 BE 와 다시 맞춰 보니 값이 다르다. 진행 기록을 남기지 않는다."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +76,13 @@ class Product:
     stock_quantity: int
     updated_at: datetime
     deleted_at: datetime | None
+
+
+@dataclass(frozen=True)
+class Summary:
+    books: int
+    products: int
+    isbn_dropped: int
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -115,6 +145,11 @@ def to_product(row: dict[str, Any]) -> Product:
         updated_at=_utc(row["updated_at"]),
         deleted_at=_utc(row.get("deleted_at")),
     )
+
+
+def since_of(last: datetime | None) -> datetime | None:
+    """다시 읽을 시작 시각. 마지막 시각이 없으면(처음) None = 전부."""
+    return None if last is None else last - OVERLAP
 
 
 def connect_args(url: str) -> dict[str, Any]:
@@ -272,3 +307,98 @@ async def upsert_products(conn: asyncpg.Connection, products: list[Product]) -> 
             for p in products
         ],
     )
+
+
+async def _last(conn: asyncpg.Connection, cursor: str, table: str) -> datetime | None:
+    saved = await conn.fetchval(
+        "SELECT cursor_value FROM replication_state WHERE name = $1", cursor
+    )
+    if saved is not None:
+        return saved
+    # 처음: AI 표의 마지막 시각. 한 번만 표를 훑는다
+    return await conn.fetchval(f"SELECT max(updated_at) FROM {table}")
+
+
+async def _save(conn: asyncpg.Connection, cursor: str, value: datetime) -> None:
+    await conn.execute(
+        "INSERT INTO replication_state (name, cursor_value) VALUES ($1, $2)"
+        " ON CONFLICT (name) DO UPDATE SET cursor_value = EXCLUDED.cursor_value",
+        cursor,
+        value,
+    )
+
+
+async def check(conn: asyncpg.Connection, source: Any, sample: list[int]) -> None:
+    """옮긴 책을 BE 와 다시 맞춰 본다. 확인하는 사이 BE 에서 다시 바뀐 책은 다음 실행이 옮기므로 넘어간다."""
+    if not sample:
+        return
+    be = {r["id"]: to_book(r) for r in source.books_by_ids(sample)}
+    ai = {
+        r["book_id"]: r
+        for r in await conn.fetch(
+            "SELECT book_id, isbn13, title, author, publisher, updated_at, deleted_at"
+            " FROM v_books WHERE book_id = ANY($1::int[])",
+            sample,
+        )
+    }
+    wrong = []
+    for book_id in sample:
+        want = be.get(book_id)
+        got = ai.get(book_id)
+        if want is None:
+            continue
+        if got is None:
+            wrong.append(book_id)
+            continue
+        if want.updated_at > got["updated_at"]:
+            continue
+        same = (
+            (got["title"], got["author"], got["publisher"])
+            == (want.title, want.author, want.publisher)
+            and got["isbn13"] in (want.isbn13, None)
+            and (got["deleted_at"] is None) == (want.deleted_at is None)
+        )
+        if not same:
+            wrong.append(book_id)
+    if wrong:
+        raise CheckFailed(
+            f"옮긴 책 {len(sample)}권 중 {len(wrong)}권이 BE 와 다르다(예: {wrong[:5]})"
+        )
+
+
+async def run(conn: asyncpg.Connection, source: Any) -> Summary:
+    """바뀐 책·상품을 옮기고, 맞춰 본 뒤 진행 기록을 남긴다."""
+    books_since = since_of(await _last(conn, BOOKS_CURSOR, "v_books"))
+    products_since = since_of(await _last(conn, PRODUCTS_CURSOR, "v_products"))
+
+    n_books = dropped = 0
+    last_book: datetime | None = None
+    sample: deque[int] = deque(maxlen=SAMPLE_SIZE)
+    for batch in source.books_since(books_since, FETCH_SIZE):
+        books = [to_book(r) for r in batch]
+        dropped += await upsert_books(conn, books)
+        n_books += len(books)
+        last_book = max([last_book, *(b.updated_at for b in books)], key=_order)
+        sample.extend(b.book_id for b in books)
+        logger.info("책 %d권 옮김(마지막 %s)", n_books, last_book)
+
+    n_products = 0
+    last_product: datetime | None = None
+    for batch in source.products_since(products_since, FETCH_SIZE):
+        products = [to_product(r) for r in batch]
+        await upsert_products(conn, products)
+        n_products += len(products)
+        last_product = max(
+            [last_product, *(p.updated_at for p in products)], key=_order
+        )
+
+    await check(conn, source, list(sample))
+    if last_book is not None:
+        await _save(conn, BOOKS_CURSOR, last_book)
+    if last_product is not None:
+        await _save(conn, PRODUCTS_CURSOR, last_product)
+    return Summary(books=n_books, products=n_products, isbn_dropped=dropped)
+
+
+def _order(value: datetime | None) -> datetime:
+    return value or datetime.min.replace(tzinfo=UTC)
