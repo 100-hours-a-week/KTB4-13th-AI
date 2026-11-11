@@ -151,8 +151,9 @@ def test_앞_턴에서_이어진_검색어로_못_찾았으면_이번_말이_아
 
     assert reply == "조건에 맞는 책을 아직 못 찾았어요."
     assert followup.startswith(
-        '"일본 작가를 제외한 추리소설 입문용"에 맞는 책을 찾지 못했어요.'
+        '"일본 작가를 제외한 추리소설 입문용"에서 조건을 하나 줄이거나'
     )
+    assert "못 찾" not in followup  # reply 와 같은 말을 두 번 하지 않는다(#685 리뷰)
     assert "만으로는" not in followup
     assert "• " not in followup  # 처음부터 고르라는 분야 보기를 달지 않는다
 
@@ -162,7 +163,7 @@ def test_이번_말의_낱말이_검색어의_일부뿐이면_이어진_검색�
 
     _, followup = chat._no_card_response(spec, "일본 작가 말고", had_candidates=False)
 
-    assert followup.startswith('"일본 작가를 제외한 추리소설 입문용"에')
+    assert followup.startswith('"일본 작가를 제외한 추리소설 입문용"에서')
 
 
 def test_이어진_검색어가_길면_잘라서_짚는다() -> None:
@@ -171,7 +172,7 @@ def test_이어진_검색어가_길면_잘라서_짚는다() -> None:
 
     _, followup = chat._no_card_response(spec, "더 없어?", had_candidates=False)
 
-    assert followup.startswith(f'"{query[:30]}…"에 맞는')
+    assert followup.startswith(f'"{query[:30]}…"에서')
 
 
 def test_이번_말이_검색어를_정했으면_지금처럼_이번_말을_짚는다() -> None:

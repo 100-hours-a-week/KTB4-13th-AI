@@ -2351,11 +2351,12 @@ def _no_card_response(
             if len(query) <= _CARRIED_QUERY_MAX_CHARS
             else query[:_CARRIED_QUERY_MAX_CHARS] + "…"
         )
+        # reply 가 이미 "못 찾았어요"라고 하므로 followup 은 다시 말하지 않고 검색어를 짚어 바로 묻는다(#685 리뷰)
         return (
             "조건에 맞는 책을 아직 못 찾았어요.",
             (
-                f'"{shown}"에 맞는 책을 찾지 못했어요. 조건을 하나 줄이거나 다른 말로 바꿔 '
-                "말씀해 주시겠어요? 아는 제목이나 저자를 알려 주셔도 돼요."
+                f'"{shown}"에서 조건을 하나 줄이거나 다른 말로 바꿔 말씀해 주시겠어요? '
+                "아는 제목이나 저자를 알려 주셔도 돼요."
             ),
         )
     head = (
