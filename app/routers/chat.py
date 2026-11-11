@@ -2342,6 +2342,22 @@ def _no_card_response(
             or f"{names} 조건이 걸려 있어요. 조건을 넓혀서 다시 찾아볼까요?",
         )
     said = message.strip()
+    query = _query_text(spec)
+    if said and not _query_from_message(query, said):
+        # 검색어가 앞 턴에서 이어졌다("추리소설 입문" 뒤의 "다른 거 더 없어?", "일본 작가 말고"). 이번 말만 짚으면
+        # 앞의 조건을 버린 것처럼 들리고, 분야 보기(소설·에세이…)는 처음부터 다시 고르라는 말이 된다(#680)
+        shown = (
+            query
+            if len(query) <= _CARRIED_QUERY_MAX_CHARS
+            else query[:_CARRIED_QUERY_MAX_CHARS] + "…"
+        )
+        return (
+            "조건에 맞는 책을 아직 못 찾았어요.",
+            (
+                f'"{shown}"에 맞는 책을 찾지 못했어요. 조건을 하나 줄이거나 다른 말로 바꿔 '
+                "말씀해 주시겠어요? 아는 제목이나 저자를 알려 주셔도 돼요."
+            ),
+        )
     head = (
         f'"{said}"만으로는 찾기 어려워요.'
         if said and len(said) <= _CLARIFY_ECHO_MAX_CHARS
@@ -2353,6 +2369,24 @@ def _no_card_response(
             f"{head} 제목이나 저자를 알려 주시거나, 분야를 골라 주세요."
         ),
     )
+
+
+# 앞 턴에서 이어진 검색어를 답에 따라 쓸 때의 최대 길이. 넘으면 자르고 "…"를 붙인다
+_CARRIED_QUERY_MAX_CHARS = 30
+_QUERY_WORD = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+
+
+def _query_from_message(query: str, message: str) -> bool:
+    """검색어를 이번 말이 정했는가. 검색어 낱말의 절반 이상이 이번 말에 있으면 그렇다고 본다.
+
+    낱말은 앞 두 글자로 견준다. 조사가 붙은 꼴("추리소설을", "작가를")도 같은 낱말로 센다.
+    """
+    words = _QUERY_WORD.findall(query)
+    if not words:
+        return True
+    flat = re.sub(r"\s+", "", message)
+    said = sum(1 for word in words if word[:2] in flat)
+    return said * 2 >= len(words)
 
 
 def _with_clarify_options(question: str) -> str:

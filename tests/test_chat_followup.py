@@ -105,7 +105,7 @@ def test_검색어가_없으면_조건이_걸려_있어도_주제부터_묻고_�
 
 
 def test_검색어는_있는데_못_찾았으면_짧은_말은_그대로_짚는다() -> None:
-    spec = _spec(semantic="가볍고 잔잔한 분위기의 어린이 책")
+    spec = _spec(semantic="어린왕자 같은 책")
 
     _, followup = chat._no_card_response(spec, "어린왕자", had_candidates=False)
 
@@ -136,3 +136,47 @@ def test_최저가_0은_조건이_아니라서_말하지_않는다() -> None:
     spec = _spec(semantic="책", filters=SearchFilters(price_min=0))
 
     assert chat._active_conditions(spec) == []
+
+
+def test_앞_턴에서_이어진_검색어로_못_찾았으면_이번_말이_아니라_검색어를_짚는다() -> (
+    None
+):
+    # 11/11 dev 시험: "추리소설 입문용" → (묻기) → "일본 작가 말고" → "다른 거 더 없어?"에서 후보가 0권이면
+    # '"다른 거 더 없어?"만으로는 찾기 어려워요' + 소설·에세이 보기가 나와 앞의 조건을 버린 것처럼 들렸다(#680)
+    spec = _spec(semantic="일본 작가를 제외한 추리소설 입문용")
+
+    reply, followup = chat._no_card_response(
+        spec, "다른 거 더 없어?", had_candidates=False
+    )
+
+    assert reply == "조건에 맞는 책을 아직 못 찾았어요."
+    assert followup.startswith(
+        '"일본 작가를 제외한 추리소설 입문용"에 맞는 책을 찾지 못했어요.'
+    )
+    assert "만으로는" not in followup
+    assert "• " not in followup  # 처음부터 고르라는 분야 보기를 달지 않는다
+
+
+def test_이번_말의_낱말이_검색어의_일부뿐이면_이어진_검색어다() -> None:
+    spec = _spec(semantic="일본 작가를 제외한 추리소설 입문용")
+
+    _, followup = chat._no_card_response(spec, "일본 작가 말고", had_candidates=False)
+
+    assert followup.startswith('"일본 작가를 제외한 추리소설 입문용"에')
+
+
+def test_이어진_검색어가_길면_잘라서_짚는다() -> None:
+    query = "회사 동료가 퇴사할 때 선물로 줄 수 있는 가볍게 읽을 수 있는 에세이"
+    spec = _spec(semantic=query)
+
+    _, followup = chat._no_card_response(spec, "더 없어?", had_candidates=False)
+
+    assert followup.startswith(f'"{query[:30]}…"에 맞는')
+
+
+def test_이번_말이_검색어를_정했으면_지금처럼_이번_말을_짚는다() -> None:
+    spec = _spec(semantic="추리소설 입문용으로 읽을 책")
+
+    _, followup = chat._no_card_response(spec, "추리소설 입문용", had_candidates=False)
+
+    assert followup.startswith('"추리소설 입문용"만으로는 찾기 어려워요.')
