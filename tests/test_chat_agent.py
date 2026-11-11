@@ -1401,6 +1401,35 @@ def test_모델이_출처_꼬리표를_한_줄_이유로_옮기면_바꾼다(wri
     assert short == "알베르 카뮈의 2023년 경제학 책이에요."
 
 
+@pytest.mark.parametrize(
+    "written",
+    [
+        "가족이 함께 읽기 좋은 그림책이에요.",
+        "아이와 함께 읽을 수 있는 동화예요.",
+        "부모와 함께 읽으면 좋은 책이에요.",
+    ],
+)
+def test_함께_읽기를_권하는_말은_출처_꼬리표가_아니다(written: str) -> None:
+    # 과거형("함께 읽은")만 출처로 본다. 넓게 잡으면 좋은 이유가 저자·연도 문장으로 바뀐다(#661 리뷰)
+    spec = chat.Spec.model_validate(SPEC)
+    book = _graph_book(2, "이방인", "알베르 카뮈", "부조리한 살인 사건을 다룬 소설.")
+
+    assert not picking.names_source(written)
+    assert chat._lane_reasons({"reason_short": written}, book, spec)[0] == written
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "함께 대출된 책이에요.",
+        "같이 빌린 사람이 많은 책이에요.",
+        "정보나루 추천 책이에요.",
+    ],
+)
+def test_출처를_말하는_다른_꼴도_꼬리표로_본다(written: str) -> None:
+    assert picking.names_source(written)
+
+
 def test_소개로_쓴_한_줄_이유는_그래프_책이어도_그대로_쓴다() -> None:
     spec = chat.Spec.model_validate(SPEC)
     book = _graph_book(2, "이방인", "알베르 카뮈", "부조리한 살인 사건을 다룬 소설.")

@@ -9,4 +9,4 @@
 - **크기:** 2.6MB, 작품 71,457개(목록 있는 작품 18,693개)
 - **다시 만들기:** `python -m app.jobs.build_reading_graph <usage.jsonl> data/reading_graph.json.gz` (정보나루 원본 `usage.jsonl` 은 올리지 않는다)
 
-이 그래프로 고른 카드의 이유와 근거 칸에는 "도서관 정보나루"를 밝힌다(`app/chat/picking.py` `SOURCE_NOTE`).
+이 그래프로 고른 카드의 근거 칸에는 "도서관 정보나루"를 밝힌다(`app/chat/picking.py` `SOURCE_NOTE`).
