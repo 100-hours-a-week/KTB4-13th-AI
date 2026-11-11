@@ -36,6 +36,7 @@ from app.chat import (
     jobs,
     lanes,
     picking,
+    popular,
     reading_graph,
     reasons,
     recall,
@@ -48,7 +49,17 @@ from app.chat.copying import COPIED_SHARE_MIN, copied_share
 from app.chat.schemas import ChatRequest, Spec, SpecExact, Turn
 from app.chat.streaming import ReplySink
 from app.chat.topic_switch import RELATION_PROMPT
-from app.core import body, categories, db, editions, isbn, popularity, responses, voice
+from app.core import (
+    body,
+    categories,
+    db,
+    editions,
+    foreign_script,
+    isbn,
+    popularity,
+    responses,
+    voice,
+)
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
@@ -586,6 +597,10 @@ def _may_recall(message: str) -> bool:
     """
     if not _agent_on() or lanes.points_at_book(message):
         return False
+    if popular.answers(message):
+        # 분야 이름만 말했다("소설 추천해줘"). 많이 읽힌 책이 대표작 몫을 한다. 떠올린 제목을 더하면 모델이 매번 같은
+        # 책(『종의 기원』·『불편한 편의점』)을 떠올려 카드가 그 책으로 쏠렸다(11/11 실측 6번 중 4번)
+        return False
     words = [w for w in (t.strip(_PUNCTUATION) for t in message.split()) if w]
     return any(_is_topic_word(w) for w in words)
 
@@ -708,12 +723,20 @@ async def update_spec(
             patch = {k: v for k, v in patch.items() if k != "anchor_book"}
         updated = Spec.model_validate(_merge_spec_patch(base, patch))
         ask = await _scope_within_grace(scope) if scope is not None else None
-        if ask is not None and _is_pinned(updated):
+        if ask is not None and (
+            _is_pinned(updated) or popular.answers(_genre_text(updated))
+        ):
+            # 분야만 말한 요청("소설 추천해줘")은 먼저 묻지 않는다. 많이 읽힌 책을 카드로 보여 주고 카드 아래에서 좁힐
+            # 보기를 준다(#514). 묻고 나서 "아무거나"라고 하면 어차피 같은 카드가 나온다
             ask = None
         plan = _plan(patch, first)
         # 제목·저자를 콕 집은 요청과 기준 책을 짚은 요청에는 떠올린 제목을 쓰지 않는다. 묻는 턴에도 안 쓴다
         handed_over = (
-            ask is None and updated.intent == "semantic" and plan.anchor is None
+            ask is None
+            and updated.intent == "semantic"
+            and plan.anchor is None
+            # 말에는 내용이 있어 보였어도 정리된 조건이 분야 이름뿐이면 많이 읽힌 책으로 답한다(_may_recall 과 같은 까닭)
+            and not popular.answers(_genre_text(updated))
         )
         return SpecUpdate(
             updated,
@@ -1341,13 +1364,55 @@ async def _books_by_author(author: str, search_filters: SearchFilters) -> list[d
         return []
 
 
+async def _popular_books(isbns: list[str], search_filters: SearchFilters) -> list[dict]:
+    """많이 읽힌 책을 책 표에서 가져온다(app/chat/popular.py). 테스트가 DB 없이 바꿔 끼우는 자리다.
+
+    못 가져오면 빈 목록이다. 그러면 호출부가 지금처럼 검색한다 — 저자 조회(_books_by_author)와 같은 까닭이다.
+    """
+    try:
+        async with db.get_pool().acquire() as conn:
+            return await popular.fetch(conn, isbns, search_filters)
+    except Exception:
+        logger.exception("많이 읽힌 책 조회 실패. 검색으로 후보를 만든다")
+        return []
+
+
+async def _popular_order(
+    conn: asyncpg.Connection, pool: list[dict], user_id: int
+) -> list[dict]:
+    """많이 읽힌 순의 후보(최대 popular.FETCH_LIMIT 권)에서 카드 LLM 에 넘길 CANDIDATE_LIMIT 권을 고른다(#514).
+
+    취향 벡터가 있는 사용자는 취향 가까운 순으로 세우고, 위 popular.TASTE_POOL 권 안에서 취향 순서에 기대어 뽑는다.
+    취향이 같은 책끼리는 많이 읽힌 순서를 지키고(안정 정렬), 벡터가 없는 책은 뒤로 간다. 취향을 모르면 많이 읽힌 순서에
+    기대어 뽑는다. 어느 쪽이든 맨 위 10권을 그대로 주면 같은 요청에 늘 같은 책이 나온다 — 모르는 사람은 모두가, 취향이
+    있는 사람은 새 대화마다.
+    """
+    row = await conn.fetchrow(
+        "SELECT centroid::text AS centroid, cold_start FROM taste_profile WHERE user_id = $1",
+        user_id,
+    )
+    if not row or row["cold_start"] or not row["centroid"]:
+        return popular.sample(pool, CANDIDATE_LIMIT)
+    similarities = await _fetch_similarities(
+        conn, [c["book_id"] for c in pool], json.loads(row["centroid"])
+    )
+    by_taste = sorted(pool, key=lambda c: -similarities.get(c["book_id"], -1.0))
+    return popular.sample(by_taste[: popular.TASTE_POOL], CANDIDATE_LIMIT)
+
+
 async def get_candidates(
     spec: Spec,
     exclude_book_ids: list[int],
     user_id: int,
     owned_book_ids: list[int] | None = None,
+    *,
+    use_popular: bool = True,
 ) -> list[dict]:
     """2단계 — spec으로 후보를 뽑는다. ①의 하이브리드 검색(제목 완전 일치 먼저, 나머지는 순위 합치기)을 쓴다.
+
+    분야 이름만 말한 요청("소설 추천해줘", "추리소설 아무거나")은 검색하지 않고 그 분야에서 많이 읽힌 책을 쓴다(#514,
+    app/chat/popular.py). 분야 이름으로 검색하면 제목에 그 낱말이 든 책(『소설』, 『추리소설 속 트릭의 비밀』)이 앞에 온다.
+    거르고 나서 CARD_LIMIT 권이 안 남으면(가격 조건이 좁거나 다 보여 줬다) 지금처럼 검색한다(use_popular=False 로 다시 부른다).
 
     match_score는 _attach_match_scores가 채운다(#129). 가진 책 제외는 점수와 무관하게
     바로 되므로 여기서 한다(#144). owned_book_ids(요청에 실려 온 산 책·나의 도서관 책,
@@ -1367,6 +1432,13 @@ async def get_candidates(
     query = _query_text(spec)
     if not query:
         return []
+    asked = popular.parse(_genre_text(spec)) if use_popular else None
+    index = popular.get()
+
+    async def searched_instead() -> list[dict]:
+        return await get_candidates(
+            spec, exclude_book_ids, user_id, owned_book_ids, use_popular=False
+        )
 
     # 장르는 온보딩 값(예: "소설")으로 오는데 ①의 category 필터는 카탈로그 분류명과
     # 정확히 같아야 해서 그대로 넘기면 0건이 된다(#203). 대응표에 있는 값이면 ①에는
@@ -1388,7 +1460,15 @@ async def get_candidates(
         if author and not spec.exact.title
         else []
     )
-    if by_author and not spec.semantic:
+    popular_results = (
+        await _popular_books(popular.isbns_for(index, asked), search_filters)
+        if asked is not None and index is not None
+        else []
+    )
+    from_popular = bool(popular_results)
+    if from_popular:
+        results = popular_results
+    elif by_author and not spec.semantic:
         results = by_author
     else:
         outcome = await service.search(
@@ -1399,7 +1479,9 @@ async def get_candidates(
             results = authors.narrow(results, author, by_author)
     exclude = set(exclude_book_ids) | set(spec.exclude)
     pool = [r for r in results if r["book_id"] not in exclude]
-    if catalog_categories is not None:
+    # 많이 읽힌 책은 분야를 꼬리표로 이미 골랐다. 카탈로그 분류로 다시 거르면 외국 수필('일본문학·기타 아시아문학' 등)이
+    # "에세이"에서 빠진다(11/11 평가 DB: 많이 읽힌 수필 175권 중 55권)
+    if catalog_categories is not None and not from_popular:
         book_categories = await _fetch_categories([c["book_id"] for c in pool])
         pool = [
             r for r in pool if book_categories.get(r["book_id"]) in catalog_categories
@@ -1416,14 +1498,14 @@ async def get_candidates(
             if publisher in _normalize_publisher(r.get("publisher") or "")
         ]
     if not pool:
-        return []
+        return await searched_instead() if from_popular else []
 
     if owned_book_ids:
         # 저평점을 준 책은 따로 받지 않는다. 리뷰는 산 책에만 달 수 있어 산 책에 들어 있다.
         owned = set(owned_book_ids)
         pool = [c for c in pool if c["book_id"] not in owned]
     if not pool:
-        return []
+        return await searched_instead() if from_popular else []
 
     descriptions = await _fetch_descriptions([c["book_id"] for c in pool])
     for c in pool:
@@ -1443,14 +1525,24 @@ async def get_candidates(
             if _edition_key(c.get("title"), c.get("author")) not in shown_keys
         ]
     pool = _dedupe_editions(pool)
+    if from_popular and len(pool) < CARD_LIMIT:
+        # 많이 읽힌 책이 카드 수만큼 안 남았다. 이 분야 책이 원본에 적거나(판타지 10권) 조건이 좁다
+        logger.info("많이 읽힌 책이 %d권뿐이라 검색으로 찾는다", len(pool))
+        return await searched_instead()
     # 분위기로 찾는 요청이면 남은 후보(보통 25권 안팎)를 질문과 책 글을 같이 읽는 리랭커로 다시 줄 세운 뒤 자른다(#638).
     # 제목·저자 찾기(exact)는 제목이 같은 책을 맨 앞에 둔 ①의 순서가 맞는 순서라 그대로 둔다. 리랭커를 못 쓰면 검색 순서다.
+    # 많이 읽힌 책은 분야 이름("소설")과 견줄 글이 없어 리랭커를 쓰지 않는다. 많이 읽힌 순서가 맞는 순서다.
     # DB 연결을 잡기 전에 부른다 — 외부 호출을 기다리는 동안 연결을 쥐고 있지 않게.
-    if spec.intent == "semantic" and spec.semantic:
+    if spec.intent == "semantic" and spec.semantic and not from_popular:
         pool = await reranker.rerank(spec.semantic, pool)
-    pool = pool[:CANDIDATE_LIMIT]
     async with db.get_pool().acquire() as conn:
+        if from_popular:
+            # 같은 분야를 물은 사람이 모두 같은 책을 받지 않게, 취향 순으로 세우거나 많이 읽힌 순서에 기대어 뽑는다
+            pool = await _popular_order(conn, pool, user_id)
+        pool = pool[:CANDIDATE_LIMIT]
         await _attach_match_scores(conn, pool, user_id, spec)
+    if from_popular:
+        logger.info("분야만 말한 요청이라 많이 읽힌 책 %d권을 후보로 쓴다", len(pool))
     return pool
 
 
@@ -2692,6 +2784,17 @@ def _is_pinned(spec: Spec) -> bool:
     return spec.intent == "exact" or bool(spec.exact.title or spec.exact.author)
 
 
+def _genre_text(spec: Spec) -> str | None:
+    """분야만 말한 요청인지 볼 글(#514, app/chat/popular.py). 제목·저자를 콕 집었으면 없다.
+
+    검색 문장이 비었으면 분야 칸이다 — 1단계는 "소설 추천해줘"에 분야 칸만 채우고, 검색 문장으로 옮기는 것은
+    _settle_category 가 뒤에서 한다.
+    """
+    if _is_pinned(spec):
+        return None
+    return spec.semantic or spec.filters.category
+
+
 # 대답 턴(#530) — 새 책을 찾는 말이 아닌 질문에는 검색하지 않고 답한다. 1단계가 turn: answer 로 가려 준다.
 # 보여 준 책에 대한 답은 그 책 소개로만 한다. 카드는 0장이고, 명세상 카드가 없으면 followup 이 있어야 해서 대화를
 # 이어 갈 질문을 같이 받는다. 호출은 1단계와 이것, 두 번이다.
@@ -2891,6 +2994,65 @@ async def _read_request(request: Request) -> tuple[ChatRequest, dict] | JSONResp
 
 
 async def _respond(
+    req: ChatRequest, payload: dict, on_reply: ReplySink | None
+) -> JSONResponse:
+    """요청 하나에 답한다. 세 전달 방식(JSON·SSE·폴링)이 모두 여기를 지난다.
+
+    모델이 섞어 쓴 다른 나라 글자(#717)는 갈래마다 따로 거르지 않고 나가기 직전 여기서 한 번 거른다. 먼저 보내는
+    말풍선도 거른다. 거르고 나서 빈 말풍선은 보내지 않는다(done 의 reply 만 간다).
+    """
+    sink = None if on_reply is None else _cleaned_sink(on_reply)
+    return _without_foreign_words(await _handle(req, payload, sink))
+
+
+def _cleaned_sink(on_reply: ReplySink) -> ReplySink:
+    async def sink(text: str) -> None:
+        if cleaned := foreign_script.without_foreign(text):
+            await on_reply(cleaned)
+
+    return sink
+
+
+def _clean_text(holder: dict, key: str) -> bool:
+    """holder[key] 글에서 다른 나라 글자를 거른다. 바뀌었으면 True."""
+    text = holder.get(key)
+    if not isinstance(text, str):
+        return False
+    cleaned = foreign_script.without_foreign(text)
+    if cleaned == text:
+        return False
+    holder[key] = cleaned
+    return True
+
+
+def _without_foreign_words(response: JSONResponse) -> JSONResponse:
+    """성공 응답의 말풍선·답 보기·카드 이유에서 다른 나라 글자를 거른다(#717). 거를 것이 없으면 그 응답 그대로다."""
+    if response.status_code != 200:
+        return response
+    envelope = json.loads(response.body)
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return response
+    changed = [_clean_text(data, "reply"), _clean_text(data, "followup")]
+    for card in data.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        changed += [_clean_text(card, "reason_short"), _clean_text(card, "reason_long")]
+        for basis in card.get("match_basis") or []:
+            if isinstance(basis, dict):
+                changed += [_clean_text(basis, "label"), _clean_text(basis, "detail")]
+    if not any(changed):
+        return response
+    logger.info("다른 나라 글자를 걸렀다")
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() != "content-length"
+    }
+    return JSONResponse(envelope, status_code=response.status_code, headers=headers)
+
+
+async def _handle(
     req: ChatRequest, payload: dict, on_reply: ReplySink | None
 ) -> JSONResponse:
     """요청 하나에 답한다. on_reply 가 있으면 카드 생성 LLM 이 쓰는 reply 를 거기로 먼저 흘려보낸다."""
@@ -3114,8 +3276,16 @@ async def _recommend(
 
     # 첫 턴에만 묻는다. 이어지는 턴은 사용자가 이미 답하는 중이라 같은 걸 또 묻지 않는다.
     slot_question = None if req.recent_turns else _slot_question(req.message)
+    asked_last = _bot_asked_last(req.recent_turns)
+    # 분야만 넓게 말한 요청("소설 추천해줘")이면 카드 아래에 좁힐 보기를 코드가 붙인다(#514). 고르면 다음 턴도 분야만 말한
+    # 요청이라 많이 읽힌 책에서 좁혀진다. 직전에 물었으면("다른 거"로 넘긴 사람에게) 또 묻지 않는다
+    genre_question = (
+        popular.question(popular.parse(_genre_text(spec)))
+        if popular.get() is not None and not asked_last
+        else None
+    )
     # 첫 턴에 코드가 질문을 붙이거나 직전에 물었으면 말풍선은 묻지 않는다. 한 번에 두 개를 묻거나 연달아 묻지 않게
-    may_ask = slot_question is None and not _bot_asked_last(req.recent_turns)
+    may_ask = slot_question is None and genre_question is None and not asked_last
     lane_ask: tuple[str, str] | None = None
     if spec_degraded:
         # 명세: 1단계가 실패하면 3단계(카드 생성)도 건너뛴다. 점수 상위
@@ -3175,9 +3345,17 @@ async def _recommend(
                 if llm_reply
                 else result.note
             )
-        followup = option_lines.with_options(
-            slot_question or turn_question, result.options, asking.FOLLOWUP_MAX_CHARS
-        )
+        if genre_question is not None and slot_question is None:
+            question, genre_options = genre_question
+            followup = option_lines.with_options(
+                question, genre_options, asking.FOLLOWUP_MAX_CHARS
+            )
+        else:
+            followup = option_lines.with_options(
+                slot_question or turn_question,
+                result.options,
+                asking.FOLLOWUP_MAX_CHARS,
+            )
 
     return responses.success(
         "recommend_success",

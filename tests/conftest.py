@@ -24,6 +24,9 @@ os.environ.setdefault("EXTRACTION_SELF_HOSTED_MODE", "off")
 # ③ 책 추천 에이전트(#646)도 기본값이 켜져 있다. 챗봇 테스트 대부분은 예전 경로(검색 → 카드 생성)를 보고, 이 경로는
 # CHAT_AGENT=false 로 되돌릴 때 그대로 쓰인다. 켠 동작은 tests/test_chat_agent.py 가 직접 켠다.
 os.environ.setdefault("CHAT_AGENT", "false")
+# 분야만 말한 요청의 인기 책 파일(#514)도 저장소에 있어서, 앱을 띄우는 테스트가 읽어 두면 뒤 테스트의 "소설 추천해줘"가
+# 검색 대신 그 목록으로 간다. 챗봇 테스트는 검색 경로를 기본으로 보고, 켠 동작은 tests/test_chat_popular.py 가 직접 끼운다.
+os.environ.setdefault("POPULAR_BOOKS_PATH", "")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
 from app.core import db

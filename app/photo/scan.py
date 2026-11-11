@@ -91,7 +91,8 @@ def merge(items: list[Item]) -> list[Item]:
             text_key = editions.title_key(item.read_text)
             if not text_key:
                 continue
-            identity = ("text", text_key)
+            # "C# 입문"과 "C 입문"은 키가 같아도 다른 책이다
+            identity = ("text", text_key, editions.language_marks(item.read_text))
         if identity in seen:
             continue
         seen.add(identity)

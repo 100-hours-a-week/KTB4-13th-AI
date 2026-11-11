@@ -356,10 +356,59 @@ def _held(
     return _fail(code.value, book=book, ask=f"{book}{_object_particle(book)} {verb}")
 
 
+async def _volume_or_quantity(
+    ctx: TurnContext,
+    gateway: CommerceGateway,
+    ref: BookRef,
+    isbn: str,
+    quantity: int,
+    title: str | None = None,
+) -> dict[str, Any] | None:
+    """권 번호가 있는 책에 "그거 말고 N권"이라고 했으면 수량을 바꾸지 않고 묻는 결과, 아니면 None(#695).
+
+    『토지 1』을 담은 뒤 "아 그거 말고 2권으로"에 『토지 1』을 2권으로 바꿨다(11/11 dev 3/3). 『토지 2』를 원하는
+    말일 수 있다. 어느 쪽인지 말에서 못 가려 두 뜻을 다 짚어 묻는다. 권 번호가 없는 책의 "1권 말고 2권으로"나 번호·제목으로
+    짚은 말("3번 말고 1번을 2권으로")은 수량이다. 제목을 모르면 말만 먼저 보고 맞을 때만 장바구니를 읽는다.
+    """
+    if quantity < 2 or not evidence.swaps_volume(ctx):
+        return None
+    title = (
+        ctx.titles.get(isbn)
+        or title
+        or next(
+            (
+                line.title
+                for line in await gateway.get_cart(ctx.user_id)
+                if line.isbn == isbn
+            ),
+            None,
+        )
+    )
+    volume = evidence.volume_title(title)
+    if title is None or volume is None:
+        return None
+    base, number = volume
+    other = f"《{base} {quantity}》" if number.isdigit() else f"《{base}》의 다른 권"
+    ask = (
+        f"{other}{_object_particle(other)} 원하시는 건가요, 아니면 《{title}》{_object_particle(title)} "
+        f"{quantity}권으로 바꿀까요?"
+    )
+    return _fail(
+        ToolErrorCode.ACTION_NOT_STATED.value, book=_named(ctx, ref, isbn), ask=ask
+    )
+
+
+# 숫자로 끝나는 이름의 을/를. 읽는 소리의 받침으로 정한다(영·일·삼·육·칠·팔은 받침이 있다)
+_DIGIT_HAS_FINAL = {"0": True, "1": True, "2": False, "3": True, "4": False}
+_DIGIT_HAS_FINAL.update({"5": False, "6": True, "7": True, "8": True, "9": False})
+
+
 def _object_particle(name: str) -> str:
     """이름 뒤의 을/를. 끝 글자에 받침이 있으면 을이다. 제목을 감싼 》는 건너뛴다.
     끝이 한글이 아니면(영문, 숫자) 읽는 법을 몰라 을로 둔다."""
     last = name.rstrip("》 ")[-1:]
+    if last in _DIGIT_HAS_FINAL:
+        return "을" if _DIGIT_HAS_FINAL[last] else "를"
     if "가" <= last <= "힣":
         return "을" if (ord(last) - ord("가")) % 28 else "를"
     return "을"
@@ -440,6 +489,18 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
             quantity=existing.quantity,
         )
         return arguments, failure
+    # 담기로 이미 담긴 책을 다시 부르면 수량 바꾸기라(BE#284) 수량 바꾸기와 같이 묻는다. 새로 담는 책의 "N권"은
+    # 수량이라 묻지 않는다(#700 리뷰)
+    if (
+        existing is not None
+        and (
+            held := await _volume_or_quantity(
+                ctx, gateway, args.book, isbn, quantity, existing.title
+            )
+        )
+        is not None
+    ):
+        return arguments, held
     if (short := _over_stock(ctx, isbn, quantity)) is not None:
         return arguments, short
     arguments, result = await _write(
@@ -463,6 +524,10 @@ async def _update(
         return arguments, blocked
     if (blocked := _unrequested(ctx, args.book, isbn, verb)) is not None:
         return arguments, blocked
+    if (
+        held := await _volume_or_quantity(ctx, gateway, args.book, isbn, args.quantity)
+    ) is not None:
+        return arguments, held
     if (short := _over_stock(ctx, isbn, args.quantity)) is not None:
         return arguments, short
     return await _write(

@@ -1208,3 +1208,95 @@ def test_두_가지를_했다고_쓴_문장은_묻는_말로_바꾸지_않는다
     # 어느 것을 물을지 모른다. 지금처럼 422 다
     with pytest.raises(GroundingFailed):
         finish(_run("1번은 뺐고 2번은 담았어요.", []))
+
+
+# --- 다른 나라 글자·화면 코드 거르기(#717) ---
+
+
+def _guide(target: str = "ORDER-LIST-001") -> ToolCall:
+    label = {"ORDER-LIST-001": "주문내역", "CART-001": "장바구니 보기"}[target]
+    return _call(ToolName.UI_GUIDE, {"ok": True, "label": label}, {"target": target})
+
+
+def test_따로_떨어진_다른_나라_낱말은_빼고_나머지는_그대로다() -> None:
+    # 평가 기록의 실제 답 꼴(gpt-5.4-mini, 아르메니아어 '이제'). 다른 나라 글자를 거른 뒤에도 금액 검사는 그대로 한다
+    finished = finish(
+        _run("장바구니에 두 권이 있어요. այժմ 합계는 37,000원입니다.", [_view()])
+    )
+
+    assert finished.data.reply == "장바구니에 두 권이 있어요. 합계는 37,000원입니다."
+    assert finished.removed == ["FOREIGN_WORD"]
+
+
+def test_한국어에_붙은_다른_나라_낱말이_든_문장은_뺀다() -> None:
+    # 11/11 재현(벵골어·아르메니아어 '거기')
+    finished = finish(
+        _run(
+            "주문내역에서 확인해 주세요. সেখানে에서 배송 상태를 보실 수 있어요.",
+            [_guide()],
+        )
+    )
+
+    assert finished.data.reply == "주문내역에서 확인해 주세요."
+
+
+def test_다른_나라_글자만_빼서_답이_비어도_422가_아니다() -> None:
+    finished = finish(_run("հիմա", [_guide()]))
+
+    assert finished.data.reply == "주문내역에서 확인해 주세요."
+    assert finished.removed == ["FOREIGN_WORD"]
+
+
+def test_화면_코드만_있는_줄은_뺀다() -> None:
+    # 10월 평가 기록의 실제 답
+    finished = finish(
+        _run(
+            "ORDER-LIST-001\n주문 취소와 환불은 제가 직접 처리할 수 없습니다. 주문내역 화면에서 확인해 주세요.",
+            [_guide()],
+        )
+    )
+
+    assert finished.data.reply == (
+        "주문 취소와 환불은 제가 직접 처리할 수 없습니다. 주문내역 화면에서 확인해 주세요."
+    )
+    assert finished.removed == ["INTERNAL_TEXT"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "장바구니를 확인하시려면 CART-001 화면으로 안내해 드릴게요.",
+            "장바구니를 확인하시려면 장바구니 화면으로 안내해 드릴게요.",
+        ),
+        ("CART-001로 가시면 됩니다.", "장바구니로 가시면 됩니다."),
+        ("ORDER-LIST-001로 가시면 됩니다.", "주문내역으로 가시면 됩니다."),
+        ("ORDER-LIST-001에서 확인해 주세요.", "주문내역에서 확인해 주세요."),
+    ],
+)
+def test_문장_속_화면_코드는_화면_이름으로_바꾸고_조사를_맞춘다(
+    text: str, expected: str
+) -> None:
+    assert finish(_run(text, [_guide()])).data.reply == expected
+
+
+def test_도구_인자를_글로_쓴_줄은_뺀다() -> None:
+    # 10월 평가 기록의 실제 답: 예산 없이 고르기를 시키자 인자를 답에 썼다
+    finished = finish(
+        _run(
+            '{"budget_total":1,"count":2}\n예산 금액이 함께 있어야 두 권 조합을 골라드릴 수 있어요.',
+            [],
+        )
+    )
+
+    assert (
+        finished.data.reply
+        == "예산 금액이 함께 있어야 두 권 조합을 골라드릴 수 있어요."
+    )
+
+
+def test_화면_안내만_하고_글이_없으면_그_화면을_말한다() -> None:
+    assert (
+        finish(_run("", [_guide("CART-001")])).data.reply
+        == "장바구니에서 확인해 주세요."
+    )
