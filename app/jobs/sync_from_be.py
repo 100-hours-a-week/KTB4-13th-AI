@@ -188,6 +188,15 @@ FROM products p
 LEFT JOIN product_inventory i ON i.product_id = p.id
 """
 
+# BE 에서 품절인 상품(보유 − 예약 ≤ 0). 재고 줄이 없는 상품은 BE 가 20 으로 보므로 품절이 아니다
+_BE_SOLD_OUT = """
+SELECT i.product_id AS id, i.on_hand_quantity, i.reserved_quantity
+FROM product_inventory i
+WHERE i.on_hand_quantity - i.reserved_quantity <= 0
+"""
+# 한 번에 번호로 읽는 상품 수
+_IDS_CHUNK = 1000
+
 
 class BeSource:
     """BE MySQL 을 읽기 전용으로 읽는다."""
@@ -224,6 +233,23 @@ class BeSource:
         with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(_BE_BOOKS + f" WHERE b.id IN ({marks})", ids)
             return list(cursor.fetchall())
+
+    def sold_out(self) -> dict[int, int]:
+        """BE 에서 품절인 상품 번호 → 남은 재고(0)."""
+        with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute(_BE_SOLD_OUT)
+            return {r["id"]: _available(r) for r in cursor.fetchall()}
+
+    def available_by_ids(self, ids: list[int]) -> dict[int, int]:
+        """상품 번호 → 남은 재고. 재고 줄이 없으면 20(BE 와 같다)."""
+        found: dict[int, int] = {}
+        with self._conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            for start in range(0, len(ids), _IDS_CHUNK):
+                chunk = ids[start : start + _IDS_CHUNK]
+                marks = ", ".join(["%s"] * len(chunk))
+                cursor.execute(_BE_PRODUCTS + f" WHERE p.id IN ({marks})", chunk)
+                found.update({r["id"]: _available(r) for r in cursor.fetchall()})
+        return found
 
     def close(self) -> None:
         self._conn.close()
