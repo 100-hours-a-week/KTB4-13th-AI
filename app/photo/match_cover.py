@@ -82,6 +82,9 @@ class Match:
     books: list[Scored]
     # 찾은 길. 평가와 로그에서 ISBN 으로 찾은 것과 글자로 찾은 것을 가른다
     via: Literal["isbn", "text"] | None = None
+    # 글자로 찾았으면 고른 판본이 든 묶음 전체(고른 판본 포함). 챗봇의 떠올린 제목이 각색판을 피해 다른 판본을
+    # 고를 때 쓴다(#691). 표지 찾기는 쓰지 않는다 — 사진 속 판본이 답이다
+    editions: tuple[Scored, ...] = ()
 
 
 NOTHING = Match("none", [])
@@ -202,6 +205,11 @@ def _pick(group: list[Scored]) -> Scored:
     return max(group, key=_edition_order)
 
 
+def _found(group: list[Scored]) -> Match:
+    """묶음 하나로 좁혀졌다. 그 안에서 판본을 고르고 묶음도 같이 둔다."""
+    return Match("found", [_pick(group)], "text", tuple(group))
+
+
 def _groups(scored: list[Scored]) -> list[list[Scored]]:
     """같은 책의 판본끼리 묶는다. 검색 순위대로 처음 나온 순서를 지킨다. 제목·저자가 비어 키가 없으면 한 권씩 둔다."""
     groups: dict[object, list[Scored]] = {}
@@ -252,7 +260,7 @@ def decide(text: BookText, books: Sequence[Book]) -> Match:
     if text.authors:
         same_author = [g for g in groups if any(s.author_hit for s in g)]
         if len(same_author) == 1:
-            return Match("found", [_pick(same_author[0])], "text")
+            return _found(same_author[0])
         if len(same_author) > 1:
             # 같은 책인데 저자 표기가 달라("생텍쥐페리"·"앙투안 드 생택쥐페리") 판본 묶기가 갈라 놓았을 수 있다.
             # 제목·저자에 출판사까지 같으면 한 책의 판본들로 보고 그중에서 고른다
@@ -260,17 +268,17 @@ def decide(text: BookText, books: Sequence[Book]) -> Match:
                 s for g in same_author if any(s.publisher_hit for s in g) for s in g
             ]
             if same_publisher:
-                return Match("found", [_pick(same_publisher)], "text")
+                return _found(same_publisher)
             return _candidates(same_author)
         # 저자를 읽었는데 맞는 책이 없다. 제목만 같은 다른 책일 수 있어 확정하지 않는다
         return _candidates(groups)
 
     # 저자를 못 읽었다. 제목이 같은 책이 하나뿐이거나 출판사로 하나가 남을 때만 확정한다
     if len(groups) == 1:
-        return Match("found", [_pick(groups[0])], "text")
+        return _found(groups[0])
     only = _one_by_publisher(groups)
     if only is not None:
-        return Match("found", [_pick(only)], "text")
+        return _found(only)
     return _candidates(groups)
 
 

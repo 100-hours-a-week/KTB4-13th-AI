@@ -38,6 +38,8 @@ class FoundBook:
     in_stock: bool  # 재고가 1권 이상
     # 이 상품에 쓸 수 있는 쿠폰 번호(상품이나 분류가 대상인 쿠폰). BE 가 만료 쿠폰도 같이 준다
     coupon_ids: frozenset[int]
+    # 남은 재고 수량. 담기·수량 바꾸기가 이보다 많이 쓰지 않게 한다(#692). 모르면 None
+    stock_quantity: int | None = None
 
 
 class FinderUnavailable(Exception):
@@ -149,7 +151,16 @@ class HttpBookFinder:
                 continue  # 판매 중지 등으로 상세를 못 읽은 책은 담을 수 없다
             price, stock, coupon_ids = detail
             found.append(
-                FoundBook(isbn, product_id, title, author, price, stock > 0, coupon_ids)
+                FoundBook(
+                    isbn,
+                    product_id,
+                    title,
+                    author,
+                    price,
+                    stock > 0,
+                    coupon_ids,
+                    stock_quantity=max(0, stock),
+                )
             )
         return found
 

@@ -213,10 +213,14 @@ def passes(book: dict, filters: SearchFilters, publisher: str | None) -> bool:
 
 
 def _best_edition(rows: Sequence[dict]) -> dict:
-    """한 작품의 판본 중 카드로 낼 하나. 소개글이 있는 것, 살 수 있는 것, 새 판 순이다."""
+    """한 작품의 판본 중 카드로 낼 하나. 원작 꼴인 것, 소개글이 있는 것, 살 수 있는 것, 새 판 순이다.
+
+    그래픽노블·만화로 옮긴 판본은 다른 판본이 있으면 뒤로 민다(#691). 새 판이 각색판일 때가 많다(『듄』 그래픽노블 2025).
+    """
     return max(
         rows,
         key=lambda r: (
+            not editions.is_adaptation(r["author"], r["description"]),
             bool(r["description"].strip()),
             r["in_stock"],
             r["pub_year"] or 0,
@@ -268,8 +272,9 @@ async def resolve_anchor(
     return Anchor(None, plan.anchor.title, plan.anchor.author, work)
 
 
-async def _match_title(conn: asyncpg.Connection, title: Title) -> int | None:
-    """제목과 저자가 둘 다 맞는 책 한 묶음이 있으면 그 판본의 book_id. 표지 글자로 책을 찾는 규칙(#572)을 쓴다."""
+async def _match_title(conn: asyncpg.Connection, title: Title) -> list[int]:
+    """제목과 저자가 둘 다 맞는 책 한 묶음이 있으면 그 판본들의 book_id. 표지 글자로 책을 찾는 규칙(#572)이 고른 판본이
+    맨 앞이고, 같은 묶음에서 저자가 맞는 다른 판본이 뒤에 온다. 못 찾으면 빈 목록이다."""
     text = BookText(
         is_book_cover=True,
         title=title.title,
@@ -277,19 +282,42 @@ async def _match_title(conn: asyncpg.Connection, title: Title) -> int | None:
     )
     found = await match_cover.match(conn, text)
     if found.kind != "found" or not found.books[0].author_hit:
-        return None
-    return found.books[0].book.book_id
+        return []
+    picked = found.books[0].book.book_id
+    others = [
+        s.book.book_id
+        for s in found.editions
+        if s.author_hit and s.book.book_id != picked
+    ]
+    return [picked, *others]
+
+
+def _plain_edition(books: Sequence[dict]) -> dict:
+    """떠올린 제목으로 찾은 판본들(고른 것이 맨 앞) 중 카드로 낼 하나.
+
+    표지 규칙은 새 판을 고르는데, 새 판이 그래픽노블·만화판일 때가 있다. 11/11 dev 시험에서 "SF도 괜찮음"의 『듄』
+    카드가 그래픽노블 3권이었고 그대로 담겨 주문 화면까지 갔다(#691). 고른 판본이 각색판이고 같은 묶음에 원작 꼴
+    판본이 있으면 그중에서 고른다. 없으면 고른 판본 그대로다 — 책을 버리지 않는다.
+    """
+    first = books[0]
+    if not editions.is_adaptation(first["author"], first["description"]):
+        return first
+    plain = [
+        b for b in books if not editions.is_adaptation(b["author"], b["description"])
+    ]
+    return _best_edition(plain) if plain else first
 
 
 async def _find_titled(title: Title) -> dict | None:
     if not title.author:
         return None
     async with db.get_pool().acquire() as conn:
-        book_id = await _match_title(conn, title)
-        if book_id is None:
+        ids = await _match_title(conn, title)
+        if not ids:
             return None
-        rows = await conn.fetch(_BY_IDS_SQL, [book_id])
-    return dict(rows[0]) if rows else None
+        rows = {r["book_id"]: dict(r) for r in await conn.fetch(_BY_IDS_SQL, ids)}
+    books = [rows[i] for i in ids if i in rows]
+    return _plain_edition(books) if books else None
 
 
 async def _find_named(title: Title, graph: ReadingGraph | None) -> dict | None:

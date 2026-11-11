@@ -17,6 +17,7 @@
 import re
 from dataclasses import dataclass
 from itertools import combinations
+from typing import Any
 
 from app.agent import evidence, guard
 from app.agent.checkout import Plan
@@ -423,15 +424,29 @@ LOGIN_REPLY = "로그인이 필요해요. 로그인한 뒤에 다시 말씀해 �
 
 
 def _book(run: AgentRun, titles: dict[str, str], isbn: str) -> tuple[str, str]:
-    """(사용자에게 보일 이름, 조사를 고를 때 볼 말). 제목을 모르면 사용자가 말한 번호로 부른다."""
+    """(사용자에게 보일 이름, 조사를 고를 때 볼 말). 제목을 모르면 사용자가 말한 번호로 부른다.
+
+    카드 책은 도구가 제목을 알려 주지 않았어도 턴 시작에 미리 읽은 제목(요청의 offers)으로 "2번 《제목》"이라 부른다.
+    "2번 책을 담았어요"만으로는 사용자가 보던 2번과 담긴 책이 달라도 알 수 없었다(#701).
+    """
     if title := titles.get(isbn):
         return f"《{title}》", title
     for card in run.ctx.cards:
         if card.isbn == isbn:
+            if title := run.ctx.titles.get(isbn):
+                return f"{card.rank}번 《{title}》", title
             return f"{card.rank}번 책", "책"
     if run.ctx.focused_isbn == isbn:
         return "지금 보시는 책", "책"
     return "선택하신 책", "책"
+
+
+def _left(result: dict[str, Any]) -> str:
+    """재고 부족 결과에 남은 수량이 있으면 붙일 문장(#692). 0권이면 품절이라 "재고가 부족해서"로 충분하다."""
+    left = result.get("stock")
+    if isinstance(left, int) and not isinstance(left, bool) and left > 0:
+        return f" 남은 재고는 {left}권이에요."
+    return ""
 
 
 def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
@@ -457,7 +472,7 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
             has = f" {have}권" if isinstance(have, int) else ""
             return f"{shown}{eun} 이미 장바구니에{has} 담겨 있어서 그대로 뒀어요."
         if error == CommerceErrorCode.INSUFFICIENT_PRODUCT_STOCK.value:
-            return f"{shown}{eun} 재고가 부족해서 담지 못했어요."
+            return f"{shown}{eun} 재고가 부족해서 담지 못했어요.{_left(result)}"
         if error == CommerceErrorCode.PRODUCT_NOT_FOUND.value:
             return f"{shown}{eun} 지금 살 수 없는 책이라 담지 못했어요."
         if error == CommerceErrorCode.CART_ITEM_LIMIT_EXCEEDED.value:
@@ -472,7 +487,7 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
         if error == ToolErrorCode.BATCH_ROLLED_BACK.value:
             return f"{_TOGETHER} {shown}의 수량도 바꾸지 않았어요."
         if error == CommerceErrorCode.INSUFFICIENT_PRODUCT_STOCK.value:
-            return f"재고가 부족해서 {shown}의 수량을 바꾸지 못했어요."
+            return f"재고가 부족해서 {shown}의 수량을 바꾸지 못했어요.{_left(result)}"
         if error == CommerceErrorCode.INVALID_CART_ITEM_QUANTITY.value:
             return f"수량이 올바르지 않아 {shown}의 수량을 바꾸지 못했어요."
         if error == CommerceErrorCode.CART_ITEM_NOT_FOUND.value:
