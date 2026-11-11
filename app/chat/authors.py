@@ -42,7 +42,7 @@ _SQL = f"""
 SELECT b.book_id
 FROM v_books b
 LEFT JOIN v_book_popularity p USING (book_id)
-WHERE $1 <<% b.author AND {NAMES_SQL} @> ARRAY[$1::text]{{filters}}
+WHERE {{match}} AND {NAMES_SQL} @> ARRAY[$1::text]{{filters}}
 ORDER BY {popularity.score_sql("p")} DESC,
          ({NAMES_SQL})[1] = $1 DESC,
          (coalesce(b.description, '') <> '') DESC,
@@ -50,6 +50,20 @@ ORDER BY {popularity.score_sql("p")} DESC,
          b.book_id DESC
 LIMIT $2
 """
+
+
+# 이름으로 먼저 거르는 식. 두 글자 이름은 낱말 통째 비슷함(<<%), 세 글자 이상은 부분 일치(ILIKE)다. 둘 다 저자 글자 조각
+# 색인(v_books_author_trgm_idx)을 탄다. 진짜 거르기는 뒤의 이름 목록 식이 해서 결과는 같다(fetch 설명)
+_MATCH_SHORT = "$1 <<% b.author"
+_MATCH_LONG = "b.author ILIKE $3"
+# 이 길이부터 부분 일치로 거른다. 부분 일치는 이름의 글자 조각(세 글자 묶음)으로 색인을 찾는데, 두 글자 이름은 조각이 없다
+LONG_NAME_CHARS = 3
+
+
+def _like(name: str) -> str:
+    """부분 일치 무늬. 이름 속 %·_·\\ 는 글자 그대로 찾는다(ILIKE 기본 이스케이프 문자는 \\)."""
+    escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def key(name: str | None) -> str:
@@ -72,8 +86,8 @@ async def fetch(
 ) -> list[dict]:
     """그 저자의 책을 검색 결과와 같은 모양으로 가져온다. 사용자 조건(가격·출간연도·분야)도 건다.
 
-    `$1 <<% b.author`(pg_trgm 의 낱말 통째 비슷함)로 먼저 거르는 까닭: 이미 있는 저자 글자 조각 색인
-    (v_books_author_trgm_idx)을 두 글자 이름도 탄다. 부분 일치(ILIKE '%한강%')는 세 글자보다 짧으면 이 색인을 못 타서
+    두 글자 이름을 `$1 <<% b.author`(pg_trgm 의 낱말 통째 비슷함)로 먼저 거르는 까닭: 이미 있는 저자 글자 조각 색인
+    (v_books_author_trgm_idx)을 두 글자 이름도 탄다. 세 글자 이상은 부분 일치로 거른다(아래 match). 부분 일치(ILIKE '%한강%')는 세 글자보다 짧으면 이 색인을 못 타서
     표 전체를 훑었다(평가 DB 0.8초, 개발 AI DB 4.6~5.5초). 저자 칸에 이름이 낱말 통째로 있으면 비슷함이 1이라 기준값
     (0.5)을 늘 넘고, 진짜 거르기는 이름 목록 식이 한다. 평가 DB 에서 한강·김훈·이상·히가시노 게이고·J.K. 롤링·황석영의
     책 수가 부분 일치로 찾은 것과 같았다. 새 색인을 만들지 않아도 된다(11/11).
@@ -81,11 +95,17 @@ async def fetch(
     name = key(author)
     if len(name) < MIN_NAME_CHARS:
         return []
-    where, params = filters.build_where(search_filters, first_param=3)
+    # 세 글자 이상은 부분 일치로 거른다(#658 두 번째 리뷰). <<% 는 이름의 앞 두 글자로 시작하는 낱말을 모두 후보로 받아,
+    # "김영하"면 "김영"으로 시작하는 저자 칸 2.7만 줄을 받고 첫 조회가 2초 안팎이라 1초 한도에 걸렸다(개발 AI DB).
+    # 부분 일치는 같은 색인에서 김영하 147줄·0.003초, 김수영 771줄·0.019초였다
+    long_name = len(name) >= LONG_NAME_CHARS
+    match = [_like(name)] if long_name else []
+    where, params = filters.build_where(search_filters, first_param=3 + len(match))
     rows = await conn.fetch(
-        _SQL.format(filters=where),
+        _SQL.format(match=_MATCH_LONG if long_name else _MATCH_SHORT, filters=where),
         name,
         AUTHOR_BOOKS_LIMIT,
+        *match,
         *params,
         timeout=QUERY_TIMEOUT_SECONDS,
     )

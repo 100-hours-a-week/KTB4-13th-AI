@@ -220,6 +220,42 @@ def test_저자_조회는_짧은_한도로_끊는다() -> None:
     assert authors.QUERY_TIMEOUT_SECONDS < 5
 
 
+def _sent(name: str, search_filters: SearchFilters | None = None) -> tuple[str, tuple]:
+    seen: dict = {}
+
+    class _Conn:
+        async def fetch(self, sql, *args, **kwargs):
+            seen.update(sql=sql, args=args)
+            return []
+
+    asyncio.run(authors.fetch(_Conn(), name, search_filters or SearchFilters()))
+    return seen["sql"], seen["args"]
+
+
+def test_두_글자_이름은_낱말_통째_비슷함으로_거른다() -> None:
+    sql, args = _sent("한강")
+
+    assert "$1 <<% b.author" in sql
+    assert "ILIKE" not in sql
+    assert args == ("한강", authors.AUTHOR_BOOKS_LIMIT)
+
+
+def test_세_글자_이상_이름은_부분_일치로_거른다() -> None:
+    # <<% 는 "김영"으로 시작하는 저자 칸 2.7만 줄을 받아 첫 조회가 1초 한도에 걸렸다(개발 AI DB, #658 리뷰)
+    sql, args = _sent("김영하", SearchFilters(price_max=20000))
+
+    assert "b.author ILIKE $3" in sql
+    assert "<<%" not in sql
+    assert args[:3] == ("김영하", authors.AUTHOR_BOOKS_LIMIT, "%김영하%")
+    assert "$4" in sql and args[3] == 20000  # 사용자 조건은 그 뒤 번호다
+
+
+def test_부분_일치_무늬는_이름_속_와일드카드를_글자로_찾는다() -> None:
+    _, args = _sent("a_b%c")
+
+    assert args[2] == r"%a\_b\%c%"
+
+
 def test_한_글자_이름은_DB에서_찾지_않는다() -> None:
     # "김"은 저자 칸 낱말 39만 개가 후보라 평가 DB 에서 2.8초였다
     class _Conn:
