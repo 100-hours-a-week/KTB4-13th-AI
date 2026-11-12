@@ -47,6 +47,10 @@ RETRY_BASE_SECONDS = 1.0
 RETRY_MAX_SECONDS = 30.0
 # 브로커에 못 붙거나 받다가 끊겼을 때 다시 붙기까지 기다리는 시간
 RECONNECT_SECONDS = 5.0
+# 파티션을 다시 나눌 때 브로커가 이 소비자를 기다려 주는 시간. 처리 중인 메시지를 마치고 내주므로(#734) 계산 세 번과
+# 그 사이 쉬는 시간(약 25초)보다 길어야 한다. 기본(session_timeout 10초)이면 기다리는 사이 그룹에서 빠져 다른 서버가
+# 파티션을 받는다
+REBALANCE_TIMEOUT_MS = 60_000
 # DLT 로 보낼 때 머리글이 붙는 몫. 원본이 크기 한도에 꽉 차도 다시 보낼 수 있게 발행 한도를 이만큼 넉넉히 둔다
 _HEADER_ROOM_BYTES = 64 * 1024
 
@@ -203,6 +207,7 @@ def _clients(settings: Settings) -> tuple[Any, Any]:
         group_id=settings.profile_kafka_group_id.strip(),
         client_id="bookjeok-ai",
         enable_auto_commit=False,
+        rebalance_timeout_ms=REBALANCE_TIMEOUT_MS,
         # 그룹이 처음 붙을 때 남아 있는 메시지부터 받는다. BE 는 발행 확인으로 작업을 끝내므로, 늦게 붙은 소비자가
         # 앞 메시지를 건너뛰면 그 프로필은 다시 오지 않는다
         auto_offset_reset="earliest",

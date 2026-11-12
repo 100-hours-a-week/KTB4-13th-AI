@@ -601,3 +601,14 @@ def test_처리_중인_메시지가_없으면_바로_내준다() -> None:
             await consumer.listener.on_partitions_revoked(set())
 
     asyncio.run(revoke())
+
+
+def test_재할당을_기다려_주는_시간은_계산_세_번보다_길다() -> None:
+    # 기본(session_timeout 10초)이면 처리 중인 메시지를 기다리는 사이 그룹에서 빠져 다른 서버가 파티션을 받는다
+    async def made() -> int:
+        # aiokafka 는 이벤트 루프 안에서 만들어야 한다. 붙지는 않는다
+        consumer, _ = kafka_consumer._clients(_settings())
+        return consumer._rebalance_timeout_ms
+
+    assert asyncio.run(made()) == kafka_consumer.REBALANCE_TIMEOUT_MS
+    assert kafka_consumer.REBALANCE_TIMEOUT_MS >= 60_000
