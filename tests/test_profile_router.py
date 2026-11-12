@@ -5,11 +5,14 @@
 """
 
 import json
+import logging
+import re
 from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import app
 from app.profile.schemas import USED_LIKED_BOOKS, USED_MEMORIES
 from app.routers import profile
@@ -77,6 +80,34 @@ def test_명세의_예시_요청이면_200과_응답_모양을_돌려준다() ->
         "message": "profile_success",
         "data": {"cold_start": False, "profile_version": 3},
     }
+
+
+@pytest.mark.parametrize(
+    ("interest_feed", "feed_async", "where"),
+    [
+        (True, False, "응답 안에서"),
+        (True, True, "뒤에서"),
+        (False, True, "만들지 않음"),
+    ],
+)
+def test_계산하면_사용자와_걸린_시간과_목록을_어디서_만드는지를_남긴다(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    interest_feed: bool,
+    feed_async: bool,
+    where: str,
+) -> None:
+    # 비동기(#582)를 켜기 전·후로 BE 가 응답을 기다린 시간을 견준다(#731)
+    caplog.set_level(logging.INFO, logger=profile.__name__)
+    monkeypatch.setattr(get_settings(), "interest_feed", interest_feed)
+    monkeypatch.setattr(get_settings(), "profile_feed_async", feed_async)
+
+    client.put("/preferences/profile", json=_request())
+
+    [line] = [r.getMessage() for r in caplog.records if r.name == profile.__name__]
+    assert re.fullmatch(
+        rf"프로필을 계산했다\(사용자 123, PUT\): \d+\.\d\d초, 목록은 {where}", line
+    )
 
 
 # ---------------------------------------------------------------------------
