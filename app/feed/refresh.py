@@ -88,19 +88,26 @@ async def refresh(
     """
     night = night_of(now or datetime.now(UTC))
     deadline = clock() + CALL_SECONDS
-    refreshed = 0
+    refreshed = saved = 0
     while clock() + LIST_RESERVE_SECONDS <= deadline:
         user_id = await conn.fetchval(_CLAIM_SQL, night)
         if user_id is None:
             break
-        await _refresh_one(conn, user_id, night)
+        saved += await _refresh_one(conn, user_id, night)
         refreshed += 1
     remaining = await conn.fetchval(_REMAINING_SQL, night)
+    # 응답에는 없는 "바꾼 수"를 남긴다. 다시 뽑기가 목록을 낫게 했는지 견줄 숫자다(#728)
+    logger.info(
+        "밤 다시 뽑기: 다시 뽑은 목록 %d개, 그중 바꾼 것 %d개, 남은 것 %d개",
+        refreshed,
+        saved,
+        remaining,
+    )
     return {"refreshed": refreshed, "remaining": remaining}
 
 
-async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> None:
-    """저장된 프로필로 목록을 다시 뽑아, 대신 채운 관심사가 줄었으면 저장한다.
+async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> bool:
+    """저장된 프로필로 목록을 다시 뽑아, 대신 채운 관심사가 줄었으면 저장한다. 저장했으면 True 다.
 
     대신 채운 관심사가 저장된 목록의 것의 일부일 때만 바꾼다. ⑥ 때 잘 뽑힌 관심사가 이번에 시간을 넘기면 바꾸지
     않아, 저장된 목록의 잘 뽑힌 자리를 잃지 않는다(#482). 바꾸지 않으면 오늘 밤 시도한 표시만 남아 다음 밤에 다시
@@ -152,6 +159,7 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
         "바꿈" if saved else "그대로 둠",
         time.monotonic() - started,
     )
+    return saved
 
 
 def _owned(row: asyncpg.Record) -> tuple[set[int], set[int]]:

@@ -293,11 +293,12 @@ def test_바꾼_사용자는_대신_채운_관심사_수_전후와_바꿨다고_
 
     _run_refresh(monkeypatch, build, {_A: (True, _feed())})
 
-    [one] = _refresh_logs(caplog)
+    one, summary = _refresh_logs(caplog)
     assert re.fullmatch(
         rf"밤 다시 뽑기\(사용자 {_A}\): 대신 채운 관심사 1개 → 0개, 바꿈, \d+\.\d\d초",
         one,
     )
+    assert summary == "밤 다시 뽑기: 다시 뽑은 목록 1개, 그중 바꾼 것 1개, 남은 것 0개"
 
 
 @_needs_db
@@ -309,13 +310,14 @@ def test_그대로_둔_사용자도_전후와_그대로_뒀다고_남기고_관�
 
     _run_refresh(monkeypatch, build, {_A: (True, _feed())})
 
-    [one] = _refresh_logs(caplog)
+    one, summary = _refresh_logs(caplog)
     assert re.fullmatch(
         rf"밤 다시 뽑기\(사용자 {_A}\): 대신 채운 관심사 1개 → 1개, 그대로 둠, \d+\.\d\d초",
         one,
     )
+    assert summary == "밤 다시 뽑기: 다시 뽑은 목록 1개, 그중 바꾼 것 0개, 남은 것 0개"
     # 관심사 이름은 사용자 취향이라 남기지 않는다
-    assert "요리" not in one
+    assert all("요리" not in line for line in (one, summary))
 
 
 @_needs_db
