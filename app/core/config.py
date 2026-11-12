@@ -80,10 +80,12 @@ class Settings(BaseSettings):
     # 실측한 모델. 같은 이름 아래 스냅숏이 바뀔 수 있어 바꿀 때는 같은 사례로 다시 잰다.
     jev_model_id: str = "typesafe/jev-1.14"
     jev_url: str = "https://openrouter.ai/api/alpha/decisions"
-    # ③ 분위기 요청의 후보를 외부 리랭커 API 로 다시 줄 세운 뒤 10권을 자를지(#638, app/gateway/reranker.py). 11/10 서술형
-    # 35문항에서 운영 카드 모델(gpt-4o)로 3회씩 재면 카드 평균 점수는 그대로고 0점 카드가 105턴 중 12장 → 2장. OpenRouter
-    # 키로 부르고 ZDR 엔드포인트가 없어 LLM_PROVIDER=openrouter(ZDR 켬)면 켜도 쓰지 않는다. 켜기는 이 기본값을 바꾸는 PR로 한다.
-    chat_reranker: bool = False
+    # ③ 분위기 요청의 후보를 외부 리랭커 API 로 다시 줄 세운 뒤 10권을 자를지(#638, app/gateway/reranker.py). 기본은 켬(#738).
+    # 11/10 예전 흐름(검색 → 카드 생성)에서 서술형 35문항을 운영 카드 모델(gpt-4o)로 3회씩 재면 카드 평균은 그대로고 0점 카드가
+    # 105턴 중 12장 → 2장이었다. 11/12 지금 흐름(③ 에이전트·떠올린 책 먼저, 판정 Jev)에서 서술형 40문항 1회는 카드 평균
+    # 1.790 → 1.777(구분 안 됨), 0점 카드 0 → 0, 턴 시간 중앙 6.40 → 6.46초로 나빠지지 않았다. OpenRouter 키로 부르고
+    # ZDR 엔드포인트가 없어 LLM_PROVIDER=openrouter(ZDR 켬)면 켜도 쓰지 않는다. 끄려면 CHAT_RERANKER=false.
+    chat_reranker: bool = True
     # 실측한 모델. 같은 이름 아래 모델이 바뀔 수 있어 바꿀 때는 같은 문항으로 다시 잰다.
     reranker_model_id: str = "cohere/rerank-5-fast"
     reranker_url: str = "https://openrouter.ai/api/v1/rerank"
