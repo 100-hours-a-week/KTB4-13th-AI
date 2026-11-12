@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 import pytest
+from aiokafka import ConsumerRebalanceListener
 from aiokafka.structs import TopicPartition
 
 from app.core.config import Settings
@@ -284,6 +285,12 @@ class FakeConsumer:
         self.commits: list[dict] = []
         self.started = 0
         self.stopped = 0
+        self.topics: list[str] = []
+        self.listener: ConsumerRebalanceListener | None = None
+
+    def subscribe(self, topics, listener=None) -> None:
+        self.topics = list(topics)
+        self.listener = listener
 
     async def start(self) -> None:
         self.started += 1
@@ -538,3 +545,59 @@ def test_서버가_뜰_때_띄우고_홈_목록_일꾼과_DB보다_먼저_멈춘
         "queue.stop",
         "db.disconnect",
     ]
+
+
+# --- 파티션을 내줄 때(#734). 옛 서버가 처리 중이던 갱신이 새 서버의 삭제보다 늦게 저장되지 않게 한다(#730) ---
+
+
+def test_토픽을_구독하며_파티션을_내줄_때의_콜백을_건다() -> None:
+    consumer = FakeConsumer([])
+
+    _run(consumer, FakeProducer(), Calls())
+
+    assert consumer.topics == [TOPIC]
+    assert isinstance(consumer.listener, ConsumerRebalanceListener)
+
+
+def test_처리_중인_메시지를_마치고_offset까지_넘긴_뒤에야_파티션을_내준다() -> None:
+    consumer = FakeConsumer([Record(offset=7)])
+    seen: dict = {}
+
+    async def revoke_and_note() -> None:
+        await consumer.listener.on_partitions_revoked({TopicPartition(TOPIC, 0)})
+        seen["commits_when_revoked"] = list(consumer.commits)
+
+    async def slow_rebuild(request) -> None:
+        # 계산하는 사이 재할당이 시작된다
+        seen["revoke"] = asyncio.create_task(revoke_and_note())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        seen["revoked_while_processing"] = seen["revoke"].done()
+
+    worker = ProfileConsumer(
+        _settings(),
+        rebuild=slow_rebuild,
+        clients=lambda: (consumer, FakeProducer()),
+        sleep=Calls().sleep,
+    )
+
+    async def go() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            await worker.run()
+        await seen["revoke"]
+
+    asyncio.run(go())
+
+    assert seen["revoked_while_processing"] is False
+    assert seen["commits_when_revoked"] == [{TopicPartition(TOPIC, 0): 8}]
+
+
+def test_처리_중인_메시지가_없으면_바로_내준다() -> None:
+    consumer = FakeConsumer([])
+    _run(consumer, FakeProducer(), Calls())
+
+    async def revoke() -> None:
+        async with asyncio.timeout(1):
+            await consumer.listener.on_partitions_revoked(set())
+
+    asyncio.run(revoke())

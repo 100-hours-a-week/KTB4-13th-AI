@@ -30,7 +30,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener
 from aiokafka.structs import TopicPartition
 
 from app.core.config import Settings
@@ -197,8 +197,8 @@ def _clients(settings: Settings) -> tuple[Any, Any]:
         s.strip() for s in settings.kafka_bootstrap_servers.split(",") if s.strip()
     ]
     limit = settings.profile_kafka_max_message_bytes
+    # 토픽은 ProfileConsumer.run 이 파티션을 내줄 때의 콜백과 함께 구독한다(#734)
     consumer = AIOKafkaConsumer(
-        settings.profile_kafka_topic,
         bootstrap_servers=servers,
         group_id=settings.profile_kafka_group_id.strip(),
         client_id="bookjeok-ai",
@@ -220,6 +220,26 @@ def _clients(settings: Settings) -> tuple[Any, Any]:
     return consumer, producer
 
 
+class _FinishBeforeRevoke(ConsumerRebalanceListener):
+    """파티션을 내주기 전에 처리 중인 메시지를 끝내고 offset 까지 넘긴다(#734).
+
+    배포로 서버가 바뀌며 파티션이 다른 서버로 넘어갈 때, 옛 서버가 처리 중이던 갱신이 새 서버가 처리한 삭제보다 늦게
+    저장되면 지운 프로필이 다시 생긴다(#730). aiokafka 는 모든 소비자가 이 콜백을 마친 뒤에 새 주인에게 파티션을
+    넘기고, 다시 나누는 동안에는 새 메시지를 내주지 않는다. 그래서 처리 중인 하나만 기다리면 겹치지 않는다.
+    """
+
+    def __init__(self, idle: asyncio.Event) -> None:
+        self._idle = idle
+
+    async def on_partitions_revoked(self, revoked) -> None:
+        if not self._idle.is_set():
+            logger.info("파티션을 내주기 전에 처리 중인 카프카 프로필 메시지를 마친다")
+        await self._idle.wait()
+
+    async def on_partitions_assigned(self, assigned) -> None:
+        return None
+
+
 class ProfileConsumer:
     """토픽을 받는 순환. run() 은 취소될 때까지 돈다."""
 
@@ -237,10 +257,17 @@ class ProfileConsumer:
         self._delete = delete or service.delete
         self._clients = clients or (lambda: _clients(settings))
         self._sleep = sleep
+        # 처리 중인 메시지가 없으면 켜져 있다. 파티션을 내줄 때 이것을 기다린다(#734)
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     async def run(self) -> None:
         while True:
             consumer, producer = self._clients()
+            consumer.subscribe(
+                [self._settings.profile_kafka_topic],
+                listener=_FinishBeforeRevoke(self._idle),
+            )
             try:
                 await consumer.start()
                 await producer.start()
@@ -293,17 +320,21 @@ class ProfileConsumer:
 
         while True:
             record = await consumer.getone()
-            await handle(
-                record,
-                max_bytes=self._settings.profile_kafka_max_message_bytes,
-                rebuild=self._rebuild,
-                delete=self._delete,
-                send_dlt=send_dlt,
-                sleep=self._sleep,
-            )
-            await consumer.commit(
-                {TopicPartition(record.topic, record.partition): record.offset + 1}
-            )
+            self._idle.clear()
+            try:
+                await handle(
+                    record,
+                    max_bytes=self._settings.profile_kafka_max_message_bytes,
+                    rebuild=self._rebuild,
+                    delete=self._delete,
+                    send_dlt=send_dlt,
+                    sleep=self._sleep,
+                )
+                await consumer.commit(
+                    {TopicPartition(record.topic, record.partition): record.offset + 1}
+                )
+            finally:
+                self._idle.set()
 
 
 async def _stop(consumer: Any, producer: Any) -> None:
