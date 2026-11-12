@@ -1,6 +1,8 @@
 """카프카로 오는 프로필 계산 요청을 받아 계산한다(#669). 기본은 꺼짐(PROFILE_KAFKA_ENABLED).
 
 BE 가 온보딩 완료·취향 수정 때 PUT /preferences/profile 과 같은 본문을 토픽 book.ai-profile.v1 로 보낸다(BE #551).
+v2 메시지(#733)는 삭제(DELETE)도 같은 토픽·같은 키로 온다. 같은 파티션에서 차례로 처리하므로 탈퇴 전에 보낸 갱신이
+삭제 뒤에 처리되지 않는다(#730).
 계약(BE README 「AI 추천 프로필 Kafka 직접 전달」)에서 AI 가 지킬 것:
 
 - 자동 offset commit 을 끄고, 저장이 끝난 뒤에만 commit 한다
@@ -60,6 +62,8 @@ class Record(Protocol):
 
 
 Rebuild = Callable[[ProfileRequest], Awaitable[Any]]
+# 사용자 번호로 프로필 줄을 지우고, 지운 줄이 있었으면 True(service.delete)
+Delete = Callable[[int], Awaitable[bool]]
 SendDlt = Callable[[Record, str], Awaitable[None]]
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -99,11 +103,13 @@ async def handle(
     rebuild: Rebuild,
     send_dlt: SendDlt,
     sleep: Sleep,
+    delete: Delete | None = None,
     now: Callable[[], float] = time.time,
 ) -> None:
-    """메시지 하나를 끝까지 처리한다. 돌아오면 offset 을 넘겨도 된다(계산해 저장했거나 DLT 로 보냈다).
+    """메시지 하나를 끝까지 처리한다. 돌아오면 offset 을 넘겨도 된다(계산·삭제해 저장했거나 DLT 로 보냈다).
 
-    서버가 내려가며 취소되면 CancelledError 가 그대로 올라간다. 그 메시지는 넘기지 않아서 다음에 다시 온다.
+    DELETE(v2, #733)는 계산하지 않고 지운다. 재시도·DLT 는 계산과 같다. 서버가 내려가며 취소되면 CancelledError 가
+    그대로 올라간다. 그 메시지는 넘기지 않아서 다음에 다시 온다.
     """
     try:
         message = kafka_message.parse(record.key, record.value, max_bytes=max_bytes)
@@ -115,16 +121,22 @@ async def handle(
         await _to_dlt(record, bad.reason, send_dlt, sleep)
         return
 
-    user_id = message.request.user_id
+    user_id = message.user_id
+    deleting = message.operation == kafka_message.DELETE
+    work = "삭제" if deleting else "계산"
     for attempt in range(1, REBUILD_ATTEMPTS + 1):
         started = time.monotonic()
         try:
-            await rebuild(message.request)
+            if deleting:
+                had_row = await (delete or service.delete)(user_id)
+            else:
+                await rebuild(message.request)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning(
-                "카프카로 온 프로필 계산 실패(사용자 %d, %d/%d번째)",
+                "카프카로 온 프로필 %s 실패(사용자 %d, %d/%d번째)",
+                work,
                 user_id,
                 attempt,
                 REBUILD_ATTEMPTS,
@@ -133,6 +145,15 @@ async def handle(
             if attempt < REBUILD_ATTEMPTS:
                 await sleep(_delay(attempt))
             continue
+        if deleting:
+            # 지운 줄이 있었으면 그때까지 프로필이 남아 있었다. BE 가 다시 보내는 삭제가 무엇을 잡았는지 센다(#730)
+            logger.info(
+                "카프카로 온 프로필 삭제를 처리했다(사용자 %d): %s, 보낸 뒤 %s",
+                user_id,
+                "지운 줄 있음" if had_row else "지울 줄 없음",
+                _since_sent(record, now()),
+            )
+            return
         # 카프카(#666)로 바꾼 뒤 보낸 것이 저장되기까지 걸린 시간을 견준다(#731)
         logger.info(
             "카프카로 온 프로필을 계산했다(사용자 %d): 계산 %.2f초, 보낸 뒤 %s",
@@ -143,12 +164,15 @@ async def handle(
         return
 
     logger.error(
-        "카프카로 온 프로필 계산을 %d번 실패해 DLT 로 보낸다(사용자 %d, %s)",
+        "카프카로 온 프로필 %s을 %d번 실패해 DLT 로 보낸다(사용자 %d, %s)",
+        work,
         REBUILD_ATTEMPTS,
         user_id,
         _where(record),
     )
-    await _to_dlt(record, "rebuild_failed", send_dlt, sleep)
+    await _to_dlt(
+        record, "delete_failed" if deleting else "rebuild_failed", send_dlt, sleep
+    )
 
 
 def _since_sent(record: Record, now: float) -> str:
@@ -204,11 +228,13 @@ class ProfileConsumer:
         settings: Settings,
         *,
         rebuild: Rebuild | None = None,
+        delete: Delete | None = None,
         clients: Callable[[], tuple[Any, Any]] | None = None,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._settings = settings
         self._rebuild = rebuild or service.rebuild_unhurried
+        self._delete = delete or service.delete
         self._clients = clients or (lambda: _clients(settings))
         self._sleep = sleep
 
@@ -271,6 +297,7 @@ class ProfileConsumer:
                 record,
                 max_bytes=self._settings.profile_kafka_max_message_bytes,
                 rebuild=self._rebuild,
+                delete=self._delete,
                 send_dlt=send_dlt,
                 sleep=self._sleep,
             )
