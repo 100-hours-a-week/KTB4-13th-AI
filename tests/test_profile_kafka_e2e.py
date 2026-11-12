@@ -27,6 +27,7 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.structs import TopicPartition
 
 from app.core.config import Settings
+from app.profile import kafka_consumer
 from app.profile.kafka_consumer import ProfileConsumer
 from tests.test_profile_kafka_message import _profile, _v2, _v2_delete, _value
 
@@ -288,3 +289,80 @@ def test_v1_v2_갱신_다음_v2_삭제를_보낸_차례대로_처리하고_모�
 
     assert order == [("UPSERT", 42), ("UPSERT", 42), ("DELETE", 42)]
     assert committed == 3
+
+
+def test_옛_소비자가_오래_멈춘_갱신은_새_소비자의_삭제_뒤에_저장되지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #736 리뷰: 옛 서버가 갱신 중에 DB 연결을 오래 기다리는 사이 새 서버가 붙어 파티션이 다시 나뉜다. 옛 서버는
+    # 기다리는 시간을 넘기면 그 갱신을 멈추고 내준다. 그래서 늦은 저장이 없고, 갱신부터 다시 차례로 처리된다
+    monkeypatch.setattr(kafka_consumer, "REVOKE_WAIT_SECONDS", 2.0)
+    topic, dlt, group = _names()
+
+    async def scenario() -> tuple[list, bool, int | None]:
+        await _create_topics(topic, dlt)
+        await _send(topic, [(b"42", _v2())])
+        done: list = []  # 끝까지 저장한 일, 차례대로
+        old = {"first": True, "stuck": asyncio.Event(), "late_save": False}
+        # 옛 서버가 기다리던 DB 연결을 얻는 때. 새 서버가 삭제를 처리한 뒤에 준다
+        connection = asyncio.Event()
+
+        async def old_rebuild(request) -> None:
+            if old["first"]:
+                old["first"] = False
+                old["stuck"].set()
+                await connection.wait()  # DB 연결을 오래 기다린다
+                old["late_save"] = True  # 멈추지 않았다면 삭제 뒤에 늦게 저장한다
+            done.append(("옛", "UPSERT"))
+
+        async def old_delete(user_id: int) -> bool:
+            done.append(("옛", "DELETE"))
+            return True
+
+        async def new_rebuild(request) -> None:
+            done.append(("새", "UPSERT"))
+
+        async def new_delete(user_id: int) -> bool:
+            done.append(("새", "DELETE"))
+            return True
+
+        settings = _settings(topic, dlt, group)
+        tasks = [
+            asyncio.create_task(
+                ProfileConsumer(settings, rebuild=old_rebuild, delete=old_delete).run()
+            )
+        ]
+        try:
+            async with asyncio.timeout(60):
+                await old["stuck"].wait()
+                # 옛 서버가 갱신에 묶여 있는 동안 탈퇴 삭제가 오고 새 서버가 붙는다
+                await _send(topic, [(b"42", _v2_delete())])
+                tasks.append(
+                    asyncio.create_task(
+                        ProfileConsumer(
+                            settings, rebuild=new_rebuild, delete=new_delete
+                        ).run()
+                    )
+                )
+                while not any(op == "DELETE" for _, op in done):
+                    for task in tasks:
+                        if task.done():
+                            task.result()
+                    await asyncio.sleep(0.2)
+            connection.set()  # 옛 서버가 이제야 DB 연결을 얻는다
+            await asyncio.sleep(1)  # 늦은 저장이 있다면 이 사이에 나온다
+            committed = await _committed(topic, group)
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        return done, old["late_save"], committed
+
+    done, late_save, committed = asyncio.run(scenario())
+
+    assert late_save is False
+    # 파티션을 누가 받았든 갱신 다음 삭제다
+    assert [op for _, op in done] == ["UPSERT", "DELETE"]
+    assert committed == 2
