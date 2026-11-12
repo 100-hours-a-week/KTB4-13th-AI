@@ -1400,6 +1400,21 @@ async def _popular_order(
     return popular.sample(by_taste[: popular.TASTE_POOL], CANDIDATE_LIMIT)
 
 
+async def _search(req: SearchRequest) -> service.SearchOutcome:
+    """①의 검색. 벡터 검색이 빠지면(keyword-only) 같은 요청을 한 번 더 보낸다(#740).
+
+    벡터 색인이 DB 캐시보다 커서(운영 small 1,515MB > 413MB, #623) 처음 치는 검색어는 디스크를 읽다 2초 제한에 걸린다.
+    그 사이 읽은 블록은 캐시에 남아 같은 검색어를 바로 다시 치면 빠르다 — dev 새 검색어 8개 중 첫 시도 5개가 키워드만(0~2권),
+    바로 다시 친 8개는 전부 1초 안에 10권. 챗봇 검색어는 문장("자세 교정 운동법을 위한 책")이라 키워드만으로는 0권이 되기 쉽다.
+    ① 검색창은 BE 가 5초까지만 기다려서 그대로 두고, 턴 시간이 넉넉한 챗봇만 다시 친다.
+    """
+    outcome = await service.search(req)
+    if outcome.degraded != service.KEYWORD_ONLY:
+        return outcome
+    logger.info("벡터 검색이 빠져 한 번 더 찾는다")
+    return await service.search(req)
+
+
 async def get_candidates(
     spec: Spec,
     exclude_book_ids: list[int],
@@ -1418,8 +1433,8 @@ async def get_candidates(
     바로 되므로 여기서 한다(#144). owned_book_ids(요청에 실려 온 산 책·나의 도서관 책,
     #319)를 뺀다. None이면 빼는 책이 없다(#307).
     exclude·publisher는 ①에 없는 개념이라(①은 이 필요가 없음) 결과를 받은
-    뒤 여기서 직접 거른다. ①이 keyword-only로 축소됐는지는 지금은 안 본다
-    (후속 판단).
+    뒤 여기서 직접 거른다. ①이 keyword-only로 줄여 답하면 _search가 한 번
+    더 찾는다(#740).
 
     semantic이면 소개글 없는 책도 여기서 뺀다 — 3단계는 소개글만 근거로
     카드를 쓰는데, 빈 소개글을 그대로 넘기면 모델이 제목·저자만 보고 이유를
@@ -1471,7 +1486,7 @@ async def get_candidates(
     elif by_author and not spec.semantic:
         results = by_author
     else:
-        outcome = await service.search(
+        outcome = await _search(
             SearchRequest(query=query, filters=search_filters, size=SEARCH_SIZE)
         )
         results = outcome.results
@@ -2544,12 +2559,37 @@ def _active_conditions(spec: Spec) -> list[tuple[str, str]]:
     return found
 
 
+def _ask_again(
+    spec: Spec, message: str | None, asked_options: tuple[str, ...] | None
+) -> tuple[str, str] | None:
+    """챗봇이 물은 질문의 답으로 찾았는데 카드가 없을 때의 (reply, followup)(#740). 아니면 None.
+
+    고른 보기는 챗봇이 낸 말이라 "…만으로는 찾기 어려워요"라고 하면 앞뒤가 안 맞는다. 고르지 않은 보기로 같은 질문을
+    다시 해서 다른 쪽으로 찾게 한다. 같은 묻기 꼴이라 다음 턴도 질문의 답으로 받고, "아무거나"면 처음 주제로 찾는다.
+    고르지 않은 보기가 둘 안 남거나, 조건이 걸려 있거나(조건을 풀자고 묻는 게 맞다), "아무거나"였으면(같은 질문을 또
+    하게 된다) None 이다.
+    """
+    if asked_options is None or _active_conditions(spec) or asking.skipped(message):
+        return None
+    said = " ".join((message or "").split())
+    left = [option for option in asked_options if " ".join(option.split()) != said]
+    if len(left) < asking.MIN_OPTIONS:
+        return None
+    reply = (
+        f'"{said}" 쪽으로는 맞는 책을 아직 못 찾았어요.'
+        if said and len(said) <= _CLARIFY_ECHO_MAX_CHARS
+        else "그쪽으로는 맞는 책을 아직 못 찾았어요."
+    )
+    return reply, asking.followup("다른 쪽으로 찾아볼까요?", left)
+
+
 def _no_card_response(
     spec: Spec,
     message: str,
     *,
     had_candidates: bool,
     slot_question: str | None = None,
+    answered: bool = False,
 ) -> tuple[str, str]:
     """카드가 없을 때의 (reply, followup). reply는 짧은 안내, followup은 사용자가 답할 질문이다.
 
@@ -2557,6 +2597,7 @@ def _no_card_response(
     검색어가 있고 걸린 조건이 있으면 그 조건을 풀지 묻고(따라 말할 예시를 준다), 검색어는
     있는데 못 찾았으면 제목·저자나 분야를 묻는다. 다음 턴의 답은 1단계(spec 갱신)가 그대로
     받는다. 답 예시는 한 단어가 아니라 문장으로 줘서 사용자가 문장으로 답하게 한다.
+    answered 는 이번 말이 챗봇이 물은 질문의 답인가다. 그러면 이번 말을 "만으로는 찾기 어려워요"라고 탓하지 않는다(#740).
     """
     if had_candidates:
         # 후보는 있었는데 카드를 못 만들었다(카드 생성이 비어 돌아옴). 조건 탓이 아니다.
@@ -2605,11 +2646,13 @@ def _no_card_response(
                 "아는 제목이나 저자를 알려 주셔도 돼요."
             ),
         )
-    head = (
-        f'"{said}"만으로는 찾기 어려워요.'
-        if said and len(said) <= _CLARIFY_ECHO_MAX_CHARS
-        else "말씀하신 내용만으로는 찾기 어려워요."
-    )
+    if answered:
+        # 챗봇이 물어서 답한 말이다. 답이 모자랐다고 하지 않고 다른 쪽을 묻는다
+        head = "다른 쪽으로 찾아볼까요?"
+    elif said and len(said) <= _CLARIFY_ECHO_MAX_CHARS:
+        head = f'"{said}"만으로는 찾기 어려워요.'
+    else:
+        head = "말씀하신 내용만으로는 찾기 어려워요."
     return (
         "조건에 맞는 책을 아직 못 찾았어요.",
         _with_clarify_options(
@@ -3289,6 +3332,8 @@ async def _recommend(
     # 첫 턴에만 묻는다. 이어지는 턴은 사용자가 이미 답하는 중이라 같은 걸 또 묻지 않는다.
     slot_question = None if req.recent_turns else _slot_question(req.message)
     asked_last = _bot_asked_last(req.recent_turns)
+    # 챗봇이 넓은 첫 요청에 물었던 질문의 답 보기(이번 말이 그 답일 때). 카드가 없으면 남은 보기로 다시 묻는다(#740)
+    asked_options = asking.options_asked(req.recent_turns)
     # 분야만 넓게 말한 요청("소설 추천해줘")이면 카드 아래에 좁힐 보기를 코드가 붙인다(#514). 고르면 다음 턴도 분야만 말한
     # 요청이라 많이 읽힌 책에서 좁혀진다. 직전에 물었으면("다른 거"로 넘긴 사람에게) 또 묻지 않는다
     genre_question = (
@@ -3326,6 +3371,10 @@ async def _recommend(
     if lane_ask is not None:
         # 판단 호출이 후보가 두 갈래로 갈린다며 물었다. 카드 없이 그 질문을 followup 으로 준다(명세: 카드가 없으면 followup)
         no_card_reply, followup = lane_ask
+    elif not cards and (again := _ask_again(spec, req.message, asked_options)):
+        no_card_reply, followup = again
+        # 고른 보기로는 못 찾았다. 질문하던 때의 조건으로 돌려, 다음 답(남은 보기나 "아무거나")이 그 위에 쌓이게 한다
+        spec = req.spec
     elif not cards:
         no_card_reply, followup = _no_card_response(
             spec,
@@ -3333,6 +3382,7 @@ async def _recommend(
             # 판단 호출이 맞는 책이 없다고 본 것은 카드 생성 실패가 아니다. 조건이나 주제를 묻는 쪽으로 간다
             had_candidates=bool(candidates) and turn is None,
             slot_question=slot_question,
+            answered=asked_options is not None,
         )
 
     if degraded:

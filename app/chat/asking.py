@@ -123,6 +123,28 @@ def asked(recent_turns: Sequence[_Turn]) -> bool:
     return False
 
 
+def skipped(answer: str | None) -> bool:
+    """답이 "아무거나"처럼 더 말할 게 없다는 뜻인가."""
+    return bool(answer and _SKIP_LIKE.search(answer))
+
+
+def options_asked(recent_turns: Sequence[_Turn]) -> tuple[str, ...] | None:
+    """직전 챗봇 말이 이 모듈의 질문이었으면 그때 낸 답 보기, 아니면 None. 보기 없이 물었으면 빈 튜플이다."""
+    for turn in reversed(recent_turns):
+        if turn.role == "user":
+            return None
+        if turn.role == "assistant":
+            if not _TAIL_MARK.search(turn.text):
+                return None
+            return tuple(
+                option
+                for line in turn.text.splitlines()
+                if line.startswith(OPTION_BULLET)
+                and (option := line[len(OPTION_BULLET) :].strip())
+            )
+    return None
+
+
 def parse(answer: dict) -> Ask | None:
     """판정 답이 넓다(broad)면 물을 말. 분명하거나 질문이 비었으면 None — 묻지 않고 평소처럼 찾는다."""
     if answer.get("scope") != "broad":
