@@ -51,6 +51,11 @@ RECONNECT_SECONDS = 5.0
 # 그 사이 쉬는 시간(약 25초)보다 길어야 한다. 기본(session_timeout 10초)이면 기다리는 사이 그룹에서 빠져 다른 서버가
 # 파티션을 받는다
 REBALANCE_TIMEOUT_MS = 60_000
+# 파티션을 내주기 전에 처리 중인 메시지를 기다리는 시간. 넘기면 그 작업을 멈추고 내준다(#734 리뷰). 브로커가 기다려
+# 주는 시간을 넘기면 이 서버가 그룹에서 빠지고, 멈추지 않은 작업이 새 서버의 삭제 뒤에 저장될 수 있다
+REVOKE_WAIT_SECONDS = 45.0
+# 멈추라고 한 뒤 멈추기를 기다리는 시간. 둘의 합은 REBALANCE_TIMEOUT_MS 보다 짧아야 한다
+CANCEL_WAIT_SECONDS = 5.0
 # DLT 로 보낼 때 머리글이 붙는 몫. 원본이 크기 한도에 꽉 차도 다시 보낼 수 있게 발행 한도를 이만큼 넉넉히 둔다
 _HEADER_ROOM_BYTES = 64 * 1024
 
@@ -231,18 +236,46 @@ class _FinishBeforeRevoke(ConsumerRebalanceListener):
     배포로 서버가 바뀌며 파티션이 다른 서버로 넘어갈 때, 옛 서버가 처리 중이던 갱신이 새 서버가 처리한 삭제보다 늦게
     저장되면 지운 프로필이 다시 생긴다(#730). aiokafka 는 모든 소비자가 이 콜백을 마친 뒤에 새 주인에게 파티션을
     넘기고, 다시 나누는 동안에는 새 메시지를 내주지 않는다. 그래서 처리 중인 하나만 기다리면 겹치지 않는다.
+
+    REVOKE_WAIT_SECONDS 안에 안 끝나면(DB 연결을 오래 기다리는 등) 그 작업을 멈추고 내준다. 멈춘 작업은 저장하지
+    못하고(트랜잭션이 되돌려진다) offset 도 넘기지 않아, 새 주인이 그 메시지부터 다시 차례로 처리한다. 멈추는 순간
+    이미 커밋 중이던 저장은 사용자별 잠금을 쥐고 있어서, 새 주인의 삭제는 그 저장이 끝난 뒤에 돈다.
     """
 
-    def __init__(self, idle: asyncio.Event) -> None:
+    def __init__(self, idle: asyncio.Event, stop: Callable[[], None]) -> None:
         self._idle = idle
+        self._stop = stop
 
     async def on_partitions_revoked(self, revoked) -> None:
-        if not self._idle.is_set():
-            logger.info("파티션을 내주기 전에 처리 중인 카프카 프로필 메시지를 마친다")
-        await self._idle.wait()
+        if self._idle.is_set():
+            return
+        logger.info("파티션을 내주기 전에 처리 중인 카프카 프로필 메시지를 마친다")
+        if await _waited(self._idle, REVOKE_WAIT_SECONDS):
+            return
+        logger.warning(
+            "처리 중인 카프카 프로필 메시지가 %.0f초 안에 끝나지 않아 멈추고 파티션을 내준다"
+            " — offset 을 넘기지 않아 새 주인이 다시 처리한다",
+            REVOKE_WAIT_SECONDS,
+        )
+        self._stop()
+        if not await _waited(self._idle, CANCEL_WAIT_SECONDS):
+            logger.error(
+                "처리 중인 카프카 프로필 메시지를 %.0f초 안에 멈추지 못한 채 파티션을 내준다",
+                CANCEL_WAIT_SECONDS,
+            )
 
     async def on_partitions_assigned(self, assigned) -> None:
         return None
+
+
+async def _waited(event: asyncio.Event, seconds: float) -> bool:
+    """seconds 안에 켜지면 True."""
+    try:
+        async with asyncio.timeout(seconds):
+            await event.wait()
+    except TimeoutError:
+        return False
+    return True
 
 
 class ProfileConsumer:
@@ -265,13 +298,16 @@ class ProfileConsumer:
         # 처리 중인 메시지가 없으면 켜져 있다. 파티션을 내줄 때 이것을 기다린다(#734)
         self._idle = asyncio.Event()
         self._idle.set()
+        # 처리 중인 메시지 하나(handle 과 commit). 파티션을 내주다 기다리는 시간을 넘기면 멈춘다
+        self._working: asyncio.Task[None] | None = None
+        self._stopped_for_revoke = False
 
     async def run(self) -> None:
         while True:
             consumer, producer = self._clients()
             consumer.subscribe(
                 [self._settings.profile_kafka_topic],
-                listener=_FinishBeforeRevoke(self._idle),
+                listener=_FinishBeforeRevoke(self._idle, self._stop_working),
             )
             try:
                 await consumer.start()
@@ -323,23 +359,40 @@ class ProfileConsumer:
                 ],
             )
 
+        async def work(record: Record) -> None:
+            await handle(
+                record,
+                max_bytes=self._settings.profile_kafka_max_message_bytes,
+                rebuild=self._rebuild,
+                delete=self._delete,
+                send_dlt=send_dlt,
+                sleep=self._sleep,
+            )
+            await consumer.commit(
+                {TopicPartition(record.topic, record.partition): record.offset + 1}
+            )
+
         while True:
             record = await consumer.getone()
             self._idle.clear()
+            self._working = asyncio.create_task(work(record))
             try:
-                await handle(
-                    record,
-                    max_bytes=self._settings.profile_kafka_max_message_bytes,
-                    rebuild=self._rebuild,
-                    delete=self._delete,
-                    send_dlt=send_dlt,
-                    sleep=self._sleep,
-                )
-                await consumer.commit(
-                    {TopicPartition(record.topic, record.partition): record.offset + 1}
-                )
+                await self._working
+            except asyncio.CancelledError:
+                # 서버가 내려간다. 파티션을 내주느라 멈춘 때와 겹쳐도 내려가라는 신호는 삼키지 않는다
+                if not self._stopped_for_revoke or asyncio.current_task().cancelling():
+                    raise
+                # 파티션을 내주느라 멈췄다. offset 을 넘기지 않았으니 새 주인이 다시 처리한다
             finally:
+                self._stopped_for_revoke = False
+                self._working = None
                 self._idle.set()
+
+    def _stop_working(self) -> None:
+        """파티션을 내주기 전에 처리 중인 메시지를 멈춘다(_FinishBeforeRevoke)."""
+        if self._working is not None and not self._working.done():
+            self._stopped_for_revoke = True
+            self._working.cancel()
 
 
 async def _stop(consumer: Any, producer: Any) -> None:

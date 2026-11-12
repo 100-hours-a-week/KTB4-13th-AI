@@ -603,6 +603,132 @@ def test_처리_중인_메시지가_없으면_바로_내준다() -> None:
     asyncio.run(revoke())
 
 
+def test_처리_중인_메시지가_기다리는_시간_안에_안_끝나면_멈추고_offset을_넘기지_않고_내준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 옛 서버가 DB 연결을 오래 기다리는 사이 새 서버가 삭제를 먼저 하면, 늦게 끝난 갱신이 프로필을 되살린다(#734
+    # 리뷰). 멈춘 갱신은 저장하지 못하고, offset 을 넘기지 않아 새 주인이 갱신부터 다시 차례로 처리한다
+    monkeypatch.setattr(kafka_consumer, "REVOKE_WAIT_SECONDS", 0.05)
+    consumer = FakeConsumer([Record(offset=7), Record(offset=8, value=_v2_delete())])
+    calls = Calls()
+    seen: dict = {"finished": False, "cancelled": False}
+
+    async def stuck_rebuild(request) -> None:
+        seen["revoke"] = asyncio.create_task(
+            consumer.listener.on_partitions_revoked({TopicPartition(TOPIC, 0)})
+        )
+        try:
+            await asyncio.Event().wait()  # DB 연결을 기다린다
+        except asyncio.CancelledError:
+            seen["cancelled"] = True
+            raise
+        seen["finished"] = True
+
+    worker = ProfileConsumer(
+        _settings(),
+        rebuild=stuck_rebuild,
+        delete=calls.delete,
+        clients=lambda: (consumer, FakeProducer()),
+        sleep=calls.sleep,
+    )
+
+    async def go() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            await worker.run()
+        await seen["revoke"]
+
+    asyncio.run(go())
+
+    assert (seen["cancelled"], seen["finished"]) == (True, False)
+    # 멈춘 갱신(offset 7)은 넘기지 않았다. 소비자는 멈추지 않고 다음 메시지를 받았다
+    assert consumer.commits == [{TopicPartition(TOPIC, 0): 9}]
+    assert calls.deleted == [42]
+
+
+def test_멈추라고_해도_안_멈추면_정해진_시간_뒤에는_내준다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 내주지 않고 버티면 브로커가 이 서버를 그룹에서 빼고 파티션을 넘긴다. 그 전에 내주고 까닭을 남긴다
+    monkeypatch.setattr(kafka_consumer, "REVOKE_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(kafka_consumer, "CANCEL_WAIT_SECONDS", 0.05)
+    consumer = FakeConsumer([Record(offset=7)])
+    seen: dict = {}
+
+    async def slow_to_stop(request) -> None:
+        seen["revoke"] = asyncio.create_task(
+            consumer.listener.on_partitions_revoked({TopicPartition(TOPIC, 0)})
+        )
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.5)  # 멈추는 데 오래 걸린다
+            seen["revoked_before_stopped"] = seen["revoke"].done()
+            raise
+
+    worker = ProfileConsumer(
+        _settings(),
+        rebuild=slow_to_stop,
+        clients=lambda: (consumer, FakeProducer()),
+        sleep=Calls().sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run())
+
+    assert seen["revoked_before_stopped"] is True
+    assert consumer.commits == []
+
+
+def test_파티션을_내주느라_멈추는_순간_서버도_내려가면_소비자도_끝난다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 내주느라 멈춘 것으로 보고 내려가라는 신호까지 삼키면, 서버가 소비자를 기다리다 끝나지 않는다
+    monkeypatch.setattr(kafka_consumer, "REVOKE_WAIT_SECONDS", 0.05)
+    consumer = FakeConsumer([Record(offset=7), Record(offset=8)])
+    calls = Calls()
+    seen: dict = {}
+
+    async def stuck_rebuild(request) -> None:
+        if "revoke" in seen:
+            await calls.rebuild(request)
+            return
+        seen["revoke"] = asyncio.create_task(
+            consumer.listener.on_partitions_revoked({TopicPartition(TOPIC, 0)})
+        )
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            seen["server"].cancel()  # 서버가 같은 때 내려간다
+            raise
+
+    worker = ProfileConsumer(
+        _settings(),
+        rebuild=stuck_rebuild,
+        clients=lambda: (consumer, FakeProducer()),
+        sleep=calls.sleep,
+    )
+
+    async def go() -> None:
+        seen["server"] = asyncio.create_task(worker.run())
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(2):
+                await seen["server"]
+
+    asyncio.run(go())
+
+    # 다음 메시지(offset 8)를 받지 않고 끝났다
+    assert calls.rebuilt == []
+    assert consumer.commits == []
+
+
+def test_내주기를_기다리는_시간과_멈추는_시간의_합은_브로커가_기다려_주는_시간보다_짧다() -> (
+    None
+):
+    waited = kafka_consumer.REVOKE_WAIT_SECONDS + kafka_consumer.CANCEL_WAIT_SECONDS
+
+    assert waited < kafka_consumer.REBALANCE_TIMEOUT_MS / 1000
+
+
 def test_재할당을_기다려_주는_시간은_계산_세_번보다_길다() -> None:
     # 기본(session_timeout 10초)이면 처리 중인 메시지를 기다리는 사이 그룹에서 빠져 다른 서버가 파티션을 받는다
     async def made() -> int:
