@@ -564,6 +564,155 @@ def test_보기를_따라_말한_답은_직전_질문의_답으로_받는다(
     assert data["cards"]
 
 
+OPTION_TURNS = [
+    {"role": "user", "text": "위로되는 책 추천해줘"},
+    # BE 는 챗봇 줄을 reply + 줄바꿈 + followup 으로 싣는다. 보기는 followup 안에 있다
+    {
+        "role": "assistant",
+        "text": BROAD["reply"]
+        + "\n"
+        + asking.followup(BROAD["question"], tuple(BROAD["options"])),
+    },
+]
+
+
+def _no_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _empty(spec, exclude_book_ids, user_id, owned_book_ids=None):
+        return []
+
+    monkeypatch.setattr(chat, "get_candidates", _empty)
+
+
+def test_고른_보기로_못_찾으면_탓하지_않고_남은_보기로_다시_묻는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#740 — 챗봇이 낸 보기를 눌렀는데 '"…"만으로는 찾기 어려워요'라고 하면 앞뒤가 안 맞는다."""
+    _no_candidates(monkeypatch)
+    rec = _Recorder(json.dumps({"semantic": "회사 일로 지친 직장인을 위로하는 책"}))
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+    asked_spec = {**INITIAL_SPEC, "semantic": "위로가 되는 책"}
+
+    data = client.post(
+        "/recommendations/chat",
+        json=_request(
+            message=BROAD["options"][0], recent_turns=OPTION_TURNS, spec=asked_spec
+        ),
+    ).json()["data"]
+
+    assert data["cards"] == []
+    assert data["reply"] == '"회사 일로 지쳤어요" 쪽으로는 맞는 책을 아직 못 찾았어요.'
+    assert data["followup"] == asking.followup(
+        "다른 쪽으로 찾아볼까요?", ("관계 때문에 힘들어요", "이유 없이 무기력해요")
+    )
+    assert "만으로는" not in data["followup"]
+    # 질문하던 때의 조건으로 돌린다. 다음 답(남은 보기·"아무거나")이 고른 보기 위에 쌓이지 않는다
+    assert data["spec"]["semantic"] == "위로가 되는 책"
+    # 같은 묻기 꼴이라 다음 턴도 질문의 답으로 받는다
+    next_turns = [
+        *OPTION_TURNS,
+        {"role": "user", "text": BROAD["options"][0]},
+        {"role": "assistant", "text": (data["reply"] + "\n" + data["followup"])[-200:]},
+    ]
+    assert asking.options_asked([Turn.model_validate(turn) for turn in next_turns]) == (
+        "관계 때문에 힘들어요",
+        "이유 없이 무기력해요",
+    )
+
+
+def test_보기_없이_물은_질문의_답으로_못_찾아도_답을_탓하지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_candidates(monkeypatch)
+    rec = _Recorder(json.dumps({"semantic": "회사 일 때문에 지친"}))
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post(
+        "/recommendations/chat",
+        json=_request(
+            message="회사 일 때문에 지친 마음",
+            recent_turns=ASKED_TURNS,
+            spec={**INITIAL_SPEC, "semantic": "위로가 되는 책"},
+        ),
+    ).json()["data"]
+
+    assert data["cards"] == []
+    assert "만으로는" not in data["followup"]
+    assert data["followup"].startswith(
+        "다른 쪽으로 찾아볼까요? 제목이나 저자를 알려 주시거나, 분야를 골라 주세요."
+    )
+    # 다시 묻지 않은 길은 지금처럼 이번 턴의 조건을 돌려준다
+    assert data["spec"]["semantic"] == "회사 일 때문에 지친"
+
+
+def test_다시_물은_뒤_아무거나로도_못_찾으면_같은_질문을_또_하지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_candidates(monkeypatch)
+    rec = _Recorder("{}")
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post(
+        "/recommendations/chat",
+        json=_request(
+            message="아무거나",
+            recent_turns=OPTION_TURNS,
+            spec={**INITIAL_SPEC, "semantic": "위로가 되는 책"},
+        ),
+    ).json()["data"]
+
+    assert "다른 쪽으로 찾아볼까요?\n\n• " not in data["followup"]
+    assert "만으로는" not in data["followup"]
+
+
+def test_묻기의_답에_조건이_걸려_못_찾으면_조건을_풀지_묻는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_candidates(monkeypatch)
+    rec = _Recorder(
+        json.dumps({"semantic": "위로가 되는 책", "filters": {"price_max": 1000}})
+    )
+    monkeypatch.setattr(chat, "get_chat_model", lambda: rec.model())
+
+    data = client.post(
+        "/recommendations/chat",
+        json=_request(
+            message="천 원 이하로",
+            recent_turns=OPTION_TURNS,
+            spec={**INITIAL_SPEC, "semantic": "위로가 되는 책"},
+        ),
+    ).json()["data"]
+
+    assert "1,000원 이하" in data["followup"]
+    assert data["spec"]["filters"]["price_max"] == 1000
+
+
+@pytest.mark.parametrize(
+    ("turns", "options"),
+    [
+        (OPTION_TURNS, tuple(BROAD["options"])),
+        # BE 는 줄마다 뒤쪽 200자만 싣는다. 보기는 끝 가까이에 있어 남는다
+        (
+            [
+                OPTION_TURNS[0],
+                {
+                    "role": "assistant",
+                    "text": ("가" * 300 + OPTION_TURNS[1]["text"])[-200:],
+                },
+            ],
+            tuple(BROAD["options"]),
+        ),
+        (ASKED_TURNS, ()),
+        ([*OPTION_TURNS, {"role": "user", "text": "에세이"}], None),
+        ([{"role": "assistant", "text": "어느 쪽이 끌리세요?\n• 시\n• 소설"}], None),
+        ([], None),
+    ],
+)
+def test_직전_질문의_보기를_읽는다(turns, options) -> None:
+    assert (
+        asking.options_asked([Turn.model_validate(turn) for turn in turns]) == options
+    )
+
+
 def test_카드_프롬프트에_이번_메시지와_최근_대화와_걸린_조건이_실린다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

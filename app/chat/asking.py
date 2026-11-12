@@ -86,9 +86,15 @@ SCOPE_PROMPT = ChatPromptTemplate.from_template(
 )
 
 # 1단계 프롬프트의 {ask_rule} 자리에 들어간다. 값으로 채워지므로 중괄호를 겹쳐 쓰지 않는다.
+# 주제를 남기라는 문장(#740): 보기는 주제 안의 갈래라 주제 낱말이 없을 때가 많다("자세" → "의자·책상 배치"). 4o 가 답만
+# 남겨("의자와 책상 배치에 관한 책") 의자 인테리어 책이 나왔다. 답 턴 12문항×3번: 30/36 → 35/36, 주제 바꿈·싫음·아무거나는
+# 둘 다 다 맞음. 예시는 시험 문항(자세·기분·잠·육아·여행·위로)과 겹치지 않는 주제로 골랐다.
 ANSWERED_RULE = (
     "직전 챗봇 말은 사용자가 원하는 것을 물은 질문이고, 이번 메시지는 그 답이다. 지금 semantic 에 답에서 알게 된 "
-    "것(상황, 목적, 수준, 장르, 분위기)을 더해 찾을 것을 semantic 에 통째로 다시 써라. 싫다고 한 것은 semantic 에 "
+    "것(상황, 목적, 수준, 장르, 분위기)을 더해 찾을 것을 semantic 에 통째로 다시 써라. 지금 semantic 의 주제는 "
+    "남겨라 — 답은 그 주제 안에서 고른 갈래라서 답만 쓰면 주제와 상관없는 책이 찾아진다. 예) 지금 semantic 이 "
+    '"글쓰기 책"이고 답이 "매일 조금씩"이면 "매일 조금씩 쓰는 습관을 다룬 글쓰기 책". 답이 지금 주제를 버리고 '
+    '다른 것을 찾는 말이면(예: "그건 됐고 역사책 보여줘") 지금 주제는 빼고 새로 써라. 싫다고 한 것은 semantic 에 '
     '적지 마라 — 검색어에 들어가면 오히려 그 책이 찾아진다. 답이 "아무거나"처럼 더 말할 게 없다는 뜻이면 '
     "빈 객체 {}로 답하라.\n\n"
 )
@@ -121,6 +127,28 @@ def asked(recent_turns: Sequence[_Turn]) -> bool:
         if turn.role == "assistant":
             return bool(_TAIL_MARK.search(turn.text))
     return False
+
+
+def skipped(answer: str | None) -> bool:
+    """답이 "아무거나"처럼 더 말할 게 없다는 뜻인가."""
+    return bool(answer and _SKIP_LIKE.search(answer))
+
+
+def options_asked(recent_turns: Sequence[_Turn]) -> tuple[str, ...] | None:
+    """직전 챗봇 말이 이 모듈의 질문이었으면 그때 낸 답 보기, 아니면 None. 보기 없이 물었으면 빈 튜플이다."""
+    for turn in reversed(recent_turns):
+        if turn.role == "user":
+            return None
+        if turn.role == "assistant":
+            if not _TAIL_MARK.search(turn.text):
+                return None
+            return tuple(
+                option
+                for line in turn.text.splitlines()
+                if line.startswith(OPTION_BULLET)
+                and (option := line[len(OPTION_BULLET) :].strip())
+            )
+    return None
 
 
 def parse(answer: dict) -> Ask | None:

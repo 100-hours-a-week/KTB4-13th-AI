@@ -13,6 +13,7 @@ import pytest
 
 from app.chat.schemas import Spec, SpecExact
 from app.routers import chat
+from app.search import service
 from app.search.schemas import SearchFilters, SearchRequest
 from app.search.service import SearchOutcome
 
@@ -787,3 +788,67 @@ def test_exact이거나_분위기_문장이_없으면_리랭커를_부르지_않
     result = asyncio.run(chat.get_candidates(_spec(**spec_overrides), [], 1))
 
     assert [c["book_id"] for c in result] == list(range(1, 11))
+
+
+def test_벡터_검색이_빠지면_같은_요청으로_한_번_더_찾는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#740 — 처음 치는 검색어는 벡터가 2초 제한에 걸려 키워드만 남는다. 바로 다시 치면 캐시가 데워져 빠르다."""
+    calls: list[SearchRequest] = []
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        calls.append(req)
+        if len(calls) == 1:
+            return SearchOutcome(results=[], degraded=service.KEYWORD_ONLY)
+        return SearchOutcome(results=[_book(1088)], degraded=None)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return {1088: "잠든 사이 꿈을 사고파는 상점 이야기."}
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    spec = _spec(intent="semantic", semantic="자세 교정 운동법을 위한 책")
+    result = asyncio.run(chat.get_candidates(spec, [], 1))
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert [c["book_id"] for c in result] == [1088]
+
+
+@pytest.mark.parametrize("degraded", [None, "something-else"])
+def test_벡터_검색이_온전하면_다시_찾지_않는다(
+    monkeypatch: pytest.MonkeyPatch, degraded: str | None
+) -> None:
+    calls: list[SearchRequest] = []
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        calls.append(req)
+        return SearchOutcome(results=[], degraded=degraded)
+
+    monkeypatch.setattr(chat.service, "search", _search)
+
+    asyncio.run(chat.get_candidates(_spec(semantic="비 오는 날 읽을 책"), [], 1))
+
+    assert len(calls) == 1
+
+
+def test_다시_찾아도_키워드만이면_그_결과를_쓴다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[SearchRequest] = []
+
+    async def _search(req: SearchRequest) -> SearchOutcome:
+        calls.append(req)
+        return SearchOutcome(results=[_book(len(calls))], degraded=service.KEYWORD_ONLY)
+
+    async def _descriptions(book_ids: list[int]) -> dict[int, str]:
+        return dict.fromkeys(book_ids, "소개")
+
+    monkeypatch.setattr(chat.service, "search", _search)
+    monkeypatch.setattr(chat, "_fetch_descriptions", _descriptions)
+
+    result = asyncio.run(chat.get_candidates(_spec(semantic="자세 교정"), [], 1))
+
+    assert len(calls) == 2  # 한 번만 더 찾는다
+    assert [c["book_id"] for c in result] == [2]
