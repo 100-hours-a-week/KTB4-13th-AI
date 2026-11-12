@@ -15,8 +15,8 @@
   허브 아닌 이웃이 모자라면 허브로 채운다(app/chat/lanes.py neighbor_books) — 허브는 상위 100작품이라 그래프가 커지면
   사피엔스처럼 그 책과 진짜 가까운 책도 든다
 
-파일은 app/jobs/build_reading_graph.py 가 usage.jsonl 에서 만든다. 서버는 켜질 때 메모리에 올린다(목록 받은 5.8만 작품
-약 110MB, 조회 마이크로초). 파일이 없으면 None 이고, 챗봇은 그래프 없이 돈다.
+파일은 app/jobs/build_reading_graph.py 가 usage.jsonl 에서 만든다. 서버는 켜질 때 메모리에 올린다(목록 받은 8.7만 작품
+약 150MB, 조회 마이크로초). 파일이 없으면 None 이고, 챗봇은 그래프 없이 돈다.
 """
 
 import gzip
