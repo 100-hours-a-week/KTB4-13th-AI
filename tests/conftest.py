@@ -27,6 +27,9 @@ os.environ.setdefault("CHAT_AGENT", "false")
 # 분야만 말한 요청의 인기 책 파일(#514)도 저장소에 있어서, 앱을 띄우는 테스트가 읽어 두면 뒤 테스트의 "소설 추천해줘"가
 # 검색 대신 그 목록으로 간다. 챗봇 테스트는 검색 경로를 기본으로 보고, 켠 동작은 tests/test_chat_popular.py 가 직접 끼운다.
 os.environ.setdefault("POPULAR_BOOKS_PATH", "")
+# ③ 후보 리랭커(#738)도 기본값이 켜져 있다. 키를 넣고 LLM_MOCK 을 끄는 테스트가 분위기 요청을 보내면 진짜 리랭커 API 를 부를 수
+# 있다. 꺼진 경로(검색 순서)를 기본으로 보고, 켠 동작은 tests/test_reranker_gateway.py 가 직접 켠다.
+os.environ.setdefault("CHAT_RERANKER", "false")
 
 # 이 import 는 위 환경변수 설정 뒤여야 한다 — 순서를 바꾸면 Settings 가 실패한다.
 from app.core import db

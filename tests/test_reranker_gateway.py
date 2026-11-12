@@ -242,11 +242,25 @@ def _forbid_http(monkeypatch: pytest.MonkeyPatch) -> None:
     _api(monkeypatch, _never)
 
 
-def test_기본값은_꺼져_있어_부르지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_기본값은_켜져_있어_다시_줄_세운다(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXTERNAL_AI_API_KEY", "test-key")
     monkeypatch.setenv("LLM_PROVIDER", "openrouter-no-zdr")
     monkeypatch.setenv("LLM_MOCK", "false")
     monkeypatch.delenv("CHAT_RERANKER", raising=False)
+    get_settings.cache_clear()
+
+    async def _ok(request: httpx.Request) -> httpx.Response:
+        return _scored((0, 0.1), (1, 0.9), (2, 0.5))
+
+    sent = _api(monkeypatch, _ok)
+
+    assert reranker.enabled() is True
+    assert _ids(_rerank("잔잔한 소설", _books(3))) == [2, 3, 1]
+    assert len(sent) == 1
+
+
+def test_끄면_부르지_않는다(monkeypatch: pytest.MonkeyPatch, reranker_on: None) -> None:
+    monkeypatch.setenv("CHAT_RERANKER", "false")
     get_settings.cache_clear()
     _forbid_http(monkeypatch)
 
@@ -336,7 +350,7 @@ def test_꺼져_있으면_시작_로그에_리랭커가_없다(
 ) -> None:
     _models_env(monkeypatch)
     monkeypatch.setenv("LLM_MOCK", "false")
-    monkeypatch.delenv("CHAT_RERANKER", raising=False)
+    monkeypatch.setenv("CHAT_RERANKER", "false")
 
     with caplog.at_level(logging.INFO, logger="app.gateway.llm"):
         report_models()
