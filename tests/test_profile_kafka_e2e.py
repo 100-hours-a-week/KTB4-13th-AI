@@ -28,7 +28,7 @@ from aiokafka.structs import TopicPartition
 
 from app.core.config import Settings
 from app.profile.kafka_consumer import ProfileConsumer
-from tests.test_profile_kafka_message import _profile, _value
+from tests.test_profile_kafka_message import _profile, _v2, _v2_delete, _value
 
 BOOTSTRAP = os.environ.get("KAFKA_TEST_BOOTSTRAP_SERVERS", "")
 
@@ -249,3 +249,42 @@ def test_보낸_메시지는_BE_계약의_모양이다() -> None:
 
     assert set(message) == {"schema_version", "job_revision", "profile"}
     assert message["schema_version"] == 1
+
+
+def test_v1_v2_갱신_다음_v2_삭제를_보낸_차례대로_처리하고_모두_넘긴다() -> None:
+    # 삭제도 같은 토픽·같은 키로 오면 탈퇴 전에 보낸 갱신이 삭제 뒤에 처리되지 않는다(#733, #730)
+    topic, dlt, group = _names()
+
+    async def scenario() -> tuple[list, int | None]:
+        await _create_topics(topic, dlt)
+        await _send(topic, [(b"42", _value()), (b"42", _v2()), (b"42", _v2_delete())])
+        order: list = []
+
+        async def rebuild(request) -> dict:
+            order.append(("UPSERT", request.user_id))
+            return {"message": "profile_success", "data": {}}
+
+        async def delete(user_id: int) -> bool:
+            order.append(("DELETE", user_id))
+            return True
+
+        settings = _settings(topic, dlt, group)
+        task = asyncio.create_task(
+            ProfileConsumer(settings, rebuild=rebuild, delete=delete).run()
+        )
+        try:
+            async with asyncio.timeout(30.0):
+                while len(order) < 3 or await _committed(topic, group) != 3:
+                    if task.done():
+                        task.result()
+                    await asyncio.sleep(0.1)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        return order, await _committed(topic, group)
+
+    order, committed = asyncio.run(scenario())
+
+    assert order == [("UPSERT", 42), ("UPSERT", 42), ("DELETE", 42)]
+    assert committed == 3
