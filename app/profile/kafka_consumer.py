@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -54,6 +55,8 @@ class Record(Protocol):
     offset: int
     key: bytes | None
     value: bytes | None
+    # BE 가 보낸 시각(밀리초). 카프카가 붙여 준다. 옛 형식 메시지는 -1 이다
+    timestamp: int | None
 
 
 Rebuild = Callable[[ProfileRequest], Awaitable[Any]]
@@ -96,6 +99,7 @@ async def handle(
     rebuild: Rebuild,
     send_dlt: SendDlt,
     sleep: Sleep,
+    now: Callable[[], float] = time.time,
 ) -> None:
     """메시지 하나를 끝까지 처리한다. 돌아오면 offset 을 넘겨도 된다(계산해 저장했거나 DLT 로 보냈다).
 
@@ -113,6 +117,7 @@ async def handle(
 
     user_id = message.request.user_id
     for attempt in range(1, REBUILD_ATTEMPTS + 1):
+        started = time.monotonic()
         try:
             await rebuild(message.request)
         except asyncio.CancelledError:
@@ -128,7 +133,13 @@ async def handle(
             if attempt < REBUILD_ATTEMPTS:
                 await sleep(_delay(attempt))
             continue
-        logger.info("카프카로 온 프로필을 계산했다(사용자 %d)", user_id)
+        # 카프카(#666)로 바꾼 뒤 보낸 것이 저장되기까지 걸린 시간을 견준다(#731)
+        logger.info(
+            "카프카로 온 프로필을 계산했다(사용자 %d): 계산 %.2f초, 보낸 뒤 %s",
+            user_id,
+            time.monotonic() - started,
+            _since_sent(record, now()),
+        )
         return
 
     logger.error(
@@ -138,6 +149,13 @@ async def handle(
         _where(record),
     )
     await _to_dlt(record, "rebuild_failed", send_dlt, sleep)
+
+
+def _since_sent(record: Record, now: float) -> str:
+    """BE 가 보낸 뒤 지금까지 걸린 시간. 다시 한 시간과 줄에서 기다린 시간도 든다. 시각이 없으면 모른다."""
+    if record.timestamp is None or record.timestamp < 0:
+        return "모름"
+    return f"{now - record.timestamp / 1000:.2f}초"
 
 
 def problem(settings: Settings) -> str | None:

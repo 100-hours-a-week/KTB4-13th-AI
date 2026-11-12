@@ -9,6 +9,7 @@ LLM을 쓰지 않는다. 이력과 요청으로 취향 프로필을 다시 계�
 
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core import body, responses
+from app.core.config import get_settings
 from app.profile import service
 from app.profile.schemas import ProfileRequest, parse_delete_query
 
@@ -59,6 +61,7 @@ async def profile(request: Request) -> JSONResponse:
     if req is None:
         return responses.error(400, "invalid_request")
 
+    started = time.monotonic()
     try:
         response = await service.rebuild(req)
     except Exception:
@@ -66,7 +69,23 @@ async def profile(request: Request) -> JSONResponse:
         logger.exception("취향 프로필 계산 실패(%s)", request.method)
         return responses.error(500, "internal_server_error")
 
+    # 비동기(#582)를 켜기 전·후로 BE 가 응답을 기다린 시간을 견준다(#731)
+    logger.info(
+        "프로필을 계산했다(사용자 %d, %s): %.2f초, 목록은 %s",
+        req.user_id,
+        request.method,
+        time.monotonic() - started,
+        _where_list(),
+    )
     return responses.success(response["message"], response["data"])
+
+
+def _where_list() -> str:
+    """홈 목록을 응답 안에서 만들었는지, 뒤로 넘겼는지(#581)."""
+    settings = get_settings()
+    if not settings.interest_feed:
+        return "만들지 않음"
+    return "뒤에서" if settings.profile_feed_async else "응답 안에서"
 
 
 # 이미 없어도 200 이다. BE 가 탈퇴 처리를 다시 돌려도 실패로 보이지 않게 하고, 그래서 멱등 키를 받지

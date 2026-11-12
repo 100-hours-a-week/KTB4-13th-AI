@@ -8,6 +8,8 @@
 """
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass, field
 
 import pytest
@@ -29,6 +31,8 @@ class Record:
     value: bytes | None = field(default_factory=_value)
     topic: str = TOPIC
     partition: int = 0
+    # BE 가 보낸 시각(밀리초). 카프카가 메시지에 붙여 준다
+    timestamp: int | None = None
 
 
 class Calls:
@@ -80,6 +84,35 @@ def test_맞는_메시지는_계산하고_DLT로_보내지_않는다() -> None:
     assert calls.rebuilt == [42]
     assert calls.dlt == []
     assert calls.slept == []
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "since"), [(1_000_000, "2.50초"), (None, "모름"), (-1, "모름")]
+)
+def test_계산하면_걸린_시간과_BE가_보낸_뒤_저장까지_걸린_시간을_남긴다(
+    caplog: pytest.LogCaptureFixture, timestamp: int | None, since: str
+) -> None:
+    # 카프카(#666)로 바꾼 뒤 보낸 것이 프로필로 저장되기까지 걸린 시간을 견준다(#731). 시각이 없는 옛 형식(-1)은
+    # 모른다고 남긴다
+    caplog.set_level(logging.INFO, logger=kafka_consumer.__name__)
+    calls = Calls()
+
+    asyncio.run(
+        handle(
+            Record(offset=5, timestamp=timestamp),
+            max_bytes=MAX_BYTES,
+            rebuild=calls.rebuild,
+            send_dlt=calls.send_dlt,
+            sleep=calls.sleep,
+            now=lambda: 1_002.5,
+        )
+    )
+
+    [line] = [r.getMessage() for r in caplog.records if "계산했다" in r.getMessage()]
+    assert re.fullmatch(
+        rf"카프카로 온 프로필을 계산했다\(사용자 42\): 계산 \d+\.\d\d초, 보낸 뒤 {since}",
+        line,
+    )
 
 
 def test_틀린_메시지는_계산하지_않고_까닭을_달아_DLT로_보낸다() -> None:
