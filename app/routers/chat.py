@@ -2094,21 +2094,29 @@ async def _settle_pool(
     searched: list[dict],
     *others: list[dict],
     others_first: bool = False,
+    before_search: list[dict] | None = None,
 ) -> list[dict]:
     """갈래들을 합치고 뺄 책을 뺀 뒤, 새로 들어온 책에 점수와 이웃 줄을 붙인다.
 
     검색(A)은 get_candidates 가 사용자 조건·뺄 책·점수를 이미 다뤘다. 다른 갈래 책에는 여기서 같은 조건을 건다.
     목록 순서는 검색 먼저다. others_first 면 다른 갈래를 앞에 둔다(비슷한 책을 더 원할 때 — 마니아 목록 중심).
+    before_search 는 검색 바로 앞에 두는 갈래 하나다(떠올린 제목, #723).
     """
     spec, graph = turn.spec, turn.graph
-    passed = [
-        [b for b in lane if lanes.passes(b, spec.filters, spec.exact.publisher)]
-        for lane in others
-    ]
+
+    def passing(lane: list[dict]) -> list[dict]:
+        return [b for b in lane if lanes.passes(b, spec.filters, spec.exact.publisher)]
+
+    passed = [passing(lane) for lane in others]
+    leading = [passing(before_search)] if before_search else []
     pool = [
         b
         for b in lanes.merge(
-            *((*passed, searched) if others_first else (searched, *passed)),
+            *(
+                (*passed, *leading, searched)
+                if others_first
+                else (*leading, searched, *passed)
+            ),
             graph=graph,
         )
         if not turn.skip.blocks(b, graph)
@@ -2238,7 +2246,11 @@ async def _gather_lanes(
             turn, searched, related, titled, others_first=True
         )
     else:
-        turn.pool = await _settle_pool(turn, searched, near, titled, related)
+        # 떠올린 제목을 검색 앞에 둔다(#723). 검색 10권이 앞에 있자 판단 호출이 떠올린 『코스모스』 대신 청소년 과학책을,
+        # 떠올린 한국 소설 대신 제목에 "퇴근길"이 든 에세이를 골랐다(11/11, gpt-4o, 5문항 × 3회)
+        turn.pool = await _settle_pool(
+            turn, searched, near, related, before_search=titled
+        )
     note = ""
     if relation_only:
         note = " — 함께 읽은 책만"

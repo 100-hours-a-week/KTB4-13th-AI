@@ -561,6 +561,65 @@ def test_떠올린_책에_소개글이_없으면_확인된_칸으로만_이유�
     assert card["reason_long"] is None
 
 
+def test_떠올린_책은_판단_목록에서_검색_책보다_앞에_둔다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 검색 책이 앞에 있자 판단 호출이 떠올린 『코스모스』 대신 검색에 걸린 청소년 과학책을 골랐다(#723)
+    _use_search(monkeypatch, SEARCHED)
+    titled = _row(
+        401, "9790000000401", "코스모스", "칼 세이건", "우주와 과학적 사고에 관한 책."
+    )
+
+    async def _find(title):
+        return dict(titled) if title.title == "코스모스" else None
+
+    monkeypatch.setattr(lanes, "_find_titled", _find)
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "과학적 사고"},
+        {"action": "cards", "cards": [{"book_id": 401}], "reply": "골랐어요."},
+        recalled=[{"title": "코스모스", "author": "칼 세이건"}],
+    )
+
+    _post("과학적 사고를 기르는 책", shown=False)
+
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert listing.index("코스모스 - 칼 세이건 [떠올린 제목]") < listing.index(
+        "반도체 입문 - 김반도 [검색]"
+    )
+
+
+def test_떠올린_책이_검색에도_걸리면_한_번만_두_출처를_달고_앞에_둔다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = {
+        **SEARCHED,
+        "book_id": 302,
+        "isbn": "9790000000302",
+        "title": "반도체 심화",
+    }
+    _use_search(monkeypatch, other, SEARCHED)
+
+    async def _find(title):
+        return dict(SEARCHED) if title.title == "반도체 입문" else None
+
+    monkeypatch.setattr(lanes, "_find_titled", _find)
+    prompts = _use_model(
+        monkeypatch,
+        {"semantic": "반도체"},
+        {"action": "cards", "cards": [{"book_id": 301}], "reply": "골랐어요."},
+        recalled=[{"title": "반도체 입문", "author": "김반도"}],
+    )
+
+    _post("반도체 책 추천해줘", shown=False)
+
+    listing = prompts[0].split("책 목록:\n", 1)[1]
+    assert listing.count("반도체 입문 - 김반도") == 1
+    assert listing.index("반도체 입문 - 김반도 [떠올린 제목, 검색]") < listing.index(
+        "반도체 심화"
+    )
+
+
 def test_판단_호출이_실패하면_검색과_떠올린_책으로만_규칙_카드를_낸다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
