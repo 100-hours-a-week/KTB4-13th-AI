@@ -6,7 +6,9 @@
 
 import asyncio
 import json
+import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -273,6 +275,47 @@ def test_다시_뽑을_목록이_없으면_둘_다_0이다(monkeypatch: pytest.M
     result, _ = _run_refresh(monkeypatch, _FakeBuild(), {})
 
     assert result == {"refreshed": 0, "remaining": 0}
+
+
+# --- 로그(#728). 다시 뽑기가 목록을 낫게 했는지 견줄 숫자를 남긴다 ---
+
+
+def _refresh_logs(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == refresh.__name__]
+
+
+@_needs_db
+def test_바꾼_사용자는_대신_채운_관심사_수_전후와_바꿨다고_남긴다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=refresh.__name__)
+    build = _FakeBuild(Feed([Placed(2, "요리", 80)], ()))
+
+    _run_refresh(monkeypatch, build, {_A: (True, _feed())})
+
+    [one] = _refresh_logs(caplog)
+    assert re.fullmatch(
+        rf"밤 다시 뽑기\(사용자 {_A}\): 대신 채운 관심사 1개 → 0개, 바꿈, \d+\.\d\d초",
+        one,
+    )
+
+
+@_needs_db
+def test_그대로_둔_사용자도_전후와_그대로_뒀다고_남기고_관심사_이름은_남기지_않는다(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=refresh.__name__)
+    build = _FakeBuild(Feed([Placed(2, "요리", 50)], ("요리",)))
+
+    _run_refresh(monkeypatch, build, {_A: (True, _feed())})
+
+    [one] = _refresh_logs(caplog)
+    assert re.fullmatch(
+        rf"밤 다시 뽑기\(사용자 {_A}\): 대신 채운 관심사 1개 → 1개, 그대로 둠, \d+\.\d\d초",
+        one,
+    )
+    # 관심사 이름은 사용자 취향이라 남기지 않는다
+    assert "요리" not in one
 
 
 @_needs_db

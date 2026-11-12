@@ -10,6 +10,7 @@
 """
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,8 @@ LIST_BUDGET_SECONDS = 6.0
 # 다음 목록을 시작하려면 남아 있어야 하는 시간. 예산에 대신할 책 읽기와 저장할 몫을 더했다
 LIST_RESERVE_SECONDS = 8.0
 _KST = ZoneInfo("Asia/Seoul")
+
+logger = logging.getLogger(__name__)
 
 # 다음 목록 하나를 집으며 오늘 밤 시도했다고 표시한다. 다시 뽑다 실패해도 표시가 남아 그 밤에는 다시 집지
 # 않는다. ⑨ 둘이 겹쳐 불려도 같은 목록을 집지 않는다(SKIP LOCKED)
@@ -102,7 +105,11 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
     대신 채운 관심사가 저장된 목록의 것의 일부일 때만 바꾼다. ⑥ 때 잘 뽑힌 관심사가 이번에 시간을 넘기면 바꾸지
     않아, 저장된 목록의 잘 뽑힌 자리를 잃지 않는다(#482). 바꾸지 않으면 오늘 밤 시도한 표시만 남아 다음 밤에 다시
     한다. 가진 책은 ⑥ 이 목록과 함께 저장해 둔 것으로 뺀다(_owned).
+
+    사용자마다 대신 채운 관심사 수(전 → 후)와 바꿨는지를 로그에 남긴다(#728). 관심사 이름과 책은 사용자 취향이라
+    남기지 않는다.
     """
+    started = time.monotonic()
     async with conn.transaction():
         # ⑥ 과 같은 사용자별 잠금이라 같은 사용자의 ⑥ 과 겹치지 않는다
         await conn.execute(
@@ -126,17 +133,25 @@ async def _refresh_one(conn: asyncpg.Connection, user_id: int, night: str) -> No
             book_anchors=anchors,
         )
         before = set(json.loads(row["substituted"] or "[]"))
-        if not set(feed.substituted) < before:
-            return
-        await conn.execute(
-            _SAVE_SQL,
-            user_id,
-            json.dumps(
-                {**feed.stored(owned, disliked), "retried_on": night},
-                ensure_ascii=False,
-            ),
-            bool(feed.substituted),
-        )
+        saved = set(feed.substituted) < before
+        if saved:
+            await conn.execute(
+                _SAVE_SQL,
+                user_id,
+                json.dumps(
+                    {**feed.stored(owned, disliked), "retried_on": night},
+                    ensure_ascii=False,
+                ),
+                bool(feed.substituted),
+            )
+    logger.info(
+        "밤 다시 뽑기(사용자 %s): 대신 채운 관심사 %d개 → %d개, %s, %.2f초",
+        user_id,
+        len(before),
+        len(feed.substituted),
+        "바꿈" if saved else "그대로 둠",
+        time.monotonic() - started,
+    )
 
 
 def _owned(row: asyncpg.Record) -> tuple[set[int], set[int]]:
