@@ -225,6 +225,25 @@ def test_처리한_메시지마다_다음_offset을_차례로_넘긴다() -> Non
     assert consumer.commits == [{tp: 8}, {tp: 9}]
 
 
+def test_계산은_HTTP_길이_아니라_기다리는_쪽이_없는_길로_한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # HTTP 와 같은 길(service.rebuild)이면 비동기를 켰을 때 목록이 서버 안 줄로 가서, offset 을 넘긴 뒤
+    # 만들기 전에 서버가 내려가면 그 목록은 다시 오지 않는다(#726)
+    calls = Calls()
+    monkeypatch.setattr(kafka_consumer.service, "rebuild_unhurried", calls.rebuild)
+    consumer = FakeConsumer([Record(offset=7)])
+    worker = ProfileConsumer(
+        _settings(), clients=lambda: (consumer, FakeProducer()), sleep=calls.sleep
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run())
+
+    assert calls.rebuilt == [42]
+    assert consumer.commits == [{TopicPartition(TOPIC, 0): 8}]
+
+
 def test_틀린_메시지는_원본_그대로_DLT_토픽에_까닭과_출처를_달아_보낸다() -> None:
     record = Record(offset=8, key=b"43")
     producer = FakeProducer()
@@ -331,7 +350,7 @@ def test_켜져_있으면_뒤에서_돌고_서버가_내려갈_때_멈춘다(
 def test_서버가_뜰_때_띄우고_홈_목록_일꾼과_DB보다_먼저_멈춘다(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """계산(service.rebuild)이 DB 와 홈 목록 일꾼을 쓴다. 그 둘이 준비된 뒤 띄우고, 닫히기 전에 멈춘다."""
+    """계산(service.rebuild_unhurried)이 DB 를 쓴다. DB 와 홈 목록 일꾼이 준비된 뒤 띄우고, 닫히기 전에 멈춘다."""
     import contextlib
 
     from app import main

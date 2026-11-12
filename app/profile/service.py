@@ -152,13 +152,15 @@ async def rebuild_on(conn: asyncpg.Connection, req: ProfileRequest) -> tuple[boo
 
 
 async def _rebuild_on(
-    conn: asyncpg.Connection, req: ProfileRequest
+    conn: asyncpg.Connection, req: ProfileRequest, *, unhurried: bool = False
 ) -> tuple[bool, int, build_queue.Job | None]:
     """계산해서 저장하고 (cold_start, profile_version, 줄에 넣을 작업) 을 돌려준다.
 
     관심사별 홈 추천이 켜져 있으면 목록 칸에 요청 표를 적고 목록 재료를 계산한다. 목록을 응답 뒤에 만들도록
     켜져 있으면(#581) 목록은 만들지 않고 재료를 작업으로 돌려준다. 꺼져 있으면 지금처럼 응답 안에서 3초
     예산으로 만들어 저장하고 작업은 None 이다. 두 경우 모두 같은 재료와 같은 저장(build_queue)을 쓴다.
+    기다리는 쪽이 없는 계산(unhurried, #726)은 꺼져 있어도 작업을 돌려준다 — 3초는 BE 가 응답을 기다려서
+    정한 값이다.
     """
     hist = await _history(conn, req)
     # 좋아한 책은 ISBN 으로 온다(#308). 같은 책을 두 번 적어 보내도 한 번만 치고, 앞에서부터 상한만큼 쓴다.
@@ -194,7 +196,7 @@ async def _rebuild_on(
     job = await _feed_job(
         conn, req, weights, vectors, owned, hist.disliked_book_ids, token
     )
-    if settings.profile_feed_async:
+    if settings.profile_feed_async or unhurried:
         return profile.cold_start, version, job
     await build_queue.build_and_save(
         conn, replace(job, seconds=interest_fetch.BUDGET_SECONDS)
@@ -316,7 +318,7 @@ async def _first_seen(
 
 
 async def rebuild_locked_on(
-    conn: asyncpg.Connection, req: ProfileRequest
+    conn: asyncpg.Connection, req: ProfileRequest, *, unhurried: bool = False
 ) -> dict[str, Any]:
     """사용자별 잠금을 걸고 처리한 뒤 응답 본문을 돌려준다.
 
@@ -326,14 +328,19 @@ async def rebuild_locked_on(
     멱등 키는 확인하지 않고 올 때마다 계산한다(#303). BE 는 키를 온보딩 답으로 만들어서, 기억이나
     이력만 바뀐 요청이 "같은 키·다른 본문"이 되어 409 로 막혔다. 재시도는 다시 계산해도 같은 답을
     받는다. 입력이 같으면 결과가 같고, 판 번호는 결과가 달라질 때만 오른다(compute.next_version).
+
+    unhurried 면 홈 목록을 줄에 넣지 않고, 프로필이 확정된 뒤 여기서 profile_feed_seconds 예산으로 만들어
+    저장한 뒤 돌아온다(rebuild_unhurried). 뒤의 일꾼처럼 목록을 뽑는 동안에는 사용자 잠금을 쥐지 않는다.
     """
     async with conn.transaction():
         await conn.execute(
             "SELECT pg_advisory_xact_lock($1, $2)", LOCK_SPACE, req.user_id
         )
-        cold_start, version, job = await _rebuild_on(conn, req)
-    # 프로필과 요청 표가 확정된 뒤에 줄에 넣는다. 계산이 실패해 되돌려지면 넣지 않는다
-    if job is not None:
+        cold_start, version, job = await _rebuild_on(conn, req, unhurried=unhurried)
+    # 프로필과 요청 표가 확정된 뒤에 만든다. 계산이 실패해 되돌려지면 만들지 않는다
+    if job is not None and unhurried:
+        await build_queue.build_and_save(conn, job)
+    elif job is not None:
         build_queue.submit(job)
     return {
         "message": "profile_success",
@@ -344,6 +351,17 @@ async def rebuild_locked_on(
 async def rebuild(req: ProfileRequest) -> dict[str, Any]:
     async with db.get_pool().acquire() as conn:
         return await rebuild_locked_on(conn, req)
+
+
+async def rebuild_unhurried(req: ProfileRequest) -> dict[str, Any]:
+    """기다리는 쪽이 없는 계산(카프카로 온 요청, #726). 홈 목록까지 만들어 저장한 뒤 돌아온다.
+
+    목록을 응답 뒤에 만들도록 켜져 있어도(#581) 줄에 넣지 않는다. 카프카 소비자는 돌아온 뒤에 offset 을
+    넘기므로, 줄에 넣으면 목록을 만들기 전에 서버가 내려갈 때 그 목록은 다시 오지 않는다. 예산은 꺼져
+    있을 때의 3초가 아니라 profile_feed_seconds 다.
+    """
+    async with db.get_pool().acquire() as conn:
+        return await rebuild_locked_on(conn, req, unhurried=True)
 
 
 _DELETE_SQL = "DELETE FROM taste_profile WHERE user_id = $1"

@@ -841,6 +841,42 @@ def test_켜져_있어도_rebuild_on_은_그_자리에서_설정한_예산으로
     assert row["feed_version"] == 1
 
 
+def test_기다리는_쪽이_없는_계산은_켜져_있어도_줄에_넣지_않고_그_자리에서_넉넉한_예산으로_만든다(
+    submitted, interest_feed
+) -> None:
+    # 카프카로 온 계산(#726)은 돌아온 뒤에 offset 을 넘긴다. 줄에 넣으면 목록을 만들기 전에 서버가 내려갈 때
+    # 그 목록은 다시 오지 않는다
+    interest_feed.feeds = [Feed([Placed(9100201, "요리", 80)], ())]
+
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _async_request(), unhurried=True)
+        return await _feed_row(conn)
+
+    row = _run_with_interest_tables(check)
+
+    assert submitted == []
+    assert [call["seconds"] for call in interest_feed.calls] == [10.0]
+    assert row["feed"]["books"] == [
+        {"book_id": 9100201, "interest": "요리", "match_score": 80}
+    ]
+    assert row["feed_version"] == 1
+
+
+def test_기다리는_쪽이_없는_계산은_꺼져_있어도_3초가_아니라_넉넉한_예산으로_만든다(
+    submitted, interest_feed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 꺼져 있을 때의 3초는 BE 가 HTTP 응답을 기다려서 정한 값이다
+    monkeypatch.setattr(get_settings(), "profile_feed_async", False)
+
+    async def check(conn):
+        await service.rebuild_locked_on(conn, _async_request(), unhurried=True)
+
+    _run_with_interest_tables(check)
+
+    assert submitted == []
+    assert [call["seconds"] for call in interest_feed.calls] == [10.0]
+
+
 def test_지우면_그_사용자의_줄이_사라지고_다시_지우면_지운_것이_없다(at_now) -> None:
     async def check(conn):
         await service.rebuild_on(conn, _request())

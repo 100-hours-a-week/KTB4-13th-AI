@@ -5,7 +5,7 @@
     docker compose -f compose.kafka.yml up -d
     KAFKA_TEST_BOOTSTRAP_SERVERS=localhost:19092 uv run pytest tests/test_profile_kafka_e2e.py
 
-계산(service.rebuild)은 DB 가 필요해서 가짜로 바꾼다. 여기서 보는 것은 카프카 쪽이다: BE 와 같은 모양으로 보낸 메시지를
+계산(service.rebuild_unhurried)은 DB 가 필요해서 가짜로 바꾼다. 여기서 보는 것은 카프카 쪽이다: BE 와 같은 모양으로 보낸 메시지를
 받아 계산으로 넘기는지, 틀린 메시지가 원본 그대로 DLT 에 가는지, 처리한 만큼 offset 이 넘어가 다시 붙어도 같은 메시지를
 다시 받지 않는지, 1MB 를 넘는 큰 본문을 받고 DLT 로도 다시 보내는지. 테스트마다 토픽·그룹 이름을 새로 만들어 서로 섞이지
 않는다.
