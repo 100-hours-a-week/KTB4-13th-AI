@@ -4,9 +4,13 @@ BE 가 온보딩 완료·취향 수정 때 PUT /preferences/profile 과 같은 �
 README 「AI 추천 프로필 Kafka 직접 전달」). 메시지 모양:
 
     키: 사용자 번호의 UTF-8 10진 글자("42")
-    값: {"schema_version": 1, "job_revision": "<BE 작업 UUID>", "profile": <PUT 본문>}
+    v1: {"schema_version": 1, "job_revision": "<BE 작업 UUID>", "profile": <PUT 본문>} — 갱신(UPSERT)
+    v2: {"schema_version": 2, "operation": "UPSERT", "user_id": 42, "job_revision": ..., "profile": <PUT 본문>}
+        {"schema_version": 2, "operation": "DELETE", "user_id": 42, "job_revision": ...}
 
-profile 은 HTTP 와 같은 계약(ProfileRequest)으로 검사한다. 키와 profile.user_id 가 다르면 받지 않는다.
+v2 는 삭제도 같은 토픽·같은 키로 보내려고 더했다(#733). 같은 키는 같은 파티션에 들어가 차례로 처리되므로, 탈퇴
+전에 보낸 갱신이 삭제보다 늦게 처리되지 않는다(#730 합의). profile 은 HTTP 와 같은 계약(ProfileRequest)으로
+검사한다. 키·user_id·profile.user_id 가 다르면 받지 않는다.
 
 틀린 메시지는 다시 읽어도 결과가 같다. 그래서 까닭만 단 BadMessage 를 던지고, 소비자(#669)는 다시 하지 않고 바로
 DLT 로 보낸다. 메시지에는 개인정보와 벡터가 들어 있어 까닭에 본문을 싣지 않고, 검증 오류(입력값이 들어 있다)를
@@ -25,8 +29,10 @@ from pydantic import ValidationError
 
 from app.profile.schemas import ProfileRequest
 
-# 메시지 계약 버전. BE 가 모양을 바꾸면 올린다
-SCHEMA_VERSION = 1
+# 메시지 계약 버전. BE 가 모양을 바꾸면 올린다. 바꾸는 동안 BE 가 v1 을 보낼 수 있어 둘 다 받는다
+SCHEMA_VERSIONS = (1, 2)
+UPSERT = "UPSERT"
+DELETE = "DELETE"
 
 # BE 는 Long.toString() 으로 키를 만든다. 앞자리 0·부호·공백이 붙은 키는 다른 쪽이 만든 것이다
 _USER_KEY = re.compile(r"[1-9][0-9]*")
@@ -42,8 +48,11 @@ class BadMessage(Exception):
 
 @dataclass(frozen=True)
 class ProfileMessage:
-    request: ProfileRequest
+    operation: str  # UPSERT 또는 DELETE
+    user_id: int
     job_revision: str
+    # 다시 계산할 PUT 본문. DELETE 는 None 이다
+    request: ProfileRequest | None
 
 
 def _bad(reason: str) -> BadMessage:
@@ -81,11 +90,26 @@ def parse(key: bytes | None, value: bytes | None, *, max_bytes: int) -> ProfileM
 
     version = payload.get("schema_version")
     # True == 1 이라 bool 은 따로 막는다
-    if type(version) is not int or version != SCHEMA_VERSION:
+    if type(version) is not int or version not in SCHEMA_VERSIONS:
         raise _bad("schema_version")
     revision = payload.get("job_revision")
     if not isinstance(revision, str) or not revision.strip():
         raise _bad("job_revision")
+
+    user_id = None
+    operation = UPSERT
+    if version == 2:
+        operation = payload.get("operation")
+        if operation not in (UPSERT, DELETE):
+            raise _bad("operation")
+        user_id = payload.get("user_id")
+        if type(user_id) is not int or user_id <= 0:
+            raise _bad("user_id")
+    if operation == DELETE:
+        # 다른 칸은 보지 않는다. 지우라는 메시지를 모양 때문에 DLT 로 보내면 탈퇴한 사람의 프로필이 남는다
+        if _user_from_key(key) != user_id:
+            raise _bad("key_mismatch")
+        return ProfileMessage(DELETE, user_id, revision, None)
 
     profile = payload.get("profile")
     if not isinstance(profile, dict):
@@ -95,6 +119,8 @@ def parse(key: bytes | None, value: bytes | None, *, max_bytes: int) -> ProfileM
     except ValidationError:
         raise _bad("invalid_profile") from None
 
+    if user_id is not None and request.user_id != user_id:
+        raise _bad("user_mismatch")
     if _user_from_key(key) != request.user_id:
         raise _bad("key_mismatch")
-    return ProfileMessage(request=request, job_revision=revision)
+    return ProfileMessage(UPSERT, request.user_id, revision, request)

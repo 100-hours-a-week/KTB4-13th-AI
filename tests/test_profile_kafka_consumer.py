@@ -18,7 +18,7 @@ from aiokafka.structs import TopicPartition
 from app.core.config import Settings
 from app.profile import kafka_consumer
 from app.profile.kafka_consumer import ProfileConsumer, handle
-from tests.test_profile_kafka_message import _value
+from tests.test_profile_kafka_message import _v2, _v2_delete, _value
 
 MAX_BYTES = 8 * 1024 * 1024
 TOPIC = "book.ai-profile.v1"
@@ -38,18 +38,39 @@ class Record:
 class Calls:
     """가짜 계산·DLT 발행·잠자기가 불린 차례를 적는다. fail_* 만큼 먼저 실패한다."""
 
-    def __init__(self, *, fail_rebuild: int = 0, fail_dlt: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        fail_rebuild: int = 0,
+        fail_dlt: int = 0,
+        fail_delete: int = 0,
+        had_row: bool = True,
+    ) -> None:
         self.fail_rebuild = fail_rebuild
         self.fail_dlt = fail_dlt
+        self.fail_delete = fail_delete
+        self.had_row = had_row
         self.rebuilt: list[int] = []
+        self.deleted: list[int] = []
+        # 계산·삭제가 불린 차례(같은 사용자의 갱신 다음 삭제가 차례대로인지 본다)
+        self.order: list[tuple[str, int]] = []
         self.dlt: list[tuple[int, str]] = []
         self.slept: list[float] = []
 
     async def rebuild(self, request) -> None:
         self.rebuilt.append(request.user_id)
+        self.order.append(("UPSERT", request.user_id))
         if self.fail_rebuild > 0:
             self.fail_rebuild -= 1
             raise RuntimeError("DB 연결이 잠깐 끊겼다")
+
+    async def delete(self, user_id: int) -> bool:
+        self.deleted.append(user_id)
+        self.order.append(("DELETE", user_id))
+        if self.fail_delete > 0:
+            self.fail_delete -= 1
+            raise RuntimeError("DB 연결이 잠깐 끊겼다")
+        return self.had_row
 
     async def send_dlt(self, record, reason: str) -> None:
         if self.fail_dlt > 0:
@@ -67,6 +88,7 @@ def _handle(record: Record, calls: Calls) -> None:
             record,
             max_bytes=MAX_BYTES,
             rebuild=calls.rebuild,
+            delete=calls.delete,
             send_dlt=calls.send_dlt,
             sleep=calls.sleep,
         )
@@ -113,6 +135,77 @@ def test_계산하면_걸린_시간과_BE가_보낸_뒤_저장까지_걸린_시�
         rf"카프카로 온 프로필을 계산했다\(사용자 42\): 계산 \d+\.\d\d초, 보낸 뒤 {since}",
         line,
     )
+
+
+@pytest.mark.parametrize(
+    ("had_row", "said"), [(True, "지운 줄 있음"), (False, "지울 줄 없음")]
+)
+def test_DELETE는_계산하지_않고_지우고_지운_줄이_있었는지_남긴다(
+    caplog: pytest.LogCaptureFixture, had_row: bool, said: str
+) -> None:
+    # 지운 줄이 있었다면 그 전에 프로필이 남아 있었다는 뜻이다. BE 가 다시 보내는 삭제가 무엇을 잡았는지 센다(#730)
+    caplog.set_level(logging.INFO, logger=kafka_consumer.__name__)
+    calls = Calls(had_row=had_row)
+
+    _handle(Record(offset=5, value=_v2_delete()), calls)
+
+    assert (calls.deleted, calls.rebuilt, calls.dlt) == ([42], [], [])
+    [line] = [r.getMessage() for r in caplog.records if "처리했다" in r.getMessage()]
+    assert (
+        line == f"카프카로 온 프로필 삭제를 처리했다(사용자 42): {said}, 보낸 뒤 모름"
+    )
+
+
+def test_v2_UPSERT는_지우지_않고_계산한다() -> None:
+    calls = Calls()
+
+    _handle(Record(offset=5, value=_v2()), calls)
+
+    assert (calls.rebuilt, calls.deleted, calls.dlt) == ([42], [], [])
+
+
+def test_삭제가_잠깐_실패하면_다시_하고_끝까지_실패하면_DLT로_보낸다() -> None:
+    once = Calls(fail_delete=1)
+    _handle(Record(offset=5, value=_v2_delete()), once)
+    assert (once.deleted, once.dlt) == ([42, 42], [])
+
+    always = Calls(fail_delete=99)
+    _handle(Record(offset=5, value=_v2_delete()), always)
+    assert always.deleted == [42, 42, 42]
+    assert always.dlt == [(5, "delete_failed")]
+
+
+def test_같은_사용자의_갱신_다음_삭제를_차례로_처리하고_offset을_넘긴다() -> None:
+    # 같은 키는 같은 파티션에 오고 하나씩 처리하므로, 탈퇴 전에 보낸 갱신이 삭제 뒤에 처리되지 않는다(#730)
+    consumer = FakeConsumer(
+        [Record(offset=7, value=_v2()), Record(offset=8, value=_v2_delete())]
+    )
+    calls = Calls()
+
+    _run(consumer, FakeProducer(), calls)
+
+    assert calls.order == [("UPSERT", 42), ("DELETE", 42)]
+    tp = TopicPartition(TOPIC, 0)
+    assert consumer.commits == [{tp: 8}, {tp: 9}]
+
+
+def test_삭제를_넘기지_않으면_지금_삭제를_부른다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = Calls()
+    monkeypatch.setattr(kafka_consumer.service, "delete", calls.delete)
+    consumer = FakeConsumer([Record(offset=7, value=_v2_delete())])
+    worker = ProfileConsumer(
+        _settings(),
+        rebuild=calls.rebuild,
+        clients=lambda: (consumer, FakeProducer()),
+        sleep=calls.sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.run())
+
+    assert calls.deleted == [42]
 
 
 def test_틀린_메시지는_계산하지_않고_까닭을_달아_DLT로_보낸다() -> None:
@@ -241,6 +334,7 @@ def _run(consumer: FakeConsumer, producer: FakeProducer, calls: Calls) -> None:
     worker = ProfileConsumer(
         _settings(),
         rebuild=calls.rebuild,
+        delete=calls.delete,
         clients=lambda: (consumer, producer),
         sleep=calls.sleep,
     )

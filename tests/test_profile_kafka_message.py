@@ -5,6 +5,7 @@
 - 틀린 메시지는 다시 읽어도 결과가 같아서 까닭(reason)을 달아 BadMessage 로 알린다. 소비자는 이것을 DLT 로 보낸다
 - 까닭에는 본문을 싣지 않는다. 메시지에는 개인정보·벡터가 들어 있어 로그에 남기지 않는다(BE 계약)
 - 키(사용자 번호)와 profile.user_id 가 다르면 받지 않는다(BE 계약)
+- v2 는 operation(UPSERT·DELETE)과 맨 위 user_id 를 싣는다. DELETE 는 profile 이 없다(#733, #730 합의). v1 은 UPSERT 다
 """
 
 import json
@@ -41,6 +42,29 @@ def _value(**overrides) -> bytes:
     return json.dumps(message, ensure_ascii=False).encode()
 
 
+def _v2(**overrides) -> bytes:
+    message = {
+        "schema_version": 2,
+        "operation": "UPSERT",
+        "user_id": 42,
+        "job_revision": REVISION,
+        "profile": _profile(),
+    }
+    message.update(overrides)
+    return json.dumps(message, ensure_ascii=False).encode()
+
+
+def _v2_delete(**overrides) -> bytes:
+    message = {
+        "schema_version": 2,
+        "operation": "DELETE",
+        "user_id": 42,
+        "job_revision": REVISION,
+    }
+    message.update(overrides)
+    return json.dumps(message, ensure_ascii=False).encode()
+
+
 def _reason(key: bytes | None, value: bytes | None) -> str:
     with pytest.raises(BadMessage) as caught:
         parse(key, value, max_bytes=MAX_BYTES)
@@ -51,6 +75,7 @@ def test_계약의_예시_메시지를_PUT과_같은_요청으로_읽는다() ->
     message = parse(b"42", _value(), max_bytes=MAX_BYTES)
 
     assert isinstance(message, ProfileMessage)
+    assert (message.operation, message.user_id) == ("UPSERT", 42)
     assert message.job_revision == REVISION
     assert message.request.user_id == 42
     assert message.request.idempotency_key == "existing-http-request-key"
@@ -72,8 +97,8 @@ def test_키가_사용자_번호의_10진_글자가_아니면_받지_않는다(k
     assert _reason(key, _value()) == "bad_key"
 
 
-@pytest.mark.parametrize("version", [2, 0, "1", True, None])
-def test_계약_버전이_1이_아니면_받지_않는다(version: object) -> None:
+@pytest.mark.parametrize("version", [3, 0, "1", True, None])
+def test_계약_버전이_1이나_2가_아니면_받지_않는다(version: object) -> None:
     assert _reason(b"42", _value(schema_version=version)) == "schema_version"
 
 
@@ -143,3 +168,58 @@ def test_틀린_까닭에_본문을_싣지_않는다() -> None:
     assert "아무도_몰라야_하는_취향" not in repr(caught.value)
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
+
+
+# --- v2(#733). BE 가 삭제도 같은 토픽·같은 키로 보낸다(#730) ---
+
+
+def test_v2_UPSERT는_v1과_같은_요청으로_읽는다() -> None:
+    message = parse(b"42", _v2(), max_bytes=MAX_BYTES)
+
+    assert (message.operation, message.user_id) == ("UPSERT", 42)
+    assert message.job_revision == REVISION
+    assert message.request.onboarding.categories == ["소설"]
+
+
+def test_v2_DELETE는_profile_없이_사용자_번호만_읽는다() -> None:
+    message = parse(b"42", _v2_delete(), max_bytes=MAX_BYTES)
+
+    assert (message.operation, message.user_id, message.request) == (
+        "DELETE",
+        42,
+        None,
+    )
+    assert message.job_revision == REVISION
+
+
+def test_v2_DELETE에_profile이_실려_와도_지운다() -> None:
+    # 지우라는 메시지를 모양 때문에 DLT 로 보내면 탈퇴한 사람의 프로필이 남는다
+    message = parse(b"42", _v2_delete(profile={"아무": "값"}), max_bytes=MAX_BYTES)
+
+    assert (message.operation, message.request) == ("DELETE", None)
+
+
+@pytest.mark.parametrize("operation", ["upsert", "REMOVE", None, 1])
+def test_v2의_operation이_UPSERT나_DELETE가_아니면_받지_않는다(
+    operation: object,
+) -> None:
+    assert _reason(b"42", _v2(operation=operation)) == "operation"
+
+
+@pytest.mark.parametrize("user_id", [None, "42", 0, -1, True, 4.2])
+def test_v2의_user_id가_양의_정수가_아니면_받지_않는다(user_id: object) -> None:
+    assert _reason(b"42", _v2(user_id=user_id)) == "user_id"
+    assert _reason(b"42", _v2_delete(user_id=user_id)) == "user_id"
+
+
+def test_v2의_키와_user_id가_다르면_받지_않는다() -> None:
+    assert _reason(b"43", _v2_delete()) == "key_mismatch"
+    assert _reason(b"43", _v2()) == "key_mismatch"
+
+
+def test_v2_UPSERT의_user_id와_profile의_사용자가_다르면_받지_않는다() -> None:
+    assert _reason(b"42", _v2(profile=_profile(user_id=43))) == "user_mismatch"
+
+
+def test_v2_UPSERT에_profile이_없으면_받지_않는다() -> None:
+    assert _reason(b"42", _v2(profile=None)) == "invalid_profile"
