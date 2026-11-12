@@ -8,9 +8,12 @@ BE 가 온보딩 완료·취향 수정 때 PUT /preferences/profile 과 같은 �
 - DLT 발행이 실패하면 원본을 넘기지 않는다
 - 본문은 로그에 남기지 않는다(개인정보·벡터)
 
-계산은 HTTP PUT 과 같은 길(service.rebuild)이다. 같은 사용자의 계산은 사용자별 잠금으로 차례로 돌고, 받은 본문 전체로
-처음부터 다시 계산하므로 같은 메시지가 두 번 와도 결과가 같다. 그래서 내려가는 중이나 다시 붙은 뒤 같은 메시지가 한 번 더
-와도 해가 없다.
+계산은 HTTP PUT 과 같은 계산이지만, 홈 목록까지 만들어 저장한 뒤 돌아오는 길(service.rebuild_unhurried)이다(#726).
+HTTP 길은 비동기를 켜면 목록을 서버 안 줄로 넘기는데, 그러면 offset 을 넘긴 뒤 목록을 만들기 전에 서버가 내려갈 때 그
+목록은 다시 오지 않는다. 기다리는 쪽이 없으니 예산도 HTTP 의 3초가 아니라 profile_feed_seconds 다.
+
+같은 사용자의 계산은 사용자별 잠금으로 차례로 돌고, 받은 본문 전체로 처음부터 다시 계산하므로 같은 메시지가 두 번 와도
+결과가 같다. 그래서 내려가는 중이나 다시 붙은 뒤 같은 메시지가 한 번 더 와도 해가 없다.
 
 메시지는 하나씩 차례로 처리한다. 같은 사용자의 메시지는 같은 파티션에 오므로(키가 사용자 번호) 순서가 지켜진다.
 브로커에 못 붙어도 서버는 그대로 뜨고, 이 소비자만 RECONNECT_SECONDS 마다 다시 붙는다.
@@ -182,12 +185,12 @@ class ProfileConsumer:
         self,
         settings: Settings,
         *,
-        rebuild: Rebuild = service.rebuild,
+        rebuild: Rebuild | None = None,
         clients: Callable[[], tuple[Any, Any]] | None = None,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._settings = settings
-        self._rebuild = rebuild
+        self._rebuild = rebuild or service.rebuild_unhurried
         self._clients = clients or (lambda: _clients(settings))
         self._sleep = sleep
 
