@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 import asyncpg
 
-from app.chat import reading_graph
+from app.chat import reading_graph, recall_match
 from app.chat.reading_graph import Kind, ReadingGraph
 from app.chat.shown import ShownBook
 from app.core import categories, db, editions, products
@@ -273,23 +273,14 @@ async def resolve_anchor(
 
 
 async def _match_title(conn: asyncpg.Connection, title: Title) -> list[int]:
-    """제목과 저자가 둘 다 맞는 책 한 묶음이 있으면 그 판본들의 book_id. 표지 글자로 책을 찾는 규칙(#572)이 고른 판본이
-    맨 앞이고, 같은 묶음에서 저자가 맞는 다른 판본이 뒤에 온다. 못 찾으면 빈 목록이다."""
-    text = BookText(
-        is_book_cover=True,
-        title=title.title,
-        authors=[title.author] if title.author else [],
-    )
-    found = await match_cover.match(conn, text)
-    if found.kind != "found" or not found.books[0].author_hit:
+    """제목과 저자가 둘 다 맞는 책의 book_id. 고른 판본이 맨 앞이고 같은 책의 다른 판본이 뒤에 온다. 못 찾으면 빈 목록이다.
+
+    표지 글자로 책을 찾는 규칙(#572)에, 고를 사람이 없는 떠올린 제목을 위한 규칙을 더한다(app/chat/recall_match.py, #737).
+    """
+    if not title.author:
         return []
-    picked = found.books[0].book.book_id
-    others = [
-        s.book.book_id
-        for s in found.editions
-        if s.author_hit and s.book.book_id != picked
-    ]
-    return [picked, *others]
+    books = await recall_match.match(conn, title.title, title.author)
+    return [book.book_id for book in books]
 
 
 def _plain_edition(books: Sequence[dict]) -> dict:
