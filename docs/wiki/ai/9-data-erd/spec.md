@@ -15,9 +15,9 @@ limit_exempt: 테이블 필드 명세를 한 문서에서 이어 보도록 나�
 
 | 구분 | 대상 | 원본 주인 | AI Postgres 안 | AI의 쓰기 |
 | --- | --- | --- | --- | --- |
-| AI 소유 | book_embeddings, taste_profile, idempotency_records | AI | 원본이 여기 있다 | 쓴다 |
-| BE 복제 | v_books, v_book_popularity, v_user_purchases, v_user_library, v_user_reviews | BE(MySQL) | 사본이 여기 있다. 단방향 복제로 채워진다 | 쓰지 않는다. 써도 다음 복제에 덮인다 |
-| 요청 본문 통과 | users, onboarding_responses, user_memories | BE(MySQL) | 없다 | 저장하지 않는다 |
+| AI 소유 | book_embeddings, taste_profile, idempotency_records, book_classes | AI | 원본이 여기 있다 | 쓴다 |
+| BE 복제 | v_books, v_products, v_book_popularity | BE(MySQL) | 사본이 여기 있다. 단방향 복제로 채워진다 | 쓰지 않는다. 써도 다음 복제에 덮인다 |
+| 요청 본문 통과 | users, onboarding_responses, user_memories, 이력(구매·나의 도서관·리뷰) | BE(MySQL) | 없다 | 저장하지 않는다 |
 | 응답 본문 산출 | extractions[], reason_long 등 (3.10) | 생성은 AI, 보관은 BE | 없다 | 저장하지 않는다 |
 
 `v_` 접두사는 BE 원본의 사본이라는 표시다. view가 아니다.
@@ -60,15 +60,12 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 
 복제 지연은 `/health`의 `replication_lag_seconds`로 관찰한다.
 
-**복제 대상 여섯.** 각 컬럼의 상세는 3.4부터 3.6, 3.11에 있다.
+**복제 대상 셋.** 각 컬럼의 상세는 3.4, 3.5, 3.11에 있다. 구매·나의 도서관·리뷰 복제 표 셋은 V3에서 지웠다(3.6).
 
 | 복제 테이블 | 담긴 것 | 쓰는 곳 |
 | --- | --- | --- |
 | v_books | book_id, title, author, publisher, price, in_stock, cover_url, category, pub_year, description | ①③④의 응답 항목, 벡터 적재, 키워드 검색 인덱스, ⑥ 이력 책의 카테고리 점수, ③ 이미지 턴(V2)의 제목·저자 텍스트 검색 |
 | v_products | book_id, discounted_price, stock_quantity | ①③④의 가격·재고 |
-| v_user_purchases | user_id, book_id, purchased_at | ⑥ 취향 벡터, ③④ 채점과 중복 제외 |
-| v_user_library | user_id, book_id, added_at | 같음 |
-| v_user_reviews | user_id, book_id, rating(0.5–5.0), created_at | 같음 |
 | v_book_popularity | book_id, sales, rating_avg, rating_count, as_of | ① 인기순, ③ 후보 채점, ④ 인기 항과 cold_start 목록 |
 
 **허용 지연(신선도 예산).** 사본이라 실시간이 아니다. 이 값을 넘기면 복제 문제로 보고 조치한다. **복제 수단과 주기 자체는 계약이 아니며** BE·AI·클라우드가 함께 정한다(5절). 계약이 되는 것은 위 컬럼 집합·아래 허용 지연·스키마 변경 통보 의무·위 두 전제다.
@@ -78,13 +75,12 @@ BE MySQL의 커머스 데이터를 AI PostgreSQL로 단방향 복제한 사본�
 | v_books — 가격·재고 | 5분 | 검색·카드·피드가 옛 가격과 재고를 보여준다. 담기·주문에서 BE가 원본으로 재확인하므로 잘못된 거래는 성립하지 않는다 |
 | v_books — 신간 입고 | 1시간(임베딩 생성 포함) | 새 책이 검색·추천에 뜨지 않는다. 카탈로그에는 이미 있어 "검색에서만 안 나오는 책"이 된다 |
 | v_book_popularity | 24시간 | 인기순 정렬과 추천의 인기 항이 어제 값으로 계산된다 |
-| 이력 3종 | 5분 | 방금 산 책이 홈 피드와 챗봇 카드에 다시 뜬다. 사용자가 즉시 알아채는 유일한 지연이다 |
 - 표시 값과 결제 값이 다르면 **BE 값이 최종**이기 때문에, `price`·`in_stock`이 낡아도 잘못된 거래는 성립하지 않는다.
 - **다만 `filters.in_stock_only`와 가격 구간은 조회 조건이라 재검증으로 복구되지 않는다.** 복제 전이면 그 도서가 결과에서 빠지고 사용자는 아예 보지 못한다. 누락은 위 허용 지연을 넘지 않는다.
 
 - **AI 소유 테이블이 `v_books`를 참조하는 관계선은 실제 FK다.** `book_embeddings.book_id`는 `v_books(book_id)`를 참조하며 `ON DELETE CASCADE`다. 도서가 사본에서 지워지면 그 책의 임베딩도 함께 지워진다. 이 때문에 복제 방식에 전제가 붙는다(2절).
-- **복제 테이블끼리의 관계선**(이력 3종·인기 → `v_books`)과 **`user_id` 축**은 조인 축이며 FK가 아니다. 복제 테이블 사이의 무결성은 BE 원본이 보장하고, AI DB에는 `users`가 없다.
-- **모든 시각 컬럼은 `timestamptz`**다. BE MySQL `DATETIME`은 시간대가 없고 BE는 한국 시간(Asia/Seoul)으로 저장하므로, 복제 시 Asia/Seoul로 해석해 적재한다. `taste_profile.computed_at`을 복제된 이력 시각과 직접 비교하는 것이 이중 반영 차단의 유일한 장치라, 어긋나면 예외도 로그도 없이 **점수만 조용히 틀린다.**
+- **복제 테이블끼리의 관계선**(상품·인기 → `v_books`)과 **`user_id` 축**은 조인 축이며 FK가 아니다. 복제 테이블 사이의 무결성은 BE 원본이 보장하고, AI DB에는 `users`가 없다.
+- **모든 시각 컬럼은 `timestamptz`**다. BE MySQL `DATETIME`은 시간대가 없고 BE는 한국 시간(Asia/Seoul)으로 저장하므로, 복제 시 Asia/Seoul로 해석해 적재한다.
 
 ## 3. 항목별 명세
 
@@ -96,7 +92,7 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 
 | 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
 | --- | --- | --- | --- | --- | --- |
-| book_id | int PK, FK | N | 커머스 도서 ID. `v_books(book_id)` 참조, ON DELETE CASCADE | v_books, v_book_popularity, 이력 3종과 조인하는 축. 응답의 도서 식별자와 같은 값 | BE가 발급하는 커머스 정수 ID를 그대로 사용 |
+| book_id | int PK, FK | N | 커머스 도서 ID. `v_books(book_id)` 참조, ON DELETE CASCADE | v_books, v_products, v_book_popularity와 조인하는 축. 응답의 도서 식별자와 같은 값 | BE가 발급하는 커머스 정수 ID를 그대로 사용 |
 | embedding | vector(384) | N | 제목·저자·소개를 이어 붙인 글의 임베딩 벡터 | 벡터 검색과 취향 유사도 계산의 피연산자 | pgvector 인덱스(HNSW) 대상이라 vector 타입 필수. 차원은 5절 |
 | dim | int | N | 벡터 길이 | 임베딩 API가 저장 전 인덱스 차원 일치 검증을 요구. 검증 기준값을 행에 함께 보관 | 차원 수 비교만 하므로 정수 |
 | model | string | N | 벡터 생성 모델 식별자 | 모델 교체 시 재생성 대상 행을 구분 | 모델명 문자열. 예 multilingual-e5-small |
@@ -107,7 +103,7 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 
 **탈퇴한 사용자의 행은 삭제한다.** 사용자 취향에서 뽑아낸 개인 데이터이고 AI 서버가 소유하므로 복제로는 사라지지 않는다. AI 서버는 탈퇴 사실을 스스로 알 수 없어 BE가 알려 줘야 하며, BE가 모델 API 명세 ⑩ `DELETE /preferences/profile`로 지운다(AI #270).
 
-**행이 없거나 벡터가 없는 사용자는 개인화하지 않는다.** BE는 개인화 추천에 동의한 사용자만 취향 프로필 생성을 부르므로, 행이 없는 사용자는 동의하지 않은 사용자다. 챗봇·피드는 구매·리뷰 이력이 있어도 임시 취향을 만들지 않는다(AI #266).
+**행이 없거나 벡터가 없는 사용자는 개인화하지 않는다.** BE는 개인화 추천에 동의한 사용자만 취향 프로필 생성을 부르므로, 행이 없는 사용자는 동의하지 않은 사용자다. 챗봇·피드는 구매·리뷰 이력이 있어도 임시 취향을 만들지 않는다(AI #266). 기능 플래그(`interest_feed`)를 켜면, 벡터가 없어도 추천 목록(`feed`)에 책이 있는 사용자는 홈과 더 보기가 그 목록을 읽는다(AI #473).
 
 | 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
 | --- | --- | --- | --- | --- | --- |
@@ -118,11 +114,42 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | profile_version | int | N | 프로필 판 번호 | 피드 커서에 실려 어느 프로필 기준의 목록인지 식별 | 순위 영향 값 변경 시에만 증가하는 단조 증가 정수 |
 | computed_at | timestamptz | Y | 이 프로필이 **반영한 이력 행들의 최대 시각**. 계산 시각이 아니다 | 챗봇·피드가 이 시각 이후의 이력만 가산해 이중 반영을 차단. 계산 시각으로 두면 복제가 늦은 이력이 프로필에도 가산에도 빠져 영구 누락된다 | 이력 테이블의 시각 컬럼과 직접 비교하므로 동일 타입. 반영한 이력이 없으면 Null이며 이때는 이력 전부를 가산한다 |
 
+**관심사별 추천 목록 칸**(AI #395). 아래 여덟 칸은 기능 플래그(`interest_feed`)가 켜져 있을 때만 쓰고 읽는다. 취향 프로필 생성이 관심사 점수를 계산하며 추천 목록 200권까지 뽑아 함께 저장하고, 홈과 더 보기는 요청 때 벡터를 조회하지 않고 그 목록을 읽는다.
+
+| 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
+| --- | --- | --- | --- | --- | --- |
+| interest_scores | jsonb | N | 관심사마다 재료(온보딩, 취향 기억, 책)별 점수 | 추천 목록의 자리를 관심사 점수대로 나눈다. ⑨가 다시 뽑을 때도 쓴다 | 관심사와 재료가 사용자마다 달라 고정 컬럼 불가. 기본 빈 객체 |
+| interest_vectors | jsonb | N | 관심사마다 검색어 벡터(실수 384개). 책이 있는 관심사는 그 책들의 벡터 평균, 키워드 관심사는 핵심어 벡터 | 관심사마다 가까운 책을 뽑는 검색어. ⑨는 요청 없이 이 값으로 다시 뽑는다 | 관심사 수가 사용자마다 달라 jsonb. 기본 빈 객체 |
+| conditions | jsonb | N | 늘 지킨다고 말한 조건 목록(쪽수·가격·출간연도) | 조건에 맞는 책을 목록의 앞에 둔다 | 문자열 목록. 기본 빈 배열 |
+| book_first_seen | jsonb | N | 이력의 책마다 AI 서버가 처음 본 날 | ⑨가 매칭 점수에 쓸 내 책을 다시 가를 때와 오래된 취향을 약하게 할 때 쓴다(뒤의 규칙은 미정) | ISBN에서 날짜로 가는 맵. 기본 빈 객체 |
+| feed | jsonb | Y | 추천 목록 200권(책마다 관심사와 매칭 점수)과, 시간 예산을 넘겨 대신한 관심사 | 홈과 더 보기가 읽는다. ⑨가 오늘 밤 시도한 날(`retried_on`)도 여기 둔다 | 순서 있는 목록. 아직 뽑지 않았으면 Null |
+| feed_version | int | N | 추천 목록의 판 번호 | 피드 커서에 실려, 스크롤하는 중에 목록이 다시 뽑혔는지 가린다 | 뽑을 때마다 1씩 오르는 정수. 기본 0 |
+| feed_prev | jsonb | Y | 바로 앞 판의 추천 목록(모양은 feed와 같음) | 스크롤하는 중에 목록이 바뀐 사용자가 이어 읽는다 | 앞 판이 없으면 Null |
+| feed_partial | bool | N | 시간 예산을 넘겨 인기 책으로 대신 채운 자리가 있는지 | ⑨가 이 표시가 있는 목록만 다시 뽑는다 | 두 값 분기. 기본 false |
+
 **tag_weights JSON 예시**
 
 ```json
 { "힐링": 0.8, "성장": 0.5, "에세이": 0.3 }
 ```
+
+**관심사별 추천 목록 칸 JSON 예시**
+
+```json
+{
+  "interest_scores": { "추리/스릴러": { "memory": 2.0, "books": 3.0 }, "역사": { "onboarding": 1.0 } },
+  "conditions": ["300쪽 이하", "2만 원 이하"],
+  "book_first_seen": { "9788937462788": "2026-10-15" },
+  "feed": {
+    "books": [{ "book_id": 123, "interest": "추리/스릴러", "match_score": 72 }],
+    "substituted": ["요리"],
+    "owned": [456, 789],
+    "disliked": [789]
+  }
+}
+```
+
+`feed`의 `owned`는 목록을 뽑을 때 뺀 가진 책(이력의 책과 2점 이하 리뷰 책), `disliked`는 그중 2점 이하 리뷰 책이다. 요청이 없는 ⑨가 목록을 다시 뽑을 때 복제한 이력 대신 읽는다(AI #537).
 
 ### 3.3 idempotency_records
 
@@ -170,18 +197,9 @@ BE에서 도서가 삭제되어 복제로 `v_books` 행이 지워지면 이 행�
 | rating_count | int | N | 리뷰 수 | 지금은 읽지 않는다 | 건수라 정수. 리뷰 없으면 0 |
 | as_of | timestamptz | N | 집계 기준 시각. BE가 채운 값이 그대로 복제된다 | 값의 신선도 판별. 인기 값의 실제 나이는 BE 집계 주기 + 복제 지연이다 | 시각 비교. UTC 기준 |
 
-### 3.6 이력 3종 (v_user_purchases, v_user_library, v_user_reviews)
+### 3.6 이력 3종 (V3에서 지움)
 
-세 테이블이 같은 형태이며 시각 컬럼명만 다르다. 취향 벡터 계산, 챗봇·피드 채점, 추천 제외에 함께 사용한다.
-
-| 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
-| --- | --- | --- | --- | --- | --- |
-| user_id | int | N | 사용자 ID | 세 테이블 모두 user_id로 조회 | 커머스 정수 ID |
-| book_id | int | N | 도서 ID | 해당 도서의 임베딩을 취향 벡터 재료로 사용하고, 추천 제외 판정에도 대조. 카테고리 점수는 `v_books.category`를 조인해 구한다 | 커머스 정수 ID |
-| purchased_at | timestamptz | N | 구매 시각. v_user_purchases | computed_at 이후 발생분만 채점에 가산하기 위한 비교 축. ④ 피드는 **커서 발급 시각**과도 비교해 그 이후 생긴 이력을 제외 대상에서 뺀다(스크롤이 밀리지 않게) | taste_profile.computed_at과 직접 비교하므로 동일 타입·동일 기준 시간대(UTC) |
-| added_at | timestamptz | N | 도서관 담기 시각. v_user_library | 같음(커서 발급 시각 비교 포함) | 같음 |
-| created_at | timestamptz | N | 리뷰 작성 시각. v_user_reviews | computed_at 이후 발생분만 채점에 가산하기 위한 비교 축 | 같음 |
-| rating | numeric(2,1) | N | 별점. v_user_reviews | 4.0점 이상은 선호로 가산하고, 2.0점 이하는 비선호로 그 도서를 취향 벡터와 추천에서 뺀다. 카테고리 점수는 책마다 큰 값 하나라, 산 책이면 구매 점수가 남는다(AI #103). 2.5점부터 3.5점은 중립 | 0.5점 단위의 0.5–5.0. CHECK는 범위만 걸고 0.5 단위는 강제하지 않는다(원본 예외값 하나에 복제가 거부되지 않게) |
+구매·나의 도서관·리뷰 복제 표(`v_user_purchases`, `v_user_library`, `v_user_reviews`)는 V3에서 지웠다(AI #307, 마이그레이션 `20261109_drop_user_replica_tables.sql`). 이력은 BE가 요청 본문으로 보내고 AI DB에는 저장하지 않는다. 챗봇 추천과 홈 피드는 가진 책의 ISBN(`purchased_isbns`, `library_isbns`)을 받아 후보에서 빼고, 취향 프로필 생성은 `history`(구매·나의 도서관 ISBN, 리뷰의 ISBN과 별점)를 받는다. 별점을 쓰는 기준(4.0점 이상 선호, 2.0점 이하 비선호)은 그대로이고 모델 API 명세 ⑥에 있다.
 
 ### 3.7 users
 
@@ -279,6 +297,23 @@ BE 상품 표의 복제본이다. BE는 가격·재고를 책이 아니라 상�
 
 AI는 위 세 칸만 읽는다. 서버 표에는 상품명·원가 등 칸이 더 있다.
 
+### 3.12 book_classes
+
+AI 책 분류 표다(AI #421). 세부 분류 번호(정보나루 KDC 세분류), 독자 대상, 형태, 쪽수는 수집 덤프에만 있고 BE 책 표와 `v_books`에는 없다. 취향 프로필 생성이 산 책을 관심사로 가르고(세부 분류 번호), 추천 목록이 쪽수 조건을 매기는 데 쓴다. 수집 쪽이 덤프에서 만든 파일을 AI 서버의 적재 작업으로 넣고, 덤프가 새로 나오면 전량 바꿔 넣는다.
+
+- `v_` 접두사를 쓰지 않는다. BE 원본의 사본이 아니라 AI가 채우는 표다
+- `v_books`와 ISBN으로 잇되 외래 키는 걸지 않는다. 덤프에는 있고 책 표에는 없는 책, 그 반대도 있다
+- 값이 없는 칸은 Null이다. 세부 분류 번호는 덤프의 절반쯤에만 있다(10/15 기준 126만 권 중 68만 권)
+
+| 필드명 | 타입 | Null 허용 | 설명 | 필요한 이유 | 타입 근거 |
+| --- | --- | --- | --- | --- | --- |
+| isbn13 | text PK | N | ISBN 13자리 | `v_books.isbn13`과 잇는 키 | `v_books.isbn13`과 같은 형과 같은 검사(13자리 숫자)라 조인할 때 형을 바꾸지 않는다 |
+| class_no | text | Y | 세부 분류 번호. 받은 글자 그대로(예 813.7) | 책을 관심사로 가르는 첫 기준(번호에서 세부 카테고리로 가는 표) | 소수점과 앞자리 0이 있어 글자. 1자 이상 20자 이하 |
+| reader_code | char(1) | Y | 부가기호 첫 자리(독자 대상) | 어린이책 같은 독자 대상을 가른다 | 숫자 한 자리 |
+| form_code | char(1) | Y | 부가기호 둘째 자리(형태) | 아직 쓰지 않는다. 덤프에 있어 같이 넣는다 | 숫자 한 자리 |
+| page_count | int | Y | 쪽수 | 쪽수 조건("300쪽 이하")을 매긴다 | 양의 정수 |
+| loaded_at | timestamptz | N | 넣은 시각 | 어느 덤프로 채웠는지 가린다 | 기본 지금 시각 |
+
 ## 4. API별 접근 테이블
 
 권한 부여 범위와 장애 전파 범위 확인용이다. 조회 대상은 **전부 AI PostgreSQL 안에 있다** — BE 장애가 조회 실패로 오지 않고 복제가 멈추면 값이 갱신되지 않을 뿐이다. "AI DB 기록"은 AI Postgres에 행이 남는 것만 뜻하며, BE로 나가 BE가 저장하는 것은 3.10에 있다.
@@ -287,12 +322,15 @@ AI는 위 세 칸만 읽는다. 서버 표에는 상품명·원가 등 칸이 �
 | --- | --- | --- | --- |
 | AI 검색 | book_embeddings, v_books(키워드 인덱스 포함), v_book_popularity | 없음 | 검색어, 커서(서명 문자열로 검증) |
 | 텍스트 임베딩 | 없음 | 없음. 응답의 벡터를 적재 파이프라인이 book_embeddings에 upsert한다 | 입력 텍스트 |
-| 챗봇 추천 | taste_profile, book_embeddings, v_books, v_book_popularity, 이력 3종(computed_at 이후분) | 없음 | 대화 원문, 추천 조건, 카드와 이유 문장, 이미지 |
-| 홈 피드 | taste_profile, book_embeddings, v_books, v_book_popularity, 이력 3종(computed_at 이후분) | 없음 | 결과 목록, 커서 |
+| 챗봇 추천 | taste_profile, book_embeddings, v_books, v_book_popularity, 요청의 가진 책 ISBN | 없음 | 대화 원문, 추천 조건, 카드와 이유 문장, 이미지 |
+| 홈 피드 | taste_profile, book_embeddings, v_books, v_book_popularity, 요청의 가진 책 ISBN ¹ | 없음 | 결과 목록, 커서 |
 | 취향 기억 추출 | 요청의 대화와 기존 취향 | 없음. 저장은 BE | 대화 |
-| 취향 프로필 생성 | book_embeddings, v_books(이력 책의 카테고리), 이력 3종, 메모리의 카테고리·태그 사전 벡터, 요청의 온보딩·기억 | taste_profile, idempotency_records | 온보딩 원본, 취향 기억, 이력 |
-| 쇼핑 에이전트 | 커머스 상태는 tool 조회. 후보 채점(`recommendations.candidates`)은 피드와 같은 taste_profile, book_embeddings, v_books, v_book_popularity, 이력 3종 | idempotency_records | 대화, tool 결과 |
+| 취향 프로필 생성 | book_embeddings, v_books(이력 책의 카테고리), 요청의 이력(`history`), 메모리의 카테고리·태그 사전 벡터, 요청의 온보딩·기억 ¹ | taste_profile, idempotency_records | 온보딩 원본, 취향 기억, 이력 |
+| 대체 자리 다시 뽑기(⑨) | taste_profile, book_classes, book_embeddings, v_books, v_book_popularity | taste_profile | 없음 |
+| 쇼핑 에이전트 | 커머스 상태는 tool 조회. 후보 채점(`recommendations.candidates`)은 피드와 같은 taste_profile, book_embeddings, v_books, v_book_popularity | idempotency_records | 대화, tool 결과 |
 | 서버 상태 점검 | 구성 요소 상태 | 없음 | 없음 |
+
+¹ 기능 플래그(`interest_feed`)가 켜지면 바뀐다. 홈 피드는 추천 목록이 있으면 taste_profile의 추천 목록과 v_books만 읽는다. 취향 프로필 생성은 book_classes도 읽고, 목록을 뽑아 taste_profile의 관심사·추천 목록 칸(3.2)도 쓴다
 
 ## 5. 미확정 항목
 
@@ -312,7 +350,7 @@ AI는 위 세 칸만 읽는다. 서버 표에는 상품명·원가 등 칸이 �
 | liked_book_ids 절단 기준 | 앞 50개로 정함(공통 규약도 맞춤) | 결정 완료 | 불필요 |
 | 증분 복제 가능 조건 | 복제 수단이 미정. 2절의 두 전제(행 단위 upsert·delete, 인덱스 보존) 안에서 정해야 한다 | BE 원본에 행 변경 시각과 삭제 표현이 노출되는지. FK cascade가 동작하려면 **하드 삭제가 사본에 delete로 전달**돼야 한다. 소프트 삭제(비공개 플래그)면 `v_books`에 행이 남아 cascade가 걸리지 않고 비공개 도서가 검색·추천에 계속 노출되므로, 상태 컬럼을 복제해 AI가 거를지 결정 | **필요.** 원본 스키마 확인 |
 | 복제 수단·주기 | 미정. 수단은 계약이 아니지만 위 전제 안에서 골라야 한다 | CDC / 변경 시각 기반 upsert·delete 중 택일, 주기 | **필요.** BE·AI·클라우드 3자 |
-| 복제 범위 | 도서 외에 이력 3종·인기 집계까지 복제해 달라고 회신했고 클라우드 답변을 기다린다(7단계) | 다섯 테이블 전부 복제되는지 확정 | **필요.** 클라우드 회신 |
+| 복제 범위 | 도서·상품·인기만 복제한다. 구매·나의 도서관·리뷰 표 셋은 V3에서 지웠다(AI #307) | 결정 완료 | 불필요 |
 | 시각 컬럼의 시간대 | BE 원본은 `DATETIME(6)`이고 한국 시간으로 저장된다(배포 설정 `TZ: Asia/Seoul`, 클라우드 compose 문서) | 결정 완료: 복제는 Asia/Seoul로 해석해 적재한다 | 불필요. 실제 복제 설정 확인만 남음(AI #235) |
 | 복제 시 값 변환 규칙 | `price`, `category`의 원본 타입·표현이 미확인 | `price`가 `DECIMAL`일 때의 정수 변환 기준, `category`의 NFC 정규화와 공백 처리 책임 | **필요.** 원본 타입과 정규화 책임 |
 | 복제 대상 컬럼 변경 통보 | 규정 없음 | 컬럼명·타입·의미 변경과 삭제 시 사전 통보 절차. 통보 없이 바뀌면 복제가 끊기는데 AI는 오류를 내지 않아 발견이 늦다 | **필요.** 통보 창구 |

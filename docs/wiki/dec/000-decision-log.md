@@ -4,19 +4,22 @@ type: decision-log
 group: dec-000
 owner: 김세훈
 status: 작성중
-updated: 2026-11-09
+updated: 2026-11-10
 ---
 **요약** 프로젝트의 모든 기술 결정을 한 줄씩 모은 입구. 상세는 링크를 따라간다.
 
 | 날짜 | 파트 | 결정 | 영향 파트 | 상세 |
 |---|---|---|---|---|
+| 11-10 | AI | 챗봇·홈 추천의 가진 책과 프로필 계산의 이력은 요청으로만 받고, 복제한 사용자 표는 읽지 않는다(AI #307) | AI, BE, CLD | [모델 API 명세 ③④⑥](../ai/1-model-api/spec.md) |
 | 11-09 | AI | 탈퇴·동의 철회한 사용자의 취향 프로필은 BE가 ⑩ DELETE로 지운다(AI #270) | AI, BE | [모델 API 명세 ⑩](../ai/1-model-api/spec.md) |
 | 10-18 | AI | ⑦은 BE를 부르지 않고 바꿀 것 목록(`actions`)만 돌려준다(AI #489, BE #284) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-18 | AI | ⑦ 담긴 책은 수량을 말할 때만 바꾸고, 한 번에 시킨 쓰기는 모두 되거나 모두 안 된다(AI #489) | AI, BE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-18 | AI | ③도 `recent_turns`의 200자 초과 줄은 400 대신 뒤쪽 200자만 쓴다(AI #490) | AI, BE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
+| 10-16 | AI | AI DB에 책 분류 표와 프로필의 관심사·추천 목록 칸을 더하고, 적용은 클라우드가 한다(AI #395) | AI, CLD | [ERD 3.2·3.12](../ai/9-data-erd/spec.md) |
 | 10-16 | AI | ⑤ 신뢰도를 세기로 바꾸고 어디에·핵심어를 더한다(AI #395) | AI, BE | [모델 API 명세 ⑤](../ai/1-model-api/spec.md) |
 | 10-16 | AI | ⑥ 요청의 취향 기억에 세기·어디에·핵심어·저장한 때를 싣는다(AI #395) | AI, BE | [모델 API 명세 ⑥](../ai/1-model-api/spec.md) |
 | 10-16 | AI | ⑨ 대체 자리 다시 뽑기를 BE 밤 배치 맨 끝에 부른다(AI #395) | AI, BE | [모델 API 명세 ⑨](../ai/1-model-api/spec.md) |
+| 10-16 | AI | ④ match_score를 관심사별 추천 목록의 점수로 바꾸고, 인기가 빠져 최고 85점이다(AI #448) | AI, FE | [모델 API 명세 ④](../ai/1-model-api/spec.md) |
 | 10-15 | AI | 추천과 쇼핑을 가르는 일은 AI 서버가 하고 BE는 ③ 챗봇 입구만 부른다. 응답의 `route`로 구분한다(AI #413) | AI, BE, FE | [모델 API 명세 ③](../ai/1-model-api/spec.md) |
 | 10-14 | AI | ⑦ 확인 버튼은 FE가 BE 장바구니 API로 직접 담는다(FE, BE 확인 대기, AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
 | 10-14 | AI | ⑦ `context_cards`는 가장 최근에 카드가 보인 묶음을 보낸다(AI #396) | AI, BE, FE | [모델 API 명세 ⑦](../ai/1-model-api/spec.md) |
