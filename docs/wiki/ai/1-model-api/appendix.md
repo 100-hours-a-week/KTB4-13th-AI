@@ -4,7 +4,7 @@ type: appendix
 group: ai-1
 owner: 미정
 status: 작성중
-updated: 2026-09-18
+updated: 2026-11-10
 limit_exempt: 원본 4장의 호출 예시 9개 전체를 보존 (변환 문서)
 ---
 **요약** 원본 4장의 API 호출 예시와 예시 응답 9개다.
@@ -28,7 +28,7 @@ curl -X POST https://ai.internal.bookjeok.com/search \
   "data": {
     "results": [
       {
-        "book_id": 2091,
+        "isbn": "9788900000080",
         "title": "슬픔을 아는 사람",
         "author": "유진목",
         "publisher": "문학동네",
@@ -67,7 +67,7 @@ curl -X POST https://ai.internal.bookjeok.com/embeddings \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":"퇴근길에 읽을 짧은 소설","anchor_book":null,"exclude":[]},"message":"유머 있으면 좋겠어","recent_turns":[],"exclude_book_ids":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":null}'
+  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":"퇴근길에 읽을 짧은 소설","anchor_book":null,"exclude":[]},"message":"유머 있으면 좋겠어","recent_turns":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":null}'
 ```
 
 ```json
@@ -86,7 +86,6 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
     "recognition": null,
     "cards": [
       {
-        "book_id": 1088,
         "isbn": "9788900000011",
         "rank": 1,
         "match_score": 87,
@@ -114,7 +113,7 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":null,"anchor_book":null,"exclude":[]},"recent_turns":[],"exclude_book_ids":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":"<https://s3>.…/up_20260903_abc?X-Amz-Signature=…"}'
+  -d '{"user_id":123,"consented":true,"spec":{"intent":"semantic","exact":{"title":null,"author":null,"publisher":null},"filters":{},"semantic":null,"anchor_book":null,"exclude":[]},"recent_turns":[],"exclude_isbns":[],"purchased_isbns":["9788900000035"],"library_isbns":[],"image_ref":"<https://s3>.…/up_20260903_abc?X-Amz-Signature=…"}'
 ```
 
 응답. 한 권으로 특정한 경우:
@@ -135,7 +134,6 @@ curl -X POST https://ai.internal.bookjeok.com/recommendations/chat \
     "recognition": { "recognized": true, "book_id": 1088, "candidates": [] },
     "cards": [
       {
-        "book_id": 4021,
         "isbn": "9788900000042",
         "rank": 1,
         "match_score": 79,
@@ -225,7 +223,7 @@ curl -G https://ai.internal.bookjeok.com/recommendations/feed \
   "data": {
     "items": [
       {
-        "book_id": 3310,
+        "isbn": "9788900000066",
         "title": "…",
         "author": "…",
         "price": 9900,
@@ -274,7 +272,7 @@ curl -X POST https://ai.internal.bookjeok.com/preferences/extractions \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"idempotency_key":"prof_20260904_a1b2","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384}]}'
+  -d '{"user_id":123,"idempotency_key":"prof_20260904_a1b2","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_isbns":["9788900000011","9788900000066"]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384}]}'
 ```
 
 ```json
@@ -289,7 +287,7 @@ curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
 ```bash
 curl -X POST https://ai.internal.bookjeok.com/preferences/profile \
   -H "Authorization: Bearer $SERVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"user_id":123,"idempotency_key":"prof_20261004_c3d4","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_book_ids":[1088,3310]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384},{"type":"mood","value":"이별 후 위로되는 잔잔한 소설을 찾음","vector":[0.01,-0.04,"…"],"dim":384}]}'
+  -d '{"user_id":123,"idempotency_key":"prof_20261004_c3d4","onboarding":{"reading_times":["밤"],"criteria":["베스트셀러"],"categories":["에세이","한국소설"],"tags":["힐링","성장"],"liked_isbns":["9788900000011","9788900000066"]},"memories":[{"type":"author","value":"김영하의 문장을 좋아함","vector":[0.02,-0.01,"…"],"dim":384},{"type":"mood","value":"이별 후 위로되는 잔잔한 소설을 찾음","vector":[0.01,-0.04,"…"],"dim":384}]}'
 ```
 
 ```json
