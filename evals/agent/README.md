@@ -22,6 +22,22 @@ uv run python -m evals.agent.run --model openai/gpt-5.4-mini
 
 서버를 띄우지 않고 같은 프로세스에서, `/agent/act`와 같은 길(그래프 → 답변 검사, 턴 시간 제한)로 돕니다. 사례마다 시작 상태가 달라서 사례마다 가짜 BE를 새로 만듭니다. 채점은 `grade.py`가 코드로만 하고 LLM을 쓰지 않습니다.
 
+## LangSmith에서 점수 비교와 프롬프트 반영
+
+1. `.env`에 `LANGSMITH_API_KEY`와 `LANGSMITH_AGENT_PROMPT=bookjeok-shopping-agent`를 설정합니다. 조직 키에는 `LANGSMITH_WORKSPACE_ID`도 넣습니다. `uv run python -m evals.agent.run --seed-langsmith-prompt`로 코드의 시스템 프롬프트를 비공개로 처음 등록합니다.
+2. LangSmith에서 시스템 메시지를 편집하고 후보 커밋을 **Staging**으로 승격합니다. 템플릿 형식은 Mustache를 유지합니다. 앱이 기능별 규칙을 넣는 위치를 검증하므로 기능 설명, 장바구니 JSON 예시, `## 답하는 법` 제목을 수정했다면 아래 명령으로 후보가 읽히는지 확인합니다.
+3. 같은 모델과 같은 사례로 운영 버전과 후보를 자동 채점합니다. `--prompt-ref`에는 태그나 커밋 해시를 넣을 수 있습니다. 평가 한 번은 처음 읽은 커밋으로 끝까지 실행합니다.
+
+```bash
+uv run python -m evals.agent.run --langsmith --prompt-ref production --split heldout --repeat 3 --label baseline
+uv run python -m evals.agent.run --langsmith --prompt-ref staging --split heldout --repeat 3 --label candidate
+```
+
+첫 운영 버전을 올리기 전에는 기준선을 `--prompt-ref local`로 잽니다. LangSmith **Datasets & Experiments**에서 `agent_offline_score`의 평균을 비교합니다. 사례당 통과는 100점, 실패는 0점입니다. 사례의 자세한 실패 사유는 로컬 JSON에 남습니다. 전송을 다시 할 때는 원본 경로를 `--regrade <파일> --langsmith`에 넣으면 모델 호출 없이 채점하고 올립니다. 다른 사례 파일로 평가했다면 `--cases`도 함께 지정합니다.
+
+4. 점수를 확인한 후보 커밋을 **Production**으로 승격합니다. AI 서버는 기본 5초 주기로 다음 쇼핑 요청에서 운영 프롬프트를 갱신합니다. `LANGSMITH_AGENT_PROMPT_REFRESH_SECONDS=0`이면 갱신 작업이 겹치지 않는 요청마다 조회합니다. 조회가 실패하면 마지막으로 읽은 버전이나 코드의 기본 프롬프트를 사용합니다. 이전 커밋을 Production으로 돌리는 것도 같은 방식으로 반영됩니다. [LangSmith 프롬프트 버전 관리](https://docs.langchain.com/langsmith/manage-prompts)
+5. 서버에 `LANGSMITH_AGENT_PROJECT=bookjeok-agent-production`을 설정하면 생성이 끝날 때마다 운영 점수를 올립니다. **Tracing Projects**에서 `agent_online_score` 평균을 보고 메타데이터 `prompt_version`으로 커밋을 좁힐 수 있습니다. 200 응답이고 근거 검사에 걸린 답변이나 가드가 차단한 쓰기 시도가 없으면 100점, 그 외는 0점입니다. 기본으로는 대화, 장바구니, 사용자 식별자를 전송하지 않습니다. `LANGSMITH_TRACE=true`이면 표본 턴을 원문 트레이스(요청·답·그래프 단계, 사용자 번호 제외)로 보내고 점수를 그 트레이스에 붙입니다([원문 트레이스와 LangSmith 규칙](../README.md#원문-트레이스와-langsmith-규칙)). `LANGSMITH_AGENT_SAMPLE_RATE`로 평가 비율을 조정할 수 있습니다. 전역 `LANGSMITH_TRACING` 설정은 쓰지 않습니다.
+
 **재는 것:** 종류별·묶음별 통과율, 턴당 LLM 호출 수, 지연(중앙, p95, 최대), 토큰, 반복 상한(6번)에 걸린 횟수, 턴 시간이 다 되어 도구를 멈춘 횟수, 도구 반복 수의 분포, 확인 없이 실행된 조합, 속이는 입력에 넘어간 횟수, 응답 상태(422, 503, 504), **답변 검사가 지운 문장의 이유별 수**(실제 모델이 거짓 완료를 얼마나 하는지 모으는 데 씁니다).
 
 **읽을 때 주의:**

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core import body, categories, responses
+from app.core.online_eval import evaluate_response
 from app.search import books, service
 from app.search.schemas import SearchRequest
 
@@ -52,6 +53,7 @@ def parse_request(payload: Any) -> SearchRequest | None:
 
 
 @router.post("/search")
+@evaluate_response("search")
 async def search(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
     if raw is None:

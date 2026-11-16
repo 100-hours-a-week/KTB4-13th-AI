@@ -16,7 +16,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from app.core import body, responses
+from app.core import body, langsmith, responses
+from app.core.online_eval import evaluate_response
 from app.gateway import embedding
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def parse_request(payload: Any) -> EmbeddingsRequest | None:
 
 
 @router.post("/embeddings")
+@evaluate_response("embedding")
 async def embeddings(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
     if raw is None:
@@ -78,6 +80,13 @@ async def embeddings(request: Request) -> JSONResponse:
         logger.exception("임베딩 생성 실패")
         return responses.error(503, "upstream_unavailable")
 
+    langsmith.fact("vectors", len(vectors))
+    langsmith.fact(
+        "shape_ok",
+        len(vectors) == len(req.texts)
+        and dim > 0
+        and all(len(v) == dim for v in vectors),
+    )
     return responses.success(
         "embed_success", {"vectors": vectors, "dim": dim, "model": model}
     )

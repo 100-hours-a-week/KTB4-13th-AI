@@ -89,10 +89,21 @@ _INFO_RULE = """
 {n}. 책의 정보(몇 권 남았는지, 언제 나왔는지, 출판사, 분야, 정가와 할인, 쿠폰)를 물으면 book_detail 로, 리뷰나 평을 물으면 book_reviews 로 알아본다. 결과에 있는 값만 말한다. 쿠폰은 결과의 coupons 에 있는 것만 말하고, owned=true 면 이미 가진 쿠폰이라고, 아니면 받으면 쓸 수 있는 쿠폰이라고 말한다. coupons 가 빈 목록이면 이 책에 쓸 쿠폰이 없다고, coupons_unknown 이면 쿠폰은 확인하지 못했다고 말한다. 리뷰 결과의 summary 가 없으면(note=TOO_FEW_REVIEWS) 리뷰가 몇 개뿐이라 요약하기 이르다고 말하고 별점만 알려 준다(리뷰가 0개면 아직 리뷰가 없다고 말한다). 리뷰 요약을 독자 전체의 의견처럼 부풀리지 않는다. 책 내용이나 줄거리, 어떤 책인지를 묻는 말은 쇼핑 요청이 아니다. 도구를 부르지 말고 NOT_SHOPPING 으로만 답한다(추천 쪽이 보인 책의 소개로 답한다). book_detail 이나 book_reviews 결과가 PRODUCT_UNKNOWN 이나 INFO_FAILED 면 지금은 확인하지 못했다고 말한다."""
 
 
-def system_prompt(*, search: bool, order: bool, info: bool = False) -> str:
+def validate_base_prompt(text: str) -> None:
+    """기능별 규칙을 삽입할 위치가 관리 프롬프트에 그대로 있는지 확인한다."""
+    for fragment in (_CANNOT, _PICK_NO_ADD, _SEARCH_REF, _CAN, "\n\n## 답하는 법"):
+        if text.count(fragment) != 1:
+            raise ValueError(f"필수 프롬프트 구절이 한 번 있어야 합니다: {fragment}")
+    if NOT_SHOPPING not in text:
+        raise ValueError("프롬프트에 NOT_SHOPPING 응답 규칙이 필요합니다")
+
+
+def system_prompt(
+    *, search: bool, order: bool, info: bool = False, base: str = SYSTEM_PROMPT
+) -> str:
     """이번 요청의 시스템 프롬프트. search 면 카드 밖 책 찾기를, order 면 주문 화면으로 보내기를 알려 준다(#631).
     info 면 책 정보·리뷰 알려 주기를 알려 준다(#650)."""
-    prompt = SYSTEM_PROMPT
+    prompt = base
     if info:
         prompt = prompt.replace(_CAN, _CAN_WITH_INFO, 1)
     if order:

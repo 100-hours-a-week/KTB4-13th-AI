@@ -669,7 +669,7 @@ def test_스위치를_켜면_1단계에_에이전트_칸을_싣고_끄면_그대
     def _prompt() -> str:
         sent: list[str] = []
 
-        async def _invoke(chain, inputs):
+        async def _invoke(chain, inputs, **_):
             sent.append(chat.SPEC_PROMPT.format_messages(**inputs)[0].content)
             return {}
 

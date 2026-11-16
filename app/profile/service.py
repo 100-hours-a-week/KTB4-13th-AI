@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 
-from app.core import db, history, isbn
+from app.core import db, history, isbn, langsmith
 from app.core.config import get_settings
 from app.core.pgvector import to_vector_literal
 from app.feed import build_queue, interest_fetch
@@ -348,9 +348,29 @@ async def rebuild_locked_on(
     }
 
 
+async def _rebuild(req: ProfileRequest, *, unhurried: bool) -> dict[str, Any]:
+    with langsmith.observe("profile") as observed:
+        try:
+            async with db.get_pool().acquire() as conn:
+                response = await rebuild_locked_on(conn, req, unhurried=unhurried)
+        except Exception:
+            if observed is not None:
+                observed.record({"status": 500, "kafka": unhurried}, 0)
+            raise
+        if observed is not None:
+            observed.record(
+                {
+                    "status": 200,
+                    "kafka": unhurried,
+                    "cold_start": response["data"]["cold_start"],
+                },
+                100,
+            )
+        return response
+
+
 async def rebuild(req: ProfileRequest) -> dict[str, Any]:
-    async with db.get_pool().acquire() as conn:
-        return await rebuild_locked_on(conn, req)
+    return await _rebuild(req, unhurried=False)
 
 
 async def rebuild_unhurried(req: ProfileRequest) -> dict[str, Any]:
@@ -360,8 +380,7 @@ async def rebuild_unhurried(req: ProfileRequest) -> dict[str, Any]:
     넘기므로, 줄에 넣으면 목록을 만들기 전에 서버가 내려갈 때 그 목록은 다시 오지 않는다. 예산은 꺼져
     있을 때의 3초가 아니라 profile_feed_seconds 다.
     """
-    async with db.get_pool().acquire() as conn:
-        return await rebuild_locked_on(conn, req, unhurried=True)
+    return await _rebuild(req, unhurried=True)
 
 
 _DELETE_SQL = "DELETE FROM taste_profile WHERE user_id = $1"

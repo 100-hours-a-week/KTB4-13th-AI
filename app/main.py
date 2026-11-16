@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.chat import popular, reading_graph
 from app.core import cursor, db, request_log, responses
+from app.core import langsmith as eval_monitor
 from app.core.auth import Unauthorized, verify_service_token, warn_if_disabled
 from app.core.config import get_settings
 from app.feed import build_queue
@@ -70,10 +71,12 @@ async def lifespan(app: FastAPI):
     # 카프카로 오는 프로필 계산 요청(#666). 켰을 때만 뒤에서 띄운다. 계산이 DB 와 위 일꾼을 쓰므로 그 뒤에 띄운다.
     # 브로커에 못 붙어도 서버는 뜨고 소비자만 다시 붙는다
     kafka_consumer.start(get_settings())
+    eval_monitor.start(get_settings())
     yield
     # 앱이 내려갈 때. 소비자가 일꾼과 연결 풀을 쓰므로 소비자부터, 그다음 일꾼을 멈춘다
     await kafka_consumer.stop()
     await build_queue.stop()
+    await eval_monitor.stop()
     await decision.aclose()
     await reranker.aclose()
     await db.disconnect()

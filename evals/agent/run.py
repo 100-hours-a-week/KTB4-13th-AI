@@ -30,16 +30,17 @@ from zoneinfo import ZoneInfo
 
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
+from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.reply import GroundingFailed, finish
 from app.agent.schemas import AgentActRequest, parse_request
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.gateway.book_finder import FakeBookFinder, FoundBook
 from app.gateway.book_info import FakeBookInfo
 from app.gateway.commerce import CommerceError
 from app.gateway.commerce_fake import FakeBook, FakeCommerce
 from app.gateway.commerce_provider import get_commerce
 from app.gateway.llm import LLMUnavailableError, get_chat_model
-from evals.agent import grade
+from evals.agent import grade, langsmith_export
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 DEFAULT_CONCURRENCY = 4
@@ -179,7 +180,14 @@ def request_payload(case: dict, *, accepts_history: bool) -> dict:
     return payload
 
 
-async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dict:
+async def run_case(
+    data: dict,
+    case: dict,
+    model: Any,
+    *,
+    timeout: float,
+    base_prompt: str = SYSTEM_PROMPT,
+) -> dict:
     """사례 하나를 한 번 돌려 실행 기록을 만든다. 오류도 기록으로 남기고 예외를 던지지 않는다."""
     fake, uid = await build_commerce(data, case)
     others = [o["user_id"] for o in case["state"].get("others", [])]
@@ -230,6 +238,7 @@ async def run_case(data: dict, case: dict, model: Any, *, timeout: float) -> dic
                     # 사례에 상품 번호가 없어 책 정보는 PRODUCT_UNKNOWN 이다(정보 답은 이 묶음이 재지 않는다)
                     info=FakeBookInfo() if BOOK_INFO else None,
                     book_info=BOOK_INFO,
+                    base_prompt=base_prompt,
                 )
             finished = finish(run)
             data = finished.data.model_dump(mode="json")
@@ -274,13 +283,16 @@ async def run_all(
     concurrency: int,
     timeout: float,
     on_done=None,
+    base_prompt: str = SYSTEM_PROMPT,
 ) -> list[dict]:
     """사례마다 repeat 번 돌리고 채점한다. 순서는 (반복, 사례)대로 유지한다."""
     gate = asyncio.Semaphore(concurrency)
 
     async def one(case: dict, n: int) -> dict:
         async with gate:
-            record = await run_case(data, case, model, timeout=timeout)
+            record = await run_case(
+                data, case, model, timeout=timeout, base_prompt=base_prompt
+            )
         result = {
             "id": case["id"],
             "kind": case["kind"],
@@ -405,6 +417,8 @@ def format_report(summary: dict) -> str:
         "| 묶음 | 통과 |",
         "| --- | --- |",
     ]
+    if "prompt_version" in summary:
+        lines[0] += f", 프롬프트 `{summary['prompt_version']}`"
     for group, row in sorted(summary["by_group"].items()):
         lines.append(f"| {group} | {_pct(row['passed'], row['n'])} |")
     # dev 는 고치는 데 쓴 사례, heldout 은 재는 데만 쓴 사례다. 고친 효과는 heldout 으로 본다
@@ -476,6 +490,9 @@ def _regrade(path: Path, args: argparse.Namespace) -> None:
         r["grade"] = grade.grade_case(case, r["record"])
     old = saved["summary"]
     summary = summarize(data, results, model=old["model"], repeat=old["repeat"])
+    for key in ("prompt_version", "book_info"):
+        if key in old:
+            summary[key] = old[key]
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -486,6 +503,26 @@ def _regrade(path: Path, args: argparse.Namespace) -> None:
             encoding="utf-8",
         )
     print(format_report(summary))
+    if args.langsmith:
+        _publish(get_settings(), args, data, results, summary)
+
+
+def _publish(
+    settings: Settings,
+    args: argparse.Namespace,
+    data: dict,
+    results: list[dict],
+    summary: dict,
+) -> None:
+    try:
+        url = langsmith_export.export(
+            settings, data, results, summary, label=args.label
+        )
+    except Exception as exc:  # noqa: BLE001 - 로컬 원본을 보존하고 재시도 방법을 알려 준다
+        raise SystemExit(
+            f"LangSmith 평가 전송 실패({type(exc).__name__}). 저장한 원본을 --regrade --langsmith 로 다시 올릴 수 있습니다."
+        ) from None
+    print(f"LangSmith 실험: {url}")
 
 
 def _cases_path(args: argparse.Namespace) -> Path:
@@ -529,6 +566,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--label", default="run", help="결과 파일 이름에 붙이는 말")
     parser.add_argument("--out", default="", help="결과 원본 JSON 위치")
     parser.add_argument(
+        "--prompt-ref",
+        default="local",
+        help="local, staging, production 또는 LangSmith 프롬프트 커밋 해시",
+    )
+    parser.add_argument(
+        "--langsmith",
+        action="store_true",
+        help="채점 결과를 LangSmith 실험으로 저장",
+    )
+    parser.add_argument(
+        "--seed-langsmith-prompt",
+        action="store_true",
+        help="코드의 시스템 프롬프트로 LangSmith 비공개 프롬프트를 처음 생성",
+    )
+    parser.add_argument(
         "--regrade",
         default="",
         help="저장한 결과 JSON 을 모델을 부르지 않고 지금 채점 기준으로 다시 채점해 보고서를 낸다",
@@ -537,12 +589,33 @@ def main(argv: list[str] | None = None) -> None:
     global BOOK_INFO
     BOOK_INFO = args.book_info
 
+    settings = None
+    if args.langsmith or args.seed_langsmith_prompt or args.prompt_ref != "local":
+        settings = get_settings()
+        if not settings.langsmith_api_key.get_secret_value():
+            parser.error("LANGSMITH_API_KEY가 필요합니다")
+        if (
+            args.seed_langsmith_prompt or args.prompt_ref != "local"
+        ) and not langsmith_export.prompt_name(settings):
+            parser.error(
+                "LANGSMITH_PROMPTS의 agent 항목이나 LANGSMITH_AGENT_PROMPT가 필요합니다"
+            )
+
+    if args.seed_langsmith_prompt:
+        try:
+            print(langsmith_export.seed_prompt(settings))
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        return
+
     if args.regrade:
         _regrade(Path(args.regrade), args)
         return
 
+    if args.repeat < 1 or args.concurrency < 1:
+        parser.error("--repeat와 --concurrency는 1 이상이어야 합니다")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    settings = get_settings()
+    settings = settings or get_settings()
     if settings.llm_mock:
         raise SystemExit("LLM_MOCK 이 켜져 있어 실제 모델을 부를 수 없다")
     model_id = args.model or settings.agent_llm_model_id or settings.llm_model_id
@@ -551,6 +624,14 @@ def main(argv: list[str] | None = None) -> None:
     if not cases:
         raise SystemExit("고른 사례가 없다")
 
+    try:
+        prompt = asyncio.run(
+            langsmith_export.evaluation_prompt(settings, args.prompt_ref)
+        )
+    except Exception as exc:  # noqa: BLE001 - 후보를 읽지 못한 실행을 채점하지 않는다
+        raise SystemExit(
+            f"평가 프롬프트를 읽을 수 없습니다 ({args.prompt_ref}, {type(exc).__name__}): {exc}"
+        ) from None
     model = get_chat_model(json_mode=False, model_id=model_id)
     total = len(cases) * args.repeat
     print(
@@ -575,10 +656,12 @@ def main(argv: list[str] | None = None) -> None:
             concurrency=args.concurrency,
             timeout=settings.agent_turn_timeout_seconds,
             on_done=progress,
+            base_prompt=prompt.text,
         )
     )
     print()
     summary = summarize(data, results, model=model_id, repeat=args.repeat)
+    summary.update(prompt_version=prompt.version, book_info=BOOK_INFO)
     stamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S")
     out = Path(args.out) if args.out else RESULTS_DIR / f"{stamp}-{args.label}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -590,6 +673,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(format_report(summary))
     print(f"\n결과 원본: {out}")
+    if args.langsmith:
+        _publish(settings, args, data, results, summary)
 
 
 if __name__ == "__main__":

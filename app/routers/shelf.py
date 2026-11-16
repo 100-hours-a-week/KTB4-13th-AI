@@ -12,7 +12,8 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.core import body, responses
+from app.core import body, langsmith, responses
+from app.core.online_eval import evaluate_response
 from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
 from app.photo import fetch, scan
 from app.photo.schemas import parse_request, to_data
@@ -34,6 +35,7 @@ _IMAGE_ERRORS = {
 
 
 @router.post("/scans")
+@evaluate_response("photo")
 async def create_scan(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
     if raw is None:
@@ -48,6 +50,8 @@ async def create_scan(request: Request) -> JSONResponse:
     req = parse_request(payload)
     if req is None:
         return responses.error(400, "invalid_request")
+    # 사진 주소 뒤의 서명(?…)은 잠깐 쓰는 열쇠라 트레이스에도 싣지 않는다
+    langsmith.trace_inputs({**payload, "image_ref": req.image_ref.split("?", 1)[0]})
 
     try:
         result = await scan.scan(req.image_ref)

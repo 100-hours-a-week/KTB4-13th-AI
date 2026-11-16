@@ -94,6 +94,7 @@ class LlmComparer:
             ai = await invoke_chain(
                 self._model,
                 [SystemMessage(_RULES), HumanMessage(_document(pairs))],
+                name="agent.compare",
             )
             summary = _clean(message_text(ai))
         except LLMUnavailableError as e:

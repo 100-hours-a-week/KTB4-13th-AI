@@ -9,8 +9,10 @@ import logging
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 
+from app.core import langsmith
 from app.core.config import get_settings
 from app.extraction import prompts, rules
 from app.extraction.schemas import ExtractionRequest
@@ -46,41 +48,43 @@ async def extract(req: ExtractionRequest) -> list[dict[str, Any]]:
     LLM 장애는 LLMUnavailableError(시간 초과는 LLMTimeoutError), 임베딩 장애는
     EmbeddingUnavailableError 로 올라간다.
     """
+    prompt = await langsmith.prompt("extraction", prompts.EXTRACTION_PROMPT)
     api_chain = _chain(
         # ⑤만 쓰는 모델. 설정이 비어 있으면 None 을 넘겨 챗봇과 같은 모델을 쓴다. 온도는 ⑤만 낮춘다.
         # 기본(1)이면 같은 대화를 다시 돌려도 결과가 꽤 달라, 지시문을 고쳐도 나아졌는지 가르기 어려웠다(#433)
         get_chat_model(
             model_id=get_settings().extraction_llm_model_id or None,
             temperature=EXTRACTION_TEMPERATURE,
-        )
+        ),
+        prompt.template,
     )
     self_hosted = _self_hosted_model()
     if self_hosted is None:
-        llm_output = await invoke_chain(api_chain, prompts.inputs(req))
+        llm_output = await invoke_chain(
+            api_chain, prompts.inputs(req), name="extraction"
+        )
     else:
         llm_output = await invoke_chain_with_fallback(
-            _chain(self_hosted), api_chain, prompts.inputs(req)
+            _chain(self_hosted, prompt.template),
+            api_chain,
+            prompts.inputs(req),
+            name="extraction",
         )
 
     raw = llm_output["extractions"]
+    langsmith.fact("candidates", len(raw))
     extractions = await to_extractions(req, llm_output)
     logger.info(
         "취향 기억 추출(프롬프트 %s): LLM 이 낸 후보 %d, 응답 %d",
-        prompts.PROMPT_VERSION,
+        prompts.PROMPT_VERSION if prompt.version == "local" else prompt.version,
         len(raw),
         len(extractions),
     )
     return extractions
 
 
-def _chain(model: BaseChatModel) -> Runnable:
-    return (
-        prompts.EXTRACTION_PROMPT
-        | model
-        | message_text
-        | parse_json_response
-        | _require_extractions
-    )
+def _chain(model: BaseChatModel, prompt: ChatPromptTemplate) -> Runnable:
+    return prompt | model | message_text | parse_json_response | _require_extractions
 
 
 def _require_extractions(llm_output: dict) -> dict:

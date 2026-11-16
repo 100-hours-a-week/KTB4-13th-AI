@@ -15,7 +15,7 @@
 """
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.core import categories
@@ -57,6 +57,7 @@ class Outcome:
     status: int
     data: dict[str, Any] | None  # 200 이면 응답의 data, 아니면 None
     seconds: float
+    prompt_versions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class Score:
     values: tuple[str, ...]  # 뽑은 문장(결과를 사람이 읽을 때 쓴다)
     # 뽑은 취향의 종류·세기·어디에·핵심어. 세 칸이 왜 틀렸는지 사람이 볼 때 쓴다
     got: tuple[dict[str, Any], ...]
+    prompt_versions: dict[str, str] = field(default_factory=dict)
 
 
 def _squash(text: str) -> str:
@@ -205,6 +207,7 @@ def score(case: dict[str, Any], outcome: Outcome) -> Score:
             expected=len(wanted),
             status=outcome.status,
             seconds=outcome.seconds,
+            prompt_versions=outcome.prompt_versions,
             **filled,
         )
 

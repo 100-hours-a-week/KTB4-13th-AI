@@ -597,7 +597,7 @@ class _Stream:
     ) -> None:
         self._pieces, self._error, self._delay = pieces, error, delay
 
-    async def astream(self, _inputs):
+    async def astream(self, _inputs, _config=None):
         for piece in self._pieces:
             await asyncio.sleep(self._delay)
             yield AIMessageChunk(content=piece)

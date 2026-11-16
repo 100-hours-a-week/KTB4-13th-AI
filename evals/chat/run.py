@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from app.core import isbn
+from app.core.langsmith import EVAL_PROMPTS_HEADER, header_versions
 from app.core.products import price_sql
 from evals.chat.grade import load_cases
 
@@ -58,7 +59,11 @@ def _request(url: str, token: str, body: dict | None = None) -> tuple[int, dict]
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as res:
-            return res.status, json.loads(res.read())
+            payload = json.loads(res.read())
+            versions = header_versions(res.headers.get(EVAL_PROMPTS_HEADER))
+            if versions:
+                payload["_eval_prompt_versions"] = versions
+            return res.status, payload
     except urllib.error.HTTPError as e:
         raw = e.read()
         try:
@@ -95,6 +100,7 @@ def run_case(base_url: str, token: str, case: dict) -> tuple[str, list[dict]]:
                 "reply": data.get("reply"),
                 "followup": data.get("followup"),
                 "degraded": data.get("degraded"),
+                "prompt_versions": payload.get("_eval_prompt_versions", {}),
                 "cards": [
                     {
                         key: card.get(key)

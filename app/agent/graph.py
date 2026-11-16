@@ -476,6 +476,7 @@ async def run_agent(
     info: BookInfo | None = None,
     book_info: bool = False,
     summarizer: ReviewSummarizer | None = None,
+    base_prompt: str = prompts.SYSTEM_PROMPT,
 ) -> AgentRun:
     """요청 하나를 그래프로 처리한다. LLM 장애는 LLMUnavailableError 로 올라간다.
 
@@ -505,6 +506,8 @@ async def run_agent(
     graph = build_graph(
         model, gateway, ctx, comparer, finder, deadline, offered_info, summarizer
     )
+    # 트레이스를 보낼지는 요청 단위(app.core.langsmith.observe)가 정한다. 원문 트레이스를 켠 표본 요청이면
+    # 그래프가 그 루트 아래에 붙고, 아니면 observe 가 막는다.
     out: _State = await graph.ainvoke(
         {
             "messages": [
@@ -513,6 +516,7 @@ async def run_agent(
                         search=finder is not None,
                         order=checkout,
                         info=offered_info is not None,
+                        base=base_prompt,
                     )
                 ),
                 SystemMessage(prompts.state_message(ctx)),
@@ -523,7 +527,8 @@ async def run_agent(
             "iterations": 0,
             "llm_calls": 0,
             "out_of_time": False,
-        }
+        },
+        {"run_name": "agent.graph"},
     )
     final_text = _text(out["messages"][-1])
     actions: list[CartAction] = []

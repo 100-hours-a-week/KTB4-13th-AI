@@ -171,7 +171,7 @@ def test_모델_호출이_끝나지_않아도_읽기_시간_제한에_끊는다(
     _fake_model('{"photo_type": "none", "books": []}', monkeypatch)
     monkeypatch.setattr(read.get_settings(), "photo_timeout_seconds", 0.06)
 
-    async def slow_invoke(chain, inputs):
+    async def slow_invoke(chain, inputs, **_):
         await asyncio.sleep(1)
 
     monkeypatch.setattr(read, "invoke_chain", slow_invoke)

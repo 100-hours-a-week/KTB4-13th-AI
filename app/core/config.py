@@ -6,6 +6,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -102,6 +103,24 @@ class Settings(BaseSettings):
     # ⑦ 한 턴(LLM 호출 최대 4번과 도구 실행)의 시간 제한. 명세 ⑦ 의 504 "생성 30초 초과". llm_timeout_seconds 는
     # LLM 호출 하나의 제한이라 턴 전체는 이것으로 끊는다(#376).
     agent_turn_timeout_seconds: float = 30
+    # LangSmith 프롬프트와 온라인 평가. 각각 프롬프트 매핑과 프로젝트 이름을 채우면 사용한다.
+    langsmith_api_key: SecretStr = SecretStr("")
+    # 팀 계정은 APAC 리전에 가입했다. 리전은 가입 때 정해져 옮길 수 없고, 키와 주소의 리전이 다르면 403 이 난다.
+    # 웹 화면 주소는 SDK가 이 주소에서 apac.smith.langchain.com 으로 알아서 바꾼다.
+    langsmith_endpoint: str = "https://apac.api.smith.langchain.com"
+    langsmith_workspace_id: str = ""
+    langsmith_project: str = ""
+    langsmith_prompts: dict[str, str] = Field(default_factory=dict)
+    langsmith_prompt_refresh_seconds: float = Field(default=5, ge=0)
+    langsmith_sample_rate: float = Field(default=1, ge=0, le=1)
+    # 켜면 표본으로 뽑힌 ③⑦·취향 추출·사진 요청을 원문(요청 본문·응답·LLM 호출)까지 트레이스로 보내고 점수를 그
+    # 트레이스에 붙인다. 사용자 번호(user_id)는 빼고 보낸다. 끄면 점수와 숫자만 보낸다. 프로젝트가 있어야 쓴다.
+    langsmith_trace: bool = False
+    langsmith_eval_mode: bool = False
+    langsmith_agent_prompt: str = ""
+    langsmith_agent_project: str = ""
+    langsmith_agent_prompt_refresh_seconds: float = Field(default=5, ge=0)
+    langsmith_agent_sample_rate: float = Field(default=1, ge=0, le=1)
     # ⑦ 카드 밖 책 찾기·주문 화면·쿠폰과 포인트(#631). 켜면 BE 공개 검색으로 카드에 없는 책을 찾아 담고, "주문해
     # 줘"면 주문 화면 버튼과 쓸 쿠폰·포인트(checkout)를 돌려준다. BE#533 이 배포되기 전에는 BE 가 목록 밖 ISBN 과
     # 주문 화면 목적지를 거절해 턴이 실패하므로 기본은 끈다. 문지기의 "사 줘" 규칙(v4)과 근거 검사의 "사 줘"도 이

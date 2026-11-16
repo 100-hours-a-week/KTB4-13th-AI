@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.core import categories, db, responses
 from app.core.config import get_settings
+from app.core.online_eval import evaluate_response
 from app.feed import cursor, refresh, service
 from app.feed.schemas import parse_query
 
@@ -25,6 +26,7 @@ _NO_STORE = {"Cache-Control": "private, no-store"}
 
 
 @router.get("/feed")
+@evaluate_response("feed")
 async def feed(request: Request) -> JSONResponse:
     req = parse_query(request.query_params.multi_items())
     if req is None:

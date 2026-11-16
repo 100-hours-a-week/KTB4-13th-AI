@@ -8,7 +8,7 @@ from typing import Any, Literal
 import openai
 from langchain_core.language_models import BaseChatModel, FakeListChatModel
 from langchain_core.messages import BaseMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import OpenAIRefusalError
 
@@ -208,7 +208,12 @@ def message_text(message: BaseMessage) -> str:
     return message.content
 
 
-async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
+def _run_config(name: str | None) -> RunnableConfig | None:
+    """LangSmith 트레이스에 보일 단계 이름. 없으면 체인마다 RunnableSequence 로 찍혀 구분이 안 된다."""
+    return {"run_name": name} if name else None
+
+
+async def invoke_chain(chain: Runnable, inputs: Any, *, name: str | None = None) -> Any:
     """체인을 실행하고, provider 예외를 LLMUnavailableError로 바꿔 던진다.
 
     체인을 직접 ainvoke 하면 호출부가 openai 예외를 알아야 한다. 체인은 반드시
@@ -217,13 +222,15 @@ async def invoke_chain(chain: Runnable, inputs: Any) -> Any:
     성공·실패를 last_known_status()가 읽는 _llm_ok에도 남긴다 — ⑧ /health가
     이 값을 재사용하므로, 이 함수를 거치지 않고 체인을 부르면 health가 최근
     상태를 놓친다.
+
+    name 은 트레이스에 보이는 단계 이름이다(프롬프트 이름과 같게 쓴다).
     """
     with _llm_call():
-        return await chain.ainvoke(inputs)
+        return await chain.ainvoke(inputs, _run_config(name))
 
 
 async def invoke_chain_with_fallback(
-    chain: Runnable, fallback: Runnable, inputs: Any
+    chain: Runnable, fallback: Runnable, inputs: Any, *, name: str | None = None
 ) -> Any:
     """chain 을 부르고, LLM 장애(시간 초과 포함)로 끝나면 fallback 으로 한 번 더 부른다.
 
@@ -237,14 +244,16 @@ async def invoke_chain_with_fallback(
     try:
         async with asyncio.timeout(get_settings().llm_timeout_seconds):
             try:
-                return await invoke_chain(chain, inputs)
+                return await invoke_chain(chain, inputs, name=name)
             except LLMUnavailableError as e:
                 # 예외 메시지에는 모델이 쓴 글이 실릴 수 있어(#202) 종류만 남긴다
                 logger.warning(
                     "먼저 부른 LLM 이 답하지 못해(%s) 받쳐 둔 LLM 으로 다시 부른다",
                     type(e).__name__,
                 )
-                return await invoke_chain(fallback, inputs)
+                return await invoke_chain(
+                    fallback, inputs, name=f"{name}.fallback" if name else None
+                )
     except TimeoutError as e:
         raise LLMTimeoutError(
             "LLM 이 제한 시간 안에 답하지 못했다(다시 부른 것 포함)"
@@ -252,7 +261,11 @@ async def invoke_chain_with_fallback(
 
 
 async def stream_json(
-    chain: Runnable, inputs: Any, on_text: Callable[[str], Awaitable[None]]
+    chain: Runnable,
+    inputs: Any,
+    on_text: Callable[[str], Awaitable[None]],
+    *,
+    name: str | None = None,
 ) -> dict:
     """체인(`프롬프트 | 모델`)을 흘려 받으며, 지금까지 온 글 전체를 조각마다 on_text 에 넘긴다.
 
@@ -266,7 +279,7 @@ async def stream_json(
     with _llm_call():
         try:
             async with asyncio.timeout(get_settings().llm_timeout_seconds):
-                async for chunk in chain.astream(inputs):
+                async for chunk in chain.astream(inputs, _run_config(name)):
                     # 끝 알림 조각처럼 글 없이 오는 조각도 있다
                     if piece := message_text(chunk):
                         text += piece

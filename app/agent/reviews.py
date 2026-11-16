@@ -88,6 +88,7 @@ class LlmReviewSummarizer:
             ai = await invoke_chain(
                 self._model,
                 [SystemMessage(_RULES), HumanMessage(document(title, reviews))],
+                name="agent.reviews",
             )
             summary = clean(message_text(ai))
         except LLMUnavailableError as e:

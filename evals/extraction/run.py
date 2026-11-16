@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.core import langsmith
 from evals.extraction.scoring import Outcome, Score, score
 
 CASES_PATH = Path(__file__).with_name("cases.json")
@@ -228,9 +229,28 @@ def api_target() -> Target:
             response = await client.post(URL, json=request, headers=headers)
         seconds = perf_counter() - started
         data = response.json().get("data") if response.status_code == 200 else None
-        return Outcome(response.status_code, data, seconds)
+        return Outcome(
+            response.status_code,
+            data,
+            seconds,
+            langsmith.header_versions(
+                response.headers.get(langsmith.EVAL_PROMPTS_HEADER)
+            ),
+        )
 
     return call
+
+
+async def _measure(cases: Sequence[dict[str, Any]], runs: int) -> list[Score]:
+    from app.core.config import get_settings
+
+    # ASGITransport는 FastAPI lifespan을 실행하지 않는다. 평가용 프롬프트 클라이언트만 연다.
+    settings = get_settings().model_copy(update={"langsmith_eval_mode": True})
+    langsmith.start(settings)
+    try:
+        return await run(cases, api_target(), runs)
+    finally:
+        await langsmith.stop()
 
 
 def _model_line() -> str:
@@ -323,7 +343,9 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
     # 서버는 요청마다 로그를 남긴다. 수십 번 부르면 결과 표가 묻히므로 도는 동안은 경고부터만 보인다
     logging.disable(logging.INFO)
     try:
-        scores = asyncio.run(run(cases, target or api_target(), args.runs))
+        scores = asyncio.run(
+            run(cases, target, args.runs) if target else _measure(cases, args.runs)
+        )
     finally:
         logging.disable(logging.NOTSET)
     summary = summarize(scores, args.runs)

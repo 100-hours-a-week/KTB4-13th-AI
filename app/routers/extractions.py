@@ -11,7 +11,8 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.core import body, responses
+from app.core import body, langsmith, responses
+from app.core.online_eval import evaluate_response
 from app.extraction import service
 from app.extraction.schemas import parse_request
 from app.gateway.llm import LLMTimeoutError, LLMUnavailableError
@@ -26,6 +27,7 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 
 
 @router.post("/extractions")
+@evaluate_response("extraction")
 async def extract_preferences(request: Request) -> JSONResponse:
     raw = await body.read_limited(request, MAX_BODY_BYTES)
     if raw is None:
@@ -37,11 +39,13 @@ async def extract_preferences(request: Request) -> JSONResponse:
         # JSON 문법 오류와, UTF-8 이 아닌 본문(UnicodeDecodeError) 둘 다 ValueError 다.
         return responses.error(400, "invalid_request")
 
+    langsmith.trace_inputs(payload)
     req = parse_request(payload)
     if req is None:
         return responses.error(400, "invalid_request")
 
     extractions: list = []
+    langsmith.fact("evaluated", bool(req.consented and req.conversation))
     # 동의하지 않은 사용자의 대화는 뽑지 않는다(명세 ⑤). 빈 대화는 뽑을 것이 없다.
     if req.consented and req.conversation:
         try:

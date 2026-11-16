@@ -56,11 +56,13 @@ from app.core import (
     editions,
     foreign_script,
     isbn,
+    langsmith,
     popularity,
     responses,
     voice,
 )
 from app.core.config import get_settings
+from app.core.online_eval import evaluate_response
 from app.core.pgvector import to_vector_literal
 from app.core.turns import MAX_RECENT_TURNS
 from app.feed import interest_scoring, personalized, scoring
@@ -445,7 +447,8 @@ async def _ask_spec_patch(
     shown_listing: str = "(없음)",
     ask_stage: asking.Stage = "none",
 ) -> dict:
-    chain = SPEC_PROMPT | get_chat_model() | message_text | parse_json_response
+    prompt = await langsmith.template("chat.spec", SPEC_PROMPT)
+    chain = prompt | get_chat_model() | message_text | parse_json_response
     return await invoke_chain(
         chain,
         {
@@ -456,6 +459,7 @@ async def _ask_spec_patch(
             "ask_rule": asking.rule(ask_stage),
             "agent_rule": AGENT_RULE if _agent_on() else "",
         },
+        name="chat.spec",
     )
 
 
@@ -483,9 +487,12 @@ async def _asks_new_request(message: str, previous: str) -> bool:
         return picked.choice == "new"
     model_id = get_settings().relation_llm_model_id
     model = get_chat_model(model_id=model_id) if model_id else get_chat_model()
-    chain = RELATION_PROMPT | model | message_text | parse_json_response
+    prompt = await langsmith.template("chat.relation", RELATION_PROMPT)
+    chain = prompt | model | message_text | parse_json_response
     try:
-        answer = await invoke_chain(chain, {"previous": previous, "message": message})
+        answer = await invoke_chain(
+            chain, {"previous": previous, "message": message}, name="chat.relation"
+        )
     except LLMUnavailableError:
         logger.warning("새 요청 판정 실패 — 이어가는 말로 본다", exc_info=True)
         return False
@@ -506,9 +513,10 @@ async def _relation_within_grace(relation: "asyncio.Task[bool]") -> bool:
 
 async def _judge_scope(message: str) -> asking.Ask | None:
     """넓은 첫 요청인지 판정한다(#530). 넓으면 물을 말과 답 보기, 아니면 None. 호출이 실패하면 묻지 않는다."""
-    chain = asking.SCOPE_PROMPT | get_chat_model() | message_text | parse_json_response
+    prompt = await langsmith.template("chat.scope", asking.SCOPE_PROMPT)
+    chain = prompt | get_chat_model() | message_text | parse_json_response
     try:
-        answer = await invoke_chain(chain, {"message": message})
+        answer = await invoke_chain(chain, {"message": message}, name="chat.scope")
     except LLMUnavailableError:
         logger.warning("넓은 요청 판정 실패 — 묻지 않고 찾는다", exc_info=True)
         return None
@@ -613,11 +621,13 @@ async def _recall_titles(
     어떤 예외도 밖으로 내지 않는다. 이 호출은 턴과 나란히 돌다 쓰지 않으면 끊기는데, 끝난 작업의 예외를 아무도 받지
     않으면 이벤트 루프가 경고만 남기고 원인을 잃는다.
     """
-    chain = recall.RECALL_PROMPT | get_chat_model() | message_text | parse_json_response
+    prompt = await langsmith.template("chat.recall", recall.RECALL_PROMPT)
+    chain = prompt | get_chat_model() | message_text | parse_json_response
     try:
         answer = await invoke_chain(
             chain,
             {"message": message, "recent_turns": _format_recent_turns(recent_turns)},
+            name="chat.recall",
         )
     except Exception:
         logger.warning("떠올린 제목 호출 실패 — 검색으로만 찾는다", exc_info=True)
@@ -1838,15 +1848,17 @@ async def generate_cards(
     }
 
     try:
+        prompt = await langsmith.template("chat.cards", CARD_PROMPT)
         if on_reply is None:
             # 프롬프트 채우기 → 모델 호출 → 답에서 글자 꺼내기 → JSON 읽기, 네 칸을 잇는다.
-            chain = CARD_PROMPT | get_chat_model() | message_text | parse_json_response
-            parsed = await invoke_chain(chain, inputs)
+            chain = prompt | get_chat_model() | message_text | parse_json_response
+            parsed = await invoke_chain(chain, inputs, name="chat.cards")
         else:
             parsed = await stream_json(
-                CARD_PROMPT | get_chat_model(),
+                prompt | get_chat_model(),
                 inputs,
                 streaming.ReplyPreview(on_reply, _preview_reply).feed,
+                name="chat.cards",
             )
     except LLMUnavailableError:
         logger.exception("카드 생성 실패")
@@ -2283,14 +2295,10 @@ async def _judge(
         relation=turn.plan.relation if turn.anchor is not None else None,
     )
     try:
+        prompt = await langsmith.template("chat.pick", picking.JUDGE_PROMPT)
         if on_reply is None:
-            chain = (
-                picking.JUDGE_PROMPT
-                | get_chat_model()
-                | message_text
-                | parse_json_response
-            )
-            answer = await invoke_chain(chain, inputs)
+            chain = prompt | get_chat_model() | message_text | parse_json_response
+            answer = await invoke_chain(chain, inputs, name="chat.pick")
         else:
             preview = streaming.ReplyPreview(on_reply, _preview_reply)
 
@@ -2300,7 +2308,7 @@ async def _judge(
                     await preview.feed(text)
 
             answer = await stream_json(
-                picking.JUDGE_PROMPT | get_chat_model(), inputs, feed
+                prompt | get_chat_model(), inputs, feed, name="chat.pick"
             )
     except LLMUnavailableError:
         logger.exception("판단 호출 실패")
@@ -2879,14 +2887,11 @@ async def _judge_lane(
             )
             answer = {"lane": picked.choice}
         else:
-            chain = (
-                gate_judge.LANE_PROMPT
-                | get_chat_model()
-                | message_text
-                | parse_json_response
-            )
+            prompt = await langsmith.template("chat.lane", gate_judge.LANE_PROMPT)
+            chain = prompt | get_chat_model() | message_text | parse_json_response
             answer = await asyncio.wait_for(
-                invoke_chain(chain, inputs), timeout=GATE_JUDGE_TIMEOUT_SECONDS
+                invoke_chain(chain, inputs, name="chat.lane"),
+                timeout=GATE_JUDGE_TIMEOUT_SECONDS,
             )
     except (LLMUnavailableError, TimeoutError):
         logger.warning("문지기 판정 실패 — 규칙의 기본값으로 간다", exc_info=True)
@@ -2907,7 +2912,8 @@ async def _answer(
     req: ChatRequest, shown_books: list[shown.ShownBook]
 ) -> tuple[str, str, bool]:
     """대답 턴의 (reply, followup, degraded). LLM 이 실패하면 고정 안내와 degraded 를 준다."""
-    chain = ANSWER_PROMPT | get_chat_model() | message_text | parse_json_response
+    prompt = await langsmith.template("chat.answer", ANSWER_PROMPT)
+    chain = prompt | get_chat_model() | message_text | parse_json_response
     try:
         parsed = await invoke_chain(
             chain,
@@ -2916,6 +2922,7 @@ async def _answer(
                 "shown": shown.listing(shown_books, ANSWER_DESCRIPTION_CHARS),
                 "message": req.message,
             },
+            name="chat.answer",
         )
     except LLMUnavailableError:
         logger.exception("대답 턴 실패")
@@ -3005,6 +3012,7 @@ async def _read_request(request: Request) -> tuple[ChatRequest, dict] | JSONResp
     return req, payload
 
 
+@evaluate_response("chat")
 async def _respond(
     req: ChatRequest, payload: dict, on_reply: ReplySink | None
 ) -> JSONResponse:
@@ -3013,8 +3021,41 @@ async def _respond(
     모델이 섞어 쓴 다른 나라 글자(#717)는 갈래마다 따로 거르지 않고 나가기 직전 여기서 한 번 거른다. 먼저 보내는
     말풍선도 거른다. 거르고 나서 빈 말풍선은 보내지 않는다(done 의 reply 만 간다).
     """
+    langsmith.trace_inputs(payload)
     sink = None if on_reply is None else _cleaned_sink(on_reply)
-    return _without_foreign_words(await _handle(req, payload, sink))
+    response = _without_foreign_words(await _handle(req, payload, sink))
+    if langsmith.tracing_request():
+        await _trace_judge_books(response)
+    return response
+
+
+# 판정 LLM 이 읽는 책 소개 길이. 오프라인 카드 채점 기준(제목·저자·소개 앞 300자)과 같게 둔다.
+JUDGE_DESCRIPTION_CHARS = 300
+
+
+async def _trace_judge_books(response: JSONResponse) -> None:
+    """원문 트레이스를 켠 표본 턴에, 판정 LLM 이 읽을 카드 책 정보를 싣는다.
+
+    응답 카드에는 소개가 없어, 판정이 우리가 쓴 추천 이유에 끌려간다. 그래서 오프라인 채점과 같은 재료(제목·저자·
+    소개 앞부분)를 트레이스 출력 ``judge_books`` 에 따로 싣고, 카드가 있는 턴에 ``has_cards`` 꼬리표를 단다. 판정
+    규칙은 이 꼬리표로 턴을 고른다. 실패해도 응답에는 영향이 없다.
+    """
+    try:
+        cards = json.loads(response.body).get("data", {}).get("cards") or []
+        picked = [
+            (card["rank"], card["isbn"])
+            for card in cards
+            if isinstance(card.get("rank"), int) and isinstance(card.get("isbn"), str)
+        ]
+        books = await shown.fetch(picked)
+    except Exception:
+        logger.warning("판정용 책 정보를 싣지 못했다", exc_info=True)
+        return
+    if books:
+        langsmith.trace_outputs(
+            {"judge_books": shown.listing(books, JUDGE_DESCRIPTION_CHARS)},
+            tags=["has_cards"],
+        )
 
 
 def _cleaned_sink(on_reply: ReplySink) -> ReplySink:
@@ -3055,6 +3096,7 @@ def _without_foreign_words(response: JSONResponse) -> JSONResponse:
                 changed += [_clean_text(basis, "label"), _clean_text(basis, "detail")]
     if not any(changed):
         return response
+    langsmith.fact("filtered_text_fields", sum(changed))
     logger.info("다른 나라 글자를 걸렀다")
     headers = {
         key: value
@@ -3106,6 +3148,7 @@ async def _handle(
                 return responses.error(400, "invalid_request")
             turn = await agent.shop_turn(shop_req, shopping.agent_payload(payload))
             if turn.error is not None:
+                langsmith.fact("delegated_to_agent", True)
                 # ⑦ 이 실패한 것을 ③ 의 추천으로 덮지 않는다. 장바구니 요청에 추천 답을 하는 쪽이 더 나쁘다
                 return turn.error
             if not turn.not_shopping:

@@ -16,12 +16,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.agent import guard, replay
+from app.agent import langsmith as agent_monitor
 from app.agent.compare import LlmComparer
 from app.agent.graph import run_agent
 from app.agent.reply import GroundingFailed, finish
 from app.agent.reviews import LlmReviewSummarizer
 from app.agent.schemas import AgentActRequest, parse_request
 from app.core import body, idempotency, responses
+from app.core import langsmith as eval_monitor
 from app.core.config import get_settings
 from app.gateway.commerce_provider import (
     get_book_info,
@@ -113,6 +115,27 @@ async def act(request: Request) -> JSONResponse:
 
 async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
     """검사를 마친 요청 하나를 처리한다. `payload`는 멱등 키의 본문 비교에 쓴다."""
+    with eval_monitor.observe("agent", payload) as observed:
+        result = await _shop_turn(req, payload, observed)
+        if observed is not None:
+            observed.trace_outputs(_trace_outputs(result))
+        return result
+
+
+def _trace_outputs(result: ShopTurn) -> dict:
+    if result.error is not None:
+        return {
+            "status": result.error.status_code,
+            **json.loads(result.error.body),
+        }
+    return {"status": 200, "message": result.message, "data": result.data}
+
+
+async def _shop_turn(
+    req: AgentActRequest,
+    payload: dict[str, Any],
+    observed: eval_monitor.Observation | None,
+) -> ShopTurn:
     # 같은 요청의 재시도는 다시 처리하지 않고 처음 응답을 돌려준다. 같은 키에 다른 본문이면 409
     key = replay.key_of(req.idempotency_key)
     digest = idempotency.body_hash(payload)
@@ -124,7 +147,11 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
         logger.info("⑦ 같은 키의 재시도라 저장한 응답을 돌려준다")
         return ShopTurn(message=stored["message"], data=stored["data"])
 
+    run = None
+    status = None
+    removed = []
     try:
+        prompt = await agent_monitor.current_prompt()
         gateway = get_commerce(req)
         catalog = get_catalog()
         model = agent_model()
@@ -147,24 +174,34 @@ async def shop_turn(req: AgentActRequest, payload: dict[str, Any]) -> ShopTurn:
                 info=get_book_info(),
                 book_info=settings.agent_book_info,
                 summarizer=LlmReviewSummarizer(model),
+                base_prompt=prompt.text,
             )
         finished = finish(run)
+        status, removed = 200, finished.removed
     except TimeoutError:
+        status = 504
         # AI 는 장바구니를 바꾸지 않으므로(actions 만 돌려준다) 끊겨도 바뀐 것이 없다
         logger.warning("⑦ 턴 시간 제한을 넘었다")
         return ShopTurn(error=responses.error(504, "generation_timeout"))
     except GroundingFailed as e:
+        status, removed = 422, e.removed
         logger.warning("⑦ 답변 검사로 답이 남지 않았다 removed=%s", e.removed)
         return ShopTurn(error=responses.error(422, "grounding_failed"))
     except LLMUnavailableError as e:
         if _is_timeout(e):
+            status = 504
             return ShopTurn(error=responses.error(504, "generation_timeout"))
+        status = 503
         return ShopTurn(error=_unavailable())
     except Exception as e:  # noqa: BLE001 - 예외 메시지에 대화 원문이 들어갈 수 있어 종류만 남긴다
+        status = 500
         # 그대로 두면 FastAPI 기본 500 {"detail": ...} 이 나가 공통 응답 형식이 깨진다. 예외 메시지에
         # 검증 실패한 입력(대화 원문)이 들어갈 수 있어서 종류만 남긴다.
         logger.error("⑦ 처리 실패(%s)", type(e).__name__)
         return ShopTurn(error=responses.error(500, "internal_server_error"))
+    finally:
+        if observed is not None and observed.sampled and status is not None:
+            agent_monitor.record(observed, status, run, removed)
 
     logger.info(
         "⑦ 완료 llm_calls=%d iterations=%d hit_cap=%s out_of_time=%s tool_calls=%d removed=%s ms=%.0f",

@@ -707,7 +707,7 @@ def test_판정_답을_쓸_수_없으면_None이다(monkeypatch, content: str) -
 
 
 def test_판정이_늦으면_None이다(monkeypatch) -> None:
-    async def _slow(_chain, _inputs):
+    async def _slow(_chain, _inputs, **_):
         await asyncio.sleep(1)
 
     monkeypatch.setattr(chat, "GATE_JUDGE_TIMEOUT_SECONDS", 0.01)

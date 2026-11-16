@@ -18,6 +18,8 @@ dev/
 
 # ⑦ 평가 실행 결과 원본(실제 모델 호출 기록). 저장소에는 올리지 않는다
 evals/agent/results/
+# 여러 태스크 평가의 원본 및 회귀 테스트 결과
+evals/results/
 # ④⑥ 평가 실행 결과(--out). 책 표가 PC 마다 달라 저장소에 올리지 않는다. 기준선만 evals/feed/baseline.json 에 둔다
 evals/feed/results/
 # ③ 평가 실행 원본·요약(--out). 모델 호출 기록이라 저장소에는 올리지 않는다. 기준선만 evals/chat/baselines/ 에 둔다

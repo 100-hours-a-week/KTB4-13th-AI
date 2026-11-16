@@ -15,6 +15,7 @@ from typing import Literal
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.core import langsmith
 from app.core.config import get_settings
 from app.gateway.llm import (
     LLMTimeoutError,
@@ -55,6 +56,7 @@ photo_type 에 사진 종류를 적는다. 책의 앞표지나 뒤표지가 보�
 예:
 {"photo_type": "cover", "books": [{"is_book_cover": true, "title": "달러구트 꿈 백화점", "original_title": null, "subtitle": "주문하신 꿈은 매진입니다", "authors": ["이미예"], "publisher": "팩토리나인", "volume": null, "isbn": null}]}"""
 
+READ_TEMPLATE = langsmith.text_template(READ_PROMPT, "human")
 _NON_DIGIT = re.compile(r"\D")
 
 
@@ -146,9 +148,12 @@ async def read(image_url: str) -> PhotoText:
         model_id=settings.photo_llm_model_id or None,
         timeout_seconds=timeout_seconds,
     )
+    prompt = await langsmith.prompt(
+        "photo.read", READ_TEMPLATE, validate=langsmith.validate_text
+    )
     message = HumanMessage(
         content=[
-            {"type": "text", "text": READ_PROMPT},
+            {"type": "text", "text": langsmith.plain_text(prompt.template)},
             # 작은 글씨(저자·출판사·책등)까지 읽으려면 사진을 잘게 나눠 보는 high 가 필요하다
             {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
         ]
@@ -156,7 +161,9 @@ async def read(image_url: str) -> PhotoText:
     try:
         async with asyncio.timeout(timeout_seconds):
             raw = await invoke_chain(
-                model | message_text | parse_json_response, [message]
+                model | message_text | parse_json_response,
+                [message],
+                name="photo.read",
             )
     except TimeoutError as e:
         raise LLMTimeoutError("사진 읽기가 제한 시간을 넘겼습니다") from e

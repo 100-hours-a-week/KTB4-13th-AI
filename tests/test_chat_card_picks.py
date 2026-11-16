@@ -117,13 +117,13 @@ def test_SSE는_카드_이유를_받기_전에_말풍선을_보낸다() -> None:
 
     original_stream = chat.stream_json
 
-    async def watch_stream(chain, inputs, on_text):
+    async def watch_stream(chain, inputs, on_text, **kwargs):
         async def track(text: str) -> None:
             nonlocal fed
             fed = text
             await on_text(text)
 
-        return await original_stream(chain, inputs, track)
+        return await original_stream(chain, inputs, track, **kwargs)
 
     chat.stream_json = watch_stream
     try:

@@ -306,8 +306,11 @@ def main(
     print(render(summary, bundle["top"]))
 
     if args.out:
+        from evals.langsmith_publish import fingerprint
+
         saved = {
             "bundle_version": bundle["version"],
+            "labels_fingerprint": fingerprint(labels),
             "catalog": catalog,
             "database": database,
             "code": label,
