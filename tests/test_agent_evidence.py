@@ -441,7 +441,24 @@ def test_정확히_말한_사례의_정답_행동은_근거가_있어_막히지_
         )
 
 
-@pytest.mark.parametrize("case", _ASK, ids=[c["id"] for c in _ASK])
+# 아직 막지 못하는 되물을 사례(#721). 카드가 한 장이면 "2번"처럼 없는 번호를 말해도 그 카드를 근거 있는 것으로 본다.
+# strict 라서 고치는 순간 실패하므로 그때 여기서 뺀다
+_ASK_GAPS = {"ask-11"}
+_ASK_PARAMS = [
+    pytest.param(
+        case,
+        id=case["id"],
+        marks=pytest.mark.xfail(
+            strict=True, reason="#721 카드 한 장에 없는 번호를 말해도 근거로 본다"
+        ),
+    )
+    if case["id"] in _ASK_GAPS
+    else pytest.param(case, id=case["id"])
+    for case in _ASK
+]
+
+
+@pytest.mark.parametrize("case", _ASK_PARAMS)
 def test_되물어야_하는_사례는_어떤_짐작도_근거를_얻지_못한다(case: dict) -> None:
     ctx = _case_ctx(case)
     guesses = [(BookRef(source="card", n=c.rank), c.isbn) for c in ctx.cards] + [

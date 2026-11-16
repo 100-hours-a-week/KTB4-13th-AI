@@ -348,7 +348,7 @@ def test_백분위수는_정렬한_값에서_고른다() -> None:
 def _args(**kw):
     import argparse
 
-    base = {"ids": "", "kinds": "", "group": "", "split": ""}
+    base = {"ids": "", "kinds": "", "group": "", "split": "", "bundle": ""}
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -372,7 +372,7 @@ def test_사례를_dev와_heldout으로_가른다() -> None:
     heldout = run._select(DATA, _args(split="heldout"))
 
     assert len(dev) == 105
-    assert len(heldout) == 72
+    assert len(heldout) == 73
     assert {c["id"] for c in dev} | {c["id"] for c in heldout} == set(CASES)
     # split 칸이 없는 옛 사례는 dev 다
     assert all(c.get("split", "dev") == "dev" for c in dev)
@@ -381,7 +381,7 @@ def test_사례를_dev와_heldout으로_가른다() -> None:
     assert {
         c["kind"] for c in run._select(DATA, _args(split="heldout", kinds="ask"))
     } == {"ask"}
-    assert len(run._select(DATA, _args(split="heldout", kinds="ask"))) == 6
+    assert len(run._select(DATA, _args(split="heldout", kinds="ask"))) == 7
 
 
 def test_없는_사례_번호나_종류는_실행을_멈춘다() -> None:
@@ -389,6 +389,23 @@ def test_없는_사례_번호나_종류는_실행을_멈춘다() -> None:
         run._select(DATA, _args(ids="nope-01"))
     with pytest.raises(SystemExit):
         run._select(DATA, _args(kinds="nope"))
+    with pytest.raises(SystemExit):
+        run._select(DATA, _args(bundle="nope"))
+
+
+def test_표시로_고르면_그_표시가_붙은_사례만_돈다() -> None:
+    # 모델을 견줄 때 모델 판단이 갈리는 사례만 돌린다(#720)
+    model = run._select(DATA, _args(bundle="model"))
+
+    assert len(model) == 16
+    assert all("model" in c["bundles"] for c in model)
+    assert {"describe-01", "delegate-02", "ask-04"} <= {c["id"] for c in model}
+    # 코드가 막아야 하는 사례(#721)는 모델 비교에 넣지 않는다
+    assert "ask-11" not in {c["id"] for c in model}
+    # 다른 조건과 겹쳐 쓸 수 있다
+    assert {
+        c["split"] for c in run._select(DATA, _args(bundle="model", split="heldout"))
+    } == {"heldout"}
 
 
 def test_LLM_MOCK이_켜져_있으면_실행을_거부한다(monkeypatch) -> None:

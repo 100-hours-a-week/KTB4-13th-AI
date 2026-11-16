@@ -29,7 +29,7 @@ import asyncpg
 
 from app.core import isbn
 from app.core.products import price_sql
-from evals.chat.grade import load_cases
+from evals.chat.grade import bundle_numbers, load_cases
 
 # 화면이 보내는 초기 spec(명세 ③). 턴이 이어지면 직전 응답의 spec 으로 바뀐다.
 INITIAL_SPEC = {
@@ -211,6 +211,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4, help="동시에 보낼 질문 수")
     parser.add_argument("--only", default="", help="이 번호의 질문만. 예: 8,43")
     parser.add_argument(
+        "--bundle", default="", help="이 표시(bundles)가 붙은 질문만(#720). 예: model"
+    )
+    parser.add_argument(
         "--model",
         default=os.environ.get("LLM_MODEL_ID", ""),
         help="서버가 쓰는 모델(기록용)",
@@ -238,6 +241,9 @@ def main() -> None:
 
     cases_file = load_cases()
     only = {int(n) for n in args.only.split(",") if n.strip()}
+    if args.bundle:
+        bundle = bundle_numbers(cases_file, args.bundle)
+        only = only & bundle if only else set(bundle)
     cases = [c for c in cases_file["cases"] if not only or c["no"] in only]
 
     status, health = _request(f"{args.base_url}/health", token)
@@ -255,6 +261,7 @@ def main() -> None:
         "runs": args.runs,
         "workers": args.workers,
         "note": args.note,
+        "bundle": args.bundle or None,
     }
     runs: list[dict[str, list[dict]]] = []
     out = Path(args.out)

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "about": "#631 카드 밖 책 찾기·주문 화면·쿠폰과 포인트. AGENT_CHECKOUT 을 켠 채로 돈다(사례의 checkout: true). cases.json(기능을 끈 기준선)과 따로 잰다",
   "catalog": [
     {
@@ -139,6 +139,11 @@
     "checkout": {
       "group": "typical",
       "about": "카드 밖 책을 찾아 담거나, 주문해 달라는 말에 주문 화면과 쿠폰·포인트를 준다"
+    }
+  },
+  "bundles": {
+    "model": {
+      "about": "모델을 바꾸면 결과가 달라질 수 있는 사례만 모은 것(#720). 소개글로 가리킨 책, 맡긴 고르기·결제, 대화로 가리킨 책, 사겠다는 말 같은 모델 판단이 갈리는 곳이다. 모델을 견줄 때 --bundle model 로 돌린다"
     }
   },
   "cases": [
@@ -423,7 +428,10 @@
             "target": "ORDER-001"
           }
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-h01",
@@ -546,7 +554,10 @@
             "target": "ORDER-001"
           }
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-h04",
@@ -694,7 +705,10 @@
         "required_text": [
           "주문 화면에서"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-h08",
@@ -1103,7 +1117,10 @@
             "target": "ORDER-001"
           }
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-n05",
@@ -1935,7 +1952,10 @@
             "target": "ORDER-001"
           }
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-p03",
@@ -1973,7 +1993,10 @@
             "target": "ORDER-001"
           }
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "checkout-p04",

@@ -1,5 +1,5 @@
 {
-  "version": 13,
+  "version": 14,
   "catalog": [
     {
       "isbn": "9788900001001",
@@ -206,6 +206,11 @@
     "interest": {
       "group": "guard",
       "about": "책을 가리키며 관심만 말했다. 담기, 빼기, 수량 변경을 시키지 않았다(#531)"
+    }
+  },
+  "bundles": {
+    "model": {
+      "about": "모델을 바꾸면 결과가 달라질 수 있는 사례만 모은 것(#720). 소개글로 가리킨 책, 맡긴 고르기·결제, 대화로 가리킨 책, 사겠다는 말 같은 모델 판단이 갈리는 곳이다. 모델을 견줄 때 --bundle model 로 돌린다"
     }
   },
   "cases": [
@@ -1841,7 +1846,10 @@
       "expect": {
         "outcome": "ask_back",
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "already-01",
@@ -2606,7 +2614,10 @@
           0
         ],
         "cart_total": 37000
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "ask-05",
@@ -4619,7 +4630,10 @@
         "required_text": [
           "데이터베이스"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "describe-02",
@@ -4663,7 +4677,10 @@
         "required_text": [
           "네트워크"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "short-01",
@@ -4948,7 +4965,10 @@
         "cart": {
           "9788900001117": 1
         }
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "long-03",
@@ -5056,7 +5076,10 @@
         "cart": {
           "9788900001001": 2
         }
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "multiturn-02",
@@ -5191,7 +5214,10 @@
         "required_text": [
           "파이썬"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "notshop-04",
@@ -5464,7 +5490,10 @@
           "ask_back"
         ],
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "delegate-02",
@@ -5511,7 +5540,10 @@
         "confirm_isbns": [
           "9788900001001"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "short-05",
@@ -5679,7 +5711,10 @@
         "required_text": [
           "파이썬"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "multiturn-06",
@@ -5730,7 +5765,10 @@
       "expect": {
         "outcome": "ask_back",
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "describe-03",
@@ -5774,7 +5812,10 @@
         "required_text": [
           "알고리즘"
         ]
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "interest-01",
@@ -5862,7 +5903,10 @@
           "not_shopping"
         ],
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "interest-03",
@@ -7195,7 +7239,10 @@
       "expect": {
         "outcome": "ask_back",
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "multiturn-12",
@@ -7249,7 +7296,10 @@
           "not_shopping"
         ],
         "cart": {}
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "multiturn-21",
@@ -7362,7 +7412,10 @@
         "cart": {
           "9788900001070": 1
         }
-      }
+      },
+      "bundles": [
+        "model"
+      ]
     },
     {
       "id": "multiturn-14",
@@ -8070,6 +8123,37 @@
           "9788900001056": 1,
           "9788900001100": 1
         }
+      }
+    },
+    {
+      "id": "ask-11",
+      "kind": "ask",
+      "split": "heldout",
+      "about": "카드가 한 장뿐인데 '2번'을 담으라고 한다. 없는 번호이니 담지 않고 어느 책인지 묻는다(ask-04와 같은 기준). 11/11 dev 멀티턴 시험에서 6번 중 1번은 1번 책을 담았는데, 근거 검사가 이 경우를 막지 못하는 코드 결함이었다(#721)",
+      "request": {
+        "user_id": 9800126,
+        "conversation_id": "eval_ask-11",
+        "message": "2번 담아줘",
+        "context_cards": [
+          {
+            "isbn": "9788900001018",
+            "rank": 1,
+            "match_score": 90
+          }
+        ],
+        "focused_isbn": null,
+        "user_context": {
+          "logged_in": true
+        },
+        "allow_tools": null,
+        "idempotency_key": "eval_ask-11_1"
+      },
+      "state": {
+        "cart": []
+      },
+      "expect": {
+        "outcome": "ask_back",
+        "cart": {}
       }
     }
   ]

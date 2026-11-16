@@ -13,7 +13,7 @@ from app.routers.chat import parse_request
 from evals.chat.grade import load_cases
 from evals.chat.run import INITIAL_SPEC
 
-ACTIONS = {"recommend", "clarify", "recommend_and_ask", "observe"}
+ACTIONS = {"recommend", "clarify", "recommend_and_ask", "observe", "answer"}
 EXPECT_KEYS = {"action", "intent", "cards", "reply", "spec", "semantic", "ungraded"}
 CARD_KEYS = {
     "any_isbn",
@@ -119,7 +119,13 @@ def test_기대_동작은_채점기가_아는_칸만_쓴다(case: dict) -> None:
     assert expect.get("intent") in (None, "exact", "semantic")
     assert set(expect.get("cards", {})) <= CARD_KEYS
     assert set(expect.get("reply", {})) <= {"has", "lacks"}
-    assert set(expect.get("semantic", {})) <= {"changes_at", "has", "lacks"}
+    assert set(expect.get("semantic", {})) <= {
+        "changes_at",
+        "has",
+        "lacks",
+        "keeps",
+        "no_unstated_mood",
+    }
     for note in expect.get("ungraded", []):
         assert isinstance(note, str) and note.strip()
 
@@ -140,6 +146,9 @@ def test_턴을_가리키는_검사는_있는_턴을_가리킨다(case: dict) ->
     cards = expect.get("cards", {})
     if cards.get("not_shown_before") or cards.get("only_shown_before"):
         assert turns >= 2
+    if expect["action"] == "answer":
+        # 앞 턴에 보여 준 책을 묻는 말이다
+        assert turns >= 2
 
 
 def test_기록만_하는_질문은_검사_대신_무엇을_볼지만_적는다() -> None:
@@ -155,3 +164,21 @@ def test_되물어야_하는_질문에는_카드_검사를_두지_않는다() ->
     for case in _CASES:
         if case["expect"]["action"] == "clarify":
             assert "cards" not in case["expect"], case["no"]
+
+
+def test_되물어야_하는_질문과_답할_질문에는_카드_검사를_두지_않는다() -> None:
+    # 답하는 턴은 카드가 없거나 앞의 카드 그대로다. 카드 검사를 적어 두면 늘 통과해 채점한 것처럼 보인다.
+    for case in _CASES:
+        if case["expect"]["action"] == "answer":
+            assert "cards" not in case["expect"], case["no"]
+
+
+def test_표시마다_설명이_있고_질문은_있는_표시만_가리킨다() -> None:
+    # 표시(bundles, #720)는 모델을 견줄 때 그 질문만 돌리는 데 쓴다. 이름을 잘못 적으면 그 질문이 조용히 빠진다.
+    bundles = _DATA["bundles"]
+    for info in bundles.values():
+        assert info["about"].strip()
+    for case in _CASES:
+        assert set(case.get("bundles", [])) <= set(bundles), case["no"]
+    for name in bundles:
+        assert sum(name in case.get("bundles", []) for case in _CASES) >= 10, name

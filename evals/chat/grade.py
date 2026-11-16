@@ -29,6 +29,8 @@ CASES_PATH = Path(__file__).with_name("cases.json")
 RECOMMEND_ACTIONS = {"recommend", "recommend_and_ask"}
 # 기대 동작을 아직 정하지 않았거나 코드로 볼 수 없는 질문. 돌려서 응답만 남기고 통과율에서 뺀다.
 OBSERVE = "observe"
+# 보여 준 책을 묻는 말(#720). 답만 하고, 앞에서 보여 주지 않은 책을 새로 내면 실패다. 카드가 없어도 된다.
+ANSWER = "answer"
 
 # 사용자가 말하지 않았는데 조건 문장(spec.semantic)에 붙으면 "지어낸 분위기"로 세는 낱말.
 # 어림이다 — 목록에 없는 낱말은 못 잡고, 뜻이 같은 다른 말로 한 요청은 잘못 잡을 수 있다.
@@ -63,6 +65,15 @@ _VOLUME_SUFFIX = re.compile(
 
 def load_cases(path: Path = CASES_PATH) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def bundle_numbers(cases_file: dict, name: str) -> frozenset[int]:
+    """표시(bundles, #720)가 붙은 질문 번호. 없는 표시 이름이면 SystemExit."""
+    if name not in cases_file.get("bundles", {}):
+        raise SystemExit(f"없는 표시: {name}")
+    return frozenset(
+        c["no"] for c in cases_file["cases"] if name in c.get("bundles", [])
+    )
 
 
 def normalize(text: str | None) -> str:
@@ -167,6 +178,8 @@ def grade_case(case: dict, turns: list[dict], books: dict) -> list[str]:
     ):
         fails.append("연도 미달")
     earlier = {c["book_id"] for t in turns[:-1] for c in t["cards"]}
+    if action == ANSWER and {c["book_id"] for c in cards} - earlier:
+        fails.append("질문에 새 카드")
     if want.get("not_shown_before") and earlier & {c["book_id"] for c in cards}:
         fails.append("본 책이 다시 나옴")
     # "이 중에 하나만 골라줘"처럼 앞에서 보여 준 책 안에서 골라야 하는 질문.
@@ -200,6 +213,13 @@ def grade_case(case: dict, turns: list[dict], books: dict) -> list[str]:
         w in _semantic(last) for w in semantic.get("lacks", [])
     ):
         fails.append("주제 전환 무시")
+    if any(w not in _semantic(last) for w in semantic.get("keeps", [])):
+        fails.append("앞 주제를 잃음")
+    user_said = " ".join(case["turns"])
+    if semantic.get("no_unstated_mood") and any(
+        w in _semantic(last) and w not in user_said for w in MOOD_WORDS
+    ):
+        fails.append("말 안 한 분위기")
 
     return list(dict.fromkeys(fails))
 
@@ -557,6 +577,11 @@ def main() -> None:
     parser.add_argument("raw", nargs="?", help="run.py 가 저장한 원본")
     parser.add_argument("--skip-runs", default="", help="뺄 회차 번호(1부터). 예: 4,5")
     parser.add_argument("--only", default="", help="이 번호의 질문만 센다. 예: 8,43")
+    parser.add_argument(
+        "--bundle",
+        default="",
+        help="이 표시(bundles)가 붙은 질문만 센다(#720). 예: model",
+    )
     parser.add_argument("--save", help="요약을 저장할 JSON 경로")
     parser.add_argument(
         "--compare", nargs=2, metavar=("전", "후"), help="저장한 요약 둘을 견준다"
@@ -576,6 +601,9 @@ def main() -> None:
     raw = json.loads(Path(args.raw).read_text(encoding="utf-8"))
     skip = frozenset(int(n) for n in args.skip_runs.split(",") if n.strip())
     only = frozenset(int(n) for n in args.only.split(",") if n.strip())
+    if args.bundle:
+        bundle = bundle_numbers(cases_file, args.bundle)
+        only = only & bundle if only else bundle
     summary = summarize(cases_file, raw, skip, only)
     print(render(summary, cases_file))
     if args.save:

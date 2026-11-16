@@ -280,6 +280,74 @@ def test_주제를_바꿨는데_옛_주제가_남으면_실패다() -> None:
     ]
 
 
+# --- 모델 비교 질문(#720)의 검사 ---
+
+
+def test_조건을_더한_턴에_앞_주제가_빠지면_실패다() -> None:
+    case = _case(turns=2, semantic={"keeps": ["조선"]})
+    first = _turn(
+        cards=[_card(1)], spec={"filters": {}, "semantic": "조선 시대 역사책"}
+    )
+
+    lost = _turn(cards=[_card(3)], spec={"filters": {}, "semantic": "얇은 소설"})
+    kept = _turn(cards=[_card(3)], spec={"filters": {}, "semantic": "얇은 조선 역사책"})
+
+    assert grade.grade_case(case, [first, lost], _BOOKS) == ["앞 주제를 잃음"]
+    assert grade.grade_case(case, [first, kept], _BOOKS) == []
+
+
+def test_사용자가_말하지_않은_분위기가_조건_문장에_붙으면_실패다() -> None:
+    case = {
+        **_case(semantic={"no_unstated_mood": True}),
+        "turns": ["파이썬 입문서 추천해줘"],
+    }
+    made_up = _turn(
+        cards=[_card(1)], spec={"filters": {}, "semantic": "가벼운 파이썬 입문서"}
+    )
+    plain = _turn(cards=[_card(1)], spec={"filters": {}, "semantic": "파이썬 입문서"})
+
+    assert grade.grade_case(case, [made_up], _BOOKS) == ["말 안 한 분위기"]
+    assert grade.grade_case(case, [plain], _BOOKS) == []
+
+
+def test_사용자가_말한_분위기는_조건_문장에_있어도_된다() -> None:
+    case = {
+        **_case(semantic={"no_unstated_mood": True}),
+        "turns": ["가볍게 읽을 파이썬 책"],
+    }
+    turn = _turn(
+        cards=[_card(1)], spec={"filters": {}, "semantic": "가볍게 읽을 파이썬 책"}
+    )
+
+    assert grade.grade_case(case, [turn], _BOOKS) == []
+
+
+def test_답할_질문에_새_카드를_내면_실패고_카드가_없거나_그대로면_통과다() -> None:
+    case = _case(turns=2, action="answer")
+    first = _turn(cards=[_card(1), _card(3)])
+
+    assert grade.grade_case(case, [first, _turn(cards=[_card(2)])], _BOOKS) == [
+        "질문에 새 카드"
+    ]
+    assert grade.grade_case(case, [first, _turn()], _BOOKS) == []
+    assert grade.grade_case(case, [first, _turn(cards=[_card(3)])], _BOOKS) == []
+
+
+def test_표시_이름으로_그_표시가_붙은_질문_번호를_고른다() -> None:
+    cases_file = {
+        "bundles": {"model": {"about": "가짜"}},
+        "cases": [
+            {"no": 1, "bundles": ["model"]},
+            {"no": 2},
+            {"no": 3, "bundles": ["model"]},
+        ],
+    }
+
+    assert grade.bundle_numbers(cases_file, "model") == {1, 3}
+    with pytest.raises(SystemExit):
+        grade.bundle_numbers(cases_file, "없는표시")
+
+
 def _raw(runs: list[list[dict]]) -> dict:
     return {"meta": {}, "books": _BOOKS, "runs": [{"1": turns} for turns in runs]}
 

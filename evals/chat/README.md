@@ -6,7 +6,7 @@
 
 ## 돌리는 법
 
-실제 모델을 부르므로 비용이 듭니다(109개 × 5번이면 요청 700번 남짓, 동시 4개로 20분 안팎). CI에서는 돌리지 않습니다.
+실제 모델을 부르므로 비용이 듭니다(126개 × 5번이면 요청 800번 남짓, 동시 4개로 25분 안팎). CI에서는 돌리지 않습니다.
 
 필요한 것은 셋입니다.
 
@@ -33,6 +33,7 @@ uv run python -m evals.chat.grade evals/chat/results/이름-원본.json \
   --save evals/chat/results/이름.json
 uv run python -m evals.chat.grade 원본.json --skip-runs 4,5     # 버릴 회차
 uv run python -m evals.chat.grade 원본.json --only 8,43        # 일부만 돌린 원본과 같은 질문으로 견줄 때
+uv run python -m evals.chat.grade 원본.json --bundle model     # 모델 비교 질문(아래)만 셀 때
 
 # 책소개를 저장하기 전(#503)에 만든 원본은 긴 이유 지표를 못 잽니다. 책 정보만 다시 채웁니다(LLM 안 부름)
 DATABASE_URL=postgresql://…/평가DB uv run python -m evals.chat.run --refill-books 원본.json
@@ -93,17 +94,19 @@ uv run python -m evals.chat.grade --compare 전.json 후.json
 | --- | --- |
 | `version` | 묶음의 버전. 질문이나 기대 동작을 고치면 올리고 결과에 같이 적습니다 |
 | `kinds`, `sources` | 종류와 출처의 설명 |
+| `bundles` | 따로 골라 돌리는 표시의 설명. 지금은 `model`(아래 "모델 비교 질문") 하나입니다 |
 | `cases[].no` | 질문 번호. 1부터 빠짐없이 이어집니다(이슈와 PR이 번호로 가리킵니다) |
 | `cases[].kind` | 종류(아래 표) |
 | `cases[].source` | 출처(아래 표). `community`, `chatlog`, `study`는 무엇을 본떴는지 `evidence`에 적습니다 |
 | `cases[].about` | 이 질문으로 보려는 것 한 줄 |
 | `cases[].turns` | 사용자 말. 여러 개면 여러 턴입니다 |
-| `expect.action` | `recommend`(카드가 있어야 함), `clarify`(카드 없이 되물어야 함), `recommend_and_ask`, `observe`(기대 동작을 정하지 않아 응답만 남기고 통과율에서 뺌) |
+| `cases[].bundles` | 이 질문에 붙은 표시 이름(없으면 표시 없음) |
+| `expect.action` | `recommend`(카드가 있어야 함), `clarify`(카드 없이 되물어야 함), `recommend_and_ask`, `answer`(앞 턴에 보여 준 책을 묻는 말. 카드가 없거나 앞의 카드 그대로여야 하고, 새 책을 내면 "질문에 새 카드"), `observe`(기대 동작을 정하지 않아 응답만 남기고 통과율에서 뺌) |
 | `expect.intent` | 첫 턴의 의도(`exact`/`semantic`) |
 | `expect.cards` | 마지막 턴의 카드 조건. 아래 표 |
 | `expect.reply` | 말풍선·되묻기 문장에 `has`(있어야 하는 말), `lacks`(없어야 하는 말) |
 | `expect.spec[]` | 턴별 조건. `{turn, path, equals}` |
-| `expect.semantic` | 조건 문장(`spec.semantic`)이 `changes_at`턴에 바뀌었는지, `has`/`lacks` 낱말 |
+| `expect.semantic` | 조건 문장(`spec.semantic`)이 `changes_at`턴에 바뀌었는지, `has`/`lacks` 낱말, `keeps`(조건을 더한 마지막 턴에도 남아야 하는 앞 주제 낱말, 빠지면 "앞 주제를 잃음"), `no_unstated_mood`(사용자가 말하지 않은 분위기 낱말 `MOOD_WORDS`가 붙으면 "말 안 한 분위기") |
 | `expect.ungraded[]` | 코드로 볼 수 없어 채점하지 않는 기대. LLM 채점이 생기면 여기서 옮깁니다 |
 
 `expect.cards`의 칸:
@@ -121,23 +124,23 @@ uv run python -m evals.chat.grade --compare 전.json 후.json
 
 ## 종류와 출처
 
-109개, 139턴입니다. 1턴 87개, 2턴 18개, 3턴 3개, 7턴 1개(#104)입니다.
+126개, 162턴입니다. 1턴 98개, 2턴 24개, 3턴 3개, 7턴 1개(#104)입니다.
 
 | 종류 | 개수 | 뜻 |
 | --- | --- | --- |
-| `situation` | 27 | 주제와 자기 상황을 말한다 |
-| `multi` | 21 | 여러 턴에 걸쳐 조건을 보태거나 바꾼다 |
-| `condition` | 16 | 가격, 출간연도, 분량, 빼 달라는 것 같은 조건을 붙인다 |
+| `situation` | 29 | 주제와 자기 상황을 말한다 |
+| `multi` | 27 | 여러 턴에 걸쳐 조건을 보태거나 바꾼다 |
+| `condition` | 18 | 가격, 출간연도, 분량, 빼 달라는 것 같은 조건을 붙인다 |
+| `topic` | 18 | 주제만 짧게 말한다 |
 | `like` | 14 | 읽은 책이나 작가를 들어 비슷한 책을 찾는다 |
-| `topic` | 11 | 주제만 짧게 말한다 |
 | `edge` | 10 | 되물어야 하는 말, 추천이 아닌 말, 거친 말투 |
 | `lookup` | 10 | 제목, 저자, 출판사로 책을 찾는다 |
 
 | 출처 | 개수 | 뜻 |
 | --- | --- | --- |
-| `research` | 43 | 조사한 유형에 맞춰 직접 쓴 질문 |
+| `research` | 48 | 조사한 유형에 맞춰 직접 쓴 질문 |
+| `bug` | 34 | 고친 버그나 운영·dev에서 직접 넣어 본 문장을 다시 일으키는 질문 |
 | `chatlog` | 31 | 실제 챗봇 기록(WildChat-1M 책 추천 요청 201건)을 본떠 주제만 바꾼 질문 |
-| `bug` | 22 | 고친 버그나 운영·dev에서 직접 넣어 본 문장을 다시 일으키는 질문 |
 | `community` | 12 | 국내 커뮤니티의 실제 추천 요청 글을 본떠 다시 쓴 질문 |
 | `study` | 1 | LLM 영화 추천 챗봇 실사용 연구에서 사용자가 한 행동 |
 
@@ -237,6 +240,37 @@ uv run python -m evals.chat.grade --compare 전.json 후.json
 | 길이 중앙 / 최대 | 87자 / 138자 | 114자 / 184자 |
 
 **나빠진 것.** 1단계가 조건 문장에 지어 넣은 분위기("에세이 추천해줘" → "가벼운 에세이")를 긴 이유가 "가벼운 에세이를 찾는 분께 어울린다"고 되받습니다. 프롬프트에 "책소개에서 확인되지 않는 점은 쓰지 마라"(B), "분위기·분량·난이도는 근거가 있을 때만"(C)을 더해 봤지만 분위기 질문 9개×2회에서 줄지 않았습니다(A 39%, B 39%, C 47%). 원인인 1단계 문제(#384 문제 2)를 고쳐야 줄어듭니다.
+
+## 모델 비교 질문 (`--bundle model`, v5)
+
+③ 모델을 바꿔 볼 때 전체를 모델마다 다 돌리면 비용이 큽니다(`gpt-4o`로 한 번에 약 2.5달러). 그래서 **모델을 바꾸면 결과가 달라질 수 있는 질문 26개(37턴)** 만 따로 모았습니다([#720](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/720)). 10/12~11/11 실험·QA에서 안 된 것을 원인별로 가르면 모델·데이터·코드·환경인데, 여기에는 모델 칸만 넣었습니다. 고전을 못 내는 것(좋은 책 신호가 없음), 분야만 말한 요청에 제목 낱말 책이 나오는 것(검색), 취향만으로 찾는 길이 없는 것(#527)은 어떤 모델로도 안 풀려서 넣지 않았습니다.
+
+| 번호 | 보는 것 |
+| --- | --- |
+| 110~113 | 장면을 그린 말("코카콜라 마시는 아이")을 책 제목으로 읽지 않는다(`intent`) |
+| 114~117 | 말하지 않은 분위기를 조건 문장에 붙이지 않는다(`no_unstated_mood`) |
+| 118~120, 126 | "~말고"로 뺀 책·저자가 나오지 않는다. 한 턴과 둘째 턴 두 가지 |
+| 121, 122 | 앞 대화를 이어받는다: 작가의 다른 책, 분량 조건을 더해도 앞 주제를 잃지 않음(`keeps`) |
+| 123, 124 | 보여 준 책을 묻거나 할 수 없는 것을 부탁하면 새 카드를 내지 않는다(`answer`) |
+| 125 | 같은 말을 회차마다 다르게 읽는지(기록만) |
+| 42, 47, 51, 52, 94~97, 100 | 이미 있던 질문 중 모델 판단이 갈리는 것("~말고", 주제 없는 말, "k8s 입문", 줄거리, 말 바로잡기 등) |
+
+```bash
+# 서버를 견줄 모델로 띄운 뒤(LLM_MODEL_ID=…, 위 "돌리는 법"과 같음) 이 질문만 3번
+DATABASE_URL=postgresql://…/평가DB uv run python -m evals.chat.run \
+  --bundle model --runs 3 --model openai/gpt-4o --server-log /tmp/chat-eval-server.log \
+  --out evals/chat/results/model-gpt-4o-원본.json
+uv run python -m evals.chat.grade evals/chat/results/model-gpt-4o-원본.json --bundle model \
+  --save evals/chat/results/model-gpt-4o.json
+uv run python -m evals.chat.grade --compare model-gpt-4o.json model-다른모델.json
+```
+
+**읽을 때 주의.**
+- 모델을 견줄 때는 앱 코드(커밋)·평가 DB·ZDR 끔을 같게 두고 `LLM_MODEL_ID`만 바꿉니다. 이 값은 ③의 모든 단계(조건 뽑기, 카드, 대답 턴)를 같이 바꿉니다
+- 26개라 회차 사이 1~2개 차이는 오차 안입니다. "확실히 나쁘다"를 가리는 데 쓰고, 비슷한 모델 사이의 작은 차이는 말하지 않습니다
+- 질문에 맞는 책인지(관련성)는 이 질문들로도 못 봅니다. 그건 `evals/chat_stages`의 점수표로 따로 잽니다
+- 119·120번의 일본 작가는 이름 열 명으로 어림합니다. 목록에 없는 일본 작가는 못 잡습니다
+- 새 17개(110~126)는 아직 어느 모델로도 재지 않았습니다
 
 ## BE를 거치는 점검 (`smoke_be.py`)
 

@@ -53,7 +53,7 @@ EXPECTED_COUNTS = {
 # 고치는 데 쓰지 않고 재는 데만 쓰는 사례(split 이 heldout, #387). 기준선에서 틀린 세 가지가 목표다.
 # 실제 사용형 사례(#416)는 종류마다 하나씩 heldout 에 둔다. 근거 검사를 고치기 전에 쓴 사례(#418)를 더했다.
 HELDOUT_COUNTS = {
-    "ask": 6,
+    "ask": 7,
     "update": 8,
     "remove": 7,
     "mixed": 5,
@@ -481,3 +481,16 @@ def test_이번_말만으로는_무슨_행동인지_알_수_없다(case) -> None
     # '그거 취소해줘'처럼 행동은 있어도 대상이 이력에 있는 사례는 허용한다
     if case["id"] not in {"followup-08"}:
         assert not leaked, (case["id"], message, leaked)
+
+
+@pytest.mark.parametrize("name", ["cases.json", "checkout_cases.json"])
+def test_표시마다_설명이_있고_사례는_있는_표시만_가리킨다(name: str) -> None:
+    # 표시(bundles, #720)는 모델을 견줄 때 그 사례만 돌리는 데 쓴다. 이름을 잘못 적으면 그 사례가 조용히 빠진다.
+    data = json.loads((_PATH.parent / name).read_text(encoding="utf-8"))
+    bundles = data["bundles"]
+    for info in bundles.values():
+        assert info["about"].strip()
+    for case in data["cases"]:
+        assert set(case.get("bundles", [])) <= set(bundles), case["id"]
+    for bundle in bundles:
+        assert any(bundle in case.get("bundles", []) for case in data["cases"]), bundle

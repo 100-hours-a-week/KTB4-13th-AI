@@ -460,6 +460,10 @@ def _select(data: dict, args: argparse.Namespace) -> list[dict]:
         cases = [c for c in cases if data["kinds"][c["kind"]]["group"] == args.group]
     if args.split:
         cases = [c for c in cases if c.get("split", "dev") == args.split]
+    if args.bundle:
+        if args.bundle not in data.get("bundles", {}):
+            raise SystemExit(f"없는 표시: {args.bundle}")
+        cases = [c for c in cases if args.bundle in c.get("bundles", [])]
     return cases
 
 
@@ -519,6 +523,11 @@ def main(argv: list[str] | None = None) -> None:
         choices=["dev", "heldout"],
         default="",
         help="dev 는 고치는 데 쓴 사례, heldout 은 재는 데만 쓴 사례(#387)",
+    )
+    parser.add_argument(
+        "--bundle",
+        default="",
+        help="이 표시(bundles)가 붙은 사례만(#720). 예: model. --cases checkout 과 같이 쓰면 주문 사례 파일에서 고른다",
     )
     parser.add_argument(
         "--book-info",
