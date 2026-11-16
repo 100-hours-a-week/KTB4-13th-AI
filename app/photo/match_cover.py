@@ -294,6 +294,14 @@ def decide(text: BookText, books: Sequence[Book]) -> Match:
     return _candidates(groups)
 
 
+async def search(conn: asyncpg.Connection, title: str) -> list[Book]:
+    """제목으로 ① 키워드 검색을 해서 카탈로그 책을 검색 순위 순서로 읽는다. decide 에 넘길 후보다."""
+    ids = await keyword.search_ids(conn, title, SearchFilters(), SEARCH_LIMIT)
+    rows = await conn.fetch(catalog.BY_IDS_SQL, ids)
+    by_id = {row["book_id"]: catalog.book(row) for row in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
 async def match(conn: asyncpg.Connection, text: BookText) -> Match:
     """표지 글자로 책을 찾는다. ISBN 이 맞으면 그 책, 아니면 제목 검색 뒤 decide 의 규칙이다."""
     book = await catalog.by_isbn(conn, text.isbn)
@@ -301,7 +309,4 @@ async def match(conn: asyncpg.Connection, text: BookText) -> Match:
         return Match("found", [Scored(book, True, True, True)], "isbn")
     if not text.is_book_cover or not text.title:
         return NOTHING
-    ids = await keyword.search_ids(conn, text.title, SearchFilters(), SEARCH_LIMIT)
-    rows = await conn.fetch(catalog.BY_IDS_SQL, ids)
-    by_id = {row["book_id"]: catalog.book(row) for row in rows}
-    return decide(text, [by_id[i] for i in ids if i in by_id])
+    return decide(text, await search(conn, text.title))
