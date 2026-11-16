@@ -24,6 +24,7 @@ from langchain_core.messages import (
 from langgraph.graph import END, START, StateGraph
 
 from app.agent import descriptors, prompts
+from app.agent.batch import plan_writes
 from app.agent.compare import Comparer
 from app.agent.errors import ToolErrorCode
 from app.agent.reference import TurnContext
@@ -137,6 +138,18 @@ def build_graph(
         replies: list[ToolMessage] = []
         recorded: list[ToolCall] = []
 
+        # 같은 묶음의 쓰기가 둘 이상이면 실행 전에 같이 따져 본다. 하나라도 안 되면 아무것도 BE 에 보내지 않는다
+        withheld = await plan_writes(
+            ctx,
+            gateway,
+            [
+                (index, name, requested["args"])
+                for index, requested in enumerate(ai.tool_calls[:MAX_CALLS_PER_STEP])
+                if (name := descriptors.FROM_LLM_NAME.get(requested["name"]))
+                is not None
+            ],
+        )
+
         # 순서대로 하나씩 실행한다. 장바구니 번호는 LLM 이 본 목록 기준이라 순서가 바뀌면 안 된다
         for index, requested in enumerate(ai.tool_calls):
             name = descriptors.FROM_LLM_NAME.get(requested["name"])
@@ -154,9 +167,12 @@ def build_graph(
                     )
                 )
                 continue
-            call = await execute(
-                ctx, gateway, name, requested["args"], comparer=comparer
-            )
+            if (held := withheld.get(index)) is not None:
+                call = held.call()
+            else:
+                call = await execute(
+                    ctx, gateway, name, requested["args"], comparer=comparer
+                )
             recorded.append(call)
             replies.append(
                 ToolMessage(

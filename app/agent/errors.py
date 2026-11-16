@@ -36,6 +36,9 @@ class ToolErrorCode(StrEnum):
     )
     # AI 가 이번 턴에 고른 책이라 사용자 확인 없이 담지 않았다(확인 버튼으로 담는다)
     CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
+    # 한 묶음에서 함께 요청된 쓰기 중 하나가 미리 알 수 있는 이유로 안 돼서, 이 쓰기도 실행하지 않았다(#488).
+    # 같은 턴의 뒤 호출도 같은 이유로 막는다
+    NOT_APPLIED_WITH_OTHERS = "NOT_APPLIED_WITH_OTHERS"
     # 예산 안에서 그 권수를 채울 조합이 없다(재고 있는 직전 카드 안에서만 고른다)
     NO_COMBINATION = "NO_COMBINATION"
     # 비교하려는 책에 소개글이 없다

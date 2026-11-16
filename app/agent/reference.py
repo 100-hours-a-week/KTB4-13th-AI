@@ -69,12 +69,43 @@ class TurnContext:
     # 방금 조회했지만 LLM 이 아직 받아 보지 못한 장바구니. 같은 묶음의 뒤 호출이 이 목록으로 번호를 풀면
     # LLM 이 본 적 없는 목록의 n번째가 실행된다. 묶음이 끝나 결과를 LLM 에게 돌려줄 때 commit_cart_view 로 올린다.
     pending_cart: list[CartLine] | None = None
+    # 한 묶음의 쓰기 중 하나가 막혀 나머지도 실행하지 않았다. 이번 턴의 뒤 쓰기도 실행하지 않는다(batch.py).
+    # LLM 이 막힌 묶음에서 되는 것만 골라 하나씩 다시 부르면 "전부 되거나 전부 안 되게"가 깨지기 때문이다
+    writes_halted: bool = False
+    # 이번 턴에 성공한 쓰기가 만든 수량(ISBN → 수량, 뺐으면 None). 장바구니를 다시 읽기 전까지 cart_snapshot 보다 새롭다
+    applied: dict[str, int | None] = field(default_factory=dict)
+    # 요청의 idempotency_key. 쓰기마다 이 키에서 파생한 키를 BE 에 실어 보낸다(write_key). 없으면 안 싣는다
+    idempotency_key: str | None = None
 
     def commit_cart_view(self) -> None:
         """한 묶음의 도구 결과를 LLM 에게 돌려줄 때 부른다. 이 묶음에서 조회한 장바구니가 다음 번호의 기준이 된다."""
         if self.pending_cart is not None:
             self.cart_snapshot = self.pending_cart
             self.pending_cart = None
+            self.applied.clear()  # 새로 읽은 목록에 그 쓰기들이 이미 들어 있다
+
+    def write_key(self, name: ToolName, isbn: str, quantity: int | None) -> str | None:
+        """BE 쓰기 호출에 실을 중복 방지 키: 요청 키 + 무슨 일을 어느 책에 몇 권으로.
+
+        호출 순서가 아니라 내용으로 만든다. 같은 요청을 다시 처리할 때 LLM 이 호출 순서를 달리해도 같은 일은 같은
+        키가 되고, 이미 반영된 것을 BE 가 다시 적용하지 않는다. 같은 책을 같은 턴에 같은 수량으로 두 번 바꾸는
+        일은 한 번으로 친다.
+        """
+        if self.idempotency_key is None:
+            return None
+        suffix = "" if quantity is None else f":{quantity}"
+        return f"{self.idempotency_key}:{name.value}:{isbn}{suffix}"
+
+    def expected_quantity(self, isbn: str) -> int | None:
+        """수량을 바꾸는 결정의 바탕이 된 수량: LLM 이 본 장바구니에서 이 책의 수량(이번 턴의 쓰기가 있었다면 그
+        결과). 본 적이 없거나 담겨 있지 않았으면 None 이고, 그러면 조건 없이 바꾼다.
+        """
+        if isbn in self.applied:
+            return self.applied[isbn]
+        for line in self.cart_snapshot or []:
+            if line.isbn == isbn:
+                return line.quantity
+        return None
 
     @classmethod
     def from_request(cls, req: AgentActRequest) -> Self:
@@ -86,6 +117,7 @@ class TurnContext:
             allow_tools=None if req.allow_tools is None else list(req.allow_tools),
             message=req.message,
             turns=list(req.recent_turns),
+            idempotency_key=req.idempotency_key,
         )
 
 

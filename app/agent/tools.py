@@ -13,6 +13,7 @@ LLM 은 책을 `BookRef`(카드 몇 번, 장바구니 몇 번째, 지금 보는 
 """
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal
 
@@ -169,7 +170,14 @@ async def _add(ctx: TurnContext, gateway: CommerceGateway, args: AddArgs) -> _Do
             quantity=existing.quantity,
         )
         return arguments, failure
-    return await _write(arguments, gateway.add_item(ctx.user_id, isbn, args.quantity))
+    key = ctx.write_key(ToolName.CART_ADD, isbn, args.quantity)
+    done = await _write(
+        arguments,
+        gateway.add_item(ctx.user_id, isbn, args.quantity, idempotency_key=key),
+    )
+    if done[1].get("ok") is True:
+        ctx.applied[isbn] = args.quantity
+    return done
 
 
 async def _update(
@@ -178,9 +186,20 @@ async def _update(
     isbn = resolve(ctx, args.book)
     evidence.require(ctx, args.book, isbn)
     arguments = {"isbn": isbn, "quantity": args.quantity}
-    return await _write(
-        arguments, gateway.set_quantity(ctx.user_id, isbn, args.quantity)
+    # 사용자와 LLM 이 본 수량을 같이 보낸다. 그사이 다른 곳에서 바뀌었으면 BE 가 덮어쓰지 않고 거절한다
+    done = await _write(
+        arguments,
+        gateway.set_quantity(
+            ctx.user_id,
+            isbn,
+            args.quantity,
+            expected_quantity=ctx.expected_quantity(isbn),
+            idempotency_key=ctx.write_key(ToolName.CART_UPDATE, isbn, args.quantity),
+        ),
     )
+    if done[1].get("ok") is True:
+        ctx.applied[isbn] = args.quantity
+    return done
 
 
 async def _remove(
@@ -188,7 +207,13 @@ async def _remove(
 ) -> _Done:
     isbn = resolve(ctx, args.book)
     evidence.require(ctx, args.book, isbn)
-    return await _write({"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn))
+    key = ctx.write_key(ToolName.CART_REMOVE, isbn, None)
+    done = await _write(
+        {"isbn": isbn}, gateway.remove_item(ctx.user_id, isbn, idempotency_key=key)
+    )
+    if done[1].get("ok") is True:
+        ctx.applied[isbn] = None
+    return done
 
 
 async def _offer(ctx: TurnContext, gateway: CommerceGateway, args: OfferArgs) -> _Done:
@@ -292,6 +317,43 @@ _HANDLERS: dict[ToolName, _Handler] = {
     ToolName.SELECTION_PICK: _pick,
     ToolName.UI_GUIDE: _ui_guide,
 }
+
+
+@dataclass(frozen=True)
+class WriteIntent:
+    """BE 까지 갈 쓰기 하나. 책은 코드가 채운 ISBN 이다."""
+
+    name: ToolName
+    isbn: str
+    quantity: int | None  # 빼기는 수량이 없다
+
+    @property
+    def arguments(self) -> dict[str, Any]:
+        """기록에 남기는 arguments. 실행한 호출의 기록(_add, _update, _remove)과 같은 모양이다."""
+        if self.quantity is None:
+            return {"isbn": self.isbn}
+        return {"isbn": self.isbn, "quantity": self.quantity}
+
+
+def write_intent(ctx: TurnContext, name: ToolName, raw_args: Any) -> WriteIntent | None:
+    """이 쓰기 호출이 BE 를 부르게 되는지 미리 본다. 앞에서 막히면 None.
+
+    execute 가 BE 를 부르기 전에 지나는 검사(guard → 인자 → 책 확정 → AI 가 고른 책 → 근거)를 같은 순서로
+    지난다. 한 묶음의 쓰기를 실행 전에 같이 따져 보려는 batch.py 가 쓴다. 검사를 바꾸면 여기도 같이 바꾼다
+    (tests/test_agent_batch.py 가 둘이 같은 결정을 내리는지 본다).
+    """
+    if name not in guard.WRITE_TOOLS or guard.check(ctx, name) is not None:
+        return None
+    try:
+        args = ARG_MODELS[name].model_validate(raw_args)
+        isbn = resolve(ctx, args.book)
+        if name == ToolName.CART_ADD and isbn in ctx.picked:
+            return None
+        evidence.require(ctx, args.book, isbn)
+    except (ValidationError, RefError):
+        return None
+    quantity = None if name == ToolName.CART_REMOVE else args.quantity
+    return WriteIntent(name, isbn, quantity)
 
 
 def _failed(

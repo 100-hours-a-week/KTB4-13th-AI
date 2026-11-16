@@ -7,7 +7,7 @@ BE처럼 삭제한 항목을 지우지 않고 표시만 한다. 그래야 삭제
 BE의 조회 순서(created_at 내림차순)가 같이 재현된다.
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from app.gateway.catalog import BookText
@@ -47,6 +47,9 @@ class FakeCommerce:
         # BE는 가입할 때 장바구니를 만든다. 여기 없는 사용자는 장바구니가 없는 사용자다.
         self._carts: dict[int, dict[str, _Row]] = {user_id: {} for user_id in users}
         self._seq = 0
+        # 성공한 쓰기의 멱등 키. 같은 키가 다시 오면 적용하지 않고 성공으로 답한다. 실패는 장바구니를 안
+        # 바꿨으므로 기억하지 않는다(다시 보내면 다시 시도한다)
+        self._done: set[tuple[int, str]] = set()
 
     # --- CommerceGateway ---
 
@@ -56,7 +59,17 @@ class FakeCommerce:
         active.sort(key=lambda pair: pair[1].seq, reverse=True)
         return [self._line(isbn, row) for isbn, row in active]
 
-    async def add_item(self, user_id: int, isbn: str, quantity: int) -> None:
+    async def add_item(
+        self,
+        user_id: int,
+        isbn: str,
+        quantity: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
+        self._once(user_id, idempotency_key, lambda: self._add(user_id, isbn, quantity))
+
+    def _add(self, user_id: int, isbn: str, quantity: int) -> None:
         cart = self._carts.get(user_id)
         if cart is None:
             raise CommerceError(CommerceErrorCode.CART_NOT_FOUND)
@@ -75,14 +88,39 @@ class FakeCommerce:
         row.deleted = False  # 되살려도 seq는 그대로라 원래 자리로 돌아온다
         row.quantity = quantity
 
-    async def set_quantity(self, user_id: int, isbn: str, quantity: int) -> None:
+    async def set_quantity(
+        self,
+        user_id: int,
+        isbn: str,
+        quantity: int,
+        *,
+        expected_quantity: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
+        self._once(
+            user_id,
+            idempotency_key,
+            lambda: self._set(user_id, isbn, quantity, expected_quantity),
+        )
+
+    def _set(
+        self, user_id: int, isbn: str, quantity: int, expected_quantity: int | None
+    ) -> None:
         row = self._active_row(user_id, isbn)
+        if expected_quantity is not None and row.quantity != expected_quantity:
+            raise CommerceError(CommerceErrorCode.CART_QUANTITY_CHANGED)
         _validate_quantity(quantity)
         self._validate_stock(isbn, quantity)
         row.quantity = quantity
 
-    async def remove_item(self, user_id: int, isbn: str) -> None:
-        self._active_row(user_id, isbn).deleted = True
+    async def remove_item(
+        self, user_id: int, isbn: str, *, idempotency_key: str | None = None
+    ) -> None:
+        self._once(
+            user_id,
+            idempotency_key,
+            lambda: setattr(self._active_row(user_id, isbn), "deleted", True),
+        )
 
     async def get_offers(self, isbns: Sequence[str]) -> list[BookOffer]:
         offers: list[BookOffer] = []
@@ -120,6 +158,16 @@ class FakeCommerce:
         self._books[isbn].active = False
 
     # --- 내부 ---
+
+    def _once(self, user_id: int, key: str | None, apply: Callable[[], None]) -> None:
+        """같은 키로 이미 성공했으면 적용하지 않는다. 키가 없으면 매번 적용한다."""
+        if key is None:
+            apply()
+            return
+        if (user_id, key) in self._done:
+            return
+        apply()  # 거절되면 여기서 던지고, 키는 기억하지 않는다
+        self._done.add((user_id, key))
 
     def _active_row(self, user_id: int, isbn: str) -> _Row:
         row = self._carts.get(user_id, {}).get(isbn)

@@ -232,9 +232,15 @@ def _particle(word: str, with_batchim: str, without_batchim: str) -> str:
 # BE 가 거절한 이유(CommerceErrorCode)와 이미 담긴 책을 담지 않은 것. 이 코드들이 결과에 있으면 BE 까지
 # 갔던 호출이다. 그 앞에서 막힌 것(책을 못 가리킴, 인자 오류 등)은 LLM 이 되묻거나 설명한다.
 _REACHED_BE = frozenset(
-    {code.value for code in CommerceErrorCode} | {ToolErrorCode.ALREADY_IN_CART.value}
+    {code.value for code in CommerceErrorCode}
+    | {
+        ToolErrorCode.ALREADY_IN_CART.value,
+        # 한 묶음의 다른 쓰기가 안 돼서 함께 막은 쓰기. BE 를 부르지 않았지만 책은 코드가 채운 값이다(batch.py)
+        ToolErrorCode.NOT_APPLIED_WITH_OTHERS.value,
+    }
 )
 LOGIN_REPLY = "로그인이 필요해요. 로그인한 뒤에 다시 말씀해 주세요."
+BATCH_NOTE = "여러 개를 한 번에 요청하시면 하나라도 안 될 때 모두 하지 않아요. 가능한 것만 다시 말씀해 주세요."
 
 
 def _book(run: AgentRun, titles: dict[str, str], isbn: str) -> tuple[str, str]:
@@ -257,6 +263,14 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
     error = result.get("error")
     quantity = call.arguments.get("quantity")
     count = quantity if isinstance(quantity, int) else None
+
+    if error == ToolErrorCode.NOT_APPLIED_WITH_OTHERS.value:
+        together = "함께 요청하신 일이 안 돼서"
+        if name == ToolName.CART_ADD:
+            return f"{together} {shown}{eul} 담지 않았어요."
+        if name == ToolName.CART_UPDATE:
+            return f"{together} {shown}의 수량을 바꾸지 않았어요."
+        return f"{together} {shown}{eul} 빼지 않았어요."
 
     if name == ToolName.CART_ADD:
         if result.get("ok") is True:
@@ -284,6 +298,11 @@ def _outcome(name: ToolName, shown: str, plain: str, call: ToolCall) -> str:
             return f"재고가 부족해서 {shown}의 수량을 바꾸지 못했어요."
         if error == CommerceErrorCode.INVALID_CART_ITEM_QUANTITY.value:
             return f"수량이 올바르지 않아 {shown}의 수량을 바꾸지 못했어요."
+        if error == CommerceErrorCode.CART_QUANTITY_CHANGED.value:
+            return (
+                f"그사이 {shown}의 수량이 달라져서 바꾸지 않았어요. "
+                "장바구니를 확인하고 다시 말씀해 주세요."
+            )
         if error == CommerceErrorCode.CART_ITEM_NOT_FOUND.value:
             return f"{shown}{eun} 장바구니에 없어서 수량을 바꾸지 못했어요."
         return f"{shown}의 수량을 바꾸지 못했어요."
@@ -323,6 +342,11 @@ def _outcomes(run: AgentRun, titles: dict[str, str]) -> list[str]:
         _outcome(name, *_book(run, titles, isbn), call)
         for (name, isbn), call in attempts.items()
     ]
+    if any(
+        call.result.get("error") == ToolErrorCode.NOT_APPLIED_WITH_OTHERS.value
+        for call in attempts.values()
+    ):
+        sentences.append(BATCH_NOTE)
     if login_needed:
         sentences.append(LOGIN_REPLY)
     return sentences

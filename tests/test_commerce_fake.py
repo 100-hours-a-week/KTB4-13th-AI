@@ -194,6 +194,98 @@ def test_수량_변경도_재고를_다시_본다() -> None:
     assert fake.cart_state(1) == {A: 2}
 
 
+def test_본_수량과_지금_수량이_다르면_수량_변경을_거절하고_그대로_둔다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 2))
+    _run(fake.set_quantity(1, A, 5))  # 그사이 다른 곳에서 바꿨다
+
+    code = _code(fake.set_quantity(1, A, 3, expected_quantity=2))
+
+    assert code == CommerceErrorCode.CART_QUANTITY_CHANGED
+    assert fake.cart_state(1) == {A: 5}
+
+
+def test_본_수량과_지금_수량이_같으면_바꾸고_안_주면_조건_없이_바꾼다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 2))
+
+    _run(fake.set_quantity(1, A, 3, expected_quantity=2))
+    assert fake.cart_state(1) == {A: 3}
+
+    _run(fake.set_quantity(1, A, 4))
+    assert fake.cart_state(1) == {A: 4}
+
+
+def test_본_수량_조건은_담긴_책이_없을_때는_담기지_않았다고_먼저_말한다() -> None:
+    fake = _fake()
+
+    code = _code(fake.set_quantity(1, A, 3, expected_quantity=2))
+
+    assert code == CommerceErrorCode.CART_ITEM_NOT_FOUND
+
+
+# --- 멱등 키 ---
+
+
+def test_같은_키로_이미_성공한_수량_변경은_다시_적용하지_않는다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 3))
+    _run(fake.set_quantity(1, A, 2, idempotency_key="k1"))
+    _run(fake.set_quantity(1, A, 5))  # 응답을 못 받은 사이 사용자가 바꿨다
+
+    _run(fake.set_quantity(1, A, 2, idempotency_key="k1"))  # 같은 요청의 재시도
+
+    assert fake.cart_state(1) == {A: 5}
+
+
+def test_같은_키로_이미_성공한_담기와_빼기도_다시_적용하지_않는다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 1, idempotency_key="add"))
+    _run(fake.set_quantity(1, A, 4))
+    _run(fake.add_item(1, A, 1, idempotency_key="add"))
+    assert fake.cart_state(1) == {A: 4}
+
+    _run(fake.remove_item(1, A, idempotency_key="rm"))
+    _run(fake.add_item(1, A, 2))  # 다시 담았다
+    _run(fake.remove_item(1, A, idempotency_key="rm"))
+    assert fake.cart_state(1) == {A: 2}
+
+
+def test_키가_다르거나_없으면_그때마다_적용한다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 1))
+
+    _run(fake.set_quantity(1, A, 2, idempotency_key="k1"))
+    _run(fake.set_quantity(1, A, 3, idempotency_key="k2"))
+    assert fake.cart_state(1) == {A: 3}
+
+    _run(fake.set_quantity(1, A, 4))
+    _run(fake.set_quantity(1, A, 5))
+    assert fake.cart_state(1) == {A: 5}
+
+
+def test_거절된_쓰기의_키는_기억하지_않아_다시_보내면_다시_시도한다() -> None:
+    fake = _fake(stock=1)
+    assert (
+        _code(fake.add_item(1, A, 3, idempotency_key="k"))
+        == CommerceErrorCode.INSUFFICIENT_PRODUCT_STOCK
+    )
+    fake.set_stock(A, 10)
+
+    _run(fake.add_item(1, A, 3, idempotency_key="k"))
+
+    assert fake.cart_state(1) == {A: 3}
+
+
+def test_멱등_키는_사용자마다_따로_센다() -> None:
+    fake = _fake()
+    _run(fake.add_item(1, A, 1, idempotency_key="k"))
+
+    _run(fake.add_item(2, A, 1, idempotency_key="k"))
+
+    assert fake.cart_state(2) == {A: 1}
+
+
 # --- 빼기 ---
 
 

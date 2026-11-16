@@ -363,7 +363,7 @@ def test_사례를_번호_종류_묶음으로_고른다() -> None:
         "pick",
     }
     guard = run._select(DATA, _args(group="guard", split="dev"))
-    assert len(guard) == 26
+    assert len(guard) == 28
     assert all(DATA["kinds"][c["kind"]]["group"] == "guard" for c in guard)
 
 
@@ -371,7 +371,7 @@ def test_사례를_dev와_heldout으로_가른다() -> None:
     dev = run._select(DATA, _args(split="dev"))
     heldout = run._select(DATA, _args(split="heldout"))
 
-    assert len(dev) == 90
+    assert len(dev) == 92
     assert len(heldout) == 34
     assert {c["id"] for c in dev} | {c["id"] for c in heldout} == set(CASES)
     # split 칸이 없는 옛 사례는 dev 다

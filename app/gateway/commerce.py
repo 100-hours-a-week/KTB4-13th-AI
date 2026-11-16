@@ -31,6 +31,9 @@ class CommerceErrorCode(StrEnum):
     INVALID_CART_ITEM_QUANTITY = "INVALID_CART_ITEM_QUANTITY"
     INSUFFICIENT_PRODUCT_STOCK = "INSUFFICIENT_PRODUCT_STOCK"
     PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND"
+    # 수량을 바꾸려는 사이에 담긴 수량이 달라졌다(expected_quantity 와 다름). BE 의 오류 코드는 아직 정해지지
+    # 않았다. AI 서버가 쓰는 이름이고, BE 가 정하면 BeCommerce 의 오류 표에서 이 이름으로 이어 준다(#488)
+    CART_QUANTITY_CHANGED = "CART_QUANTITY_CHANGED"
 
 
 class CommerceError(Exception):
@@ -79,15 +82,40 @@ class CommerceGateway(Protocol):
         """장바구니를 BE 순서대로 돌려준다. 장바구니가 없으면 빈 목록."""
         ...
 
-    async def add_item(self, user_id: int, isbn: str, quantity: int) -> None:
-        """담는다. 이미 담긴 책이면 더하지 않고 quantity로 **대체**한다."""
+    async def add_item(
+        self,
+        user_id: int,
+        isbn: str,
+        quantity: int,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
+        """담는다. 이미 담긴 책이면 더하지 않고 quantity로 **대체**한다.
+
+        idempotency_key 가 있으면 같은 키로 이미 성공한 쓰기는 다시 적용하지 않고 성공으로 답한다. 응답을 못 받고
+        재시도하는 사이 사용자가 바꾼 수량을 옛 값으로 덮지 않으려는 것이다(수정·빼기도 같다).
+        """
         ...
 
-    async def set_quantity(self, user_id: int, isbn: str, quantity: int) -> None:
-        """담긴 책의 수량을 quantity로 바꾼다. 담기지 않은 책은 CART_ITEM_NOT_FOUND."""
+    async def set_quantity(
+        self,
+        user_id: int,
+        isbn: str,
+        quantity: int,
+        *,
+        expected_quantity: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
+        """담긴 책의 수량을 quantity로 바꾼다. 담기지 않은 책은 CART_ITEM_NOT_FOUND.
+
+        expected_quantity 가 있으면 지금 담긴 수량이 그 값일 때만 바꾼다. 다르면 CART_QUANTITY_CHANGED 이고
+        바꾸지 않는다. "그 수량을 보고 정한 결정"이 그사이 다른 변경으로 낡았을 때 덮어쓰지 않으려는 것이다.
+        """
         ...
 
-    async def remove_item(self, user_id: int, isbn: str) -> None:
+    async def remove_item(
+        self, user_id: int, isbn: str, *, idempotency_key: str | None = None
+    ) -> None:
         """장바구니에서 뺀다. 담기지 않은 책은 CART_ITEM_NOT_FOUND."""
         ...
 

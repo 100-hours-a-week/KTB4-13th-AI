@@ -44,22 +44,26 @@ class _Spy:
     def __init__(self, inner: FakeCommerce) -> None:
         self.inner = inner
         self.calls: list[str] = []
+        self.kwargs: dict[str, dict] = {}  # 쓰기 호출에 실려 간 덧붙이는 인자
 
     async def get_cart(self, user_id):
         self.calls.append("get_cart")
         return await self.inner.get_cart(user_id)
 
-    async def add_item(self, user_id, isbn, quantity):
+    async def add_item(self, user_id, isbn, quantity, **kwargs):
         self.calls.append("add_item")
-        return await self.inner.add_item(user_id, isbn, quantity)
+        self.kwargs["add_item"] = kwargs
+        return await self.inner.add_item(user_id, isbn, quantity, **kwargs)
 
-    async def set_quantity(self, user_id, isbn, quantity):
+    async def set_quantity(self, user_id, isbn, quantity, **kwargs):
         self.calls.append("set_quantity")
-        return await self.inner.set_quantity(user_id, isbn, quantity)
+        self.kwargs["set_quantity"] = kwargs
+        return await self.inner.set_quantity(user_id, isbn, quantity, **kwargs)
 
-    async def remove_item(self, user_id, isbn):
+    async def remove_item(self, user_id, isbn, **kwargs):
         self.calls.append("remove_item")
-        return await self.inner.remove_item(user_id, isbn)
+        self.kwargs["remove_item"] = kwargs
+        return await self.inner.remove_item(user_id, isbn, **kwargs)
 
     async def get_offers(self, isbns):
         self.calls.append("get_offers")
@@ -317,6 +321,107 @@ def test_담기지_않은_책의_수량은_바꾸지_못한다() -> None:
 
     assert call.result == {"ok": False, "error": "CART_ITEM_NOT_FOUND"}
     assert fake.cart_state(UID) == {}
+
+
+def test_수량_변경은_LLM이_본_수량을_같이_보낸다() -> None:
+    spy, _fake_be, ctx = _setup(seed=[(A, 2)])
+    _see_cart(ctx, spy)
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 3})
+
+    assert call.result == {"ok": True}
+    assert spy.kwargs["set_quantity"]["expected_quantity"] == 2
+
+
+def test_본_뒤에_다른_곳에서_수량이_바뀌었으면_덮어쓰지_않고_이유를_남긴다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 2)])
+    _see_cart(ctx, spy)
+    asyncio.run(fake.set_quantity(UID, A, 5))  # 사용자가 다른 화면에서 5권으로 바꿨다
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 3})
+
+    assert call.result == {"ok": False, "error": "CART_QUANTITY_CHANGED"}
+    assert fake.cart_state(UID) == {A: 5}
+
+
+def test_같은_턴에_같은_책을_두_번_바꾸면_앞의_결과를_본_수량으로_삼는다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 2)])
+    _see_cart(ctx, spy)
+
+    first = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 3})
+    second = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 4})
+
+    assert first.result == second.result == {"ok": True}
+    assert spy.kwargs["set_quantity"]["expected_quantity"] == 3
+    assert fake.cart_state(UID) == {A: 4}
+
+
+def test_장바구니를_다시_보면_새_목록이_본_수량의_기준이_된다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 2)])
+    _see_cart(ctx, spy)
+    asyncio.run(fake.set_quantity(UID, A, 5))
+    _see_cart(ctx, spy)  # LLM 이 5권인 것을 보았다
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 3})
+
+    assert call.result == {"ok": True}
+    assert spy.kwargs["set_quantity"]["expected_quantity"] == 5
+
+
+def test_장바구니를_본_적이_없으면_조건_없이_바꾼다() -> None:
+    spy, fake, ctx = _setup(seed=[(A, 2)])
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": card(1), "quantity": 3})
+
+    assert call.result == {"ok": True}
+    assert spy.kwargs["set_quantity"]["expected_quantity"] == None
+    assert fake.cart_state(UID) == {A: 3}
+
+
+def test_이번_턴에_뺀_책의_수량_변경은_BE가_담기지_않았다고_거절한다() -> None:
+    spy, _fake_be, ctx = _setup(seed=[(A, 2)])
+    _see_cart(ctx, spy)
+    _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(1)})
+
+    call = _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(1), "quantity": 3})
+
+    assert call.result == {"ok": False, "error": "CART_ITEM_NOT_FOUND"}
+    assert spy.kwargs["set_quantity"]["expected_quantity"] == None
+
+
+def test_쓰기_호출에는_요청_키에서_만든_중복_방지_키가_실린다() -> None:
+    spy, _fake_be, ctx = _setup(seed=[(A, 1), (B, 1)], idempotency_key="idem_1")
+    _see_cart(ctx, spy)
+
+    _run(ctx, spy, ToolName.CART_ADD, {"book": card(3), "quantity": 2})
+    _run(ctx, spy, ToolName.CART_UPDATE, {"book": cart(2), "quantity": 4})
+    _run(ctx, spy, ToolName.CART_REMOVE, {"book": cart(1)})
+
+    assert spy.kwargs["add_item"]["idempotency_key"] == f"idem_1:cart.add:{C}:2"
+    assert spy.kwargs["set_quantity"]["idempotency_key"] == f"idem_1:cart.update:{A}:4"
+    assert spy.kwargs["remove_item"]["idempotency_key"] == f"idem_1:cart.remove:{B}"
+
+
+def test_요청_키가_없으면_중복_방지_키를_싣지_않는다() -> None:
+    spy, _fake_be, ctx = _setup()
+
+    _run(ctx, spy, ToolName.CART_ADD, {"book": card(1)})
+
+    assert spy.kwargs["add_item"]["idempotency_key"] is None
+
+
+def test_중복_방지_키는_호출_순서가_아니라_내용으로_정해진다() -> None:
+    _spy, _fake_be, ctx = _setup(idempotency_key="k")
+
+    assert ctx.write_key(ToolName.CART_UPDATE, A, 3) == ctx.write_key(
+        ToolName.CART_UPDATE, A, 3
+    )
+    assert ctx.write_key(ToolName.CART_UPDATE, A, 3) != ctx.write_key(
+        ToolName.CART_UPDATE, A, 4
+    )
+    assert ctx.write_key(ToolName.CART_UPDATE, A, 3) != ctx.write_key(
+        ToolName.CART_UPDATE, B, 3
+    )
 
 
 def test_수량_0은_삭제가_아니라_거절이다() -> None:
