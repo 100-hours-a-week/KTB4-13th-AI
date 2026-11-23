@@ -111,6 +111,23 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 
 결과는 종류별·묶음별 통과율 표로 나오고, PR 본문에 그대로 붙일 수 있습니다.
 
+## 고치기 전과 후를 판정하기
+
+취향 뽑기를 고친 PR은 main과 PR 브랜치에서 같은 묶음을 `--runs 3 --out`으로 하나씩 돌리고, 두 파일을 판정에 넣습니다. 판정은 LLM을 부르지 않습니다. 나온 판정표를 PR 본문의 "고정 Dataset 검증 결과" 칸에 붙입니다.
+
+```
+uv run python -m evals.extraction.verdict --base main.json --new pr.json
+uv run python -m evals.extraction.verdict --base main.json --new pr.json --group borrowed
+```
+
+규칙은 V3 때 측정 전에 정한 것입니다([#569](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/569) 「판정 기준」). 결과를 본 뒤에 바꾸지 않습니다.
+
+- 대화마다 3번 중 2번 이상 통과하면 그 대화를 통과로 봅니다
+- 통과율 차이(후보 − 기준)의 95% 구간 아래 끝이 −10%p보다 위면 **통과**, 아니면 **탈락**입니다. 차이가 작아도 대화 수가 적어 구간이 넓으면 탈락입니다. "떨어졌을 가능성을 배제하지 못했다"는 뜻입니다
+- 구간은 대화를 중복을 허락해 1만 번 다시 뽑는 짝 부트스트랩으로 냅니다(`evals/stats.py`, 시드 569)
+- 실패 이유별 호출 수도 같이 나옵니다. 크게 나빠진 이유가 있는지는 사람이 봅니다
+- 묶음 판이 다른 파일끼리는 견주지 않습니다. 프롬프트 판과 모델이 달라도 견주고, 판정표 머리에 둘 다 적습니다
+
 ## 코드 채점이 보는 것
 
 호출 하나는 아래를 모두 지키면 통과입니다.
