@@ -107,7 +107,7 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 - `--yes`가 없으면 LLM 호출이 몇 번인지와 어느 모델인지만 알려 주고 끝납니다. 숫자를 보고 나서 `--yes`를 붙입니다
 - 고르기: `--kinds`(종류, 쉼표로 여럿), `--ids`(대화 번호), `--group`(`typical`, `guard`, `borrowed`). 없는 이름을 주면 돌리지 않고 끝납니다. 아무것도 안 주면 179개 전부입니다
 - `--runs`: 대화마다 몇 번 돌릴지. 같은 대화에도 결과가 달라지므로 한 번 잰 값은 믿기 어렵습니다
-- `--out`: 호출마다의 결과(뽑은 문장, 실패 이유, 걸린 시간)를 JSON으로 남깁니다. 묶음 버전과 프롬프트 버전도 같이 적힙니다
+- `--out`: 호출마다의 결과(뽑은 문장, 실패 이유, 걸린 시간)를 JSON으로 남깁니다. 묶음 버전과 프롬프트 버전도 같이 적힙니다. API 응답(`response`)과 서버 규칙을 거치기 전의 LLM 답(`llm_output`)도 남깁니다. 응답의 벡터는 길이만 남깁니다
 
 결과는 종류별·묶음별 통과율 표로 나오고, PR 본문에 그대로 붙일 수 있습니다.
 
@@ -147,6 +147,18 @@ uv run python -m evals.extraction.run --kinds request --runs 3 --yes --out resul
 - **어디에**: 고른 이름이 모두 받아들이는 이름 안에 있어야 맞습니다. 주제만 셉니다
 
 서버는 [#426](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/426)(프롬프트 v4)부터 이 칸을 냅니다. 그 전 프롬프트의 결과는 0%입니다.
+
+## 남긴 응답으로 다시 채점하기
+
+채점 코드(`scoring.py`)나 기대값(`cases.json`)만 고친 경우에는 LLM을 다시 부르지 않고, `--out`으로 남긴 응답을 지금 코드로 다시 채점합니다. 돈이 들지 않습니다.
+
+```
+uv run python -m evals.extraction.run --rescore result.json --out rescored.json
+```
+
+- 파일의 호출을 모두 다시 채점합니다. 답은 그때의 것이라, 결과 파일의 프롬프트 판과 모델도 그때의 것을 그대로 적고 `rescored_from`에 원래 파일 이름을 남깁니다
+- 묶음 판이 다른 파일과, 응답을 남기지 않은 파일(이 기능 전에 잰 파일)은 다시 채점하지 않습니다
+- 서버 규칙(`app/extraction/rules.py`)·프롬프트·모델을 고친 경우는 응답이 바뀌므로 LLM을 다시 불러야 합니다. `llm_output`은 나중에 서버 규칙만 고친 경우도 LLM 없이 다시 재려고 남기는 것입니다
 
 ## 고칠 때
 

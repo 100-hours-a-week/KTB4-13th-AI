@@ -2,12 +2,16 @@
 
     uv run python -m evals.extraction.run --kinds request --runs 3          # 몇 번 부르는지만 본다
     uv run python -m evals.extraction.run --kinds request --runs 3 --yes    # 실제로 돌린다
+    uv run python -m evals.extraction.run --rescore result.json              # 남긴 응답을 지금 채점 코드로(LLM 없음)
 
 대화마다 API(`POST /preferences/extractions`)를 같은 프로세스에서 그대로 부른다. 서버를 따로 띄우지
 않고, 요청 검사·LLM·규칙·임베딩을 실제 요청과 같은 길로 지난다. LLM 은 `.env` 의 설정대로 진짜를
 부르므로 돈이 든다. 그래서 `--yes` 없이는 호출 수만 알려 주고 끝낸다.
 
 채점은 코드로 볼 수 있는 것만 한다(scoring.py). LLM 채점은 뒤 단계다.
+
+`--out` 파일에는 호출마다 API 응답과, 서버 규칙(rules.screen)을 거치기 전의 LLM 답도 남긴다(#753). 채점 코드나
+기대값만 고친 경우에는 `--rescore` 로 남긴 응답을 다시 채점한다. LLM 을 부르지 않으니 돈이 들지 않는다.
 """
 
 import argparse
@@ -17,7 +21,8 @@ import logging
 import statistics
 import sys
 from collections import Counter
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -34,6 +39,8 @@ URL = "/preferences/extractions"
 CALL_TIMEOUT_SECONDS = 60
 
 Target = Callable[[dict[str, Any]], Awaitable[Outcome]]
+# 결과 파일에 벡터는 길이만 남긴다. 호출마다 1024개 숫자를 남기면 파일이 수십 MB 가 된다
+VECTOR_LEN = "vector_len"
 
 
 def load_bundle() -> dict[str, Any]:
@@ -79,14 +86,50 @@ def select(
 
 
 async def run(
-    cases: Sequence[dict[str, Any]], target: Target, runs: int
+    cases: Sequence[dict[str, Any]],
+    target: Target,
+    runs: int,
+    outcomes: list[Outcome] | None = None,
 ) -> list[Score]:
-    """대화마다 runs 번씩 차례로 부르고 채점한다. 한 번에 하나씩만 부른다(호출 한도와 순서 때문)."""
+    """대화마다 runs 번씩 차례로 부르고 채점한다. 한 번에 하나씩만 부른다(호출 한도와 순서 때문).
+
+    outcomes 를 주면 호출마다 받은 응답을 채점 결과와 같은 순서로 넣는다.
+    """
     scores: list[Score] = []
     for case in cases:
         for _ in range(runs):
-            scores.append(score(case, await target(case["request"])))
+            outcome = await target(case["request"])
+            if outcomes is not None:
+                outcomes.append(outcome)
+            scores.append(score(case, outcome))
     return scores
+
+
+def compact(data: Any) -> Any:
+    """결과 파일에 남길 응답. 벡터는 길이만 남긴다. 채점은 벡터가 목록이고 dim 과 길이가 같은지만 본다."""
+    if not isinstance(data, dict) or not isinstance(data.get("extractions"), list):
+        return data
+    items = [
+        {**item, "vector": None, VECTOR_LEN: len(item["vector"])}
+        if isinstance(item, dict) and isinstance(item.get("vector"), list)
+        else item
+        for item in data["extractions"]
+    ]
+    return {**data, "extractions": items}
+
+
+def expand(data: Any) -> Any:
+    """compact 를 되돌린다. 벡터는 같은 길이의 0 으로 채운다."""
+    if not isinstance(data, dict) or not isinstance(data.get("extractions"), list):
+        return data
+    items = []
+    for item in data["extractions"]:
+        if isinstance(item, dict) and VECTOR_LEN in item:
+            size = item[VECTOR_LEN]
+            item = {k: v for k, v in item.items() if k != VECTOR_LEN}
+            item["vector"] = [0.0] * size
+        items.append(item)
+    return {**data, "extractions": items}
 
 
 def _failures(scores: Sequence[Score]) -> dict[str, int]:
@@ -210,6 +253,27 @@ def render(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@contextmanager
+def keep_llm_output(kept: list[Any]) -> Iterator[None]:
+    """도는 동안 서버가 규칙에 넘기는 LLM 답(service.to_extractions 의 인자)을 kept 에 넣는다.
+
+    서버 코드는 고치지 않고, 이 프로세스에서 부르는 동안만 그 함수를 감싼다. 끝나면 되돌린다.
+    """
+    from app.extraction import service
+
+    original = service.to_extractions
+
+    async def keeping(req: Any, llm_output: Any) -> list[dict[str, Any]]:
+        kept.append(llm_output)
+        return await original(req, llm_output)
+
+    service.to_extractions = keeping
+    try:
+        yield
+    finally:
+        service.to_extractions = original
+
+
 def api_target() -> Target:
     """서버 앱을 같은 프로세스에서 부르는 대상. LLM 과 임베딩은 설정대로 진짜를 쓴다."""
     from app.core.config import get_settings
@@ -219,18 +283,46 @@ def api_target() -> Target:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     async def call(request: dict[str, Any]) -> Outcome:
+        kept: list[Any] = []
         started = perf_counter()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://eval",
-            timeout=CALL_TIMEOUT_SECONDS,
-        ) as client:
-            response = await client.post(URL, json=request, headers=headers)
+        with keep_llm_output(kept):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://eval",
+                timeout=CALL_TIMEOUT_SECONDS,
+            ) as client:
+                response = await client.post(URL, json=request, headers=headers)
         seconds = perf_counter() - started
         data = response.json().get("data") if response.status_code == 200 else None
-        return Outcome(response.status_code, data, seconds)
+        # LLM 이 답하지 못했으면(장애·시간 초과) 남길 답이 없다
+        return Outcome(response.status_code, data, seconds, kept[-1] if kept else None)
 
     return call
+
+
+def rescore(saved: dict[str, Any]) -> list[Score]:
+    """남긴 응답을 지금의 채점 코드와 기대값으로 다시 채점한다. LLM 을 부르지 않는다."""
+    if saved.get("bundle_version") != load_bundle()["version"]:
+        raise ValueError(
+            f"묶음 판이 다르다(파일 {saved.get('bundle_version')}, 지금 {load_bundle()['version']})"
+        )
+    if any("response" not in record for record in saved["runs"]):
+        raise ValueError(
+            "응답을 남기지 않은 파일이라 다시 채점할 수 없다(#753 전에 잰 파일)"
+        )
+    cases = {case["id"]: case for case in load_cases()}
+    return [
+        score(
+            cases[record["case_id"]],
+            Outcome(
+                record["status"],
+                expand(record["response"]),
+                record["seconds"],
+                record.get("llm_output"),
+            ),
+        )
+        for record in saved["runs"]
+    ]
 
 
 def _model_line() -> str:
@@ -283,6 +375,67 @@ def _split(text: str | None) -> list[str] | None:
     return [part.strip() for part in text.split(",") if part.strip()] if text else None
 
 
+def _record(s: Score, outcome: Outcome) -> dict[str, Any]:
+    return {
+        **asdict(s),
+        "failures": list(s.failures),
+        "values": list(s.values),
+        "got": list(s.got),
+        # 채점 코드만 고쳤을 때 --rescore 로 다시 채점하는 데 쓴다
+        "response": compact(outcome.data),
+        "llm_output": outcome.llm_output,
+    }
+
+
+def _write(
+    path: str,
+    head: dict[str, Any],
+    summary: dict[str, Any],
+    scores: Sequence[Score],
+    outcomes: Sequence[Outcome],
+) -> None:
+    saved = {
+        **head,
+        "summary": summary,
+        "runs": [_record(s, o) for s, o in zip(scores, outcomes, strict=True)],
+    }
+    Path(path).write_text(
+        json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"\n호출마다의 결과: {path}")
+
+
+def _rescore_main(path: str, out: str | None) -> int:
+    saved = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        scores = rescore(saved)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    runs = saved["summary"]["runs_per_case"]
+    print(
+        f"{path} 의 호출 {len(scores)}번을 지금 채점 코드로 다시 채점한다. LLM 은 부르지 않는다. "
+        f"답은 그때의 것이다(프롬프트 판 {saved.get('prompt_version')}, {saved.get('model')})"
+    )
+    summary = summarize(scores, runs)
+    print()
+    print(render(summary))
+    if out:
+        outcomes = [
+            Outcome(r["status"], r["response"], r["seconds"], r.get("llm_output"))
+            for r in saved["runs"]
+        ]
+        head = {
+            "bundle_version": saved["bundle_version"],
+            "prompt_version": saved.get("prompt_version"),
+            "model": saved.get("model"),
+            "rescored_from": Path(path).name,
+        }
+        # compact 한 응답을 그대로 다시 남긴다(expand 하지 않는다)
+        _write(out, head, summary, scores, outcomes)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="⑤ 취향 뽑기 평가 묶음을 돌려 채점한다"
@@ -295,8 +448,21 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
     )
     parser.add_argument("--yes", action="store_true", help="실제로 LLM 을 부른다")
     parser.add_argument("--out", help="호출마다의 결과를 남길 JSON 파일")
+    parser.add_argument(
+        "--rescore",
+        metavar="결과파일",
+        help="--out 으로 남긴 응답을 지금 채점 코드로 다시 채점한다. LLM 을 부르지 않는다",
+    )
     args = parser.parse_args(argv)
 
+    if args.rescore:
+        if args.kinds or args.ids or args.group or args.yes:
+            print(
+                "--rescore 는 파일의 호출을 모두 다시 채점한다. 고르기와 --yes 는 쓰지 않는다",
+                file=sys.stderr,
+            )
+            return 2
+        return _rescore_main(args.rescore, args.out)
     if args.runs < 1:
         print("--runs 는 1 이상이어야 한다", file=sys.stderr)
         return 2
@@ -321,9 +487,10 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
         return 0
 
     # 서버는 요청마다 로그를 남긴다. 수십 번 부르면 결과 표가 묻히므로 도는 동안은 경고부터만 보인다
+    outcomes: list[Outcome] = []
     logging.disable(logging.INFO)
     try:
-        scores = asyncio.run(run(cases, target or api_target(), args.runs))
+        scores = asyncio.run(run(cases, target or api_target(), args.runs, outcomes))
     finally:
         logging.disable(logging.NOTSET)
     summary = summarize(scores, args.runs)
@@ -333,25 +500,12 @@ def main(argv: Sequence[str] | None = None, *, target: Target | None = None) -> 
     if args.out:
         from app.extraction.prompts import PROMPT_VERSION
 
-        saved = {
+        head = {
             "bundle_version": load_bundle()["version"],
             "prompt_version": PROMPT_VERSION,
             "model": _model_line(),
-            "summary": summary,
-            "runs": [
-                {
-                    **asdict(s),
-                    "failures": list(s.failures),
-                    "values": list(s.values),
-                    "got": list(s.got),
-                }
-                for s in scores
-            ],
         }
-        Path(args.out).write_text(
-            json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        print(f"\n호출마다의 결과: {args.out}")
+        _write(args.out, head, summary, scores, outcomes)
     return 0
 
 
