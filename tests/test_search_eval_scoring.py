@@ -225,6 +225,17 @@ def test_점수를_매기지_않은_책은_0점으로_계산하고_따로_센다
     assert score(case, _response(1), shelf, top=20).unlabeled == 1
 
 
+def test_보는_권수보다_더_받으면_nDCG_프라임만_뒤의_책을_당겨_온다() -> None:
+    shelf = {i: _book(i) for i in range(1, 15)}
+    case = _descriptive_case()
+    # 1등은 라벨이 없고 13등은 2점이다. 위 12권을 볼 때 nDCG 는 13등을 안 세고, nDCG′ 는 빈자리로 당겨 온다
+    labels = {case["id"]: {shelf[i].isbn: 2 for i in range(2, 14)}}
+    s = score(case, _response(*range(1, 15)), shelf, top=12, labels=labels, look=12)
+    assert s.returned == 12
+    assert s.unlabeled == 1 and s.judged == pytest.approx(11 / 12)
+    assert s.ndcg < 1 and s.ndcg_labeled == pytest.approx(1.0)
+
+
 def test_서술형은_종류와_소분류별로_모은다() -> None:
     shelf = {1: _book(1), 2: _book(2)}
     labels = {
