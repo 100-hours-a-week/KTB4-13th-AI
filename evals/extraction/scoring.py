@@ -57,6 +57,8 @@ class Outcome:
     status: int
     data: dict[str, Any] | None  # 200 이면 응답의 data, 아니면 None
     seconds: float
+    # 서버 규칙(rules.screen)을 거치기 전의 LLM 답(JSON 을 읽은 것). 채점에는 쓰지 않고 결과 파일에만 남긴다
+    llm_output: Any = None
 
 
 @dataclass(frozen=True)
