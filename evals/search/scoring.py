@@ -12,7 +12,9 @@
 - 키워드 0건인 있는 말(`no-keyword`, #548): 결과가 빈 사례 수. 0이어야 한다. 벡터 결과에만 기대는 말이라, 없는 말을
   자르는 규칙이 이 말까지 비우지 않는지 지킨다.
 - 서술형(`descriptive`, #502): 정답이 여럿이라 나온 책마다 매긴 점수(맞음 2·조금 1·아님 0, labels.json)로 위 10권의
-  nDCG 를 낸다. 이상값은 위 10권이 모두 2점인 순서로 고정한다(descriptive 참고).
+  nDCG 를 낸다. 이상값은 위 10권이 모두 2점인 순서로 고정한다(descriptive 참고). 라벨 없는 책을 0점으로 세면 새 책을
+  올리는 설정이 불리해서, 라벨 있는 책만 센 nDCG′ 와 라벨 있는 비율(Judged)도 같이 낸다(#556).
+- 첫 화면(#556 판정): 인기순 위 12권으로 볼 때는 저자·서술형도 12권을 본다(look).
 """
 
 import math
@@ -76,6 +78,10 @@ class Score:
     relevant: int | None = None  # 서술형: 위 10권 중 2점 책 수
     irrelevant: int | None = None  # 서술형: 위 10권 중 0점 책 수
     unlabeled: int | None = None  # 서술형: 위 10권 중 점수를 매기지 않은 책 수
+    ndcg_labeled: float | None = (
+        None  # 서술형: 점수 없는 책을 빼고 앞으로 당겨 잰 nDCG′
+    )
+    judged: float | None = None  # 서술형: 본 권수 중 점수를 매긴 책의 비율(Judged@N)
 
 
 def title_rank(case: Mapping[str, Any], books: Sequence[Book | None]) -> int | None:
@@ -88,14 +94,15 @@ def title_rank(case: Mapping[str, Any], books: Sequence[Book | None]) -> int | N
     return None
 
 
-def author_share(case: Mapping[str, Any], books: Sequence[Book | None]) -> float:
-    """위 10권 가운데 저자 칸에 그 이름이 통째로 든 책의 비율. 한강을 찾는데 한강준의 책은 세지 않는다."""
+def author_share(
+    case: Mapping[str, Any], books: Sequence[Book | None], look: int = AUTHOR_TOP
+) -> float:
+    """위 look 권(기본 10) 가운데 저자 칸에 그 이름이 통째로 든 책의 비율. 한강을 찾는데 한강준의 책은 세지 않는다."""
     name = case["expect"]["author"]
     hits = sum(
-        book is not None and has_author(book.author, name)
-        for book in books[:AUTHOR_TOP]
+        book is not None and has_author(book.author, name) for book in books[:look]
     )
-    return hits / AUTHOR_TOP
+    return hits / look
 
 
 def breaks(filters: Mapping[str, Any], book: Book | None) -> bool:
@@ -136,7 +143,9 @@ def dcg(grades: Sequence[int]) -> float:
 
 
 def descriptive(
-    books: Sequence[Book | None], labels: Mapping[str, int]
+    books: Sequence[Book | None],
+    labels: Mapping[str, int],
+    look: int = DESCRIPTIVE_TOP,
 ) -> dict[str, Any]:
     """위 10권의 nDCG 와 2점·0점·점수 없는 책 수. `labels` 는 이 검색어에 매긴 ISBN → 점수다.
 
@@ -146,13 +155,22 @@ def descriptive(
     하나도 나오지 않은 검색어(제목에 그 낱말만 든 책이 나온 경우)가 1점 책만으로 1에 가깝게 나온다. 고정하면
     라벨을 더해도 이상값이 그대로라서 다른 코드의 숫자가 바뀌지 않는다.
     """
-    top = books[:DESCRIPTIVE_TOP]
-    grades = [labels.get(book.isbn) if book and book.isbn else None for book in top]
+
+    def grade(book: Book | None) -> int | None:
+        return labels.get(book.isbn) if book and book.isbn else None
+
+    top = books[:look]
+    grades = [grade(book) for book in top]
+    ideal = dcg([2] * look)
+    # nDCG′: 점수 없는 책을 목록에서 빼고 뒤의 책을 당겨 위 look 권으로 잰다(위 N권 밖의 책까지 당겨 온다)
+    labeled = [g for g in (grade(book) for book in books) if g is not None][:look]
     return {
-        "ndcg": dcg([g or 0 for g in grades]) / dcg([2] * DESCRIPTIVE_TOP),
+        "ndcg": dcg([g or 0 for g in grades]) / ideal,
         "relevant": sum(g == 2 for g in grades),
         "irrelevant": sum(g == 0 for g in grades),
         "unlabeled": sum(g is None for g in grades),
+        "ndcg_labeled": dcg(labeled) / ideal,
+        "judged": sum(g is not None for g in grades) / look,
     }
 
 
@@ -162,26 +180,36 @@ def score(
     shelf: Mapping[int, Book],
     top: int,
     labels: Mapping[str, Mapping[str, int]] | None = None,
+    look: int | None = None,
 ) -> Score:
-    """사례 하나를 채점한다. `shelf` 는 받은 책의 book_id → 책 정보, `labels` 는 사례 번호 → ISBN → 점수다."""
-    books = [shelf.get(book_id) for book_id in response.book_ids[:top]]
+    """사례 하나를 채점한다. `shelf` 는 받은 책의 book_id → 책 정보, `labels` 는 사례 번호 → ISBN → 점수다.
+
+    look 은 저자·서술형이 보는 권수다. 주지 않으면 10권(지금 기준), 첫 화면으로 볼 때는 12권이다.
+    """
+    # 받은 권수가 top 보다 많을 수 있다(첫 화면). 뒤의 책은 nDCG′ 가 당겨 올 때만 쓴다
+    received = [shelf.get(book_id) for book_id in response.book_ids]
+    books = received[:top]
     kind = case["kind"]
     extra: dict[str, Any] = {}
     if kind in TITLE_KINDS:
         extra["rank"] = title_rank(case, books)
     elif kind == "author":
-        extra["author_share"] = author_share(case, books)
+        extra["author_share"] = author_share(case, books, look or AUTHOR_TOP)
     elif kind == "filter":
         extra["violations"] = sum(breaks(case["filters"], book) for book in books)
     elif kind == "descriptive":
-        extra.update(descriptive(books, (labels or {}).get(case["id"], {})))
+        extra.update(
+            descriptive(
+                received, (labels or {}).get(case["id"], {}), look or DESCRIPTIVE_TOP
+            )
+        )
     return Score(
         id=case["id"],
         kind=kind,
         change=case.get("change"),
         facet=case.get("facet"),
         ok=response.status == 200 and response.degraded is None,
-        returned=len(response.book_ids),
+        returned=len(books),
         seconds=response.seconds,
         **extra,
     )
@@ -191,7 +219,7 @@ def _mean(values: Sequence[float], digits: int = 3) -> float | None:
     return round(statistics.fmean(values), digits) if values else None
 
 
-def _row(items: Sequence[Score]) -> dict[str, Any]:
+def _row(items: Sequence[Score], hit_at: Sequence[int] = HIT_AT) -> dict[str, Any]:
     measured = [s for s in items if s.ok]
     row: dict[str, Any] = {
         "cases": len(items),
@@ -206,7 +234,7 @@ def _row(items: Sequence[Score]) -> dict[str, Any]:
     kind = items[0].kind
     if kind in TITLE_KINDS:
         ranks = [s.rank for s in measured]
-        for k in HIT_AT:
+        for k in hit_at:
             row[f"hit_{k}"] = _mean([r is not None and r <= k for r in ranks])
         row["mrr"] = _mean([1 / r if r else 0.0 for r in ranks])
         row["missed"] = sum(r is None for r in ranks)
@@ -220,12 +248,16 @@ def _row(items: Sequence[Score]) -> dict[str, Any]:
         row["relevant_mean"] = _mean([s.relevant for s in measured], 1)
         row["irrelevant_mean"] = _mean([s.irrelevant for s in measured], 1)
         row["unlabeled"] = sum(s.unlabeled for s in measured)
+        row["ndcg_labeled_mean"] = _mean([s.ndcg_labeled for s in measured])
+        row["judged_mean"] = _mean([s.judged for s in measured])
     elif kind in EMPTY_KINDS:
         row["empty"] = sum(s.returned == 0 for s in measured)
     return row
 
 
-def summarize(scores: Sequence[Score]) -> dict[str, Any]:
+def summarize(
+    scores: Sequence[Score], hit_at: Sequence[int] = HIT_AT
+) -> dict[str, Any]:
     """종류별로 모은다. 표기 변형은 바꾼 방법별로, 서술형은 소분류별로도 낸다. 종류를 섞은 전체 숫자는 내지 않는다.
 
     재지 못한 사례(200 이 아니거나 줄여 답함)는 평균에서 빼고, `cases` 와 `measured` 의 차이로 드러낸다.
@@ -240,7 +272,7 @@ def summarize(scores: Sequence[Score]) -> dict[str, Any]:
         if s.facet:
             facets.setdefault(s.facet, []).append(s)
     return {
-        "kinds": {kind: _row(items) for kind, items in kinds.items()},
-        "changes": {change: _row(items) for change, items in changes.items()},
-        "facets": {facet: _row(items) for facet, items in facets.items()},
+        "kinds": {kind: _row(items, hit_at) for kind, items in kinds.items()},
+        "changes": {change: _row(items, hit_at) for change, items in changes.items()},
+        "facets": {facet: _row(items, hit_at) for facet, items in facets.items()},
     }
