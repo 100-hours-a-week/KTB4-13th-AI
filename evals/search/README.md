@@ -153,6 +153,23 @@ uv run python -m evals.search.label apply-review --by "누가 확인했는지, �
 - 점수: `confirm-labels.json`에 507권(2점 183 · 1점 153 · 0점 171). 2026-11-08 Claude 세션이 같은 기준으로, 어느 설정에서 나온 책인지 가리고 매겼습니다
 - 쓴 기록: 2026-11-08 #556의 걸러내는 선 0.65 판정에 한 번 썼습니다. 다시 쓸 때는 몇 번째인지 결과에 적습니다
 
+### 사람이 점수를 가리고 다시 매기기
+
+세션이 매긴 점수가 사람 점수와 맞는지 봅니다([#751](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/751)). 사람은 점수를 모르는 채 시트의 체크박스만 고르고, `regrade.py`가 세션 점수와 견줍니다.
+
+```
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.regrade sheet --picks picks.json --prefix b --sheet B.md --key B-key.json
+uv run python -m evals.search.regrade score --sheet A.md A-key.json 나중 --sheet B.md B-key.json --sheet C.md C-key.json
+```
+
+1. `sheet`: 고른 책 목록(`picks.json`, 사례·ISBN·묶음)으로 시트와 열쇠를 만듭니다. 어떤 책을 고를지는 표본마다 달라서 이 명령 밖에서 정합니다. 시트에는 점수도 묶음도 적지 않고, 열쇠는 채점이 끝날 때까지 열지 않습니다
+2. 사람이 책마다 체크박스 하나를 고릅니다
+3. `score`: 시트와 열쇠를 짝으로 받아 묶음(처음·나중·확인용)별 일치도를 내고, 묶음 크기로 가중해 합칩니다. 같은 책을 며칠 뒤 다시 매긴 시트는 묶음을 `다시`로 두면 처음 매긴 사람 점수와 견주고, 합친 값에는 넣지 않습니다
+
+- 일치도는 선형 가중 κ입니다. 두 점수가 우연보다 얼마나 더 맞는지를 보고, 1이면 모두 같습니다. 점수가 1 차이면 반만, 2 차이면 다 틀린 것으로 칩니다
+- 합친 κ가 0.6 이상이면 서술형 판정에 세션 점수를 계속 쓰고, 못 미치면 서술형 판정을 보류합니다. 0.6은 #556(2026-11-06)에 정한 값입니다
+- 같은 비율과 2점·0점으로 갈린 권수도 같이 냅니다. 한 점수에 몰린 묶음은 κ가 낮게 나오기 쉬워서입니다
+
 ## 돌리는 법
 
 평가 DB에 붙여 돌립니다. 평가 DB를 만드는 법은 `evals/feed/README.md`의 "평가용 책 표"에 있습니다. 서버를 따로 띄우지 않습니다. LLM은 부르지 않고 검색어 벡터만 로컬 임베딩 모델로 만듭니다. 이 PC에서는 묶음 전부에 1분 안팎 걸렸습니다.
