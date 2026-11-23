@@ -451,3 +451,89 @@ def test_API를_그대로_거쳐_응답과_시간을_받는다(monkeypatch) -> N
     assert [item["value"] for item in outcome.data["extractions"]] == [
         "쿠버네티스 입문서를 찾음"
     ]
+    # 규칙을 거치기 전의 LLM 답도 받는다. 서버 함수는 부른 뒤 제자리로 돌아온다
+    assert outcome.llm_output == json.loads(reply)
+    assert service.to_extractions.__name__ == "to_extractions"
+
+
+# --- 남긴 응답으로 다시 채점하기(#753). LLM 을 부르지 않는다 ---
+
+
+def _with_llm_output(request: dict) -> Outcome:
+    ideal = _ideal(request)
+    return Outcome(ideal.status, ideal.data, ideal.seconds, {"extractions": ["날것"]})
+
+
+def test_응답과_LLM_날것_답을_남기고_벡터는_길이만_남긴다(tmp_path) -> None:
+    target, _calls = _target(_with_llm_output)
+    path = tmp_path / "result.json"
+
+    run.main(["--ids", "request-01", "--yes", "--out", str(path)], target=target)
+
+    [record] = json.loads(path.read_text(encoding="utf-8"))["runs"]
+    [item] = record["response"]["extractions"]
+    assert item["vector"] is None and item[run.VECTOR_LEN] == 2
+    assert record["llm_output"] == {"extractions": ["날것"]}
+
+
+def test_남긴_벡터를_되살리면_모양_검사를_그대로_지난다() -> None:
+    data = _ideal(_BY_ID["request-01"]["request"]).data
+    again = run.expand(run.compact(data))
+    assert again["extractions"][0]["vector"] == [0.0, 0.0]
+    assert run.expand(run.compact(None)) is None
+
+
+def test_남긴_응답을_지금_기대값으로_다시_채점한다(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    target, _calls = _target()
+    first = tmp_path / "first.json"
+    run.main(
+        ["--ids", "request-01,none-01", "--runs", "2", "--yes", "--out", str(first)],
+        target=target,
+    )
+
+    again = tmp_path / "again.json"
+    assert run.main(["--rescore", str(first), "--out", str(again)]) == 0
+    old = json.loads(first.read_text(encoding="utf-8"))
+    new = json.loads(again.read_text(encoding="utf-8"))
+    assert [r["passed"] for r in new["runs"]] == [r["passed"] for r in old["runs"]]
+    assert new["rescored_from"] == "first.json"
+    assert new["prompt_version"] == old["prompt_version"]
+    assert new["summary"]["runs_per_case"] == 2
+
+    # 기대값만 고친 경우: 같은 응답이 지금 기대에는 놓친 것이 된다
+    changed = copy.deepcopy(_CASES)
+    for case in changed:
+        if case["id"] == "request-01":
+            case["expect"]["extractions"][0]["keywords"] = ["없는말"]
+    monkeypatch.setattr(run, "load_cases", lambda: changed)
+    assert run.main(["--rescore", str(first), "--out", str(again)]) == 0
+    runs = json.loads(again.read_text(encoding="utf-8"))["runs"]
+    assert [r["failures"] for r in runs if r["case_id"] == "request-01"] == [
+        ["missed"],
+        ["missed"],
+    ]
+
+
+def test_응답이_없거나_묶음이_다른_파일은_다시_채점하지_않는다(
+    tmp_path, capsys
+) -> None:
+    target, _calls = _target()
+    path = tmp_path / "result.json"
+    run.main(["--ids", "none-01", "--yes", "--out", str(path)], target=target)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    legacy = copy.deepcopy(saved)
+    for record in legacy["runs"]:
+        del record["response"]
+    (tmp_path / "legacy.json").write_text(json.dumps(legacy), encoding="utf-8")
+    assert run.main(["--rescore", str(tmp_path / "legacy.json")]) == 2
+    assert "응답을 남기지 않은 파일" in capsys.readouterr().err
+
+    other = {**saved, "bundle_version": saved["bundle_version"] + 1}
+    (tmp_path / "other.json").write_text(json.dumps(other), encoding="utf-8")
+    assert run.main(["--rescore", str(tmp_path / "other.json")]) == 2
+    assert "묶음 판이 다르다" in capsys.readouterr().err
+
+    assert run.main(["--rescore", str(path), "--yes"]) == 2
