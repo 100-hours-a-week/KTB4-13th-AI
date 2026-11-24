@@ -110,9 +110,11 @@ def test_서술형은_매긴_점수로_위_10권의_nDCG_를_소분류별로도_
     assert run.main(argv, search=search, facts=lambda ids: {1: book}) == 0
 
     printed = capsys.readouterr().out
-    # 2점 책이 1등이고, 책 표에 없는 2번은 점수 없는 책이다. 이상값(위 10권이 모두 2점)으로 나눠 3 / 13.63
-    assert "| descriptive | 1 | 0.220 | 1.0 | 0.0 | 1 |" in printed
+    # 2점 책이 1등이고, 책 표에 없는 2번은 점수 없는 책이다. 이상값(위 10권이 모두 2점)으로 나눠 3 / 13.63.
+    # nDCG′ 는 점수 없는 책을 빼고 재도 2점 책 하나라 같고, 10권 중 점수가 있는 책은 1권(10%)이다
+    assert "| descriptive | 1 | 0.220 | 0.220 | 10.0% | 1.0 | 0.0 | 1 |" in printed
     assert "| ↳ topic | 1 | 0.220 |" in printed
+    assert "2점·0점 책은 위 10권 중" in printed
 
 
 def test_yes_가_없으면_부르지_않고_모르는_종류나_코드_폴더면_멈춘다() -> None:
@@ -122,3 +124,139 @@ def test_yes_가_없으면_부르지_않고_모르는_종류나_코드_폴더면
     assert run.main(["--kinds", "author"], search=search, facts=dict) == 0
     assert run.main(["--kinds", "autor", "--yes"], search=search, facts=dict) == 2
     assert run.main(["--code", "/없는/폴더", "--yes"], search=search, facts=dict) == 2
+
+
+def _book(book_id: int, isbn: str | None = None, author: str | None = None) -> Book:
+    return Book(
+        book_id=book_id,
+        isbn=isbn,
+        title=f"책{book_id}",
+        author=author,
+        category=None,
+        pub_year=None,
+        price=None,
+    )
+
+
+def test_첫_화면은_인기순_위_12권으로_받고_12권을_본다(capsys) -> None:
+    sent = []
+
+    def search(requests: list[dict]) -> list[dict]:
+        sent.extend(requests)
+        return [
+            {
+                "status": 200,
+                "degraded": None,
+                "book_ids": list(range(1, 13)),
+                "seconds": 0.1,
+            }
+        ]
+
+    shelf = {i: _book(i, author="전순선" if i == 12 else None) for i in range(1, 13)}
+    assert (
+        run.main(
+            ["--ids", "author-01", "--screen", "--yes"],
+            search=search,
+            facts=lambda ids: shelf,
+        )
+        == 0
+    )
+
+    assert sent == [{"query": "전순선", "filters": {}, "size": 24, "sort": "popular"}]
+    printed = capsys.readouterr().out
+    # 12번째 책이 그 저자의 책이라 12권을 보면 1/12, 10권만 보면 0이다
+    assert "popular 정렬, 위 12권 기준" in printed
+    assert "위 12권 중 그 저자의 책 0.08" in printed
+
+
+def test_첫_화면의_제목은_1등과_12등_안을_본다(capsys) -> None:
+    def search(requests: list[dict]) -> list[dict]:
+        return [{"status": 200, "degraded": None, "book_ids": [1], "seconds": 0.1}]
+
+    title = run.load_bundle()["cases"][0]
+    shelf = {
+        1: Book(
+            book_id=1,
+            isbn=None,
+            title=title["expect"]["titles"][0],
+            author=None,
+            category=None,
+            pub_year=None,
+            price=None,
+        )
+    }
+    assert (
+        run.main(
+            ["--ids", title["id"], "--screen", "--yes"],
+            search=search,
+            facts=lambda ids: shelf,
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "| 종류 | 사례 | 1등 안 | 12등 안 | MRR |" in printed
+
+
+def test_다른_묶음과_라벨_파일로_잰다(tmp_path: Path) -> None:
+    # 확인용 검색어(#556 판정 기준 4)는 평가 묶음·라벨과 따로 둔다
+    catalog = run.load_bundle()["catalog"]
+    bundle = {"version": 1, "top": 20, "seed": "556", "catalog": catalog}
+    bundle["cases"] = [
+        {"id": "confirm-01", "kind": "descriptive", "facet": "topic", "query": "우주"}
+    ]
+    (tmp_path / "b.json").write_text(json.dumps(bundle), encoding="utf-8")
+    labels = {"labels": {"confirm-01": {"9780000000001": 2}}}
+    (tmp_path / "l.json").write_text(json.dumps(labels), encoding="utf-8")
+    book = Book(
+        book_id=1,
+        isbn="9780000000001",
+        title="책",
+        author=None,
+        category=None,
+        pub_year=None,
+        price=None,
+    )
+
+    def search(requests: list[dict]) -> list[dict]:
+        return [{"status": 200, "degraded": None, "book_ids": [1], "seconds": 0.1}]
+
+    out = tmp_path / "r.json"
+    argv = ["--bundle", str(tmp_path / "b.json"), "--labels", str(tmp_path / "l.json")]
+    argv += ["--yes", "--out", str(out)]
+    assert run.main(argv, search=search, facts=lambda ids: {1: book}) == 0
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert saved["bundle_version"] == 1
+    assert [s["id"] for s in saved["scores"]] == ["confirm-01"]
+    # 2점 책 하나가 1등이다(이상값은 위 10권이 모두 2점, 3 / 13.63)
+    assert saved["scores"][0]["ndcg"] == pytest.approx(0.220, abs=1e-3)
+
+
+def test_첫_화면_결과_파일에_판정에_쓰는_칸과_서술형의_ISBN_을_남긴다(
+    tmp_path: Path, capsys
+) -> None:
+    # 판정은 정렬·본 권수가 같은 파일끼리 하고, 서술형은 남긴 ISBN 으로 마지막 라벨에 다시 매긴다(#752)
+    def search(requests: list[dict]) -> list[dict]:
+        return [
+            {
+                "status": 200,
+                "degraded": None,
+                "book_ids": list(range(1, 15)),
+                "seconds": 0.1,
+            }
+        ]
+
+    shelf = {i: _book(i, isbn=f"97800000000{i:02d}") for i in range(1, 15)}
+    out = tmp_path / "screen.json"
+    argv = ["--ids", "descriptive-01", "--screen", "--yes", "--out", str(out)]
+    assert run.main(argv, search=search, facts=lambda ids: shelf) == 0
+    # 표 아래 설명도 본 권수(12)를 적는다
+    assert "2점·0점 책은 위 12권 중" in capsys.readouterr().out
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert (saved["sort"], saved["top"], saved["look"]) == ("popular", 12, 12)
+    [row] = saved["scores"]
+    # 받은 14권을 모두 남긴다. 채점은 위 12권만 하고, 뒤의 책은 nDCG′ 가 당겨 올 때 쓴다
+    assert row["returned"] == 12
+    assert row["isbns"] == [f"97800000000{i:02d}" for i in range(1, 15)]
+    assert 0 <= row["judged"] <= 1
