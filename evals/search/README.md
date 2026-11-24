@@ -195,6 +195,40 @@ DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.sear
 - `--out` 파일에 정렬(`sort`)과 본 권수(`top`, `look`)가 남습니다. 판정은 이 값이 같은 파일끼리만 합니다
 - `--screen` 없이 잰 관련도순 숫자는 원리를 볼 때 씁니다
 
+### 고치기 전과 후를 판정하기
+
+검색을 고친 PR은 main과 PR 브랜치를 같은 DB에서 `--screen --out`으로 하나씩 재고, 두 파일을 판정에 넣습니다. 나온 판정표를 PR 본문의 "고정 Dataset 검증 결과" 칸에 붙입니다. DB와 LLM을 쓰지 않습니다.
+
+```
+git worktree add --detach ../main-code origin/main
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.run --yes --screen --code ../main-code --out evals/search/results/main-screen.json
+DATABASE_URL=postgresql://localhost/bookjeok_ai_eval uv run python -m evals.search.run --yes --screen --out evals/search/results/pr-screen.json
+uv run python -m evals.search.verdict compare --base evals/search/results/main-screen.json --new evals/search/results/pr-screen.json
+```
+
+규칙은 V3 때 측정 전에 정한 것입니다([#556](https://github.com/100-hours-a-week/KTB4-13th-AI/issues/556) 「미리 정하는 판정 기준」). 결과를 본 뒤에 바꾸지 않습니다.
+
+| 무엇 | 탈락 | 좋아짐 |
+| --- | --- | --- |
+| 제목 | 1등 맞힌 수가 2건 이상 줄어듦(잃은 수 − 얻은 수) | 보지 않음 |
+| 표기 변형 1등 | 잃은 쪽이 많고 McNemar 정확 검정 p < 0.05 | 짝 부트스트랩 95% 구간 아래 끝 > 0 |
+| 저자 | 짝 부트스트랩 95% 구간 아래 끝 < −0.02 | 보지 않음 |
+| 서술형 | 자동 탈락 없음. 구간과 바뀐 사례를 보고 사람이 정한다 | nDCG 차이의 95% 구간 아래 끝 > 0 |
+| 필터 | 조건을 어긴 책이 1권이라도 | 보지 않음 |
+
+- 하나라도 탈락이면 **탈락**입니다. 탈락이 없고 Judged가 어느 쪽이든 0.9 미만이면 **라벨 보충 뒤 판정**입니다. 위 "점수를 매기는 법"으로 새로 나온 책을 매긴 뒤 다시 판정합니다
+- 그다음 서술형이나 표기 변형이 좋아졌으면 **좋아짐**, 아니면 **판단 불가**입니다. 판단 불가는 "같다"가 아니라 "이 검색어 수로는 차이를 가릴 수 없다"입니다
+- 재지 못한 사례(200이 아니거나 줄여 답함)가 있으면 **다시 재기**입니다. 짝이 빠진 채로는 판정하지 않습니다
+- 묶음 판·정렬·본 권수·DB가 다른 파일끼리는 견주지 않습니다. 관련도순 파일끼리는 숫자만 내고 **원리 확인용**이라고 적습니다
+- 서술형은 파일에 적힌 숫자를 쓰지 않고, 남긴 ISBN으로 지금의 `labels.json`에 다시 매깁니다
+- 짝 부트스트랩은 사례를 중복을 허락해 1만 번 다시 뽑아 평균 차이의 95% 구간을 내는 계산입니다(`evals/stats.py`, 시드 556)
+
+확인용 검색어로 마지막 후보 여럿을 볼 때는 `confirm`을 씁니다. 후보마다 서술형 nDCG를 견주고, 여럿 중 하나쯤 우연히 넘는 일을 막으려고 Holm 보정을 겁니다.
+
+```
+uv run python -m evals.search.verdict --labels evals/search/confirm-labels.json confirm --base base-confirm.json --new a-confirm.json --new b-confirm.json
+```
+
 ## 결과 읽는 법
 
 | 칸 | 뜻 |
