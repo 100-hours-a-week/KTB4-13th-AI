@@ -10,7 +10,8 @@
 - 필터(`filter`): 요청에 건 조건을 어긴 책의 수. 0이어야 한다.
 - 없는 말(`nonsense`): 돌아온 권수와, 결과가 빈 사례 수를 센다. 몇이면 통과인지는 없다(#548, 검색에서는 자르지 않는다).
 - 키워드 0건인 있는 말(`no-keyword`, #548): 결과가 빈 사례 수. 0이어야 한다. 벡터 결과에만 기대는 말이라, 없는 말을
-  자르는 규칙이 이 말까지 비우지 않는지 지킨다.
+  자르는 규칙이 이 말까지 비우지 않는지 지킨다. 찾던 책을 붙인 오타·로마자·초성 19건은 그 책이 처음 나온 등수도 잰다
+  (묶음 4, #752). 같은 제목의 아무 판본, 그 저자의 책, 제목에 시리즈 이름이 든 책 중 사례에 적힌 것이다.
 - 서술형(`descriptive`, #502): 정답이 여럿이라 나온 책마다 매긴 점수(맞음 2·조금 1·아님 0, labels.json)로 위 10권의
   nDCG 를 낸다. 이상값은 위 10권이 모두 2점인 순서로 고정한다(descriptive 참고). 라벨 없는 책을 0점으로 세면 새 책을
   올리는 설정이 불리해서, 라벨 있는 책만 센 nDCG′ 와 라벨 있는 비율(Judged)도 같이 낸다(#556).
@@ -70,7 +71,10 @@ class Score:
     ok: bool  # 200 으로 온전히 답했는가. 아니면 평균에서 빼고 따로 센다
     returned: int
     seconds: float
-    rank: int | None = None  # 제목: 정답이 처음 나온 등수(1부터). 위 N권에 없으면 None
+    rank: int | None = (
+        None  # 제목·찾던 책: 정답이 처음 나온 등수(1부터). 위 N권에 없으면 None
+    )
+    sought: bool = False  # 키워드 0건: 찾던 책을 붙인 사례
     author_share: float | None = None  # 저자: 위 10권 중 그 저자 책의 비율
     violations: int | None = None  # 필터: 조건을 어긴 책의 수
     facet: str | None = None  # 서술형의 소분류(주제, 분위기 등)
@@ -90,6 +94,32 @@ def title_rank(case: Mapping[str, Any], books: Sequence[Book | None]) -> int | N
     wanted.discard("")
     for rank, book in enumerate(books, start=1):
         if book is not None and editions.title_key(book.title) in wanted:
+            return rank
+    return None
+
+
+def sought_rank(case: Mapping[str, Any], books: Sequence[Book | None]) -> int | None:
+    """키워드 0건인 말의 찾던 책(`expect`)이 처음 나온 등수. 없으면 None.
+
+    제목(`titles`)은 제목 사례와 같이 띄어쓰기·문장부호를 빼고 같은 제목의 아무 판본, 저자(`author`)는 저자 칸에
+    그 이름이 통째로 든 책, 시리즈(`series`)는 제목에 시리즈 이름이 든 책이다.
+    """
+    expect = case["expect"]
+    if "titles" in expect:
+        return title_rank(case, books)
+    if "author" in expect:
+
+        def found(book: Book) -> bool:
+            return has_author(book.author, expect["author"])
+
+    else:
+        series = editions.title_key(expect["series"])
+
+        def found(book: Book) -> bool:
+            return series in editions.title_key(book.title)
+
+    for rank, book in enumerate(books, start=1):
+        if book is not None and found(book):
             return rank
     return None
 
@@ -197,6 +227,9 @@ def score(
         extra["author_share"] = author_share(case, books, look or AUTHOR_TOP)
     elif kind == "filter":
         extra["violations"] = sum(breaks(case["filters"], book) for book in books)
+    elif kind == "no-keyword" and "expect" in case:
+        extra["rank"] = sought_rank(case, books)
+        extra["sought"] = True
     elif kind == "descriptive":
         extra.update(
             descriptive(
@@ -252,6 +285,10 @@ def _row(items: Sequence[Score], hit_at: Sequence[int] = HIT_AT) -> dict[str, An
         row["judged_mean"] = _mean([s.judged for s in measured])
     elif kind in EMPTY_KINDS:
         row["empty"] = sum(s.returned == 0 for s in measured)
+        sought = [s for s in measured if s.sought]
+        if sought:
+            row["sought"] = len(sought)
+            row["found"] = sum(s.rank is not None for s in sought)
     return row
 
 

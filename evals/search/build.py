@@ -22,7 +22,7 @@ from app.core import editions, products
 from app.feed.interest_picks import has_author
 
 CASES_PATH = Path(__file__).with_name("cases.json")
-VERSION = 3
+VERSION = 4
 # 위 몇 권을 보는지. 사례마다 /search 에 이 권수를 한 번 요청한다
 TOP = 20
 # 책을 고르는 순서를 정하는 값. 바꾸면 다른 묶음이 나온다
@@ -170,41 +170,44 @@ NONSENSE = (
     ("mixed", "ㅁㄴㅇㄹ 1234"),
     ("mixed", "ㅂㅈㄷㄱ asdf"),
 )
-# 키워드 결과가 0건인 있는 말(#548). (소분류, 검색어). 사람이 찾는 책이 있는 말인데 키워드 검색이 0건이라 벡터
+# 키워드 결과가 0건인 있는 말(#548). (소분류, 검색어, 찾던 책). 사람이 찾는 책이 있는 말인데 키워드 검색이 0건이라 벡터
 # 결과에만 기댄다. 없는 말을 자르는 규칙을 넣을 때 이 말들이 비지 않는지 지키려고 둔다. 1권 이상 나오면 맞다.
 # 소분류는 제목 오타(typo), 로마자로 쓴 제목·저자(romanized), 제목 초성(chosung), 상황을 구어로 말한 것(colloquial).
 # 평가 DB 에서 키워드 결과가 0건인 것만 골랐다(10/22). 책 표가 바뀌면 키워드에 걸리는 것이 생길 수 있다.
+# 찾던 책(묶음 4, #752)은 그 책이 위 N권에 들었는지 잰다. 같은 제목의 아무 판본(titles), 그 저자의 책(author), 제목에
+# 시리즈 이름이 든 책(series) 중 하나다. 구어는 맞는 책이 여럿이라 붙이지 않는다. "원씽"은 평가 책 표에 그 제목의 책이
+# 없어 붙이지 않았다("원씽 교실" 등만 있다). "겨울의 적자"라는 책은 없어서, 소개글로 보아 윈터러 판본인 "룬의 아이들"로 잡았다.
 NO_KEYWORD = (
-    ("typo", "데미얀"),
-    ("typo", "채식쥬의자"),
-    ("typo", "아몬듣"),
-    ("typo", "사피언스ㅡ"),
-    ("typo", "해리퍼터"),
-    ("typo", "어린왕쟈님"),
-    ("typo", "룬의아이들 겨울의 적쟈"),
-    ("typo", "역행쟈"),
-    ("typo", "원씽ㅇ"),
-    ("romanized", "haripota"),
-    ("romanized", "ingan sil-gyeok"),
-    ("romanized", "tolseutoi"),
-    ("romanized", "eorin wangja"),
-    ("romanized", "chaesikjuuija"),
-    ("romanized", "sonyeoni onda"),
-    ("chosung", "ㅎㄹㅍㅌ"),
-    ("chosung", "ㄷㅁㅇ"),
-    ("chosung", "ㅅㄴㅇ ㅇㄷ"),
-    ("chosung", "ㅇㄹㅇㅈ"),
-    ("chosung", "ㅊㅅㅈㅇㅈ"),
-    ("colloquial", "머리 식힐 거"),
-    ("colloquial", "잠 안 올 때 볼 거"),
-    ("colloquial", "출퇴근길에 가볍게 볼 거"),
-    ("colloquial", "선물용으로 괜찮은 거"),
-    ("colloquial", "주말에 뒹굴면서 볼 거"),
-    ("colloquial", "비행기에서 볼 거"),
-    ("colloquial", "입문용으로 괜찮은 거"),
-    ("colloquial", "애기 재울 때 읽어 줄 거"),
-    ("colloquial", "친구 생일에 줄 만한 거"),
-    ("colloquial", "시험 끝나고 볼 거"),
+    ("typo", "데미얀", {"titles": ["데미안"]}),
+    ("typo", "채식쥬의자", {"titles": ["채식주의자"]}),
+    ("typo", "아몬듣", {"titles": ["아몬드"]}),
+    ("typo", "사피언스ㅡ", {"titles": ["사피엔스"]}),
+    ("typo", "해리퍼터", {"series": "해리 포터"}),
+    ("typo", "어린왕쟈님", {"titles": ["어린 왕자"]}),
+    ("typo", "룬의아이들 겨울의 적쟈", {"titles": ["룬의 아이들"]}),
+    ("typo", "역행쟈", {"titles": ["역행자"]}),
+    ("typo", "원씽ㅇ", None),
+    ("romanized", "haripota", {"series": "해리 포터"}),
+    ("romanized", "ingan sil-gyeok", {"titles": ["인간 실격"]}),
+    ("romanized", "tolseutoi", {"author": "톨스토이"}),
+    ("romanized", "eorin wangja", {"titles": ["어린 왕자"]}),
+    ("romanized", "chaesikjuuija", {"titles": ["채식주의자"]}),
+    ("romanized", "sonyeoni onda", {"titles": ["소년이 온다"]}),
+    ("chosung", "ㅎㄹㅍㅌ", {"series": "해리 포터"}),
+    ("chosung", "ㄷㅁㅇ", {"titles": ["데미안"]}),
+    ("chosung", "ㅅㄴㅇ ㅇㄷ", {"titles": ["소년이 온다"]}),
+    ("chosung", "ㅇㄹㅇㅈ", {"titles": ["어린 왕자"]}),
+    ("chosung", "ㅊㅅㅈㅇㅈ", {"titles": ["채식주의자"]}),
+    ("colloquial", "머리 식힐 거", None),
+    ("colloquial", "잠 안 올 때 볼 거", None),
+    ("colloquial", "출퇴근길에 가볍게 볼 거", None),
+    ("colloquial", "선물용으로 괜찮은 거", None),
+    ("colloquial", "주말에 뒹굴면서 볼 거", None),
+    ("colloquial", "비행기에서 볼 거", None),
+    ("colloquial", "입문용으로 괜찮은 거", None),
+    ("colloquial", "애기 재울 때 읽어 줄 거", None),
+    ("colloquial", "친구 생일에 줄 만한 거", None),
+    ("colloquial", "시험 끝나고 볼 거", None),
 )
 # 서술형 검색어(#502). 맞는 책이 여럿이라 나온 책마다 매긴 점수(labels.json)로 잰다. 사람이 쓴 목록 그대로 쓴다.
 # (소분류, 검색어, 출처). 출처는 handoff(인계 문서의 예시), chat-eval(③ 챗봇 평가 질문을 검색창에 칠 말로 줄임),
@@ -367,8 +370,14 @@ def fixed_cases() -> list[dict]:
         for i, (group, query) in enumerate(NONSENSE, start=1)
     ]
     cases += [
-        _case(f"no-keyword-{i:02d}", "no-keyword", query, group=group)
-        for i, (group, query) in enumerate(NO_KEYWORD, start=1)
+        _case(
+            f"no-keyword-{i:02d}",
+            "no-keyword",
+            query,
+            group=group,
+            **({"expect": sought} if sought else {}),
+        )
+        for i, (group, query, sought) in enumerate(NO_KEYWORD, start=1)
     ]
     return cases + [
         _case(f"descriptive-{i:02d}", "descriptive", query, facet=facet, source=source)

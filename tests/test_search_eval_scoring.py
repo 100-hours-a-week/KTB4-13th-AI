@@ -10,6 +10,7 @@ from evals.search.scoring import (
     author_share,
     breaks,
     score,
+    sought_rank,
     summarize,
     title_rank,
 )
@@ -181,6 +182,61 @@ def test_없는_말과_키워드_0건인_있는_말은_결과가_빈_사례를_�
     assert kinds["nonsense"]["empty"] == 1
     assert kinds["no-keyword"]["empty"] == 1
     assert kinds["no-keyword"]["returned_mean"] == 1.0
+
+
+def _sought(expect: dict, case_id: str = "no-keyword-01") -> dict:
+    return {"id": case_id, "kind": "no-keyword", "group": "typo", "expect": expect}
+
+
+def test_찾던_책은_같은_제목의_아무_판본_그_저자의_책_시리즈_이름이_든_책이다() -> None:
+    books = [
+        _book(1, title="데미안 읽기"),
+        _book(2, title="데미안!", author="헤르만 헤세"),
+        _book(3, title="해리 포터와 마법사의 돌", author="톨스토이 외"),
+    ]
+    # 제목은 제목 사례와 같이 띄어쓰기·문장부호만 빼고 같아야 한다. "데미안 읽기"는 다른 책이다
+    assert sought_rank(_sought({"titles": ["데미안"]}), books) == 2
+    assert sought_rank(_sought({"series": "해리포터"}), books) == 3
+    assert sought_rank(_sought({"author": "톨스토이"}), books) == 3
+    # 이름이 다른 이름의 일부면 그 저자가 아니다
+    assert sought_rank(_sought({"author": "톨스토"}), books) is None
+    assert sought_rank(_sought({"titles": ["아몬드"]}), [None, *books]) is None
+
+
+def test_찾던_책이_위_N권에_든_사례를_센다() -> None:
+    shelf = {1: _book(1, title="아몬드"), 2: _book(2, title="다른 책")}
+    scores = [
+        score(
+            _sought({"titles": ["아몬드"]}, "no-keyword-01"),
+            _response(2, 1),
+            shelf,
+            top=12,
+        ),
+        # 13번째 이후는 보지 않는다
+        score(
+            _sought({"titles": ["아몬드"]}, "no-keyword-02"),
+            _response(*[2] * 12, 1),
+            shelf,
+            top=12,
+        ),
+        score(
+            {"id": "no-keyword-21", "kind": "no-keyword", "group": "colloquial"},
+            _response(2),
+            shelf,
+            top=12,
+        ),
+    ]
+    assert [(s.rank, s.sought) for s in scores] == [
+        (2, True),
+        (None, True),
+        (None, False),
+    ]
+    row = summarize(scores)["kinds"]["no-keyword"]
+    assert row["sought"] == 2 and row["found"] == 1
+    assert row["empty"] == 0
+    # 찾던 책이 없는 묶음(버전 3)의 숫자는 그대로다
+    old = summarize(scores[2:])["kinds"]["no-keyword"]
+    assert "sought" not in old and "found" not in old
 
 
 def _descriptive_case(facet: str = "topic") -> dict:

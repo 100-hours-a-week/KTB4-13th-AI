@@ -13,6 +13,7 @@ from app.core import editions
 from app.core.isbn import ISBN13_PATTERN
 from app.routers.search import parse_request
 from app.search.schemas import MAX_SIZE, SearchFilters
+from evals.search import build
 from evals.search.build import CHANGES, change_title, person_like
 
 _PATH = Path(__file__).resolve().parents[1] / "evals" / "search" / "cases.json"
@@ -116,7 +117,7 @@ def test_필터_사례는_검색이_받는_조건을_건다() -> None:
         assert "filters" not in case and "expect" not in case
 
 
-def test_없는_말과_키워드_0건인_있는_말은_소분류가_있고_정답을_적지_않는다() -> None:
+def test_없는_말과_키워드_0건인_있는_말은_소분류가_있다() -> None:
     for kind, groups in (
         ("nonsense", NONSENSE_GROUPS),
         ("no-keyword", NO_KEYWORD_GROUPS),
@@ -126,9 +127,32 @@ def test_없는_말과_키워드_0건인_있는_말은_소분류가_있고_정�
         assert len({case["query"] for case in cases}) == len(cases), kind
         for case in cases:
             # 서술형의 소분류(facet)와 섞이지 않게 다른 칸에 둔다
-            assert (
-                "facet" not in case and "expect" not in case and "filters" not in case
-            )
+            assert "facet" not in case and "filters" not in case
+    for case in _of("nonsense"):
+        assert "expect" not in case, case["id"]
+
+
+def test_키워드_0건인_말은_구어를_빼고_찾던_책을_하나씩_적는다() -> None:
+    # 묶음 4(#752). 구어는 맞는 책이 여럿이고, 원씽은 평가 책 표에 그 제목의 책이 없다
+    sought = [case for case in _of("no-keyword") if "expect" in case]
+    assert len(sought) == 19
+    assert {case["group"] for case in sought} == {"typo", "romanized", "chosung"}
+    assert [
+        c["id"]
+        for c in _of("no-keyword")
+        if c["group"] != "colloquial" and "expect" not in c
+    ] == ["no-keyword-09"]
+    for case in sought:
+        (key, value), *rest = case["expect"].items()
+        assert not rest and key in {"titles", "author", "series"}, case["id"]
+        assert value if key == "titles" else isinstance(value, str) and value
+
+
+def test_키워드_0건인_말은_묶음을_만드는_코드와_같다() -> None:
+    # 묶음을 다시 만들 때 찾던 책이 사라지지 않게, 손으로 고친 것이 아니라 build.py 가 내는 그대로여야 한다
+    fixed = [c for c in build.fixed_cases() if c["kind"] == "no-keyword"]
+    assert _of("no-keyword") == fixed
+    assert _DATA["version"] == build.VERSION
     # 버전 2 의 다섯은 번호와 검색어를 그대로 둬서, 예전 결과 파일과 견줄 수 있다
     assert [(c["id"], c["query"]) for c in _of("nonsense")[:5]] == [
         ("nonsense-1", "ㅁㄴㅇㄹㅍ"),
