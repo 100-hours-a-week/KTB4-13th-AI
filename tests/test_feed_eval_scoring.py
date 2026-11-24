@@ -366,6 +366,23 @@ def test_재지_못한_사용자는_평균에서_빼고_따로_센다() -> None:
     assert row["rough"] is False
 
 
+def test_시간_예산을_넘겨_대신_채운_관심사를_남기고_센다() -> None:
+    # 대신 채운 관심사의 책은 추천 순서가 아니라 그 분류의 인기 책이다. 로컬이 잠깐 느려도 생긴다.
+    shelf = _shelf(_book("1", kdc="594.5"))
+    slow = _case(show=["cooking"])
+    fine = {**_case(show=["cooking"]), "id": "one-topic-02"}
+    scores = _scores(
+        (slow, _response(["1"], substituted=("cooking",)), shelf, None),
+        (fine, _response(["1"]), shelf, None),
+    )
+    summary = summarize(scores, KINDS, INTERESTS)
+
+    assert scores[0].substituted == ("cooking",)
+    assert scores[1].substituted == ()
+    assert summary["kinds"]["one-topic"]["substituted_users"] == 1
+    assert summary["groups"]["typical"]["substituted_users"] == 1
+
+
 def test_짝이_있는_종류는_짝과의_차이를_낸다() -> None:
     shelf = _shelf(
         _book("1", kdc="594.5"), _book("2", kdc="594.5"), _book("3", text="추리")
