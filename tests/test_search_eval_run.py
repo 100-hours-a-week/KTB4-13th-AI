@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -166,6 +167,25 @@ def test_첫_화면은_인기순_위_12권으로_받고_12권을_본다(capsys) 
     # 12번째 책이 그 저자의 책이라 12권을 보면 1/12, 10권만 보면 0이다
     assert "popular 정렬, 위 12권 기준" in printed
     assert "위 12권 중 그 저자의 책 0.08" in printed
+
+
+def test_첫_화면에서_찾던_책이_든_사례를_표에_적는다(capsys) -> None:
+    def search(requests: list[dict]) -> list[dict]:
+        return [
+            {"status": 200, "degraded": None, "book_ids": [1, 2], "seconds": 0.1}
+            for _ in requests
+        ]
+
+    shelf = {1: _book(1), 2: replace(_book(2), title="데미안")}
+    code = run.main(
+        ["--ids", "no-keyword-01,no-keyword-12,no-keyword-21", "--screen", "--yes"],
+        search=search,
+        facts=lambda ids: shelf,
+    )
+
+    assert code == 0
+    # 데미얀 → 데미안은 2등, 톨스토이(저자)는 없다. 구어는 찾던 책이 없어 세지 않는다
+    assert "찾던 책이 위 12권에 든 사례 1/2건" in capsys.readouterr().out
 
 
 def test_첫_화면의_제목은_1등과_12등_안을_본다(capsys) -> None:
