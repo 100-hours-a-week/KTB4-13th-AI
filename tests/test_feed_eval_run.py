@@ -234,6 +234,24 @@ def test_재지_못한_사용자가_있으면_표에서_알린다() -> None:
     assert "재지 못한 사용자 1명" in text
 
 
+def test_대신_채운_사용자가_있으면_표에서_알린다() -> None:
+    from evals.feed.scoring import summarize
+
+    async def slow(case: dict) -> Response:
+        return Response(200, 200, False, None, ("1",), 0.01, substituted=("f-x",))
+
+    server = FakeServer()
+    picked = runner.select(CASES, ids=["one-field-01"])
+    scores = asyncio.run(
+        runner.run(picked, BY_ID, slow, server.facts, BUNDLE["interests"])
+    )
+    text = runner.render(
+        summarize(scores, BUNDLE["kinds"], BUNDLE["interests"]), BUNDLE["top"]
+    )
+
+    assert "대신 채운 사용자 1명" in text
+
+
 # ── 명령 ─────────────────────────────────────────────────────────────────
 
 
