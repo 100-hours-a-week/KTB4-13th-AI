@@ -42,6 +42,9 @@ class Response:
     degraded: str | None  # 기능을 줄여 답했으면 그 이름(X-Degraded)
     isbns: tuple[str, ...]  # 위 N권, 받은 순서대로
     seconds: float  # 홈 추천 한 번에 걸린 시간
+    # 프로필 계산이 시간 예산(3초)을 넘겨 그 분류의 인기 책으로 대신 채운 관심사(#451). 이 관심사의 책은
+    # 추천 순서가 아니라 대신한 책이다
+    substituted: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class Score:
     seconds: float
     isbns: tuple[str, ...]
     titles: tuple[str, ...]
+    substituted: tuple[str, ...] = ()  # 시간 예산을 넘겨 대신 채운 관심사
 
 
 def matches(interest: Mapping[str, Any], book: Book) -> bool | None:
@@ -224,6 +228,7 @@ def score(
         seconds=response.seconds,
         isbns=tuple(isbns),
         titles=tuple(shelf[isbn].title if isbn in shelf else "" for isbn in isbns),
+        substituted=response.substituted,
     )
 
 
@@ -243,6 +248,7 @@ def _common(scores: Sequence[Score]) -> dict[str, Any]:
         "low_users": sum(s.least <= 2 for s in with_show),
         "none_mean": _mean([s.none for s in with_show]),
         "unsure_mean": _mean([s.unsure for s in with_show]),
+        "substituted_users": sum(bool(s.substituted) for s in scores),
     }
 
 

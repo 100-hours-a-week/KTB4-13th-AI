@@ -211,6 +211,16 @@ def render(summary: dict[str, Any], top: int) -> str:
             f"- 재지 못한 사용자 {failed}명(API 오류, 벡터 없이 답함, 개인화 여부가 기대와 다름)",
         ]
 
+    substituted = sum(item["substituted_users"] for item in kinds.values())
+    if substituted:
+        lines += [
+            "",
+            (
+                f"- 시간 예산을 넘겨 관심사를 그 분류의 인기 책으로 대신 채운 사용자 {substituted}명. "
+                "로컬이 잠깐 느려서 생겼을 수 있으니 견주기 전에 다시 잰다"
+            ),
+        ]
+
     paired = {k: v for k, v in kinds.items() if "twin_show_mean" in v}
     if paired:
         lines += [
@@ -319,6 +329,11 @@ async def measure(
                         "history": user["history"],
                     },
                 )
+                # 시간 예산을 넘겨 대신 채운 관심사. 응답에는 없고 ⑥ 이 저장한 목록에 남는다
+                substituted = await conn.fetchval(
+                    "SELECT feed->'substituted' FROM taste_profile WHERE user_id = $1",
+                    case["user_id"],
+                )
                 history = user["history"]
                 started = perf_counter()
                 feed = await client.get(
@@ -342,6 +357,7 @@ async def measure(
                     degraded=feed.headers.get("X-Degraded"),
                     isbns=tuple(item["isbn"] for item in data.get("items", [])),
                     seconds=seconds,
+                    substituted=tuple(json.loads(substituted)) if substituted else (),
                 )
 
             async def facts(isbns: set[str]) -> dict[str, Book]:
