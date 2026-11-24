@@ -115,6 +115,7 @@ def test_서술형은_매긴_점수로_위_10권의_nDCG_를_소분류별로도_
     # nDCG′ 는 점수 없는 책을 빼고 재도 2점 책 하나라 같고, 10권 중 점수가 있는 책은 1권(10%)이다
     assert "| descriptive | 1 | 0.220 | 0.220 | 10.0% | 1.0 | 0.0 | 1 |" in printed
     assert "| ↳ topic | 1 | 0.220 |" in printed
+    assert "2점·0점 책은 위 10권 중" in printed
 
 
 def test_yes_가_없으면_부르지_않고_모르는_종류나_코드_폴더면_멈춘다() -> None:
@@ -252,7 +253,7 @@ def test_다른_묶음과_라벨_파일로_잰다(tmp_path: Path) -> None:
 
 
 def test_첫_화면_결과_파일에_판정에_쓰는_칸과_서술형의_ISBN_을_남긴다(
-    tmp_path: Path,
+    tmp_path: Path, capsys
 ) -> None:
     # 판정은 정렬·본 권수가 같은 파일끼리 하고, 서술형은 남긴 ISBN 으로 마지막 라벨에 다시 매긴다(#752)
     def search(requests: list[dict]) -> list[dict]:
@@ -269,6 +270,8 @@ def test_첫_화면_결과_파일에_판정에_쓰는_칸과_서술형의_ISBN_�
     out = tmp_path / "screen.json"
     argv = ["--ids", "descriptive-01", "--screen", "--yes", "--out", str(out)]
     assert run.main(argv, search=search, facts=lambda ids: shelf) == 0
+    # 표 아래 설명도 본 권수(12)를 적는다
+    assert "2점·0점 책은 위 12권 중" in capsys.readouterr().out
 
     saved = json.loads(out.read_text(encoding="utf-8"))
     assert (saved["sort"], saved["top"], saved["look"]) == ("popular", 12, 12)
