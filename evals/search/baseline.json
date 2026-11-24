@@ -1,5 +1,5 @@
 {
- "bundle_version": 2,
+ "bundle_version": 4,
  "catalog": {
   "built": "2026-10-13",
   "books": 2107214,
@@ -10,17 +10,20 @@
   "books": 2107214,
   "with_vectors": 595329
  },
- "measured": "2026-10-19",
+ "measured": "2026-11-24",
  "runs": {
-  "v1": {
-   "code": "421a77c",
+  "main": {
+   "code": "dabb63c",
+   "sort": "relevance",
+   "top": 20,
+   "look": null,
    "summary": {
     "kinds": {
      "title": {
       "cases": 300,
       "measured": 300,
       "returned_mean": 20.0,
-      "seconds_median": 0.088,
+      "seconds_median": 0.122,
       "hit_1": 0.997,
       "hit_5": 1.0,
       "hit_20": 1.0,
@@ -31,43 +34,55 @@
       "cases": 100,
       "measured": 100,
       "returned_mean": 20.0,
-      "seconds_median": 0.072,
+      "seconds_median": 0.07,
       "hit_1": 0.87,
-      "hit_5": 0.96,
-      "hit_20": 1.0,
-      "mrr": 0.915,
-      "missed": 0
+      "hit_5": 0.95,
+      "hit_20": 0.99,
+      "mrr": 0.91,
+      "missed": 1
      },
      "author": {
       "cases": 30,
       "measured": 30,
       "returned_mean": 20.0,
-      "seconds_median": 0.045,
+      "seconds_median": 0.036,
       "author_share_mean": 0.96
      },
      "filter": {
       "cases": 20,
       "measured": 20,
       "returned_mean": 19.4,
-      "seconds_median": 0.061,
+      "seconds_median": 0.063,
       "violations": 0,
       "violating_cases": 0
      },
      "nonsense": {
-      "cases": 5,
-      "measured": 5,
+      "cases": 50,
+      "measured": 50,
       "returned_mean": 20.0,
-      "seconds_median": 0.049
+      "seconds_median": 0.023,
+      "empty": 0
+     },
+     "no-keyword": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 20.0,
+      "seconds_median": 0.033,
+      "empty": 0,
+      "sought": 19,
+      "found": 3
      },
      "descriptive": {
       "cases": 40,
       "measured": 40,
       "returned_mean": 20.0,
-      "seconds_median": 0.124,
-      "ndcg_mean": 0.619,
-      "relevant_mean": 4.7,
+      "seconds_median": 0.108,
+      "ndcg_mean": 0.617,
+      "relevant_mean": 4.8,
       "irrelevant_mean": 1.4,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.617,
+      "judged_mean": 1.0
      }
     },
     "changes": {
@@ -75,29 +90,29 @@
       "cases": 20,
       "measured": 20,
       "returned_mean": 20.0,
-      "seconds_median": 0.079,
-      "hit_1": 0.75,
+      "seconds_median": 0.09,
+      "hit_1": 0.8,
       "hit_5": 0.95,
       "hit_20": 1.0,
-      "mrr": 0.848,
+      "mrr": 0.873,
       "missed": 0
      },
      "volume-roman": {
       "cases": 13,
       "measured": 13,
       "returned_mean": 20.0,
-      "seconds_median": 0.126,
-      "hit_1": 0.385,
-      "hit_5": 0.769,
-      "hit_20": 1.0,
-      "mrr": 0.578,
-      "missed": 0
+      "seconds_median": 0.121,
+      "hit_1": 0.308,
+      "hit_5": 0.692,
+      "hit_20": 0.923,
+      "mrr": 0.5,
+      "missed": 1
      },
      "volume-circled": {
       "cases": 12,
       "measured": 12,
       "returned_mean": 20.0,
-      "seconds_median": 0.124,
+      "seconds_median": 0.123,
       "hit_1": 1.0,
       "hit_5": 1.0,
       "hit_20": 1.0,
@@ -108,7 +123,7 @@
       "cases": 25,
       "measured": 25,
       "returned_mean": 20.0,
-      "seconds_median": 0.113,
+      "seconds_median": 0.108,
       "hit_1": 1.0,
       "hit_5": 1.0,
       "hit_20": 1.0,
@@ -119,7 +134,7 @@
       "cases": 30,
       "measured": 30,
       "returned_mean": 20.0,
-      "seconds_median": 0.043,
+      "seconds_median": 0.036,
       "hit_1": 1.0,
       "hit_5": 1.0,
       "hit_20": 1.0,
@@ -132,176 +147,196 @@
       "cases": 7,
       "measured": 7,
       "returned_mean": 20.0,
-      "seconds_median": 0.149,
+      "seconds_median": 0.143,
       "ndcg_mean": 0.686,
       "relevant_mean": 6.0,
       "irrelevant_mean": 0.9,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.686,
+      "judged_mean": 1.0
      },
      "mood": {
       "cases": 7,
       "measured": 7,
       "returned_mean": 20.0,
-      "seconds_median": 0.117,
-      "ndcg_mean": 0.607,
+      "seconds_median": 0.098,
+      "ndcg_mean": 0.588,
       "relevant_mean": 4.6,
       "irrelevant_mean": 2.3,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.588,
+      "judged_mean": 1.0
      },
      "audience": {
       "cases": 6,
       "measured": 6,
       "returned_mean": 20.0,
-      "seconds_median": 0.101,
-      "ndcg_mean": 0.754,
-      "relevant_mean": 6.5,
-      "irrelevant_mean": 1.2,
-      "unlabeled": 0
+      "seconds_median": 0.095,
+      "ndcg_mean": 0.765,
+      "relevant_mean": 6.7,
+      "irrelevant_mean": 1.0,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.765,
+      "judged_mean": 1.0
      },
      "situation": {
       "cases": 6,
       "measured": 6,
       "returned_mean": 20.0,
-      "seconds_median": 0.104,
+      "seconds_median": 0.084,
       "ndcg_mean": 0.498,
       "relevant_mean": 3.2,
       "irrelevant_mean": 1.7,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.498,
+      "judged_mean": 1.0
      },
      "long": {
       "cases": 8,
       "measured": 8,
       "returned_mean": 20.0,
-      "seconds_median": 0.142,
+      "seconds_median": 0.116,
       "ndcg_mean": 0.57,
       "relevant_mean": 3.4,
       "irrelevant_mean": 1.0,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.57,
+      "judged_mean": 1.0
      },
      "mixed": {
       "cases": 6,
       "measured": 6,
       "returned_mean": 20.0,
-      "seconds_median": 0.131,
-      "ndcg_mean": 0.603,
+      "seconds_median": 0.111,
+      "ndcg_mean": 0.604,
       "relevant_mean": 5.0,
       "irrelevant_mean": 1.8,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.604,
+      "judged_mean": 1.0
      }
     }
    }
   },
-  "main": {
-   "code": "9c07e7c",
+  "main-screen": {
+   "code": "dabb63c",
+   "sort": "popular",
+   "top": 12,
+   "look": 12,
    "summary": {
     "kinds": {
      "title": {
       "cases": 300,
       "measured": 300,
-      "returned_mean": 20.0,
-      "seconds_median": 0.093,
+      "returned_mean": 12.0,
+      "seconds_median": 0.073,
       "hit_1": 0.997,
-      "hit_5": 1.0,
-      "hit_20": 1.0,
+      "hit_12": 1.0,
       "mrr": 0.998,
       "missed": 0
      },
      "title-variant": {
       "cases": 100,
       "measured": 100,
-      "returned_mean": 20.0,
-      "seconds_median": 0.078,
+      "returned_mean": 12.0,
+      "seconds_median": 0.057,
       "hit_1": 0.87,
-      "hit_5": 0.96,
-      "hit_20": 1.0,
-      "mrr": 0.915,
-      "missed": 0
+      "hit_12": 0.98,
+      "mrr": 0.909,
+      "missed": 2
      },
      "author": {
       "cases": 30,
       "measured": 30,
-      "returned_mean": 20.0,
-      "seconds_median": 0.045,
-      "author_share_mean": 0.96
+      "returned_mean": 12.0,
+      "seconds_median": 0.03,
+      "author_share_mean": 0.95
      },
      "filter": {
       "cases": 20,
       "measured": 20,
-      "returned_mean": 19.4,
-      "seconds_median": 0.058,
+      "returned_mean": 11.8,
+      "seconds_median": 0.047,
       "violations": 0,
       "violating_cases": 0
      },
      "nonsense": {
-      "cases": 5,
-      "measured": 5,
-      "returned_mean": 20.0,
-      "seconds_median": 0.051
+      "cases": 50,
+      "measured": 50,
+      "returned_mean": 12.0,
+      "seconds_median": 0.021,
+      "empty": 0
+     },
+     "no-keyword": {
+      "cases": 30,
+      "measured": 30,
+      "returned_mean": 12.0,
+      "seconds_median": 0.028,
+      "empty": 0,
+      "sought": 19,
+      "found": 3
      },
      "descriptive": {
       "cases": 40,
       "measured": 40,
-      "returned_mean": 20.0,
-      "seconds_median": 0.127,
-      "ndcg_mean": 0.619,
-      "relevant_mean": 4.7,
-      "irrelevant_mean": 1.4,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.102,
+      "ndcg_mean": 0.602,
+      "relevant_mean": 5.5,
+      "irrelevant_mean": 1.9,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.602,
+      "judged_mean": 1.0
      }
     },
     "changes": {
      "no-subtitle": {
       "cases": 20,
       "measured": 20,
-      "returned_mean": 20.0,
-      "seconds_median": 0.085,
-      "hit_1": 0.75,
-      "hit_5": 0.95,
-      "hit_20": 1.0,
-      "mrr": 0.848,
+      "returned_mean": 12.0,
+      "seconds_median": 0.066,
+      "hit_1": 0.8,
+      "hit_12": 1.0,
+      "mrr": 0.873,
       "missed": 0
      },
      "volume-roman": {
       "cases": 13,
       "measured": 13,
-      "returned_mean": 20.0,
-      "seconds_median": 0.14,
-      "hit_1": 0.385,
-      "hit_5": 0.769,
-      "hit_20": 1.0,
-      "mrr": 0.578,
-      "missed": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.11,
+      "hit_1": 0.308,
+      "hit_12": 0.846,
+      "mrr": 0.495,
+      "missed": 2
      },
      "volume-circled": {
       "cases": 12,
       "measured": 12,
-      "returned_mean": 20.0,
-      "seconds_median": 0.139,
+      "returned_mean": 12.0,
+      "seconds_median": 0.114,
       "hit_1": 1.0,
-      "hit_5": 1.0,
-      "hit_20": 1.0,
+      "hit_12": 1.0,
       "mrr": 1.0,
       "missed": 0
      },
      "case": {
       "cases": 25,
       "measured": 25,
-      "returned_mean": 20.0,
-      "seconds_median": 0.116,
+      "returned_mean": 12.0,
+      "seconds_median": 0.094,
       "hit_1": 1.0,
-      "hit_5": 1.0,
-      "hit_20": 1.0,
+      "hit_12": 1.0,
       "mrr": 1.0,
       "missed": 0
      },
      "nospace": {
       "cases": 30,
       "measured": 30,
-      "returned_mean": 20.0,
-      "seconds_median": 0.045,
+      "returned_mean": 12.0,
+      "seconds_median": 0.029,
       "hit_1": 1.0,
-      "hit_5": 1.0,
-      "hit_20": 1.0,
+      "hit_12": 1.0,
       "mrr": 1.0,
       "missed": 0
      }
@@ -310,62 +345,74 @@
      "topic": {
       "cases": 7,
       "measured": 7,
-      "returned_mean": 20.0,
-      "seconds_median": 0.15,
-      "ndcg_mean": 0.686,
-      "relevant_mean": 6.0,
-      "irrelevant_mean": 0.9,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.135,
+      "ndcg_mean": 0.676,
+      "relevant_mean": 7.0,
+      "irrelevant_mean": 1.0,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.676,
+      "judged_mean": 1.0
      },
      "mood": {
       "cases": 7,
       "measured": 7,
-      "returned_mean": 20.0,
-      "seconds_median": 0.111,
-      "ndcg_mean": 0.607,
-      "relevant_mean": 4.6,
-      "irrelevant_mean": 2.3,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.093,
+      "ndcg_mean": 0.546,
+      "relevant_mean": 4.9,
+      "irrelevant_mean": 3.4,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.546,
+      "judged_mean": 1.0
      },
      "audience": {
       "cases": 6,
       "measured": 6,
-      "returned_mean": 20.0,
-      "seconds_median": 0.102,
-      "ndcg_mean": 0.754,
-      "relevant_mean": 6.5,
-      "irrelevant_mean": 1.2,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.088,
+      "ndcg_mean": 0.727,
+      "relevant_mean": 7.2,
+      "irrelevant_mean": 1.5,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.727,
+      "judged_mean": 1.0
      },
      "situation": {
       "cases": 6,
       "measured": 6,
-      "returned_mean": 20.0,
-      "seconds_median": 0.103,
-      "ndcg_mean": 0.498,
-      "relevant_mean": 3.2,
-      "irrelevant_mean": 1.7,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.081,
+      "ndcg_mean": 0.486,
+      "relevant_mean": 3.7,
+      "irrelevant_mean": 2.3,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.486,
+      "judged_mean": 1.0
      },
      "long": {
       "cases": 8,
       "measured": 8,
-      "returned_mean": 20.0,
-      "seconds_median": 0.143,
-      "ndcg_mean": 0.57,
-      "relevant_mean": 3.4,
-      "irrelevant_mean": 1.0,
-      "unlabeled": 0
+      "returned_mean": 12.0,
+      "seconds_median": 0.115,
+      "ndcg_mean": 0.574,
+      "relevant_mean": 4.4,
+      "irrelevant_mean": 1.4,
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.574,
+      "judged_mean": 1.0
      },
      "mixed": {
       "cases": 6,
       "measured": 6,
-      "returned_mean": 20.0,
-      "seconds_median": 0.132,
-      "ndcg_mean": 0.603,
-      "relevant_mean": 5.0,
+      "returned_mean": 12.0,
+      "seconds_median": 0.107,
+      "ndcg_mean": 0.611,
+      "relevant_mean": 6.0,
       "irrelevant_mean": 1.8,
-      "unlabeled": 0
+      "unlabeled": 0,
+      "ndcg_labeled_mean": 0.611,
+      "judged_mean": 1.0
      }
     }
    }
