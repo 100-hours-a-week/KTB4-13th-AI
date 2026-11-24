@@ -230,6 +230,10 @@ def render(
             )
         elif "empty" in row:
             measure = f"결과가 빈 사례 {row['empty']}건"
+            if "sought" in row:
+                measure += (
+                    f", 찾던 책이 위 {top}권에 든 사례 {row['found']}/{row['sought']}건"
+                )
         lines.append(
             f"| {kind} | {row['measured']} | {measure} | {_num(row['returned_mean'])} "
             f"| {_num(row['seconds_median'], 3)} |"
