@@ -175,7 +175,7 @@ _NOTE = (
     "시간은 이 PC 에서 잰 것이라 종류끼리 견주는 데만 쓴다."
 )
 _DESCRIPTIVE_NOTE = (
-    "- 서술형은 매긴 점수(labels.json)로 잰다. 2점·0점 책은 위 10권 중 그 점수의 책 수(평균), "
+    "- 서술형은 매긴 점수(labels.json)로 잰다. 2점·0점 책은 위 {look}권 중 그 점수의 책 수(평균), "
     "점수 없는 책은 라벨에 없어 0점으로 센 책의 수(합)다"
 )
 
@@ -251,7 +251,7 @@ def render(
             f"| {row['unlabeled']} | {_num(row['seconds_median'], 3)} |"
         )
     if described:
-        lines += ["", _DESCRIPTIVE_NOTE]
+        lines += ["", _DESCRIPTIVE_NOTE.format(look=look)]
     failed = sum(row["cases"] - row["measured"] for row in kinds.values())
     if failed:
         lines += [
