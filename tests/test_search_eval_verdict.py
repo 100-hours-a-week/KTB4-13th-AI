@@ -121,6 +121,42 @@ def test_서술형은_자동으로_탈락시키지_않고_좋아지면_후보다
     assert "확실히 내려감" in _line(result, "서술형 nDCG").detail
 
 
+def _sought(i: int, found: bool) -> dict:
+    return {
+        "id": f"no-keyword-{i}",
+        "kind": "no-keyword",
+        "ok": True,
+        "sought": True,
+        "rank": 3 if found else None,
+        "book_ids": [i],
+    }
+
+
+def test_엔진_판정은_서술형이_확실히_내려가면_탈락이다() -> None:
+    base = _run([_described(i, 0.5) for i in range(40)], "base")
+    fell = _run([_described(i, 0.3 + 0.001 * i) for i in range(40)])
+    assert verdict.compare(base, fell).verdict == verdict.UNCLEAR
+    assert verdict.compare(base, fell, engine=True).verdict == verdict.FAIL
+    thin = _run([_described(i, 0.3 + 0.001 * i, judged=0.8) for i in range(40)])
+    assert verdict.compare(base, thin, engine=True).verdict == verdict.NEEDS_LABELS
+
+
+def test_엔진_판정은_찾던_책을_McNemar_로_본다() -> None:
+    def rows(found: set[int]) -> list[dict]:
+        return [_sought(i, i in found) for i in range(20)]
+
+    base = _run(rows({0, 1}), "base")
+    assert not any(
+        x.name.startswith("찾던")
+        for x in verdict.compare(base, _run(rows(set()))).lines
+    )
+    lost_one = verdict.compare(base, _run(rows({0})), engine=True)
+    assert _line(lost_one, "찾던").verdict == verdict.UNCLEAR
+    rose = verdict.compare(base, _run(rows(set(range(10)))), engine=True)
+    assert _line(rose, "찾던").verdict == verdict.BETTER
+    assert rose.verdict == verdict.BETTER
+
+
 def test_Judged_가_모자라면_라벨을_보충한_뒤_판정하되_탈락은_먼저다() -> None:
     base = _run([_described(i, 0.5) for i in range(40)], "base")
     thin = _run([_described(i, 0.7, judged=0.8) for i in range(40)])

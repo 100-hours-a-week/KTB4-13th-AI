@@ -22,13 +22,20 @@
 하나라도 탈락이면 탈락이다. 탈락이 없고 Judged 평균이 어느 쪽이든 0.9 미만이면 "라벨 보충 뒤 판정"이다. 그 뒤
 서술형이나 표기 변형이 좋아졌으면 "좋아짐", 아니면 "판단 불가"다("같다"가 아니다). 재지 못한 사례(200 이 아니거나
 줄여 답함)가 있으면 짝이 빠진 채 판정하지 않고 "다시 재기"로 적는다.
+
+`--engine`(Elasticsearch 판정, #754. V4 최종안 5절에서 측정 전에 정함)은 검색 엔진을 바꾸는 판정이라 기준 둘을 더한다.
+
+| 무엇 | 탈락 | 좋아짐 |
+| --- | --- | --- |
+| 서술형 | nDCG 차이의 구간 위 끝 < 0(Judged 가 모자라면 라벨 보충 뒤) | 그대로 |
+| 찾던 책(키워드 0건 중 찾던 책을 붙인 사례) | 표기 변형과 같이 McNemar | 표기 변형과 같이 구간 하한 > 0 |
 """
 
 import argparse
 import json
 import statistics
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -153,12 +160,18 @@ def title_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
     )
 
 
-def variant_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
-    lost, gained = flips(base, new, ids)
+def _paired_line(
+    name: str,
+    base: Run,
+    new: Run,
+    ids: Sequence[str],
+    hit: Callable[[Mapping[str, Any]], bool],
+) -> Line:
+    """사례마다 맞힘·못 맞힘인 줄. 잃은 쪽이 많고 McNemar p < 0.05 면 탈락, 구간 하한 > 0 이면 좋아짐."""
+    lost = [i for i in ids if hit(base.rows[i]) and not hit(new.rows[i])]
+    gained = [i for i in ids if hit(new.rows[i]) and not hit(base.rows[i])]
     p = stats.mcnemar(len(lost), len(gained))
-    gap = _bootstrap(
-        [float(first_hit(new.rows[i])) - float(first_hit(base.rows[i])) for i in ids]
-    )
+    gap = _bootstrap([float(hit(new.rows[i])) - float(hit(base.rows[i])) for i in ids])
     if len(lost) > len(gained) and p < stats.ALPHA:
         verdict = FAIL
     elif gap.low > 0:
@@ -166,12 +179,26 @@ def variant_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
     else:
         verdict = UNCLEAR
     return Line(
-        f"표기 변형 {len(ids)}건 1등",
-        sum(first_hit(base.rows[i]) for i in ids),
-        sum(first_hit(new.rows[i]) for i in ids),
+        name,
+        sum(hit(base.rows[i]) for i in ids),
+        sum(hit(new.rows[i]) for i in ids),
         f"잃음 {len(lost)} · 얻음 {len(gained)}, McNemar p {p:.3g}, 구간 {_span(gap)}",
         verdict,
     )
+
+
+def variant_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
+    return _paired_line(f"표기 변형 {len(ids)}건 1등", base, new, ids, first_hit)
+
+
+def sought_found(row: Mapping[str, Any]) -> bool:
+    """찾던 책이 첫 화면에 들었는가(#764)."""
+    return row["rank"] is not None
+
+
+def sought_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
+    """찾던 책을 붙인 키워드 0건 사례(오타·로마자·초성). --engine 에서만 본다(#754)."""
+    return _paired_line(f"찾던 책 {len(ids)}건 첫 화면", base, new, ids, sought_found)
 
 
 def author_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
@@ -187,17 +214,30 @@ def author_line(base: Run, new: Run, ids: Sequence[str]) -> Line:
     )
 
 
-def descriptive_lines(base: Run, new: Run, ids: Sequence[str]) -> list[Line]:
-    """서술형 줄들. 판정은 nDCG(라벨 없는 책 = 0, 하한)로 하고 나머지는 숫자만 낸다."""
+def descriptive_lines(
+    base: Run, new: Run, ids: Sequence[str], engine: bool = False
+) -> list[Line]:
+    """서술형 줄들. 판정은 nDCG(라벨 없는 책 = 0, 하한)로 하고 나머지는 숫자만 낸다.
+
+    engine 이면 nDCG 구간 위 끝이 0 아래일 때 탈락이다. 라벨 없는 책을 0점으로 친 하한이라, Judged 가 모자라면
+    탈락 대신 라벨 보충 뒤 판정으로 둔다.
+    """
+    enough = stats.enough_labels(
+        statistics.fmean(base.rows[i]["judged"] for i in ids),
+        statistics.fmean(new.rows[i]["judged"] for i in ids),
+    )
     lines = []
     for key, name in (("ndcg", "서술형 nDCG"), ("ndcg_labeled", "서술형 nDCG′")):
         was = [base.rows[i][key] for i in ids]
         now = [new.rows[i][key] for i in ids]
         gap = _bootstrap([b - a for a, b in zip(was, now, strict=True)])
         verdict = "-"
+        note = ", 확실히 내려감(사람이 정한다)" if gap.high < 0 else ""
         if key == "ndcg":
             verdict = BETTER if gap.low > 0 else UNCLEAR
-        note = ", 확실히 내려감(사람이 정한다)" if gap.high < 0 else ""
+            if engine and gap.high < 0:
+                verdict = FAIL if enough else NEEDS_LABELS
+                note = ", 확실히 내려감"
         lines.append(
             Line(
                 name,
@@ -251,8 +291,8 @@ def changed_cases(base: Run, new: Run, kind: str, top: int) -> int:
     )
 
 
-def compare(base: Run, new: Run) -> Comparison:
-    """두 파일을 판정한다. 견줄 수 없는 파일이면 ValueError 다."""
+def compare(base: Run, new: Run, engine: bool = False) -> Comparison:
+    """두 파일을 판정한다. 견줄 수 없는 파일이면 ValueError 다. engine 은 모듈 설명의 --engine."""
     reason = mismatch(base, new)
     if reason:
         raise ValueError(f"{new.name}: {reason}")
@@ -269,10 +309,13 @@ def compare(base: Run, new: Run) -> Comparison:
     if ids.get("author"):
         lines.append(author_line(base, new, ids["author"]))
     if ids.get("descriptive"):
-        lines += descriptive_lines(base, new, ids["descriptive"])
+        lines += descriptive_lines(base, new, ids["descriptive"], engine)
         lines.append(judged_line(base, new, ids["descriptive"]))
     if ids.get("filter"):
         lines.append(filter_line(base, new, ids["filter"]))
+    sought = [i for i in ids.get("no-keyword", []) if base.rows[i].get("sought")]
+    if engine and sought:
+        lines.append(sought_line(base, new, sought))
     top = base.meta["top"]
     return Comparison(
         name=new.name,
@@ -360,20 +403,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     one = sub.add_parser("compare", help="기준과 후보 하나")
     one.add_argument("--base", required=True, type=Path)
     one.add_argument("--new", required=True, type=Path)
+    one.add_argument(
+        "--engine",
+        action="store_true",
+        help="검색 엔진을 바꾸는 판정(#754): 서술형이 확실히 내려가면 탈락, 찾던 책 McNemar",
+    )
     final = sub.add_parser("confirm", help="마지막 후보 여럿을 Holm 보정으로")
     final.add_argument("--base", required=True, type=Path)
     final.add_argument("--new", required=True, action="append", type=Path)
+    final.add_argument(
+        "--engine",
+        action="store_true",
+        help="검색 엔진을 바꾸는 판정(#754): 서술형 구간 위 끝이 0 아래면 탈락",
+    )
     args = parser.parse_args(argv)
 
     labels = (load_labels(args.labels) if args.labels else load_labels())["labels"]
     try:
         base = load(args.base, labels)
         if args.command == "compare":
-            print(render(base, compare(base, load(args.new, labels))))
+            print(render(base, compare(base, load(args.new, labels), args.engine)))
         else:
             news = [load(path, labels) for path in args.new]
             for name, gap, passed, dropped in confirm(base, news):
                 verdict = REMEASURE if dropped else BETTER if passed else UNCLEAR
+                if args.engine and not dropped and gap.high < 0:
+                    verdict = FAIL
                 print(
                     f"{name}: 차이 {gap.mean:+.3f}, 구간 {_span(gap)}, p {gap.p:.3g}, {verdict}"
                 )
