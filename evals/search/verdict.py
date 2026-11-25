@@ -428,7 +428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name, gap, passed, dropped in confirm(base, news):
                 verdict = REMEASURE if dropped else BETTER if passed else UNCLEAR
                 if args.engine and not dropped and gap.high < 0:
-                    verdict = FAIL
+                    new = next(n for n in news if n.name == name)
+                    judged = [
+                        statistics.fmean(r["judged"] for r in x.rows.values())
+                        for x in (base, new)
+                    ]
+                    verdict = FAIL if stats.enough_labels(*judged) else NEEDS_LABELS
                 print(
                     f"{name}: 차이 {gap.mean:+.3f}, 구간 {_span(gap)}, p {gap.p:.3g}, {verdict}"
                 )
