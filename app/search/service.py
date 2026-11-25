@@ -117,7 +117,7 @@ async def _vector_ids(
     if query_vector is None:
         return None
     try:
-        ids = await vector.search_ids(conn, query_vector, req.filters)
+        ids = await es.vector_search_ids(conn, query_vector, req.filters)
         # 0건이 필터 때문인지, 책 벡터가 아직 없어서인지 가른다(명세: 초기 적재 중이면 축소 응답).
         if not ids and not await vector.has_any(conn):
             return None

@@ -1,14 +1,16 @@
-"""Elasticsearch 판정(#754) 전용: 키워드 후보를 Elasticsearch 에서 받는다. 브랜치에만 있고 main 에 넣지 않는다.
+"""Elasticsearch 판정(#754) 전용: 키워드·벡터 후보를 Elasticsearch 에서 받는다. 브랜치에만 있고 main 에 넣지 않는다.
 
 환경 변수 SEARCH_ES 로 고른다. 비어 있으면 지금 검색과 똑같다.
 
 - `keyword` — 후보 A. 키워드 후보만 Elasticsearch(nori, BM25). 벡터는 pgvector 그대로.
+- `keyword,vector` — 후보 B. 벡터 후보도 Elasticsearch(같은 e5 벡터, 근사 최근접).
 
-엔진만 바꾼다. 후보 수(키워드 200), 필드 무게(제목 3·저자 2·소개 0.5), 필터, 합치기·제목 우선·정렬
+엔진만 바꾼다. 후보 수(키워드 200, 벡터 50), 필드 무게(제목 3·저자 2·소개 0.5), 필터, 합치기·제목 우선·정렬
 (service.py)은 지금 코드 그대로다. 질의는 문서 기본값으로 고정하고 튜닝하지 않는다(V4 최종안 5절):
 
 - 키워드는 multi_match 기본(best_fields, 낱말은 OR)에 오타 허용 `fuzziness: AUTO` 만 준다. 지금 검색의
   선(MIN_COVERAGE 0.6) 같은 장치는 없다.
+- 벡터는 knn 기본(num_candidates = k 의 1.5배, BBQ 색인은 3배로 더 받아 원래 값으로 다시 매김)이다.
 
 검색어는 지금 키워드 검색과 같게 NFKC 로 바꾸고, 글자·숫자가 하나도 없으면 0건이다(keyword.search_ids 와 같음).
 점수가 같으면 book_id 가 작은 쪽이 먼저다(지금 키워드 검색과 같음).
@@ -21,7 +23,7 @@ import asyncpg
 import httpx
 
 from app.core import categories
-from app.search import keyword
+from app.search import keyword, vector
 from app.search.schemas import SearchFilters
 
 ES_URL = os.environ.get("ES_URL", "http://localhost:9200")
@@ -35,7 +37,7 @@ FIELDS = [
 
 
 def engines() -> set[str]:
-    """Elasticsearch 로 바꾼 쪽(keyword)."""
+    """Elasticsearch 로 바꾼 쪽(keyword, vector)."""
     return {
         part.strip()
         for part in os.environ.get("SEARCH_ES", "").split(",")
@@ -98,3 +100,23 @@ async def keyword_search_ids(
             "sort": ["_score", {"book_id": "asc"}],
         }
     )
+
+
+async def vector_search_ids(
+    conn: asyncpg.Connection,
+    query_vector: list[float],
+    filters: SearchFilters,
+) -> list[int]:
+    """벡터 후보. SEARCH_ES 에 vector 가 없으면 지금 벡터 검색(부르는 모양도 그대로)."""
+    if "vector" not in engines():
+        return await vector.search_ids(conn, query_vector, filters)
+    limit = vector.CANDIDATE_LIMIT
+    knn: dict[str, Any] = {
+        "field": "embedding",
+        "query_vector": query_vector,
+        "k": limit,
+    }
+    clauses = filter_clauses(filters)
+    if clauses:
+        knn["filter"] = clauses
+    return await _search({"knn": knn, "size": limit, "_source": False})
