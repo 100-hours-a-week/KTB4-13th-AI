@@ -16,6 +16,7 @@ worktree 를 주면 검색만 그 코드로 바뀐다. V1 운영 코드처럼 �
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -315,7 +316,11 @@ def main(
     top = SCREEN_TOP if args.screen else bundle["top"]
     look = SCREEN_TOP if args.screen else None
     hit_at = (1, SCREEN_TOP) if args.screen else HIT_AT
-    print(f"사례 {len(picked)}건, /search 를 {len(picked)}번 부른다. 코드: {label}")
+    # Elasticsearch 판정(#754): 키워드·벡터를 Elasticsearch 로 바꿨는지(app/search/es.py). 결과 파일에도 남긴다
+    engine = os.environ.get("SEARCH_ES") or None
+    print(
+        f"사례 {len(picked)}건, /search 를 {len(picked)}번 부른다. 코드: {label}, SEARCH_ES: {engine}"
+    )
     if args.screen:
         print(f"첫 화면: {sort} 정렬, 위 {top}권")
 
@@ -368,6 +373,7 @@ def main(
             "catalog": catalog,
             "database": database,
             "code": label,
+            "search_es": engine,
             "sort": sort,
             "top": top,
             "look": look,

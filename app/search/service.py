@@ -11,7 +11,7 @@ import asyncpg
 
 from app.core import cursor, db
 from app.gateway import embedding
-from app.search import books, keyword, rrf, sorting, vector
+from app.search import books, es, keyword, rrf, sorting, vector
 from app.search.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ async def search(req: SearchRequest) -> SearchOutcome:
         # 키워드 검색이 실패하면 예외가 그대로 올라가 500 이 된다(DB 가 죽은 상태).
         query_vector, keyword_ids = await asyncio.gather(
             _embed_query(req.query),
-            keyword.search_ids(conn, req.query, req.filters),
+            es.keyword_search_ids(conn, req.query, req.filters),
         )
         vector_ids = await _vector_ids(conn, query_vector, req)
 
